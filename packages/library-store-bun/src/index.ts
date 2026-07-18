@@ -16,7 +16,10 @@ import type {
 } from "@takio/library-contract";
 import { Database } from "bun:sqlite";
 
+import { initializationTestSeam } from "./initialization-test-seam.js";
+
 const SCHEMA_VERSION = 1;
+const incompatibleSchema = Symbol("incompatible-schema");
 
 type StoredLibraryItem = {
   id: unknown;
@@ -67,23 +70,23 @@ export class BunSqliteLibraryStore implements LibraryStore {
 
     try {
       database = new Database(this.#databasePath, { create: true, strict: true });
-      const version = database
-        .query<{ user_version: number }, []>("PRAGMA user_version")
-        .get()?.user_version;
+      database.transaction(() => {
+        const version = database!
+          .query<{ user_version: number }, []>("PRAGMA user_version")
+          .get()?.user_version;
 
-      if (version === 0) {
-        const existingSchema = database
-          .query<{ present: number }, []>(
-            "SELECT 1 AS present FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' LIMIT 1",
-          )
-          .get();
+        if (version === 0) {
+          const existingSchema = database!
+            .query<{ present: number }, []>(
+              "SELECT 1 AS present FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' LIMIT 1",
+            )
+            .get();
 
-        if (existingSchema) {
-          database.close();
-          return failure("incompatible-schema");
-        }
+          if (existingSchema) {
+            throw incompatibleSchema;
+          }
 
-        database.transaction(() => {
+          initializationTestSeam.afterVersionZeroPreflight?.();
           database!.run(`
             CREATE TABLE library_items (
               id TEXT PRIMARY KEY,
@@ -94,17 +97,16 @@ export class BunSqliteLibraryStore implements LibraryStore {
             ) STRICT
           `);
           database!.run(`PRAGMA user_version = ${SCHEMA_VERSION}`);
-        })();
-      } else if (version !== SCHEMA_VERSION) {
-        database.close();
-        return failure("incompatible-schema");
-      }
+        } else if (version !== SCHEMA_VERSION) {
+          throw incompatibleSchema;
+        }
+      }).immediate();
 
       this.#database = database;
       return success(null);
-    } catch {
+    } catch (error) {
       database?.close();
-      return failure("storage-unavailable");
+      return failure(error === incompatibleSchema ? "incompatible-schema" : "storage-unavailable");
     }
   }
 

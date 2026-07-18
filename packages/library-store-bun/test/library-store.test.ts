@@ -6,6 +6,7 @@ import { join } from "node:path";
 
 import type { LibraryItem } from "@takio/core";
 
+import { initializationTestSeam } from "../src/initialization-test-seam.js";
 import { BunSqliteLibraryStore } from "../src/index.js";
 
 const item: LibraryItem = {
@@ -27,6 +28,8 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  delete initializationTestSeam.afterVersionZeroPreflight;
+
   const closeErrors: unknown[] = [];
   for (const store of stores) {
     try {
@@ -156,6 +159,38 @@ describe("BunSqliteLibraryStore", () => {
         )
         .all(),
     ).toEqual(schemaBefore);
+  });
+
+  it("holds the initialization lock between version-0 preflight and schema creation", async () => {
+    using competitor = new Database(databasePath, { create: true, strict: true });
+    let competingAttempts = 0;
+    let competingError: unknown;
+    initializationTestSeam.afterVersionZeroPreflight = () => {
+      competingAttempts += 1;
+      try {
+        competitor.run("CREATE TABLE injected_between_preflight_and_initialization (id TEXT)");
+      } catch (error) {
+        competingError = error;
+      }
+    };
+
+    const store = createStore();
+    expect(await store.open({ config: {} })).toEqual({ ok: true, value: null });
+    expect(competingAttempts).toBe(1);
+    expect(competingError).toMatchObject({ code: "SQLITE_BUSY" });
+
+    using initializedDatabase = new Database(databasePath);
+    expect(
+      initializedDatabase.query<{ user_version: number }, []>("PRAGMA user_version").get()
+        ?.user_version,
+    ).toBe(1);
+    expect(
+      initializedDatabase
+        .query<{ name: string; type: string }, []>(
+          "SELECT name, type FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' ORDER BY name",
+        )
+        .all(),
+    ).toEqual([{ name: "library_items", type: "table" }]);
   });
 
   it("requires the caller to inject a database path", () => {
