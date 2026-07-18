@@ -2,7 +2,7 @@
 import { Command, CommanderError } from "commander";
 import { copyFile, mkdir, realpath, rename, rm, stat } from "node:fs/promises";
 import { homedir } from "node:os";
-import { basename, dirname, extname, join, resolve } from "node:path";
+import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import {
   FORMAT_CATALOG,
   FORMAT_IDS,
@@ -77,6 +77,31 @@ async function openLibraryStore(
   }
 
   return { store, paths };
+}
+
+function isInside(parentPath: string, childPath: string): boolean {
+  const pathFromParent = relative(parentPath, childPath);
+  return (
+    pathFromParent !== "" &&
+    pathFromParent !== ".." &&
+    !pathFromParent.startsWith(`..${sep}`) &&
+    !isAbsolute(pathFromParent)
+  );
+}
+
+async function removeOwnedFile(sourcePath: string, itemsDirectory: string): Promise<void> {
+  const resolvedSourcePath = resolve(sourcePath);
+  if (!isInside(itemsDirectory, resolvedSourcePath)) {
+    return;
+  }
+
+  const [canonicalItemsDirectory, canonicalSourcePath] = await Promise.all([
+    realpath(itemsDirectory),
+    realpath(resolvedSourcePath),
+  ]);
+  if (isInside(canonicalItemsDirectory, canonicalSourcePath)) {
+    await rm(resolvedSourcePath);
+  }
 }
 
 function storageCommand(command: Command, write: (message: string) => void): Command {
@@ -260,6 +285,55 @@ export function createProgram(
         }
       },
     );
+
+  storageCommand(library.command("get").helpOption(false), writeError)
+    .option("--db <path>", "database path")
+    .requiredOption("--id <id>", "library item ID")
+    .action(async (options: { db?: string; id: string }, command: Command) => {
+      if (options.id.length === 0) {
+        command.error("", { exitCode: 1, code: "invalid-arguments" });
+      }
+
+      const { store } = await openLibraryStore(options.db, command);
+      try {
+        const result = await store.get({ id: options.id });
+        if (!result.ok) {
+          command.error("", { exitCode: 1, code: result.error.code });
+        }
+        write(JSON.stringify({ ok: true, value: { item: result.value } }));
+      } finally {
+        store.close();
+      }
+    });
+
+  storageCommand(library.command("remove").helpOption(false), writeError)
+    .option("--db <path>", "database path")
+    .requiredOption("--id <id>", "library item ID")
+    .action(async (options: { db?: string; id: string }, command: Command) => {
+      if (options.id.length === 0) {
+        command.error("", { exitCode: 1, code: "invalid-arguments" });
+      }
+
+      const { store, paths } = await openLibraryStore(options.db, command);
+      try {
+        const result = await store.remove({ id: options.id });
+        if (!result.ok) {
+          command.error("", { exitCode: 1, code: result.error.code });
+        }
+
+        if (result.value) {
+          try {
+            await removeOwnedFile(result.value.sourcePath, paths.itemsDirectory);
+          } catch {
+            command.error("", { exitCode: 1, code: "storage-unavailable" });
+          }
+        }
+
+        write(JSON.stringify({ ok: true, value: { item: result.value } }));
+      } finally {
+        store.close();
+      }
+    });
 
   program
     .command("plan")

@@ -338,5 +338,136 @@ describe("takio CLI", () => {
       expect(await Bun.file(sourcePath).text()).toBe("caller owned");
       expect(await readdir(join(directory!, "items"))).toEqual([]);
     });
+
+    it("gets and removes an imported item across separate invocations", async () => {
+      const sourcePath = join(directory!, "owned.epub");
+      await Bun.write(sourcePath, "owned contents");
+      const imported = await invoke([
+        "library",
+        "import",
+        "--db",
+        databasePath!,
+        "--source-path",
+        sourcePath,
+      ]);
+      const item = (
+        parseOutput(imported.output) as {
+          value: { item: { id: string; sourcePath: string } };
+        }
+      ).value.item;
+
+      const found = await invoke(["library", "get", "--db", databasePath!, "--id", item.id]);
+      expect((parseOutput(found.output) as { value: { item: { id: string } } }).value.item.id).toBe(
+        item.id,
+      );
+
+      const removed = await invoke([
+        "library",
+        "remove",
+        "--db",
+        databasePath!,
+        "--id",
+        item.id,
+      ]);
+      expect((parseOutput(removed.output) as { value: { item: { id: string } } }).value.item.id).toBe(
+        item.id,
+      );
+      expect(await Bun.file(item.sourcePath).exists()).toBe(false);
+
+      const missing = await invoke(["library", "get", "--db", databasePath!, "--id", item.id]);
+      expect(parseOutput(missing.output)).toEqual({ ok: true, value: { item: null } });
+      const removedAgain = await invoke([
+        "library",
+        "remove",
+        "--db",
+        databasePath!,
+        "--id",
+        item.id,
+      ]);
+      expect(parseOutput(removedAgain.output)).toEqual({ ok: true, value: { item: null } });
+    });
+
+    it("never deletes an external file referenced by low-level add", async () => {
+      const sourcePath = join(directory!, "external.epub");
+      await Bun.write(sourcePath, "caller owned");
+      expect(
+        (
+          await invoke([
+            "library",
+            "add",
+            "--db",
+            databasePath!,
+            "--id",
+            "external-book",
+            "--title",
+            "External book",
+            "--source-path",
+            sourcePath,
+            "--format",
+            "epub",
+            "--added-at",
+            "2026-07-18T12:00:00.000Z",
+          ])
+        ).exitCode
+      ).toBeUndefined();
+
+      const removed = await invoke([
+        "library",
+        "remove",
+        "--db",
+        databasePath!,
+        "--id",
+        "external-book",
+      ]);
+
+      expect(removed.exitCode).toBeUndefined();
+      expect(await Bun.file(sourcePath).text()).toBe("caller owned");
+    });
+
+    it("reports an owned-path deletion failure after removing the row", async () => {
+      const ownedDirectory = join(directory!, "items", "not-a-file.epub");
+      await mkdir(ownedDirectory, { recursive: true });
+      const addedAt = "2026-07-18T12:00:00.000Z";
+      await invoke([
+        "library",
+        "add",
+        "--db",
+        databasePath!,
+        "--id",
+        "broken-owned-book",
+        "--title",
+        "Broken owned book",
+        "--source-path",
+        ownedDirectory,
+        "--format",
+        "epub",
+        "--added-at",
+        addedAt,
+      ]);
+
+      const removed = await invoke([
+        "library",
+        "remove",
+        "--db",
+        databasePath!,
+        "--id",
+        "broken-owned-book",
+      ]);
+
+      expect(removed.exitCode).toBe(1);
+      expect(parseOutput(removed.output)).toEqual({
+        ok: false,
+        error: { code: "storage-unavailable" },
+      });
+      const missing = await invoke([
+        "library",
+        "get",
+        "--db",
+        databasePath!,
+        "--id",
+        "broken-owned-book",
+      ]);
+      expect(parseOutput(missing.output)).toEqual({ ok: true, value: { item: null } });
+    });
   });
 });
