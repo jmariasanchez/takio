@@ -1,0 +1,18 @@
+[package]
+name = "takio"
+version = "0.1.0"
+description = "A lightweight document conversion workspace"
+authors = ["Takio contributors"]
+edition = "2021"
+
+[lib]
+name = "takio_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+serde_json = "1"
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"

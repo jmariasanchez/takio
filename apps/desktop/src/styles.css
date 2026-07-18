@@ -1,0 +1,34 @@
+* { box-sizing: border-box; }
+:root { color: #eeeef0; background: #101112; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-synthesis: none; }
+body { margin: 0; min-width: 860px; min-height: 100vh; }
+button, select { font: inherit; }
+button { cursor: pointer; }
+.app-shell { display: grid; grid-template-columns: 218px minmax(0, 1fr); min-height: 100vh; background: #101112; }
+.sidebar { border-right: 1px solid #292a2c; display: flex; flex-direction: column; padding: 27px 16px 18px; }
+.brand { align-items: center; display: flex; font-size: 21px; font-weight: 700; gap: 9px; letter-spacing: -1px; margin: 0 10px 42px; }
+.brand-mark { align-items: center; background: #d9ff72; border-radius: 7px; color: #101112; display: inline-flex; font-size: 16px; height: 26px; justify-content: center; width: 26px; }
+nav { display: grid; gap: 5px; }
+.nav-item { background: transparent; border: 0; border-radius: 8px; color: #aaaeb1; display: flex; gap: 12px; padding: 11px 12px; text-align: left; }
+.nav-item:hover, .nav-item.active { background: #1c1d1e; color: #f5f5f5; }
+.nav-item span { color: #d9ff72; width: 15px; }
+.nav-item em { background: #303134; border-radius: 10px; font-size: 11px; font-style: normal; margin-left: auto; padding: 1px 7px; }
+.sidebar-footer { border-top: 1px solid #292a2c; color: #878a8e; font-size: 12px; margin-top: auto; padding: 18px 10px 0; }
+.status-dot, .ready i { background: #8fdb63; border-radius: 50%; display: inline-block; height: 7px; margin-right: 7px; width: 7px; }
+.content { margin: 0 auto; max-width: 1220px; padding: 54px clamp(36px, 6vw, 92px); width: 100%; }
+.topbar, .section-heading, .hero-card, .conversion-controls, .book-row { align-items: center; display: flex; }
+.topbar { justify-content: space-between; margin-bottom: 51px; }
+.eyebrow { color: #92969a; font-size: 10px; font-weight: 700; letter-spacing: 1.5px; margin: 0 0 9px; }
+h1, h2, p { margin-top: 0; }
+h1 { font-size: clamp(29px, 4vw, 42px); letter-spacing: -1.8px; margin-bottom: 0; }
+h2 { font-size: 20px; letter-spacing: -.6px; margin-bottom: 0; }
+.quiet-button, .text-button, .row-button { background: transparent; border: 0; color: #b6b9bd; }
+.quiet-button { border: 1px solid #343538; border-radius: 7px; padding: 8px 12px; }
+.hero-card { background: linear-gradient(115deg, #1c1e1f, #171819); border: 1px solid #303235; border-radius: 14px; gap: 32px; justify-content: space-between; padding: 30px 33px; }
+.hero-card h2 { font-size: 25px; margin-bottom: 9px; }.hero-card p:not(.eyebrow) { color: #aeb1b4; font-size: 14px; margin-bottom: 0; }
+.conversion-controls { gap: 10px; }.conversion-controls label { color: #8f9497; display: grid; font-size: 11px; gap: 5px; }
+select, .file-button { background: #111213; border: 1px solid #3a3c3e; border-radius: 7px; color: #ececef; padding: 8px 11px; }
+.file-button { color: #d9ff72; }
+.primary-button { background: #d9ff72; border: 0; border-radius: 7px; color: #151615; font-weight: 700; padding: 11px 14px; }.primary-button span { font-size: 17px; margin-left: 8px; }
+.notice { color: #899095; font-size: 12px; min-height: 18px; padding: 10px 2px 0; }.library-section { margin-top: 40px; }.section-heading { justify-content: space-between; margin-bottom: 17px; }.text-button { color: #d9ff72; font-size: 13px; }
+.book-list { border-top: 1px solid #292a2c; }.book-row { border-bottom: 1px solid #292a2c; gap: 14px; min-height: 78px; }.cover { align-items: center; background: linear-gradient(145deg, #a4b189, #4e5d46); border-radius: 4px; color: #f7f7f7; display: flex; font-family: Georgia, serif; font-size: 24px; height: 45px; justify-content: center; width: 32px; }.book-title { display: grid; gap: 5px; }.book-title strong { font-size: 14px; font-weight: 600; }.book-title span { color: #92969a; font-size: 12px; }.ready { color: #a6a9ad; font-size: 12px; margin-left: auto; }.ready i { height: 6px; width: 6px; }.row-button { color: #8f9497; font-size: 18px; letter-spacing: 2px; margin-left: 20px; }
+@media (max-width: 950px) { .content { padding: 38px; }.hero-card { align-items: flex-start; flex-direction: column; }.conversion-controls { flex-wrap: wrap; } }
