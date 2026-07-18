@@ -7,13 +7,14 @@
     "takio": "./dist/main.js"
   },
   "scripts": {
-    "build": "bun build ./src/main.ts --outdir ./dist --target bun --sourcemap",
+    "build": "bun run --filter '@takio/library-store-bun' build && bun build ./src/main.ts --outdir ./dist --target bun --sourcemap",
     "check": "bunx tsc -p tsconfig.json --noEmit",
     "test": "bun test",
     "start": "bun src/main.ts"
   },
   "dependencies": {
     "@takio/core": "workspace:*",
+    "@takio/library-store-bun": "workspace:*",
     "commander": "^13.1.0"
   },
   "devDependencies": {

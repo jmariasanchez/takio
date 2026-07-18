@@ -13,6 +13,7 @@
       },
       "dependencies": {
         "@takio/core": "workspace:*",
+        "@takio/library-store-bun": "workspace:*",
         "commander": "^13.1.0",
       },
       "devDependencies": {

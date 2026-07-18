@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-import { Command } from "commander";
+import { Command, CommanderError } from "commander";
 import {
   FORMAT_CATALOG,
   FORMAT_IDS,
@@ -8,6 +8,17 @@ import {
   planConversion,
   type FormatId,
 } from "@takio/core";
+import { BunSqliteLibraryStore } from "@takio/library-store-bun";
+
+function storageCommand(command: Command, write: (message: string) => void): Command {
+  return command
+    .configureOutput({ writeErr: () => {} })
+    .exitOverride((error) => {
+      const code = error.code.startsWith("commander.") ? "invalid-arguments" : error.code;
+      write(JSON.stringify({ ok: false, error: { code } }));
+      throw error;
+    });
+}
 
 export function createProgram(write: (message: string) => void = console.log): Command {
   const program = new Command();
@@ -40,6 +51,83 @@ export function createProgram(write: (message: string) => void = console.log): C
       write(
         `${localDevice.id.padEnd(6)} ${localDevice.status.padEnd(7)} ${localDevice.name.padEnd(9)} ${localDevice.supportedOutputs.join(", ")}`,
       );
+    });
+
+  const library = program.command("library").description("Manage a durable local library");
+
+  storageCommand(library.command("add"), write)
+    .requiredOption("--db <path>", "database path")
+    .requiredOption("--id <id>", "library item ID")
+    .requiredOption("--title <title>", "library item title")
+    .requiredOption("--source-path <path>", "source document path")
+    .requiredOption("--format <format>", `document format: ${FORMAT_IDS.join(", ")}`)
+    .requiredOption("--added-at <timestamp>", "ISO-8601 added timestamp")
+    .action(
+      async (
+        options: {
+          db: string;
+          id: string;
+          title: string;
+          sourcePath: string;
+          format: string;
+          addedAt: string;
+        },
+        command: Command,
+      ) => {
+        if (options.db.length === 0) {
+          command.error("", { exitCode: 1, code: "invalid-arguments" });
+        }
+
+        const store = new BunSqliteLibraryStore(options.db);
+        try {
+          const opened = await store.open({ config: {} });
+          if (!opened.ok) {
+            command.error("", { exitCode: 1, code: opened.error.code });
+          }
+
+          const result = await store.add({
+            item: {
+              id: options.id,
+              title: options.title,
+              sourcePath: options.sourcePath,
+              format: options.format as FormatId,
+              addedAt: options.addedAt,
+            },
+          });
+          if (!result.ok) {
+            command.error("", { exitCode: 1, code: result.error.code });
+          }
+
+          write(JSON.stringify({ ok: true, value: { item: result.value } }));
+        } finally {
+          store.close();
+        }
+      },
+    );
+
+  storageCommand(library.command("list"), write)
+    .requiredOption("--db <path>", "database path")
+    .action(async (options: { db: string }, command: Command) => {
+      if (options.db.length === 0) {
+        command.error("", { exitCode: 1, code: "invalid-arguments" });
+      }
+
+      const store = new BunSqliteLibraryStore(options.db);
+      try {
+        const opened = await store.open({ config: {} });
+        if (!opened.ok) {
+          command.error("", { exitCode: 1, code: opened.error.code });
+        }
+
+        const result = await store.list({});
+        if (!result.ok) {
+          command.error("", { exitCode: 1, code: result.error.code });
+        }
+
+        write(JSON.stringify({ ok: true, value: { items: result.value } }));
+      } finally {
+        store.close();
+      }
     });
 
   program
@@ -75,7 +163,15 @@ export function createProgram(write: (message: string) => void = console.log): C
 }
 
 export async function run(argv: string[]): Promise<void> {
-  await createProgram().parseAsync(argv);
+  try {
+    await createProgram().parseAsync(argv);
+  } catch (error) {
+    if (error instanceof CommanderError) {
+      process.exitCode = error.exitCode;
+      return;
+    }
+    throw error;
+  }
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
