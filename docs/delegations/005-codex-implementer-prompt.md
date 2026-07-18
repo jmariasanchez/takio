@@ -2,7 +2,7 @@ You are the Codex implementer for Takio Packet 005.
 
 You are already running in a fresh isolated Git worktree under an orchestrator-managed `codex exec` invocation with model `gpt-5.6-sol`, high reasoning effort, and workspace-write sandboxing. Do not invoke `codex`, attempt to start another Codex app-server client, or preflight the CLI from inside this session.
 
-Read and follow `docs/work-packets/005-bun-sqlite-library-store.md` exactly. Treat that packet, `@takio/core`, `@takio/library-contract`, existing package metadata, and tests as the complete repository guidance.
+Read and follow `docs/work-packets/005-bun-library-store-durable-roundtrip.md` exactly. Treat that packet, `@takio/core`, `@takio/library-contract`, existing package metadata, and tests as the complete repository guidance.
 
 Execution boundary:
 - Work only in the assigned isolated worktree.
@@ -42,7 +42,7 @@ Required before final response:
 4. Review the diff for scope discipline. Confirm that the adapter has no CLI/Tauri integration, production default data path, post-v1 migration, external dependency, or unrelated product feature.
 5. Create exactly one micro-commit with this exact message:
    ```text
-   feat(storage): add Bun SQLite library store
+   feat(storage): persist library records locally
    ```
 6. Respond with the adapter API, schema-v1 decision, injected temporary database-path round-trip evidence, complete verification output, generated-artifact evidence, scoped file list, commit SHA, deferred decisions, and every skipped check or blocker.
 

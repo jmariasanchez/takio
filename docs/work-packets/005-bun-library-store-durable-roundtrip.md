@@ -90,7 +90,7 @@ git diff --check
 After all verification passes, create exactly one commit:
 
 ```text
-feat(storage): add Bun SQLite library store
+feat(storage): persist library records locally
 ```
 
 The commit must contain only Packet 005's new adapter package, its tests/documentation, and strictly necessary root workspace-script changes. Stop and report a blocker instead of broadening scope.
