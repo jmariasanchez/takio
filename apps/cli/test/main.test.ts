@@ -84,16 +84,6 @@ describe("takio CLI", () => {
     expect(output).toContain("  EPUB → PDF");
   });
 
-  it("reports a missing database path as JSON with a nonzero exit", async () => {
-    const result = await invoke(["library", "list"]);
-
-    expect(result.exitCode).toBe(1);
-    expect(parseOutput(result.output)).toEqual({
-      ok: false,
-      error: { code: "invalid-arguments" },
-    });
-  });
-
   for (const args of [
     ["library", "--help"],
     ["library", "add", "--help"],
@@ -161,18 +151,35 @@ describe("takio CLI", () => {
   describe("library storage", () => {
     let directory: string | undefined;
     let databasePath: string | undefined;
+    let previousDataDirectory: string | undefined;
 
     beforeEach(async () => {
       directory = undefined;
       databasePath = undefined;
+      previousDataDirectory = process.env.TAKIO_DATA_DIR;
       directory = await mkdtemp(join(tmpdir(), "takio-cli-"));
       databasePath = join(directory, "library.sqlite");
     });
 
     afterEach(async () => {
+      if (previousDataDirectory === undefined) {
+        delete process.env.TAKIO_DATA_DIR;
+      } else {
+        process.env.TAKIO_DATA_DIR = previousDataDirectory;
+      }
       if (directory) {
         await rm(directory, { recursive: true, force: true });
       }
+    });
+
+    it("uses the isolated production layout when --db is omitted", async () => {
+      process.env.TAKIO_DATA_DIR = directory!;
+
+      const listed = await invoke(["library", "list"]);
+
+      expect(listed.exitCode).toBeUndefined();
+      expect(parseOutput(listed.output)).toEqual({ ok: true, value: { items: [] } });
+      expect(await Bun.file(join(directory!, "library.sqlite")).exists()).toBe(true);
     });
 
     it("adds and durably lists an item through separate invocations", async () => {

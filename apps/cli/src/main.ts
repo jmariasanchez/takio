@@ -1,5 +1,8 @@
 #!/usr/bin/env bun
 import { Command, CommanderError } from "commander";
+import { mkdir } from "node:fs/promises";
+import { homedir } from "node:os";
+import { dirname, join } from "node:path";
 import {
   FORMAT_CATALOG,
   FORMAT_IDS,
@@ -9,6 +12,69 @@ import {
   type FormatId,
 } from "@takio/core";
 import { BunSqliteLibraryStore } from "@takio/library-store-bun";
+
+type LibraryPaths = {
+  readonly databasePath: string;
+  readonly itemsDirectory: string;
+};
+
+function libraryPaths(databasePath?: string): LibraryPaths {
+  if (databasePath === "") {
+    throw new TypeError("A database path is required.");
+  }
+
+  if (databasePath) {
+    return {
+      databasePath,
+      itemsDirectory: join(dirname(databasePath), "items"),
+    };
+  }
+
+  const override = process.env.TAKIO_DATA_DIR;
+  if (override === "") {
+    throw new TypeError("TAKIO_DATA_DIR must not be empty.");
+  }
+
+  const root =
+    override ??
+    (process.platform === "darwin"
+      ? join(homedir(), "Library", "Application Support", "Takio")
+      : process.platform === "win32"
+        ? join(process.env.LOCALAPPDATA ?? join(homedir(), "AppData", "Local"), "Takio")
+        : join(process.env.XDG_DATA_HOME ?? join(homedir(), ".local", "share"), "takio"));
+
+  return {
+    databasePath: join(root, "library.sqlite"),
+    itemsDirectory: join(root, "items"),
+  };
+}
+
+async function openLibraryStore(
+  databasePath: string | undefined,
+  command: Command,
+): Promise<{ store: BunSqliteLibraryStore; paths: LibraryPaths }> {
+  let paths: LibraryPaths;
+  try {
+    paths = libraryPaths(databasePath);
+  } catch {
+    command.error("", { exitCode: 1, code: "invalid-arguments" });
+  }
+
+  try {
+    await mkdir(dirname(paths.databasePath), { recursive: true });
+  } catch {
+    command.error("", { exitCode: 1, code: "storage-unavailable" });
+  }
+
+  const store = new BunSqliteLibraryStore(paths.databasePath);
+  const opened = await store.open({ config: {} });
+  if (!opened.ok) {
+    store.close();
+    command.error("", { exitCode: 1, code: opened.error.code });
+  }
+
+  return { store, paths };
+}
 
 function storageCommand(command: Command, write: (message: string) => void): Command {
   return command
@@ -65,7 +131,7 @@ export function createProgram(
   program.addCommand(library);
 
   storageCommand(library.command("add").helpOption(false), writeError)
-    .requiredOption("--db <path>", "database path")
+    .option("--db <path>", "database path")
     .requiredOption("--id <id>", "library item ID")
     .requiredOption("--title <title>", "library item title")
     .requiredOption("--source-path <path>", "source document path")
@@ -74,7 +140,7 @@ export function createProgram(
     .action(
       async (
         options: {
-          db: string;
+          db?: string;
           id: string;
           title: string;
           sourcePath: string;
@@ -83,17 +149,8 @@ export function createProgram(
         },
         command: Command,
       ) => {
-        if (options.db.length === 0) {
-          command.error("", { exitCode: 1, code: "invalid-arguments" });
-        }
-
-        const store = new BunSqliteLibraryStore(options.db);
+        const { store } = await openLibraryStore(options.db, command);
         try {
-          const opened = await store.open({ config: {} });
-          if (!opened.ok) {
-            command.error("", { exitCode: 1, code: opened.error.code });
-          }
-
           const result = await store.add({
             item: {
               id: options.id,
@@ -115,19 +172,10 @@ export function createProgram(
     );
 
   storageCommand(library.command("list").helpOption(false), writeError)
-    .requiredOption("--db <path>", "database path")
-    .action(async (options: { db: string }, command: Command) => {
-      if (options.db.length === 0) {
-        command.error("", { exitCode: 1, code: "invalid-arguments" });
-      }
-
-      const store = new BunSqliteLibraryStore(options.db);
+    .option("--db <path>", "database path")
+    .action(async (options: { db?: string }, command: Command) => {
+      const { store } = await openLibraryStore(options.db, command);
       try {
-        const opened = await store.open({ config: {} });
-        if (!opened.ok) {
-          command.error("", { exitCode: 1, code: opened.error.code });
-        }
-
         const result = await store.list({});
         if (!result.ok) {
           command.error("", { exitCode: 1, code: result.error.code });
