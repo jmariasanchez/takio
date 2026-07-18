@@ -33,7 +33,10 @@ async function invoke(args: string[]): Promise<{ output: string[]; exitCode?: nu
 
 function parseOutput(output: string[]): unknown {
   expect(output).toHaveLength(1);
-  return JSON.parse(output[0]!);
+  const line = output[0]!;
+  expect(line).not.toContain("\n");
+  expect(line).not.toContain("\r");
+  return JSON.parse(line);
 }
 
 describe("takio CLI", () => {
