@@ -1,6 +1,6 @@
 You are the Codex implementer for Takio Packet 001.
 
-Read and follow `docs/work-packets/001-shared-library-domain.md` exactly. Also follow repository guidance in `.codex/AGENTS.md`.
+Read and follow `docs/work-packets/001-shared-library-domain.md` exactly. Treat the packet, existing source code, and tests as the complete repository guidance for this delegation; do not require an `AGENTS.md` file to proceed.
 
 Execution boundary:
 - Work only in this isolated worktree.
