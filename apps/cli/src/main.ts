@@ -15,7 +15,9 @@ function storageCommand(command: Command, write: (message: string) => void): Com
     .configureOutput({ writeErr: () => {} })
     .exitOverride((error) => {
       const code = error.code.startsWith("commander.") ? "invalid-arguments" : error.code;
-      write(JSON.stringify({ ok: false, error: { code } }));
+      if (error.code !== "commander.help" || command.parent?.args[0] !== "help") {
+        write(JSON.stringify({ ok: false, error: { code } }));
+      }
       throw error;
     });
 }

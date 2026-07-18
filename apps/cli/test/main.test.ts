@@ -105,6 +105,23 @@ describe("takio CLI", () => {
     });
   }
 
+  for (const args of [
+    ["help", "library"],
+    ["help", "library", "add"],
+    ["help", "library", "list"],
+  ]) {
+    it(`preserves root-owned ${args.join(" ")} help`, async () => {
+      const result = await invokeProcess(args);
+
+      expect(result.exitCode).toBe(0);
+      expect(result.stderr).toBe("");
+      expect(result.stdout).toContain("Usage: takio library [command]");
+      expect(result.stdout).toContain("Manage a durable local library");
+      expect(result.stdout).toContain("Commands:");
+      expect(result.stdout).not.toContain('"ok":false');
+    });
+  }
+
   it("reports nested library help as JSON without Commander prose", async () => {
     expectInvalidArgumentsProcess(await invokeProcess(["library", "list", "--help"]));
   });
