@@ -31,6 +31,11 @@ async function invoke(args: string[]): Promise<{ output: string[]; exitCode?: nu
   }
 }
 
+function parseOutput(output: string[]): unknown {
+  expect(output).toHaveLength(1);
+  return JSON.parse(output[0]!);
+}
+
 describe("takio CLI", () => {
   it("lists the built-in format catalogue", async () => {
     const output: string[] = [];
@@ -81,22 +86,21 @@ describe("takio CLI", () => {
       item.addedAt,
     ]);
 
-    expect(added).toEqual({
-      output: [JSON.stringify({ ok: true, value: { item } })],
-    });
+    expect(added.exitCode).toBeUndefined();
+    expect(parseOutput(added.output)).toEqual({ ok: true, value: { item } });
 
     const listed = await invoke(["library", "list", "--db", databasePath]);
-    expect(listed).toEqual({
-      output: [JSON.stringify({ ok: true, value: { items: [item] } })],
-    });
+    expect(listed.exitCode).toBeUndefined();
+    expect(parseOutput(listed.output)).toEqual({ ok: true, value: { items: [item] } });
   });
 
   it("reports a missing database path as JSON with a nonzero exit", async () => {
     const result = await invoke(["library", "list"]);
 
-    expect(result).toEqual({
-      output: [JSON.stringify({ ok: false, error: { code: "invalid-arguments" } })],
-      exitCode: 1,
+    expect(result.exitCode).toBe(1);
+    expect(parseOutput(result.output)).toEqual({
+      ok: false,
+      error: { code: "invalid-arguments" },
     });
   });
 
@@ -119,9 +123,11 @@ describe("takio CLI", () => {
     ];
 
     expect((await invoke(args)).exitCode).toBeUndefined();
-    expect(await invoke(args)).toEqual({
-      output: [JSON.stringify({ ok: false, error: { code: "duplicate-id" } })],
-      exitCode: 1,
+    const result = await invoke(args);
+    expect(result.exitCode).toBe(1);
+    expect(parseOutput(result.output)).toEqual({
+      ok: false,
+      error: { code: "duplicate-id" },
     });
   });
 });
