@@ -1,0 +1,197 @@
+use std::path::Path;
+
+use serde_json::{json, Value};
+use tauri_plugin_shell::{process::CommandEvent, ShellExt};
+
+const ENGINE_NAME: &str = "takio-library-engine";
+const MAX_OUTPUT_BYTES: usize = 8 * 1024 * 1024;
+
+fn failure(code: &str) -> Value {
+    json!({ "ok": false, "error": { "code": code } })
+}
+
+fn validate_import_source(path: &Path) -> Result<(), ()> {
+    match path.metadata() {
+        Ok(metadata) if metadata.is_file() => Ok(()),
+        _ => Err(()),
+    }
+}
+
+fn validate_id(id: &str) -> Result<(), ()> {
+    if id.trim().is_empty() {
+        Err(())
+    } else {
+        Ok(())
+    }
+}
+
+fn parse_engine_record(exit_code: Option<i32>, stdout: &[u8], stderr: &[u8]) -> Value {
+    if stdout.len() > MAX_OUTPUT_BYTES || stderr.len() > MAX_OUTPUT_BYTES || !stderr.is_empty() {
+        return failure("protocol-error");
+    }
+
+    let Ok(record) = serde_json::from_slice::<Value>(stdout) else {
+        return failure("protocol-error");
+    };
+    let Some(ok) = record.get("ok").and_then(Value::as_bool) else {
+        return failure("protocol-error");
+    };
+    let has_payload = if ok {
+        record.get("value").is_some()
+    } else {
+        record.pointer("/error/code").and_then(Value::as_str).is_some()
+    };
+
+    let exit_matches_record = match exit_code {
+        Some(0) => ok,
+        Some(_) => !ok,
+        None => false,
+    };
+
+    if has_payload && exit_matches_record {
+        record
+    } else {
+        failure("protocol-error")
+    }
+}
+
+async fn run_engine(app: &tauri::AppHandle, args: Vec<String>) -> Value {
+    let command = match app.shell().sidecar(ENGINE_NAME) {
+        Ok(command) => command,
+        Err(_) => return failure("engine-unavailable"),
+    };
+    let (mut events, child) = match command.args(args).spawn() {
+        Ok(process) => process,
+        Err(_) => return failure("engine-unavailable"),
+    };
+    let mut child = Some(child);
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+    let mut exit_code = None;
+
+    while let Some(event) = events.recv().await {
+        let chunk = match event {
+            CommandEvent::Stdout(chunk) => Some((&mut stdout, chunk)),
+            CommandEvent::Stderr(chunk) => Some((&mut stderr, chunk)),
+            CommandEvent::Terminated(payload) => {
+                exit_code = payload.code;
+                break;
+            }
+            CommandEvent::Error(_) => {
+                if let Some(child) = child.take() {
+                    let _ = child.kill();
+                }
+                return failure("protocol-error");
+            }
+            _ => None,
+        };
+
+        if let Some((output, mut bytes)) = chunk {
+            if output.len() + bytes.len() > MAX_OUTPUT_BYTES {
+                if let Some(child) = child.take() {
+                    let _ = child.kill();
+                }
+                return failure("protocol-error");
+            }
+            output.append(&mut bytes);
+        }
+    }
+
+    parse_engine_record(exit_code, &stdout, &stderr)
+}
+
+#[tauri::command]
+pub async fn library_list(app: tauri::AppHandle) -> Value {
+    run_engine(&app, vec!["library".into(), "list".into()]).await
+}
+
+#[tauri::command]
+pub async fn library_import(app: tauri::AppHandle, source_path: String) -> Value {
+    if validate_import_source(Path::new(&source_path)).is_err() {
+        return failure("invalid-arguments");
+    }
+
+    run_engine(
+        &app,
+        vec![
+            "library".into(),
+            "import".into(),
+            "--source-path".into(),
+            source_path,
+        ],
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn library_remove(app: tauri::AppHandle, id: String) -> Value {
+    if validate_id(&id).is_err() {
+        return failure("invalid-arguments");
+    }
+
+    run_engine(
+        &app,
+        vec!["library".into(), "remove".into(), "--id".into(), id],
+    )
+    .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn validates_boundary_arguments() {
+        assert!(validate_id("book-1").is_ok());
+        assert!(validate_id("  ").is_err());
+        assert!(validate_import_source(Path::new("definitely-missing.epub")).is_err());
+    }
+
+    #[test]
+    fn parses_success_and_domain_failure_records() {
+        let success = br#"{"ok":true,"value":{"items":[]}}"#;
+        let failure_record = br#"{"ok":false,"error":{"code":"storage-unavailable"}}"#;
+
+        assert_eq!(
+            parse_engine_record(Some(0), success, b""),
+            json!({
+              "ok": true,
+              "value": { "items": [] },
+            })
+        );
+        assert_eq!(
+            parse_engine_record(Some(1), failure_record, b""),
+            json!({
+              "ok": false,
+              "error": { "code": "storage-unavailable" },
+            })
+        );
+    }
+
+    #[test]
+    fn rejects_malformed_or_inconsistent_protocol_output() {
+        let protocol_failure = failure("protocol-error");
+
+        assert_eq!(parse_engine_record(Some(0), b"", b""), protocol_failure);
+        assert_eq!(
+            parse_engine_record(Some(0), b"not-json", b""),
+            protocol_failure
+        );
+        assert_eq!(
+            parse_engine_record(Some(1), br#"{"ok":true,"value":null}"#, b""),
+            protocol_failure,
+        );
+        assert_eq!(
+            parse_engine_record(Some(0), br#"{"ok":true}"#, b""),
+            protocol_failure,
+        );
+        assert_eq!(
+            parse_engine_record(Some(1), br#"{"ok":false}"#, b""),
+            protocol_failure,
+        );
+        assert_eq!(
+            parse_engine_record(Some(0), br#"{"ok":true,"value":null}"#, b"diagnostic"),
+            protocol_failure,
+        );
+    }
+}

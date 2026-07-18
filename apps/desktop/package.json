@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1 --port 1420",
     "build": "tsc -b && vite build",
+    "build:engine": "bun scripts/build-library-engine.ts",
     "check": "tsc -b --pretty false",
     "test": "bun test",
     "tauri": "tauri"

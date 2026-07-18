@@ -4,9 +4,9 @@
   "version": "0.1.0",
   "identifier": "com.takio.desktop",
   "build": {
-    "beforeDevCommand": "bun run dev",
+    "beforeDevCommand": "bun run build:engine && bun run dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "bun run build",
+    "beforeBuildCommand": "bun run build:engine && bun run build",
     "frontendDist": "../dist"
   },
   "app": {
@@ -22,5 +22,9 @@
     ],
     "security": { "csp": null }
   },
-  "bundle": { "active": true, "targets": "all" }
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "externalBin": ["binaries/takio-library-engine"]
+  }
 }
