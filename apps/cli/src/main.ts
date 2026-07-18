@@ -1,12 +1,13 @@
 #!/usr/bin/env bun
 import { Command, CommanderError } from "commander";
-import { mkdir } from "node:fs/promises";
+import { copyFile, mkdir, realpath, rename, rm, stat } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, extname, join, resolve } from "node:path";
 import {
   FORMAT_CATALOG,
   FORMAT_IDS,
   PlanningError,
+  detectFormat,
   localDevice,
   planConversion,
   type FormatId,
@@ -24,9 +25,10 @@ function libraryPaths(databasePath?: string): LibraryPaths {
   }
 
   if (databasePath) {
+    const resolvedDatabasePath = resolve(databasePath);
     return {
-      databasePath,
-      itemsDirectory: join(dirname(databasePath), "items"),
+      databasePath: resolvedDatabasePath,
+      itemsDirectory: join(dirname(resolvedDatabasePath), "items"),
     };
   }
 
@@ -43,9 +45,10 @@ function libraryPaths(databasePath?: string): LibraryPaths {
         ? join(process.env.LOCALAPPDATA ?? join(homedir(), "AppData", "Local"), "Takio")
         : join(process.env.XDG_DATA_HOME ?? join(homedir(), ".local", "share"), "takio"));
 
+  const resolvedRoot = resolve(root);
   return {
-    databasePath: join(root, "library.sqlite"),
-    itemsDirectory: join(root, "items"),
+    databasePath: join(resolvedRoot, "library.sqlite"),
+    itemsDirectory: join(resolvedRoot, "items"),
   };
 }
 
@@ -186,6 +189,77 @@ export function createProgram(
         store.close();
       }
     });
+
+  storageCommand(library.command("import").helpOption(false), writeError)
+    .option("--db <path>", "database path")
+    .requiredOption("--source-path <path>", "source document path")
+    .option("--title <title>", "library item title")
+    .action(
+      async (
+        options: { db?: string; sourcePath: string; title?: string },
+        command: Command,
+      ) => {
+        let sourcePath: string;
+        const format = detectFormat(options.sourcePath);
+        try {
+          const source = await stat(options.sourcePath);
+          if (!source.isFile() || !format) {
+            command.error("", { exitCode: 1, code: "invalid-arguments" });
+          }
+          sourcePath = await realpath(options.sourcePath);
+        } catch (error) {
+          if (error instanceof CommanderError) {
+            throw error;
+          }
+          command.error("", { exitCode: 1, code: "invalid-arguments" });
+        }
+
+        const { store, paths } = await openLibraryStore(options.db, command);
+        const id = `item_${crypto.randomUUID()}`;
+        const extension = extname(sourcePath).toLowerCase();
+        const item = {
+          id,
+          title: options.title ?? basename(sourcePath, extname(sourcePath)),
+          sourcePath: join(paths.itemsDirectory, `${id}${extension}`),
+          format: format!,
+          addedAt: new Date().toISOString(),
+        };
+        const temporaryPath = `${item.sourcePath}.tmp-${crypto.randomUUID()}`;
+        let committed = false;
+        let failureCode: string | undefined;
+
+        try {
+          await mkdir(paths.itemsDirectory, { recursive: true });
+          await copyFile(sourcePath, temporaryPath);
+          await rename(temporaryPath, item.sourcePath);
+
+          const result = await store.add({ item });
+          if (!result.ok) {
+            failureCode = result.error.code;
+          } else {
+            committed = true;
+            write(JSON.stringify({ ok: true, value: { item: result.value } }));
+          }
+        } catch {
+          failureCode = "storage-unavailable";
+        } finally {
+          if (!committed) {
+            const cleanup = await Promise.allSettled([
+              rm(temporaryPath, { force: true }),
+              rm(item.sourcePath, { force: true }),
+            ]);
+            if (cleanup.some((result) => result.status === "rejected")) {
+              failureCode = "storage-unavailable";
+            }
+          }
+          store.close();
+        }
+
+        if (failureCode) {
+          command.error("", { exitCode: 1, code: failureCode });
+        }
+      },
+    );
 
   program
     .command("plan")

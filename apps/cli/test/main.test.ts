@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { Database } from "bun:sqlite";
+import { mkdir, mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CommanderError } from "commander";
@@ -240,6 +241,102 @@ describe("takio CLI", () => {
         ok: false,
         error: { code: "duplicate-id" },
       });
+    });
+
+    it("imports an owned copy that survives deletion of the original", async () => {
+      const sourcePath = join(directory!, "original.epub");
+      await Bun.write(sourcePath, "owned contents");
+
+      const imported = await invoke([
+        "library",
+        "import",
+        "--db",
+        databasePath!,
+        "--source-path",
+        sourcePath,
+        "--title",
+        "Owned book",
+      ]);
+      const result = parseOutput(imported.output) as {
+        ok: true;
+        value: { item: { sourcePath: string; title: string; format: string } };
+      };
+
+      expect(imported.exitCode).toBeUndefined();
+      expect(result.ok).toBe(true);
+      expect(result.value.item.title).toBe("Owned book");
+      expect(result.value.item.format).toBe("epub");
+      expect(result.value.item.sourcePath).toStartWith(join(directory!, "items"));
+
+      await rm(sourcePath);
+
+      expect(await Bun.file(result.value.item.sourcePath).text()).toBe("owned contents");
+      const listed = await invoke(["library", "list", "--db", databasePath!]);
+      expect(
+        (parseOutput(listed.output) as { value: { items: { sourcePath: string }[] } }).value
+          .items[0]?.sourcePath,
+      ).toBe(result.value.item.sourcePath);
+    });
+
+    it("rejects unsupported, missing, and non-file import sources before adding rows", async () => {
+      const unsupportedPath = join(directory!, "book.xyz");
+      const directoryPath = join(directory!, "folder.epub");
+      await Bun.write(unsupportedPath, "unsupported");
+      await mkdir(directoryPath);
+
+      for (const sourcePath of [
+        unsupportedPath,
+        join(directory!, "missing.epub"),
+        directoryPath,
+      ]) {
+        const result = await invoke([
+          "library",
+          "import",
+          "--db",
+          databasePath!,
+          "--source-path",
+          sourcePath,
+        ]);
+        expect(result.exitCode).toBe(1);
+        expect(parseOutput(result.output)).toEqual({
+          ok: false,
+          error: { code: "invalid-arguments" },
+        });
+      }
+
+      expect(await Bun.file(databasePath!).exists()).toBe(false);
+    });
+
+    it("removes its copied file when SQLite rejects the imported row", async () => {
+      const sourcePath = join(directory!, "rejected.epub");
+      await Bun.write(sourcePath, "caller owned");
+      expect((await invoke(["library", "list", "--db", databasePath!])).exitCode).toBeUndefined();
+
+      using database = new Database(databasePath!);
+      database.run(`
+        CREATE TRIGGER reject_import
+        BEFORE INSERT ON library_items
+        BEGIN
+          SELECT RAISE(ABORT, 'reject import');
+        END
+      `);
+
+      const imported = await invoke([
+        "library",
+        "import",
+        "--db",
+        databasePath!,
+        "--source-path",
+        sourcePath,
+      ]);
+
+      expect(imported.exitCode).toBe(1);
+      expect(parseOutput(imported.output)).toEqual({
+        ok: false,
+        error: { code: "storage-unavailable" },
+      });
+      expect(await Bun.file(sourcePath).text()).toBe("caller owned");
+      expect(await readdir(join(directory!, "items"))).toEqual([]);
     });
   });
 });
