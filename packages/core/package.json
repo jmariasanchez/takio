@@ -8,7 +8,7 @@
   },
   "types": "./dist/index.d.ts",
   "scripts": {
-    "build": "bun build ./src/index.ts --outdir ./dist --target bun --sourcemap",
+    "build": "bun build ./src/index.ts --outdir ./dist --target bun --sourcemap && bunx tsc -p tsconfig.json --emitDeclarationOnly",
     "check": "bunx tsc -p tsconfig.json --noEmit",
     "test": "bun test"
   },
