@@ -88,8 +88,14 @@ describe("takio CLI", () => {
   for (const args of [
     ["library", "--help"],
     ["library", "add", "--help"],
+    ["library", "import", "--help"],
+    ["library", "get", "--help"],
+    ["library", "remove", "--help"],
     ["library", "help", "add"],
+    ["library", "help", "import"],
+    ["library", "help", "get"],
     ["library", "help", "list"],
+    ["library", "help", "remove"],
   ]) {
     it(`reports ${args.join(" ")} as one JSON failure record`, async () => {
       expectInvalidArgumentsProcess(await invokeProcess(args));
@@ -99,7 +105,10 @@ describe("takio CLI", () => {
   for (const args of [
     ["help", "library"],
     ["help", "library", "add"],
+    ["help", "library", "import"],
+    ["help", "library", "get"],
     ["help", "library", "list"],
+    ["help", "library", "remove"],
   ]) {
     it(`preserves root-owned ${args.join(" ")} help`, async () => {
       const result = await invokeProcess(args);
