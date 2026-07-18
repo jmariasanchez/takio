@@ -2,6 +2,8 @@ import { describe, expect, it } from "bun:test";
 
 import {
   LIBRARY_STORE_ERROR_CODES,
+  type LibraryListWireResult,
+  type LibraryRemoveWireResult,
   type LibraryStore,
   type LibraryStoreResult,
 } from "../src/index.js";
@@ -34,5 +36,12 @@ describe("LibraryStore", () => {
       error: { code: "storage-unavailable" },
     };
     expect(JSON.parse(JSON.stringify(result))).toEqual(result);
+  });
+
+  it("keeps desktop wire results explicit and JSON-safe", () => {
+    const listed: LibraryListWireResult = { ok: true, value: { items: [] } };
+    const removed: LibraryRemoveWireResult = { ok: true, value: { item: null } };
+
+    expect(JSON.parse(JSON.stringify({ listed, removed }))).toEqual({ listed, removed });
   });
 });

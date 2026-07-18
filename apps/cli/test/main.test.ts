@@ -22,9 +22,11 @@ async function invoke(args: string[]): Promise<{ output: string[]; exitCode?: nu
 
 async function invokeProcess(
   args: string[],
+  env: Record<string, string | undefined> = {},
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
   const child = Bun.spawn({
     cmd: [process.execPath, join(import.meta.dir, "../src/main.ts"), ...args],
+    env: { ...process.env, ...env },
     stdout: "pipe",
     stderr: "pipe",
   });
@@ -58,6 +60,19 @@ function expectInvalidArgumentsProcess(result: {
   expect(result.stdout).not.toContain("\r");
   expect(result.stdout).not.toMatch(/Usage:|Options:|Commands:|display help|unknown command/);
   expect(JSON.parse(result.stdout)).toEqual(expected);
+}
+
+function parseProcessOutput(result: {
+  stdout: string;
+  stderr: string;
+  exitCode: number;
+}): unknown {
+  expect(result.exitCode).toBe(0);
+  expect(result.stderr).toBe("");
+  const record = result.stdout.trim();
+  expect(record).not.toContain("\n");
+  expect(record).not.toContain("\r");
+  return JSON.parse(record);
 }
 
 describe("takio CLI", () => {
@@ -190,6 +205,27 @@ describe("takio CLI", () => {
       expect(listed.exitCode).toBeUndefined();
       expect(parseOutput(listed.output)).toEqual({ ok: true, value: { items: [] } });
       expect(await Bun.file(join(directory!, "library.sqlite")).exists()).toBe(true);
+    });
+
+    it("imports, lists, and removes through the desktop process protocol", async () => {
+      const sourcePath = join(directory!, "process-book.epub");
+      await Bun.write(sourcePath, "process owned contents");
+      const env = { TAKIO_DATA_DIR: directory };
+
+      const imported = parseProcessOutput(
+        await invokeProcess(["library", "import", "--source-path", sourcePath], env),
+      ) as { ok: true; value: { item: { id: string; title: string } } };
+      expect(imported.value.item.title).toBe("process-book");
+
+      expect(
+        parseProcessOutput(await invokeProcess(["library", "list"], env)),
+      ).toEqual({ ok: true, value: { items: [imported.value.item] } });
+
+      expect(
+        parseProcessOutput(
+          await invokeProcess(["library", "remove", "--id", imported.value.item.id], env),
+        ),
+      ).toEqual({ ok: true, value: { item: imported.value.item } });
     });
 
     it("adds and durably lists an item through separate invocations", async () => {

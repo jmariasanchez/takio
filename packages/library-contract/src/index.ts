@@ -30,6 +30,14 @@ export type GetLibraryItemResult = LibraryStoreResult<LibraryItem | null>;
 export type AddLibraryItemResult = LibraryStoreResult<LibraryItem>;
 export type RemoveLibraryItemResult = LibraryStoreResult<LibraryItem | null>;
 
+export type LibraryListWireResult = LibraryStoreResult<{
+  readonly items: readonly LibraryItem[];
+}>;
+export type LibraryImportWireResult = LibraryStoreResult<{ readonly item: LibraryItem }>;
+export type LibraryRemoveWireResult = LibraryStoreResult<{
+  readonly item: LibraryItem | null;
+}>;
+
 export interface LibraryStore {
   open(request: OpenLibraryRequest): Promise<OpenLibraryResult>;
   list(request: ListLibraryItemsRequest): Promise<ListLibraryItemsResult>;
