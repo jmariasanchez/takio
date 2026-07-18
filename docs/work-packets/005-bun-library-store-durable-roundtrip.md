@@ -31,7 +31,7 @@ Bun 1.3.13 successfully imported `Database` from `bun:sqlite` against a throwawa
 - Production default data paths, platform directory discovery, environment-variable configuration, user settings, or automatic database-path selection.
 - Schema migrations beyond initial v1 initialization, downgrade support, backup/repair workflows, or handling data from later schema versions.
 - Changes to `@takio/core` or `@takio/library-contract` public APIs, domain behavior, error codes, or tests.
-- Any external SQLite dependency, lockfile change, SQLite wrapper, ORM, Bun runtime change outside the new adapter package, or generic multi-driver abstraction.
+- Any external SQLite dependency, SQLite wrapper, ORM, Bun runtime change outside the new adapter package, or generic multi-driver abstraction. The strictly necessary `bun.lock` workspace-registration update is allowed, but no external dependency may be introduced.
 - Conversion, queue, sync, devices, import, metadata, covers, search, tags, collections, cloud, authentication, or unrelated product features.
 
 ## Required behavior
