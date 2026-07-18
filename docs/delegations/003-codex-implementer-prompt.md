@@ -1,6 +1,6 @@
 You are the Codex implementer for Takio Packet 003.
 
-Run this packet only in a fresh isolated Git worktree. The runner must use `codex exec` with model `gpt-5.6-sol`, high reasoning effort, and workspace-write sandboxing. Preflight the installed CLI with `codex exec --help`; use the supported high-reasoning configuration for this version (the expected invocation includes `-m gpt-5.6-sol -c model_reasoning_effort="high" -s workspace-write`).
+You are already running in a fresh isolated Git worktree under an orchestrator-managed `codex exec` invocation with model `gpt-5.6-sol`, high reasoning effort, and workspace-write sandboxing. Do not invoke `codex`, attempt to start another Codex app-server client, or preflight the CLI from inside this session.
 
 Read and follow `docs/work-packets/003-runtime-neutral-library-contract.md` exactly. Treat that packet, existing source, package metadata, and tests as the complete repository guidance.
 
