@@ -1,90 +1,220 @@
-import { useState } from "react";
-import { open } from "@tauri-apps/plugin-dialog";
+import { useCallback, useEffect, useState } from "react";
+import { confirm, open } from "@tauri-apps/plugin-dialog";
+import { FORMAT_CATALOG, type LibraryItem } from "@takio/core";
 
+import {
+  describeLibraryError,
+  importLibraryItem,
+  listLibraryItems,
+  removeLibraryItem,
+} from "./lib/library";
 import "./styles.css";
 
-const formats = ["EPUB", "PDF", "MOBI", "AZW3", "DOCX", "HTML", "TXT", "CBZ"];
-const recentBooks = [
-  { title: "The Long Way to a Small, Angry Planet", source: "EPUB", size: "1.8 MB", status: "Ready" },
-  { title: "Designing Data-Intensive Applications", source: "PDF", size: "5.4 MB", status: "Ready" },
-  { title: "Collected Essays", source: "DOCX", size: "328 KB", status: "Ready" },
-];
+const supportedExtensions = FORMAT_CATALOG.flatMap((format) =>
+  format.extensions.map((extension) => extension.slice(1)),
+);
+
+type LibraryState = "loading" | "ready" | "error";
+type Notice = { readonly kind: "status" | "error"; readonly text: string } | null;
+
+function addedDate(value: string): string {
+  return new Intl.DateTimeFormat(undefined, { dateStyle: "medium" }).format(new Date(value));
+}
+
+function caughtMessage(error: unknown): string {
+  return error instanceof Error && error.message
+    ? error.message
+    : "The local library is unavailable.";
+}
 
 export default function App() {
-  const [outputFormat, setOutputFormat] = useState("PDF");
-  const [selectedFile, setSelectedFile] = useState<string | null>(null);
-  const [notice, setNotice] = useState("Your library stays on this device.");
+  const [items, setItems] = useState<readonly LibraryItem[]>([]);
+  const [libraryState, setLibraryState] = useState<LibraryState>("loading");
+  const [notice, setNotice] = useState<Notice>(null);
+  const [pendingAction, setPendingAction] = useState<string | null>(null);
 
-  async function chooseFile() {
-    const selection = await open({
-      multiple: false,
-      filters: [{ name: "Supported books and documents", extensions: ["epub", "pdf", "mobi", "azw3", "docx", "html", "htm", "txt", "cbz"] }],
-    });
-    if (typeof selection === "string") {
-      setSelectedFile(selection);
-      setNotice("Ready to create a conversion job.");
+  const loadLibrary = useCallback(async (showLoading = true): Promise<boolean> => {
+    if (showLoading) {
+      setLibraryState("loading");
     }
-  }
 
-  function planConversion() {
-    if (!selectedFile) {
-      setNotice("Choose a file before creating a conversion.");
+    try {
+      const result = await listLibraryItems();
+      if (!result.ok) {
+        setLibraryState("error");
+        setNotice({ kind: "error", text: describeLibraryError(result.error.code) });
+        return false;
+      }
+
+      setItems(result.value.items);
+      setLibraryState("ready");
+      return true;
+    } catch (error) {
+      setLibraryState("error");
+      setNotice({ kind: "error", text: caughtMessage(error) });
+      return false;
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadLibrary();
+  }, [loadLibrary]);
+
+  async function importFile() {
+    let selection: string | string[] | null;
+    try {
+      selection = await open({
+        multiple: false,
+        filters: [{ name: "Supported books and documents", extensions: supportedExtensions }],
+      });
+    } catch (error) {
+      setNotice({ kind: "error", text: caughtMessage(error) });
       return;
     }
-    setNotice(`Planned ${selectedFile.split("/").at(-1)} → ${outputFormat}. Converter adapters come next.`);
+
+    if (typeof selection !== "string") {
+      return;
+    }
+
+    setPendingAction("import");
+    setNotice(null);
+    try {
+      const result = await importLibraryItem(selection);
+      if (!result.ok) {
+        setNotice({ kind: "error", text: describeLibraryError(result.error.code) });
+        return;
+      }
+
+      setNotice({ kind: "status", text: `Imported “${result.value.item.title}”.` });
+      await loadLibrary(false);
+    } catch (error) {
+      setNotice({ kind: "error", text: caughtMessage(error) });
+    } finally {
+      setPendingAction(null);
+    }
   }
+
+  async function removeItem(item: LibraryItem) {
+    let approved: boolean;
+    try {
+      approved = await confirm(
+        `Remove “${item.title}” from your Takio library? Takio will also delete its owned imported copy, if present.`,
+        { title: "Remove from library", kind: "warning" },
+      );
+    } catch (error) {
+      setNotice({ kind: "error", text: caughtMessage(error) });
+      return;
+    }
+
+    if (!approved) {
+      return;
+    }
+
+    setPendingAction(item.id);
+    setNotice(null);
+    try {
+      const result = await removeLibraryItem(item.id);
+      if (!result.ok) {
+        setNotice({ kind: "error", text: describeLibraryError(result.error.code) });
+        return;
+      }
+
+      setItems((currentItems) => currentItems.filter((candidate) => candidate.id !== item.id));
+      setLibraryState("ready");
+      setNotice({ kind: "status", text: `Removed “${item.title}”.` });
+    } catch (error) {
+      setNotice({ kind: "error", text: caughtMessage(error) });
+    } finally {
+      setPendingAction(null);
+    }
+  }
+
+  const actionsPending = pendingAction !== null;
 
   return (
     <main className="app-shell">
       <aside className="sidebar">
         <div className="brand"><span className="brand-mark">T</span><span>takio</span></div>
         <nav aria-label="Main navigation">
-          <button className="nav-item active"><span>⌘</span>Library</button>
-          <button className="nav-item"><span>↻</span>Queue <em>0</em></button>
-          <button className="nav-item"><span>◌</span>Devices</button>
+          <span className="nav-item active"><span aria-hidden="true">⌘</span>Library</span>
         </nav>
-        <div className="sidebar-footer">
-          <span className="status-dot" /> Local controller online
-        </div>
+        <div className="sidebar-footer">Stored locally on this device</div>
       </aside>
 
       <section className="content">
         <header className="topbar">
-          <div><p className="eyebrow">LIBRARY</p><h1>Convert without the clutter.</h1></div>
-          <button className="quiet-button" onClick={() => setNotice("Settings will manage agents, adapters, and storage.")}>Settings</button>
+          <div>
+            <p className="eyebrow">LIBRARY</p>
+            <h1>Your local library.</h1>
+          </div>
         </header>
 
-        <section className="hero-card" aria-label="Create conversion">
+        <section className="hero-card" aria-labelledby="import-heading">
           <div>
-            <p className="eyebrow">NEW CONVERSION</p>
-            <h2>{selectedFile ? selectedFile.split("/").at(-1) : "Drop in a book or document"}</h2>
-            <p>{selectedFile ? "Select an output and send this job to a capable device." : "Takio will pick the best available device for the job."}</p>
+            <p className="eyebrow">IMPORT</p>
+            <h2 id="import-heading">Add a book or document</h2>
+            <p>Takio keeps an owned copy here so it is available after you relaunch.</p>
           </div>
-          <div className="conversion-controls">
-            <button className="file-button" onClick={chooseFile}>Choose file</button>
-            <label>Convert to
-              <select value={outputFormat} onChange={(event) => setOutputFormat(event.target.value)}>
-                {formats.map((format) => <option key={format}>{format}</option>)}
-              </select>
-            </label>
-            <button className="primary-button" onClick={planConversion}>Create plan <span>→</span></button>
-          </div>
+          <button className="primary-button" disabled={actionsPending} onClick={importFile}>
+            {pendingAction === "import" ? "Importing…" : "Choose file"}
+          </button>
         </section>
 
-        <p className="notice" role="status">{notice}</p>
+        {notice ? (
+          <p className={`notice ${notice.kind}`} role={notice.kind === "error" ? "alert" : "status"}>
+            {notice.text}
+          </p>
+        ) : <div className="notice" aria-hidden="true" />}
 
-        <section className="library-section">
-          <div className="section-heading"><div><p className="eyebrow">RECENT</p><h2>Your library</h2></div><button className="text-button">View all</button></div>
-          <div className="book-list">
-            {recentBooks.map((book) => (
-              <article className="book-row" key={book.title}>
-                <div className="cover" aria-hidden="true">{book.title.slice(0, 1)}</div>
-                <div className="book-title"><strong>{book.title}</strong><span>{book.source} · {book.size}</span></div>
-                <span className="ready"><i />{book.status}</span>
-                <button className="row-button" aria-label={`Plan conversion for ${book.title}`}>···</button>
-              </article>
-            ))}
+        <section className="library-section" aria-busy={libraryState === "loading"}>
+          <div className="section-heading">
+            <div>
+              <p className="eyebrow">FILES</p>
+              <h2>Your library</h2>
+            </div>
+            {libraryState === "ready" && <span className="item-count">{items.length} {items.length === 1 ? "item" : "items"}</span>}
           </div>
+
+          {libraryState === "loading" && <div className="state-panel">Loading your library…</div>}
+
+          {libraryState === "error" && items.length === 0 && (
+            <div className="state-panel error-panel">
+              <strong>Library unavailable</strong>
+              <span>Takio could not load the files stored on this device.</span>
+              <button className="quiet-button" disabled={actionsPending} onClick={() => void loadLibrary()}>
+                Try again
+              </button>
+            </div>
+          )}
+
+          {libraryState === "ready" && items.length === 0 && (
+            <div className="state-panel">
+              <strong>No files yet</strong>
+              <span>Choose a supported book or document to start your local library.</span>
+            </div>
+          )}
+
+          {items.length > 0 && (
+            <div className="book-list">
+              {items.map((item) => (
+                <article className="book-row" key={item.id}>
+                  <div className="cover" aria-hidden="true">{item.title.slice(0, 1).toUpperCase()}</div>
+                  <div className="book-title">
+                    <strong>{item.title}</strong>
+                    <span>{item.format.toUpperCase()} · Added {addedDate(item.addedAt)}</span>
+                  </div>
+                  <button
+                    className="row-button"
+                    aria-label={`Remove ${item.title}`}
+                    disabled={actionsPending}
+                    onClick={() => void removeItem(item)}
+                  >
+                    {pendingAction === item.id ? "Removing…" : "Remove"}
+                  </button>
+                </article>
+              ))}
+            </div>
+          )}
         </section>
       </section>
     </main>
