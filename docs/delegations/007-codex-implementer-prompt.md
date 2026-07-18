@@ -2,7 +2,7 @@ You are the Codex implementer for Takio Packet 007.
 
 You are already running in a fresh isolated Git worktree under an orchestrator-managed `codex exec` invocation with model `gpt-5.6-sol`, high reasoning effort, and workspace-write sandboxing. Do not invoke `codex`, attempt to start another Codex app-server client, or preflight the CLI from inside this session.
 
-Read and follow `docs/work-packets/007-bun-store-initialization-atomicity.md` exactly. Treat that packet, the current unmerged `@takio/library-store-bun` adapter and focused tests, and the existing contract as the complete repository guidance.
+Read and follow `docs/work-packets/007-atomic-bun-store-initialization.md` exactly. Treat that packet, the current unmerged `@takio/library-store-bun` adapter and focused tests, and the existing contract as the complete repository guidance.
 
 Execution boundary:
 - Work only in the assigned isolated worktree.
