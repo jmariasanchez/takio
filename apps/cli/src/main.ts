@@ -53,7 +53,9 @@ export function createProgram(write: (message: string) => void = console.log): C
       );
     });
 
-  const library = program.command("library").description("Manage a durable local library");
+  const library = storageCommand(program.command("library"), write).description(
+    "Manage a durable local library",
+  );
 
   storageCommand(library.command("add"), write)
     .requiredOption("--db <path>", "database path")
@@ -105,7 +107,7 @@ export function createProgram(write: (message: string) => void = console.log): C
       },
     );
 
-  storageCommand(library.command("list"), write)
+  storageCommand(library.command("list").helpOption(false), write)
     .requiredOption("--db <path>", "database path")
     .action(async (options: { db: string }, command: Command) => {
       if (options.db.length === 0) {

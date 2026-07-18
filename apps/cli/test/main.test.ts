@@ -107,6 +107,28 @@ describe("takio CLI", () => {
     });
   });
 
+  it("reports nested library help as JSON without Commander prose", async () => {
+    const result = await invoke(["library", "list", "--help"]);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.output.join("")).not.toMatch(/Usage:|Options:|error:/);
+    expect(parseOutput(result.output)).toEqual({
+      ok: false,
+      error: { code: "invalid-arguments" },
+    });
+  });
+
+  it("reports an unknown library command as JSON without Commander prose", async () => {
+    const result = await invoke(["library", "nope"]);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.output.join("")).not.toMatch(/Usage:|Options:|error:/);
+    expect(parseOutput(result.output)).toEqual({
+      ok: false,
+      error: { code: "invalid-arguments" },
+    });
+  });
+
   it("reports a duplicate add as JSON with a nonzero exit", async () => {
     const args = [
       "library",
