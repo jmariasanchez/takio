@@ -1,5 +1,10 @@
 export { FORMAT_CATALOG, FORMAT_IDS, detectFormat, type FormatDefinition, type FormatId } from "./formats.js";
 export {
+  InMemoryLibraryRepository,
+  libraryItemSchema,
+  type LibraryItem,
+} from "./library.js";
+export {
   PlanningError,
   conversionRequestSchema,
   deviceSchema,
