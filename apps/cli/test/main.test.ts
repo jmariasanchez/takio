@@ -6,18 +6,6 @@ import { CommanderError } from "commander";
 
 import { createProgram } from "../src/main.js";
 
-let directory: string;
-let databasePath: string;
-
-beforeEach(async () => {
-  directory = await mkdtemp(join(tmpdir(), "takio-cli-"));
-  databasePath = join(directory, "library.sqlite");
-});
-
-afterEach(async () => {
-  await rm(directory, { recursive: true });
-});
-
 async function invoke(args: string[]): Promise<{ output: string[]; exitCode?: number }> {
   const output: string[] = [];
   try {
@@ -31,11 +19,35 @@ async function invoke(args: string[]): Promise<{ output: string[]; exitCode?: nu
   }
 }
 
+async function invokeProcess(
+  args: string[],
+): Promise<{ stdout: string; stderr: string; exitCode: number }> {
+  const child = Bun.spawn({
+    cmd: [process.execPath, join(import.meta.dir, "../src/main.ts"), ...args],
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const [stdout, stderr, exitCode] = await Promise.all([
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
+    child.exited,
+  ]);
+  return { stdout, stderr, exitCode };
+}
+
 function parseOutput(output: string[]): unknown {
   expect(output).toHaveLength(1);
   const line = output[0]!;
   expect(line).not.toContain("\n");
   expect(line).not.toContain("\r");
+  return JSON.parse(line);
+}
+
+function parseProcessOutput(stdout: string): unknown {
+  expect(stdout.endsWith("\n")).toBe(true);
+  expect(stdout).not.toContain("\r");
+  const line = stdout.slice(0, -1);
+  expect(line).not.toContain("\n");
   return JSON.parse(line);
 }
 
@@ -64,39 +76,6 @@ describe("takio CLI", () => {
     expect(output).toContain("  EPUB → PDF");
   });
 
-  it("adds and durably lists an item through separate invocations", async () => {
-    const item = {
-      id: "book-1",
-      title: "The Left Hand of Darkness",
-      sourcePath: "library/left-hand.epub",
-      format: "epub",
-      addedAt: "2026-07-18T12:00:00.000Z",
-    };
-    const added = await invoke([
-      "library",
-      "add",
-      "--db",
-      databasePath,
-      "--id",
-      item.id,
-      "--title",
-      item.title,
-      "--source-path",
-      item.sourcePath,
-      "--format",
-      item.format,
-      "--added-at",
-      item.addedAt,
-    ]);
-
-    expect(added.exitCode).toBeUndefined();
-    expect(parseOutput(added.output)).toEqual({ ok: true, value: { item } });
-
-    const listed = await invoke(["library", "list", "--db", databasePath]);
-    expect(listed.exitCode).toBeUndefined();
-    expect(parseOutput(listed.output)).toEqual({ ok: true, value: { items: [item] } });
-  });
-
   it("reports a missing database path as JSON with a nonzero exit", async () => {
     const result = await invoke(["library", "list"]);
 
@@ -108,51 +87,120 @@ describe("takio CLI", () => {
   });
 
   it("reports nested library help as JSON without Commander prose", async () => {
-    const result = await invoke(["library", "list", "--help"]);
+    const result = await invokeProcess(["library", "list", "--help"]);
 
-    expect(result.exitCode).toBe(1);
-    expect(result.output.join("")).not.toMatch(/Usage:|Options:|error:/);
-    expect(parseOutput(result.output)).toEqual({
+    expect(result.exitCode).not.toBe(0);
+    expect(result.stderr).toBe("");
+    expect(parseProcessOutput(result.stdout)).toEqual({
       ok: false,
       error: { code: "invalid-arguments" },
     });
   });
 
   it("reports an unknown library command as JSON without Commander prose", async () => {
-    const result = await invoke(["library", "nope"]);
+    const result = await invokeProcess(["library", "nope"]);
 
-    expect(result.exitCode).toBe(1);
-    expect(result.output.join("")).not.toMatch(/Usage:|Options:|error:/);
-    expect(parseOutput(result.output)).toEqual({
+    expect(result.exitCode).not.toBe(0);
+    expect(result.stderr).toBe("");
+    expect(parseProcessOutput(result.stdout)).toEqual({
       ok: false,
       error: { code: "invalid-arguments" },
     });
   });
 
-  it("reports a duplicate add as JSON with a nonzero exit", async () => {
-    const args = [
-      "library",
-      "add",
-      "--db",
-      databasePath,
-      "--id",
-      "book-1",
-      "--title",
-      "The Left Hand of Darkness",
-      "--source-path",
-      "library/left-hand.epub",
-      "--format",
-      "epub",
-      "--added-at",
-      "2026-07-18T12:00:00.000Z",
-    ];
+  it("preserves invalid top-level plan diagnostics", async () => {
+    const result = await invokeProcess(["plan"]);
 
-    expect((await invoke(args)).exitCode).toBeUndefined();
-    const result = await invoke(args);
-    expect(result.exitCode).toBe(1);
-    expect(parseOutput(result.output)).toEqual({
-      ok: false,
-      error: { code: "duplicate-id" },
+    expect(result.exitCode).not.toBe(0);
+    expect(result.stdout).toBe("");
+    expect(result.stderr).toContain("error: required option '--input <path>' not specified");
+    expect(result.stderr).not.toContain('"ok":false');
+  });
+
+  it("preserves unknown top-level command diagnostics", async () => {
+    const result = await invokeProcess(["nope"]);
+
+    expect(result.exitCode).not.toBe(0);
+    expect(result.stdout).toBe("");
+    expect(result.stderr).toContain("error: unknown command 'nope'");
+    expect(result.stderr).not.toContain('"ok":false');
+  });
+
+  describe("library storage", () => {
+    let directory: string | undefined;
+    let databasePath: string | undefined;
+
+    beforeEach(async () => {
+      directory = undefined;
+      databasePath = undefined;
+      directory = await mkdtemp(join(tmpdir(), "takio-cli-"));
+      databasePath = join(directory, "library.sqlite");
+    });
+
+    afterEach(async () => {
+      if (directory) {
+        await rm(directory, { recursive: true, force: true });
+      }
+    });
+
+    it("adds and durably lists an item through separate invocations", async () => {
+      const item = {
+        id: "book-1",
+        title: "The Left Hand of Darkness",
+        sourcePath: "library/left-hand.epub",
+        format: "epub",
+        addedAt: "2026-07-18T12:00:00.000Z",
+      };
+      const added = await invoke([
+        "library",
+        "add",
+        "--db",
+        databasePath!,
+        "--id",
+        item.id,
+        "--title",
+        item.title,
+        "--source-path",
+        item.sourcePath,
+        "--format",
+        item.format,
+        "--added-at",
+        item.addedAt,
+      ]);
+
+      expect(added.exitCode).toBeUndefined();
+      expect(parseOutput(added.output)).toEqual({ ok: true, value: { item } });
+
+      const listed = await invoke(["library", "list", "--db", databasePath!]);
+      expect(listed.exitCode).toBeUndefined();
+      expect(parseOutput(listed.output)).toEqual({ ok: true, value: { items: [item] } });
+    });
+
+    it("reports a duplicate add as JSON with a nonzero exit", async () => {
+      const args = [
+        "library",
+        "add",
+        "--db",
+        databasePath!,
+        "--id",
+        "book-1",
+        "--title",
+        "The Left Hand of Darkness",
+        "--source-path",
+        "library/left-hand.epub",
+        "--format",
+        "epub",
+        "--added-at",
+        "2026-07-18T12:00:00.000Z",
+      ];
+
+      expect((await invoke(args)).exitCode).toBeUndefined();
+      const result = await invoke(args);
+      expect(result.exitCode).toBe(1);
+      expect(parseOutput(result.output)).toEqual({
+        ok: false,
+        error: { code: "duplicate-id" },
+      });
     });
   });
 });

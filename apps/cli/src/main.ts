@@ -53,9 +53,10 @@ export function createProgram(write: (message: string) => void = console.log): C
       );
     });
 
-  const library = storageCommand(program.command("library"), write).description(
+  const library = storageCommand(new Command("library"), write).description(
     "Manage a durable local library",
   );
+  program.addCommand(library);
 
   storageCommand(library.command("add"), write)
     .requiredOption("--db <path>", "database path")
