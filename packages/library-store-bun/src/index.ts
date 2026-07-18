@@ -72,6 +72,17 @@ export class BunSqliteLibraryStore implements LibraryStore {
         .get()?.user_version;
 
       if (version === 0) {
+        const existingSchema = database
+          .query<{ present: number }, []>(
+            "SELECT 1 AS present FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' LIMIT 1",
+          )
+          .get();
+
+        if (existingSchema) {
+          database.close();
+          return failure("incompatible-schema");
+        }
+
         database.transaction(() => {
           database!.run(`
             CREATE TABLE library_items (
