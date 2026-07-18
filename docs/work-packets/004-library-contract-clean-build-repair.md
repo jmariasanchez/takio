@@ -68,7 +68,7 @@ git diff --check
 After all verification passes, create exactly one commit:
 
 ```text
-fix(build): restore contract clean build
+fix(storage): make contract build self-contained
 ```
 
 The commit must contain only this remediation packet's build-orchestration repair and any strictly necessary narrow regression check. Stop and report a blocker instead of broadening scope.

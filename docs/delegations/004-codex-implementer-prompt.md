@@ -33,7 +33,7 @@ Required before final response:
 3. Review the diff and explain why it is the smallest build-orchestration repair. Confirm explicitly that no runtime/API/dependency/SQLite/Tauri change was made.
 4. Create exactly one micro-commit with this exact message:
    ```text
-   fix(build): restore contract clean build
+   fix(storage): make contract build self-contained
    ```
 5. Respond with the clean-build transcript, generated-file evidence, complete workspace-gate output, scoped file list, commit SHA, explanation of the repair, and every skipped check or blocker.
 
