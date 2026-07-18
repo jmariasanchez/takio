@@ -4,6 +4,7 @@ import { FORMAT_CATALOG, type LibraryItem } from "@takio/core";
 
 import {
   describeLibraryError,
+  describeUnexpectedLibraryError,
   importLibraryItem,
   listLibraryItems,
   removeLibraryItem,
@@ -19,12 +20,6 @@ type Notice = { readonly kind: "status" | "error"; readonly text: string } | nul
 
 function addedDate(value: string): string {
   return new Intl.DateTimeFormat(undefined, { dateStyle: "medium" }).format(new Date(value));
-}
-
-function caughtMessage(error: unknown): string {
-  return error instanceof Error && error.message
-    ? error.message
-    : "The local library is unavailable.";
 }
 
 export default function App() {
@@ -51,7 +46,7 @@ export default function App() {
       return true;
     } catch (error) {
       setLibraryState("error");
-      setNotice({ kind: "error", text: caughtMessage(error) });
+      setNotice({ kind: "error", text: describeUnexpectedLibraryError(error) });
       return false;
     }
   }, []);
@@ -68,7 +63,7 @@ export default function App() {
         filters: [{ name: "Supported books and documents", extensions: supportedExtensions }],
       });
     } catch (error) {
-      setNotice({ kind: "error", text: caughtMessage(error) });
+      setNotice({ kind: "error", text: describeUnexpectedLibraryError(error) });
       return;
     }
 
@@ -88,7 +83,7 @@ export default function App() {
       setNotice({ kind: "status", text: `Imported “${result.value.item.title}”.` });
       await loadLibrary(false);
     } catch (error) {
-      setNotice({ kind: "error", text: caughtMessage(error) });
+      setNotice({ kind: "error", text: describeUnexpectedLibraryError(error) });
     } finally {
       setPendingAction(null);
     }
@@ -102,7 +97,7 @@ export default function App() {
         { title: "Remove from library", kind: "warning" },
       );
     } catch (error) {
-      setNotice({ kind: "error", text: caughtMessage(error) });
+      setNotice({ kind: "error", text: describeUnexpectedLibraryError(error) });
       return;
     }
 
@@ -123,7 +118,7 @@ export default function App() {
       setLibraryState("ready");
       setNotice({ kind: "status", text: `Removed “${item.title}”.` });
     } catch (error) {
-      setNotice({ kind: "error", text: caughtMessage(error) });
+      setNotice({ kind: "error", text: describeUnexpectedLibraryError(error) });
     } finally {
       setPendingAction(null);
     }

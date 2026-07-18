@@ -64,3 +64,7 @@ export function describeLibraryError(code: string): string {
       return "The local library is unavailable.";
   }
 }
+
+export function describeUnexpectedLibraryError(_error: unknown): string {
+  return "The local library is unavailable.";
+}

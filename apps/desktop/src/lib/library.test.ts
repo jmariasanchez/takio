@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 
 import {
   describeLibraryError,
+  describeUnexpectedLibraryError,
   importLibraryItem,
   listLibraryItems,
   removeLibraryItem,
@@ -37,4 +38,12 @@ test("gives boundary and storage failures specific user-facing messages", () => 
   expect(describeLibraryError("storage-unavailable")).toBe(
     "The local library is unavailable.",
   );
+});
+
+test("does not expose unexpected implementation details in user-facing errors", () => {
+  const implementationDetail = "Cannot read properties of undefined (reading 'invoke')";
+  const message = describeUnexpectedLibraryError(new Error(implementationDetail));
+
+  expect(message).toBe("The local library is unavailable.");
+  expect(message).not.toContain(implementationDetail);
 });
