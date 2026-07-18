@@ -20,7 +20,10 @@ function storageCommand(command: Command, write: (message: string) => void): Com
     });
 }
 
-export function createProgram(write: (message: string) => void = console.log): Command {
+export function createProgram(
+  write: (message: string) => void = console.log,
+  writeError: (message: string) => void = write,
+): Command {
   const program = new Command();
 
   program
@@ -53,12 +56,13 @@ export function createProgram(write: (message: string) => void = console.log): C
       );
     });
 
-  const library = storageCommand(new Command("library"), write).description(
-    "Manage a durable local library",
-  );
+  const library = storageCommand(new Command("library"), writeError)
+    .helpOption(false)
+    .addHelpCommand(false)
+    .description("Manage a durable local library");
   program.addCommand(library);
 
-  storageCommand(library.command("add"), write)
+  storageCommand(library.command("add").helpOption(false), writeError)
     .requiredOption("--db <path>", "database path")
     .requiredOption("--id <id>", "library item ID")
     .requiredOption("--title <title>", "library item title")
@@ -108,7 +112,7 @@ export function createProgram(write: (message: string) => void = console.log): C
       },
     );
 
-  storageCommand(library.command("list").helpOption(false), write)
+  storageCommand(library.command("list").helpOption(false), writeError)
     .requiredOption("--db <path>", "database path")
     .action(async (options: { db: string }, command: Command) => {
       if (options.db.length === 0) {
@@ -167,7 +171,7 @@ export function createProgram(write: (message: string) => void = console.log): C
 
 export async function run(argv: string[]): Promise<void> {
   try {
-    await createProgram().parseAsync(argv);
+    await createProgram(console.log, (message) => process.stdout.write(message)).parseAsync(argv);
   } catch (error) {
     if (error instanceof CommanderError) {
       process.exitCode = error.exitCode;

@@ -43,12 +43,20 @@ function parseOutput(output: string[]): unknown {
   return JSON.parse(line);
 }
 
-function parseProcessOutput(stdout: string): unknown {
-  expect(stdout.endsWith("\n")).toBe(true);
-  expect(stdout).not.toContain("\r");
-  const line = stdout.slice(0, -1);
-  expect(line).not.toContain("\n");
-  return JSON.parse(line);
+function expectInvalidArgumentsProcess(result: {
+  stdout: string;
+  stderr: string;
+  exitCode: number;
+}): void {
+  const expected = { ok: false, error: { code: "invalid-arguments" } };
+
+  expect(result.exitCode).not.toBe(0);
+  expect(result.stderr).toBe("");
+  expect(result.stdout).toBe(JSON.stringify(expected));
+  expect(result.stdout).not.toContain("\n");
+  expect(result.stdout).not.toContain("\r");
+  expect(result.stdout).not.toMatch(/Usage:|Options:|Commands:|display help|unknown command/);
+  expect(JSON.parse(result.stdout)).toEqual(expected);
 }
 
 describe("takio CLI", () => {
@@ -86,26 +94,33 @@ describe("takio CLI", () => {
     });
   });
 
-  it("reports nested library help as JSON without Commander prose", async () => {
-    const result = await invokeProcess(["library", "list", "--help"]);
-
-    expect(result.exitCode).not.toBe(0);
-    expect(result.stderr).toBe("");
-    expect(parseProcessOutput(result.stdout)).toEqual({
-      ok: false,
-      error: { code: "invalid-arguments" },
+  for (const args of [
+    ["library", "--help"],
+    ["library", "add", "--help"],
+    ["library", "help", "add"],
+    ["library", "help", "list"],
+  ]) {
+    it(`reports ${args.join(" ")} as one JSON failure record`, async () => {
+      expectInvalidArgumentsProcess(await invokeProcess(args));
     });
+  }
+
+  it("reports nested library help as JSON without Commander prose", async () => {
+    expectInvalidArgumentsProcess(await invokeProcess(["library", "list", "--help"]));
   });
 
   it("reports an unknown library command as JSON without Commander prose", async () => {
-    const result = await invokeProcess(["library", "nope"]);
+    expectInvalidArgumentsProcess(await invokeProcess(["library", "nope"]));
+  });
 
-    expect(result.exitCode).not.toBe(0);
+  it("preserves root help", async () => {
+    const result = await invokeProcess(["--help"]);
+
+    expect(result.exitCode).toBe(0);
     expect(result.stderr).toBe("");
-    expect(parseProcessOutput(result.stdout)).toEqual({
-      ok: false,
-      error: { code: "invalid-arguments" },
-    });
+    expect(result.stdout).toContain("Usage: takio [options] [command]");
+    expect(result.stdout).toContain("Options:");
+    expect(result.stdout).toContain("Commands:");
   });
 
   it("preserves invalid top-level plan diagnostics", async () => {
