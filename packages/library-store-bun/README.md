@@ -9,4 +9,8 @@ await store.add({ item });
 store.close();
 ```
 
-The caller must supply the database path. `open` initializes an empty database with the v1 `library_items` table and safely reopens v1 databases; other schema versions return `incompatible-schema`. No production path or later migration policy is selected here.
+The caller must supply the database path. `open` initializes an empty database
+at schema v3, reopens v3 databases, and atomically migrates v1 or v2 after
+retaining a verified `<database>.v1.backup` or `<database>.v2.backup`. Other
+schema versions return `incompatible-schema`; no production database location
+is selected here.
