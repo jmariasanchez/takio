@@ -2,6 +2,7 @@ export { FORMAT_CATALOG, FORMAT_IDS, detectFormat, type FormatDefinition, type F
 export {
   InMemoryLibraryRepository,
   libraryItemSchema,
+  normalizeTags,
   type LibraryItem,
 } from "./library.js";
 export {

@@ -3,20 +3,40 @@ import { describe, expect, it } from "bun:test";
 import {
   InMemoryLibraryRepository,
   libraryItemSchema,
+  normalizeTags,
   type LibraryItem,
 } from "../src/index.js";
 
-const item: LibraryItem = {
+const v1Item = {
   id: "book-1",
   title: "The Left Hand of Darkness",
   sourcePath: "library/left-hand.epub",
   format: "epub",
   addedAt: "2026-07-18T12:00:00.000Z",
-};
+} as const;
+const item: LibraryItem = { ...v1Item, tags: [] };
 
 describe("libraryItemSchema", () => {
-  it("accepts a complete library item", () => {
-    expect(libraryItemSchema.parse(item)).toEqual(item);
+  it("gives v1 items a lossless empty metadata representation", () => {
+    expect(libraryItemSchema.parse(v1Item)).toEqual(item);
+  });
+
+  it("normalizes user tags while preserving their first display spelling", () => {
+    expect(normalizeTags(["  Science   Fiction  ", "Classic"])).toEqual([
+      "Science Fiction",
+      "Classic",
+    ]);
+    expect(
+      libraryItemSchema.parse({ ...v1Item, tags: ["  Science   Fiction  ", "Classic"] }),
+    ).toMatchObject({ tags: ["Science Fiction", "Classic"] });
+  });
+
+  it("rejects blank optional metadata and duplicate normalized tags", () => {
+    expect(() => libraryItemSchema.parse({ ...v1Item, author: "  " })).toThrow();
+    expect(() => libraryItemSchema.parse({ ...v1Item, description: "" })).toThrow();
+    expect(() => libraryItemSchema.parse({ ...v1Item, coverPath: " " })).toThrow();
+    expect(() => libraryItemSchema.parse({ ...v1Item, tags: ["Classic", " classic "] })).toThrow();
+    expect(() => libraryItemSchema.parse({ ...v1Item, tags: [" "] })).toThrow();
   });
 
   it("rejects missing or invalid library fields", () => {

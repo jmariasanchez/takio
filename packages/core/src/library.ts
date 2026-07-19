@@ -2,6 +2,37 @@ import { z } from "zod";
 
 import { FORMAT_IDS } from "./formats.js";
 
+export function normalizeTags(tags: readonly string[]): readonly string[] {
+  const normalized: string[] = [];
+  const seen = new Set<string>();
+
+  for (const tag of tags) {
+    const display = tag.trim().replace(/\s+/g, " ");
+    const comparison = display.toLowerCase();
+    if (display.length === 0 || seen.has(comparison)) {
+      throw new TypeError("Tags must be nonempty and unique ignoring case.");
+    }
+    seen.add(comparison);
+    normalized.push(display);
+  }
+
+  return normalized;
+}
+
+const optionalText = z.string().trim().min(1).optional();
+const tagsSchema = z
+  .array(z.string())
+  .transform((tags, context) => {
+    try {
+      return normalizeTags(tags);
+    } catch {
+      context.addIssue({ code: z.ZodIssueCode.custom, message: "Invalid tags" });
+      return z.NEVER;
+    }
+  })
+  .readonly()
+  .default([]);
+
 export const libraryItemSchema = z
   .object({
     id: z.string().min(1),
@@ -9,6 +40,11 @@ export const libraryItemSchema = z
     sourcePath: z.string().min(1),
     format: z.enum(FORMAT_IDS),
     addedAt: z.string().datetime(),
+    author: optionalText,
+    description: optionalText,
+    coverPath: optionalText,
+    tags: tagsSchema,
+    updatedAt: z.string().datetime().optional(),
   })
   .readonly();
 
