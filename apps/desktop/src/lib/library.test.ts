@@ -54,7 +54,7 @@ test("uses only the fixed desktop library commands and argument names", async ()
     if (command === "library_open") {
       return {
         ok: true,
-        value: { id: "item-1", path: "/Books/A title.epub" },
+        value: { id: "item-1", format: "pdf", path: "/Books/A title.pdf" },
       } as never;
     }
     if (command === "library_remove") {
@@ -104,7 +104,7 @@ test("uses only the fixed desktop library commands and argument names", async ()
   await setLibraryCover("item-1", "/Pictures/A cover.jpg", invokeCommand);
   await removeLibraryCover("item-1", invokeCommand);
   await removeLibraryItem("item-1", invokeCommand);
-  await openLibraryItem("item-1", invokeCommand);
+  await openLibraryItem("item-1", "pdf", invokeCommand);
 
   expect(calls).toEqual([
     { command: "library_list", args: undefined },
@@ -146,7 +146,7 @@ test("uses only the fixed desktop library commands and argument names", async ()
     },
     { command: "library_cover_remove", args: { id: "item-1" } },
     { command: "library_remove", args: { id: "item-1" } },
-    { command: "library_open", args: { id: "item-1" } },
+    { command: "library_open", args: { id: "item-1", format: "pdf" } },
   ]);
 });
 
@@ -159,7 +159,7 @@ test("passes valid library responses through with authoritative format order", a
   } as const;
   const openResult = {
     ok: true,
-    value: { id: validItem.id, path: validItem.sourcePath },
+    value: { id: validItem.id, format: "pdf", path: "/Books/A title.pdf" },
   } as const;
 
   const decodedList = await listLibraryItems(async () => listResult as never);
@@ -202,9 +202,26 @@ test("passes valid library responses through with authoritative format order", a
   expect(await removeLibraryItem(validItem.id, async () => removeResult as never)).toBe(
     removeResult,
   );
-  expect(await openLibraryItem(validItem.id, async () => openResult as never)).toBe(
+  expect(await openLibraryItem(validItem.id, "pdf", async () => openResult as never)).toBe(
     openResult,
   );
+});
+
+test("rejects malformed or mismatched exact-format open responses", async () => {
+  for (const value of [
+    { id: validItem.id, format: "pdf", path: 42 },
+    { id: validItem.id, path: "/Books/A title.pdf" },
+    { id: validItem.id, format: "mp3", path: "/Books/A title.mp3" },
+    { id: validItem.id, format: "epub", path: "/Books/A title.epub" },
+    { id: "another-item", format: "pdf", path: "/Books/A title.pdf" },
+  ]) {
+    expect(
+      await openLibraryItem(validItem.id, "pdf", async () => ({
+        ok: true,
+        value,
+      }) as never),
+    ).toEqual({ ok: false, error: { code: "protocol-error" } });
+  }
 });
 
 test("requires explicit cleanup state after removing a library item", async () => {
@@ -343,12 +360,6 @@ test("rejects malformed nested and scalar library response values", async () => 
     }) as never),
   ).toEqual({ ok: false, error: { code: "protocol-error" } });
 
-  expect(
-    await openLibraryItem(validItem.id, async () => ({
-      ok: true,
-      value: { id: validItem.id, path: 42 },
-    }) as never),
-  ).toEqual({ ok: false, error: { code: "protocol-error" } });
 });
 
 test("normalizes comma-separated tags and rejects ambiguous replacements", () => {
@@ -382,6 +393,9 @@ test("gives boundary and storage failures specific user-facing messages", () => 
   );
   expect(describeLibraryError("format-mismatch")).toBe(
     "The source file no longer matches its library format.",
+  );
+  expect(describeLibraryError("format-not-found")).toBe(
+    "That format is no longer available for this item.",
   );
   expect(describeLibraryError("open-failed")).toBe(
     "The source file could not be opened.",

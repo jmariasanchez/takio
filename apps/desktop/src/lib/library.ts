@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { libraryItemSchema, normalizeTags } from "@takio/core";
+import { FORMAT_IDS, libraryItemSchema, normalizeTags } from "@takio/core";
 import type { FormatId, LibraryItem } from "@takio/core";
 import type {
   LibraryCoverWireResult,
@@ -35,7 +35,11 @@ export type DesktopLibrarySearchResult = LibrarySearchWireResult | LibraryBridge
 export type DesktopLibraryOpenResult =
   | {
       readonly ok: true;
-      readonly value: { readonly id: string; readonly path: string };
+      readonly value: {
+        readonly id: string;
+        readonly format: FormatId;
+        readonly path: string;
+      };
     }
   | {
       readonly ok: false;
@@ -56,6 +60,10 @@ function protocolError(): LibraryBridgeFailure {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isFormatId(value: unknown): value is FormatId {
+  return typeof value === "string" && FORMAT_IDS.some((format) => format === value);
 }
 
 function isLibraryItem(value: unknown): boolean {
@@ -218,14 +226,16 @@ export async function removeLibraryItem(
 
 export async function openLibraryItem(
   id: string,
+  format: FormatId,
   invokeCommand: LibraryInvoker = invokeTauri,
 ): Promise<DesktopLibraryOpenResult> {
-  const result = await invokeCommand<unknown>("library_open", { id });
+  const result = await invokeCommand<unknown>("library_open", { id, format });
   return decodeLibraryResult<DesktopLibraryOpenResult>(result, (value) =>
     Boolean(
       isRecord(value) &&
-        typeof value.id === "string" &&
-        value.id.length > 0 &&
+        value.id === id &&
+        isFormatId(value.format) &&
+        value.format === format &&
         typeof value.path === "string" &&
         value.path.length > 0,
     ),
@@ -260,6 +270,8 @@ export function describeLibraryError(code: string): string {
       return "The library item’s source file is missing.";
     case "format-mismatch":
       return "The source file no longer matches its library format.";
+    case "format-not-found":
+      return "That format is no longer available for this item.";
     case "open-failed":
       return "The source file could not be opened.";
     default:
