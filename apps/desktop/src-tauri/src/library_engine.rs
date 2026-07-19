@@ -88,11 +88,19 @@ fn destination_list_arguments() -> Vec<String> {
     vec!["destination".into(), "list".into()]
 }
 
-fn destination_send_arguments(id: String, destination_path: String) -> Vec<String> {
+fn validate_destination_send(id: &str, format: &str, destination_path: &str) -> Result<(), ()> {
+    validate_nonempty(id)?;
+    validate_nonempty(format)?;
+    validate_nonempty(destination_path)
+}
+
+fn destination_send_arguments(id: String, format: String, destination_path: String) -> Vec<String> {
     vec![
         "send".into(),
         "--id".into(),
         id,
+        "--format".into(),
+        format,
         "--dest".into(),
         destination_path,
     ]
@@ -380,13 +388,18 @@ pub async fn destination_list(app: tauri::AppHandle) -> Value {
 pub async fn destination_send(
     app: tauri::AppHandle,
     id: String,
+    format: String,
     destination_path: String,
 ) -> Value {
-    if validate_nonempty(&id).is_err() || validate_nonempty(&destination_path).is_err() {
+    if validate_destination_send(&id, &format, &destination_path).is_err() {
         return failure("invalid-arguments");
     }
 
-    run_engine(&app, destination_send_arguments(id, destination_path)).await
+    run_engine(
+        &app,
+        destination_send_arguments(id, format, destination_path),
+    )
+    .await
 }
 
 #[tauri::command]
@@ -460,8 +473,16 @@ mod tests {
         );
         assert_eq!(destination_list_arguments(), vec!["destination", "list"]);
         assert_eq!(
-            destination_send_arguments("book-1".into(), "/Volumes/Reader".into()),
-            vec!["send", "--id", "book-1", "--dest", "/Volumes/Reader"]
+            destination_send_arguments("book-1".into(), "epub".into(), "/Volumes/Reader".into(),),
+            vec![
+                "send",
+                "--id",
+                "book-1",
+                "--format",
+                "epub",
+                "--dest",
+                "/Volumes/Reader",
+            ]
         );
         assert_eq!(
             destination_eject_arguments("/Volumes/Reader".into()),
@@ -474,6 +495,14 @@ mod tests {
         assert!(validate_library_open("book-1", "pdf").is_ok());
         assert!(validate_library_open(" ", "pdf").is_err());
         assert!(validate_library_open("book-1", " ").is_err());
+    }
+
+    #[test]
+    fn validates_send_id_format_and_destination() {
+        assert!(validate_destination_send("book-1", "epub", "/Volumes/Reader").is_ok());
+        assert!(validate_destination_send(" ", "epub", "/Volumes/Reader").is_err());
+        assert!(validate_destination_send("book-1", " ", "/Volumes/Reader").is_err());
+        assert!(validate_destination_send("book-1", "epub", " ").is_err());
     }
 
     #[test]
