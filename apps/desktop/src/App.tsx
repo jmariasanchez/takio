@@ -85,10 +85,26 @@ export default function App() {
   const jobRequestSequence = useRef(0);
   const deviceMutationPending = useRef(false);
   const importPending = useRef(false);
+  const importButton = useRef<HTMLButtonElement>(null);
+  const itemsRef = useRef(items);
+  const postRemoveFocusItemId = useRef<string | null | undefined>(undefined);
   const queryRef = useRef(query);
   const searchInput = useRef<HTMLInputElement>(null);
   const menuActionHandlers = useRef<MenuActionHandlers | null>(null);
+  itemsRef.current = items;
   queryRef.current = query;
+
+  useEffect(() => {
+    if (pendingAction !== null || postRemoveFocusItemId.current === undefined) {
+      return;
+    }
+
+    const itemId = postRemoveFocusItemId.current;
+    postRemoveFocusItemId.current = undefined;
+    const target =
+      itemId === null ? importButton.current : document.getElementById(`library-item-${itemId}`);
+    (target ?? importButton.current)?.focus();
+  }, [items, pendingAction]);
 
   const loadLibrary = useCallback(
     async (showLoading = true, searchQuery = ""): Promise<boolean> => {
@@ -405,8 +421,13 @@ export default function App() {
     let approved: boolean;
     try {
       approved = await confirm(
-        `Remove “${item.title}” from your Takio library? Takio will also delete its owned imported copy, if present.`,
-        { title: "Remove from library", kind: "warning" },
+        `Remove “${item.title}” from your Takio library? Takio will remove managed copies. External files will not be deleted.`,
+        {
+          title: "Remove from library",
+          kind: "warning",
+          okLabel: "Remove from library",
+          cancelLabel: "Cancel",
+        },
       );
     } catch (error) {
       setNotice({ kind: "error", text: describeUnexpectedLibraryError(error) });
@@ -426,14 +447,26 @@ export default function App() {
         return;
       }
 
-      setItems((currentItems) => currentItems.filter((candidate) => candidate.id !== item.id));
+      const removedIndex = itemsRef.current.findIndex((candidate) => candidate.id === item.id);
+      const remainingItems = itemsRef.current.filter((candidate) => candidate.id !== item.id);
+      const focusItem =
+        removedIndex < 0
+          ? remainingItems[0]
+          : (remainingItems[removedIndex] ?? remainingItems[removedIndex - 1]);
+      postRemoveFocusItemId.current = focusItem?.id ?? null;
+      setItems(remainingItems);
       setDraft((currentDraft) => (currentDraft?.id === item.id ? null : currentDraft));
       setConversionDraft((currentDraft) =>
         currentDraft?.id === item.id ? null : currentDraft,
       );
       setSelectedItemId((currentId) => (currentId === item.id ? null : currentId));
       setLibraryState("ready");
-      setNotice({ kind: "status", text: `Removed “${item.title}”.` });
+      setNotice({
+        kind: "status",
+        text: result.value.cleanupPending
+          ? `Removed “${item.title}”. Some Takio-managed files could not be deleted; cleanup is pending.`
+          : `Removed “${item.title}”.`,
+      });
     } catch (error) {
       setNotice({ kind: "error", text: describeUnexpectedLibraryError(error) });
     } finally {
@@ -783,9 +816,14 @@ export default function App() {
           <div>
             <p className="eyebrow">IMPORT</p>
             <h2 id="import-heading">Add a book or document</h2>
-            <p>Takio keeps an owned copy here so it is available after you relaunch.</p>
+            <p>Add a supported file to your local Takio library.</p>
           </div>
-          <button className="primary-button" disabled={actionsPending} onClick={importFile}>
+          <button
+            ref={importButton}
+            className="primary-button"
+            disabled={actionsPending}
+            onClick={importFile}
+          >
             {pendingAction === "import" ? "Importing…" : "Choose file"}
           </button>
         </section>

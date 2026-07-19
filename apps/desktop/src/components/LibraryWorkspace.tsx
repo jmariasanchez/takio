@@ -142,6 +142,7 @@ export function LibraryWorkspace({
             return (
               <article
                 className={`book-card${selected ? " selected" : ""}`}
+                id={`library-item-${item.id}`}
                 key={item.id}
                 tabIndex={0}
                 aria-current={selected ? "true" : undefined}
@@ -166,9 +167,12 @@ export function LibraryWorkspace({
                       {item.author ? `${item.author} · ` : ""}
                       {item.formats
                         .map(
-                          ({ format }) =>
-                            FORMAT_CATALOG.find((definition) => definition.id === format)!
-                              .label,
+                          ({ format, provenance }) =>
+                            `${
+                              FORMAT_CATALOG.find(
+                                (definition) => definition.id === format,
+                              )!.label
+                            } (${provenance === "managed" ? "Managed copy" : "External reference"})`,
                         )
                         .join(", ")} · Added {addedDate(item.addedAt)}
                     </span>
@@ -235,6 +239,46 @@ export function LibraryWorkspace({
                     </button>
                   </div>
                 </div>
+
+                {selected && (
+                  <section
+                    className="format-panel"
+                    aria-labelledby={`formats-heading-${item.id}`}
+                  >
+                    <div className="format-panel-heading">
+                      <h3 id={`formats-heading-${item.id}`}>Formats</h3>
+                      <span>
+                        {item.formats.length} {item.formats.length === 1 ? "format" : "formats"}
+                      </span>
+                    </div>
+                    <ol className="format-list" role="list">
+                      {item.formats.map((bookFormat, index) => {
+                        const label = FORMAT_CATALOG.find(
+                          (definition) => definition.id === bookFormat.format,
+                        )!.label;
+                        return (
+                          <li className="format-row" key={bookFormat.format}>
+                            <div className="format-name">
+                              <strong>{label}</strong>
+                              {index === 0 && <span className="format-default">Primary format</span>}
+                            </div>
+                            <span>
+                              {bookFormat.provenance === "managed"
+                                ? "Managed copy"
+                                : "External reference"}
+                              {` · Added ${addedDate(bookFormat.addedAt)}`}
+                            </span>
+                            <code>
+                              {bookFormat.provenance === "managed"
+                                ? "Stored in Takio library"
+                                : bookFormat.sourcePath}
+                            </code>
+                          </li>
+                        );
+                      })}
+                    </ol>
+                  </section>
+                )}
 
                 {converting && (
                   <form
