@@ -98,6 +98,12 @@ function createFrozenV1Fixture(): void {
   database.run("PRAGMA user_version = 1");
 }
 
+async function createSqlFixture(filename: string): Promise<void> {
+  const sql = await readFile(join(import.meta.dir, "fixtures", filename), "utf8");
+  using database = new Database(databasePath, { create: true, strict: true });
+  database.exec(sql);
+}
+
 describe("BunSqliteLibraryStore", () => {
   it("persists add, get, list, and remove across injected-path reopenings at schema v2", async () => {
     const first = createStore();
@@ -121,6 +127,43 @@ describe("BunSqliteLibraryStore", () => {
     third.close();
 
     expect(schemaVersion()).toBe(2);
+  });
+
+  it("opens the independent frozen v2 fixture without changing any stored fields", async () => {
+    await createSqlFixture("schema-v2.sql");
+    const databaseBefore = await readFile(databasePath);
+
+    const store = createStore();
+    expect(await store.open({ config: {} })).toEqual({ ok: true, value: null });
+    expect(await store.list({})).toEqual({
+      ok: true,
+      value: [
+        {
+          id: "book-v2-minimal",
+          title: "Kindred",
+          sourcePath: "library/kindred.mobi",
+          format: "mobi",
+          addedAt: "2026-07-16T08:00:00.000Z",
+          tags: [],
+        },
+        {
+          id: "book-v2-complete",
+          title: "The Dispossessed",
+          sourcePath: "library/the-dispossessed.epub",
+          format: "epub",
+          addedAt: "2026-07-17T10:15:00.000Z",
+          author: "Ursula K. Le Guin",
+          description: "An ambiguous utopia.",
+          coverPath: join(directory, "covers", "the-dispossessed.png"),
+          tags: ["Science Fiction", "Classic"],
+          updatedAt: "2026-07-18T09:30:00.000Z",
+        },
+      ],
+    });
+    store.close();
+
+    expect(schemaVersion()).toBe(2);
+    expect(await readFile(databasePath)).toEqual(databaseBefore);
   });
 
   it("backs up and migrates a frozen v1 library without changing original fields", async () => {
@@ -499,9 +542,7 @@ describe("BunSqliteLibraryStore", () => {
   });
 
   it("rejects future schemas byte-for-byte without mutation", async () => {
-    using database = new Database(databasePath);
-    database.run("PRAGMA user_version = 3");
-    database.close();
+    await createSqlFixture("schema-future.sql");
     const before = await readFile(databasePath);
 
     const store = createStore();
@@ -510,6 +551,19 @@ describe("BunSqliteLibraryStore", () => {
       error: { code: "incompatible-schema" },
     });
     expect(await readFile(databasePath)).toEqual(before);
+    using database = new Database(databasePath, { strict: true });
+    expect(database.query<{ user_version: number }, []>("PRAGMA user_version").get()).toEqual({
+      user_version: 999,
+    });
+    expect(
+      database
+        .query<{ id: string; payload: string }, []>(
+          "SELECT id, payload FROM future_library_records",
+        )
+        .all(),
+    ).toEqual([
+      { id: "future-record", payload: "must remain byte-for-byte unchanged" },
+    ]);
   });
 
   it("rejects a nonempty version-0 database without claiming or mutating it", async () => {
