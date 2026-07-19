@@ -7,10 +7,17 @@ import { CommanderError } from "commander";
 
 import { createProgram } from "../src/main.js";
 
-async function invoke(args: string[]): Promise<{ output: string[]; exitCode?: number }> {
+async function invoke(
+  args: string[],
+  launch?: (argv: readonly string[]) => void | Promise<void>,
+): Promise<{ output: string[]; exitCode?: number }> {
   const output: string[] = [];
   try {
-    await createProgram((line) => output.push(line)).parseAsync(["bun", "takio", ...args]);
+    await createProgram((line) => output.push(line), undefined, launch).parseAsync([
+      "bun",
+      "takio",
+      ...args,
+    ]);
     return { output };
   } catch (error) {
     if (error instanceof CommanderError) {
@@ -105,6 +112,7 @@ describe("takio CLI", () => {
     ["library", "add", "--help"],
     ["library", "import", "--help"],
     ["library", "get", "--help"],
+    ["library", "open", "--help"],
     ["library", "update", "--help"],
     ["library", "search", "--help"],
     ["library", "cover", "--help"],
@@ -114,6 +122,7 @@ describe("takio CLI", () => {
     ["library", "help", "add"],
     ["library", "help", "import"],
     ["library", "help", "get"],
+    ["library", "help", "open"],
     ["library", "help", "list"],
     ["library", "help", "update"],
     ["library", "help", "search"],
@@ -130,6 +139,7 @@ describe("takio CLI", () => {
     ["help", "library", "add"],
     ["help", "library", "import"],
     ["help", "library", "get"],
+    ["help", "library", "open"],
     ["help", "library", "list"],
     ["help", "library", "update"],
     ["help", "library", "search"],
@@ -210,6 +220,26 @@ describe("takio CLI", () => {
       }
     });
 
+    async function addItem(id: string, sourcePath: string, format = "epub"): Promise<void> {
+      const result = await invoke([
+        "library",
+        "add",
+        "--db",
+        databasePath!,
+        "--id",
+        id,
+        "--title",
+        id,
+        "--source-path",
+        sourcePath,
+        "--format",
+        format,
+        "--added-at",
+        "2026-07-18T12:00:00.000Z",
+      ]);
+      expect(result.exitCode).toBeUndefined();
+    }
+
     it("uses the isolated production layout when --db is omitted", async () => {
       process.env.TAKIO_DATA_DIR = directory!;
 
@@ -273,6 +303,123 @@ describe("takio CLI", () => {
       const listed = await invoke(["library", "list", "--db", databasePath!]);
       expect(listed.exitCode).toBeUndefined();
       expect(parseOutput(listed.output)).toEqual({ ok: true, value: { items: [item] } });
+    });
+
+    it("opens a regular declared-format file with an exact platform argv array", async () => {
+      const sourcePath = join(directory!, "book with spaces.epub");
+      await Bun.write(sourcePath, "book contents");
+      await addItem("open-book", sourcePath);
+      const launches: string[][] = [];
+      const launch = (argv: readonly string[]): void => {
+        launches.push([...argv]);
+      };
+
+      const opened = await invoke(
+        ["library", "open", "--db", databasePath!, "--id", "open-book", "--json"],
+        launch,
+      );
+
+      const opener =
+        process.platform === "darwin"
+          ? "open"
+          : process.platform === "win32"
+            ? "explorer.exe"
+            : "xdg-open";
+      expect(opened.exitCode).toBeUndefined();
+      expect(parseOutput(opened.output)).toEqual({
+        ok: true,
+        value: { id: "open-book", path: sourcePath },
+      });
+      expect(launches).toEqual([[opener, sourcePath]]);
+
+      const human = await invoke(
+        ["library", "open", "--db", databasePath!, "--id", "open-book"],
+        launch,
+      );
+      expect(human).toEqual({ output: [`Opened ${sourcePath}`] });
+    });
+
+    it("reports not-found without launching for an unknown item", async () => {
+      const result = await invoke(
+        ["library", "open", "--db", databasePath!, "--id", "missing", "--json"],
+        () => {
+          throw new Error("launcher must not be called");
+        },
+      );
+
+      expect(result.exitCode).toBe(1);
+      expect(parseOutput(result.output)).toEqual({
+        ok: false,
+        error: { code: "not-found" },
+      });
+    });
+
+    it("reports missing-file for absent and non-regular sources without launching", async () => {
+      const missingPath = join(directory!, "missing.epub");
+      const directoryPath = join(directory!, "directory.epub");
+      await mkdir(directoryPath);
+      await addItem("missing-file", missingPath);
+      await addItem("directory", directoryPath);
+
+      for (const id of ["missing-file", "directory"]) {
+        const result = await invoke(
+          ["library", "open", "--db", databasePath!, "--id", id, "--json"],
+          () => {
+            throw new Error("launcher must not be called");
+          },
+        );
+        expect(result.exitCode).toBe(1);
+        expect(parseOutput(result.output)).toEqual({
+          ok: false,
+          error: { code: "missing-file" },
+        });
+      }
+    });
+
+    it("rejects a source extension outside its declared format before launching", async () => {
+      const sourcePath = join(directory!, "tampered.sh");
+      await Bun.write(sourcePath, "#!/bin/sh");
+      await addItem("tampered", sourcePath, "epub");
+
+      const result = await invoke(
+        ["library", "open", "--db", databasePath!, "--id", "tampered", "--json"],
+        () => {
+          throw new Error("launcher must not be called");
+        },
+      );
+
+      expect(result.exitCode).toBe(1);
+      expect(parseOutput(result.output)).toEqual({
+        ok: false,
+        error: { code: "format-mismatch" },
+      });
+    });
+
+    it("reports open-failed when the argv launcher rejects", async () => {
+      const sourcePath = join(directory!, "launch-failure.epub");
+      await Bun.write(sourcePath, "book contents");
+      await addItem("launch-failure", sourcePath);
+
+      const result = await invoke(
+        [
+          "library",
+          "open",
+          "--db",
+          databasePath!,
+          "--id",
+          "launch-failure",
+          "--json",
+        ],
+        () => {
+          throw new Error("spawn failed");
+        },
+      );
+
+      expect(result.exitCode).toBe(1);
+      expect(parseOutput(result.output)).toEqual({
+        ok: false,
+        error: { code: "open-failed" },
+      });
     });
 
     it("replaces editable metadata and tags durably across process invocations", async () => {
