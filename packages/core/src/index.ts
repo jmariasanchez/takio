@@ -8,6 +8,11 @@ export {
 } from "./destinations.js";
 export { FORMAT_CATALOG, FORMAT_IDS, detectFormat, type FormatDefinition, type FormatId } from "./formats.js";
 export {
+  DEFAULT_CONVERSION_SETTINGS_V1,
+  conversionSettingsV1Schema,
+  type ConversionSettingsV1,
+} from "./conversion.js";
+export {
   InMemoryLibraryRepository,
   bookFormatSchema,
   bookFormatsSchema,

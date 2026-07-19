@@ -1,6 +1,10 @@
 import { describe, expect, it } from "bun:test";
 
-import { PlanningError, planConversion } from "../src/index.js";
+import {
+  DEFAULT_CONVERSION_SETTINGS_V1,
+  PlanningError,
+  planConversion,
+} from "../src/index.js";
 
 describe("planConversion", () => {
   it("plans without touching the filesystem when an online target declares the exact pair", () => {
@@ -24,6 +28,28 @@ describe("planConversion", () => {
       status: "planned",
     });
     expect(job.id).toStartWith("job_");
+    expect(job.settings).toEqual(DEFAULT_CONVERSION_SETTINGS_V1);
+    expect(Object.isFrozen(job.settings)).toBe(true);
+  });
+
+  it("rejects settings the current executor cannot honor", () => {
+    const unsupportedSettings = [
+      { version: 2, profileId: "default" },
+      { version: 1, profileId: "tablet" },
+      { version: 1, profileId: "default", extra: true },
+    ];
+
+    for (const settings of unsupportedSettings) {
+      const plan = () => planConversion({
+        input: "library/novel.epub",
+        outputFormat: "pdf",
+        targets: [],
+        settings,
+      } as unknown as Parameters<typeof planConversion>[0]);
+
+      expect(plan).toThrow(PlanningError);
+      expect(plan).toThrow("Invalid conversion request.");
+    }
   });
 
   it("does not treat support for one input as support for every input with the same output", () => {

@@ -1,5 +1,10 @@
 import { z } from "zod";
 
+import {
+  DEFAULT_CONVERSION_SETTINGS_V1,
+  conversionSettingsV1Schema,
+  type ConversionSettingsV1,
+} from "./conversion.js";
 import { FORMAT_IDS, detectFormat, type FormatId } from "./formats.js";
 
 const formatSchema = z.enum(FORMAT_IDS);
@@ -24,6 +29,7 @@ export const conversionRequestSchema = z.object({
   input: z.string().min(1),
   outputFormat: formatSchema,
   targets: z.array(executionTargetSchema).default([]),
+  settings: conversionSettingsV1Schema.default(DEFAULT_CONVERSION_SETTINGS_V1),
 });
 
 export type ConversionRequest = z.input<typeof conversionRequestSchema>;
@@ -33,6 +39,7 @@ export interface PlannedJob {
   input: string;
   inputFormat: FormatId;
   outputFormat: FormatId;
+  settings: ConversionSettingsV1;
   assignedTarget: Pick<ExecutionTarget, "id" | "name">;
   status: "planned";
 }
@@ -79,6 +86,7 @@ export function planConversion(request: ConversionRequest): PlannedJob {
     input: parsed.input,
     inputFormat,
     outputFormat: parsed.outputFormat,
+    settings: parsed.settings,
     assignedTarget: { id: assignedTarget.id, name: assignedTarget.name },
     status: "planned",
   };
