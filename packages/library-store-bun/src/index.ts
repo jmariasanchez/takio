@@ -1,14 +1,20 @@
 import {
   bookFormatSchema,
   bookFormatsSchema,
+  detectFormat,
   libraryItemSchema,
+  type FormatId,
   type LibraryItem,
 } from "@takio/core";
 import type {
   AddLibraryItemRequest,
   AddLibraryItemResult,
+  AttachLibraryFormatRequest,
+  AttachLibraryFormatResult,
   GetLibraryItemRequest,
   GetLibraryItemResult,
+  ImportLibraryItemRequest,
+  ImportLibraryItemResult,
   LibraryStore,
   LibraryStoreErrorCode,
   LibraryStoreResult,
@@ -18,6 +24,8 @@ import type {
   OpenLibraryResult,
   RemoveLibraryCoverRequest,
   RemoveLibraryCoverResult,
+  RemoveLibraryFormatRequest,
+  RemoveLibraryFormatResult,
   RemoveLibraryItemRequest,
   RemoveLibraryItemResult,
   SearchLibraryItemsRequest,
@@ -29,8 +37,10 @@ import type {
 } from "@takio/library-contract";
 import { Database } from "bun:sqlite";
 import {
+  constants,
   copyFileSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   realpathSync,
   renameSync,
@@ -39,12 +49,15 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 import { initializationTestSeam } from "./initialization-test-seam.js";
+import { lifecycleTestSeam } from "./lifecycle-test-seam.js";
 
-const SCHEMA_VERSION = 3;
+const SCHEMA_VERSION = 4;
 const incompatibleSchema = Symbol("incompatible-schema");
+const duplicateFormat = Symbol("duplicate-format");
+const sourceChanged = Symbol("source-changed");
 
 type StoredLibraryItem = {
   id: unknown;
@@ -61,9 +74,17 @@ type StoredV2LibraryItem = StoredLibraryItem & {
   format: unknown;
 };
 type StoredV1LibraryItem = Pick<StoredV2LibraryItem, "id" | "title" | "sourcePath" | "format" | "addedAt">;
-type StoredBookFormat = { sourcePath: unknown; format: unknown; addedAt: unknown };
+type StoredV3BookFormat = { sourcePath: unknown; format: unknown; addedAt: unknown };
+type StoredBookFormat = StoredV3BookFormat & { provenance: unknown };
 type StoredPositionedBookFormat = StoredBookFormat & { position: unknown };
+type StoredPositionedV3BookFormat = StoredV3BookFormat & { position: unknown };
 type StoredTag = { name: unknown };
+type CleanupKind = "cover" | "format";
+type StoredCleanupPath = { sourcePath: unknown; kind: unknown };
+type CleanupJob = { sourcePath: string; kind: CleanupKind };
+
+const managedLeafPattern =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.[a-z0-9]+$/i;
 
 const success = <T>(value: T): LibraryStoreResult<T> => ({ ok: true, value });
 const failure = <T>(code: LibraryStoreErrorCode): LibraryStoreResult<T> => ({
@@ -78,6 +99,271 @@ function isDuplicateIdError(error: unknown): boolean {
     "code" in error &&
     (error.code === "SQLITE_CONSTRAINT_PRIMARYKEY" || error.code === "SQLITE_CONSTRAINT_UNIQUE")
   );
+}
+
+function isSqliteConstraintError(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    typeof error.code === "string" &&
+    error.code.startsWith("SQLITE_CONSTRAINT")
+  );
+}
+
+function validateManagedRoot(itemsDirectory: string): void {
+  if (!existsSync(itemsDirectory)) {
+    return;
+  }
+
+  const root = lstatSync(itemsDirectory);
+  if (!root.isDirectory() || root.isSymbolicLink()) {
+    throw new TypeError("Invalid managed items directory");
+  }
+}
+
+function resolveManagedFormatPath(
+  itemsDirectory: string,
+  storedPath: unknown,
+  format: FormatId,
+  requireFile: boolean,
+): string {
+  if (
+    typeof storedPath !== "string" ||
+    !managedLeafPattern.test(storedPath) ||
+    storedPath.includes("/") ||
+    storedPath.includes("\\") ||
+    detectFormat(storedPath) !== format
+  ) {
+    throw new TypeError("Invalid managed format path");
+  }
+
+  const root = resolve(itemsDirectory);
+  validateManagedRoot(root);
+  const path = join(root, storedPath);
+  if (dirname(path) !== root) {
+    throw new TypeError("Invalid managed format path");
+  }
+
+  if (!existsSync(path)) {
+    if (requireFile) {
+      throw new TypeError("Missing managed format file");
+    }
+    return path;
+  }
+
+  const file = lstatSync(path);
+  if (!file.isFile() || file.isSymbolicLink()) {
+    throw new TypeError("Invalid managed format file");
+  }
+
+  if (realpathSync(dirname(path)) !== realpathSync(root) || dirname(realpathSync(path)) !== realpathSync(root)) {
+    throw new TypeError("Invalid managed format path");
+  }
+  return path;
+}
+
+function readSource(sourcePath: string): { format: FormatId; path: string } | null {
+  try {
+    const path = realpathSync(sourcePath);
+    if (!lstatSync(path).isFile()) {
+      return null;
+    }
+    const format = detectFormat(path);
+    return format ? { format, path } : null;
+  } catch {
+    return null;
+  }
+}
+
+function managedLeafForReferencedPath(
+  itemsDirectory: string,
+  path: string,
+  format: FormatId,
+): string | null {
+  const root = resolve(itemsDirectory);
+  if (!existsSync(root)) {
+    return null;
+  }
+  validateManagedRoot(root);
+  const canonicalRoot = realpathSync(root);
+  if (dirname(path) !== canonicalRoot) {
+    return null;
+  }
+  const leaf = basename(path);
+  if (!managedLeafPattern.test(leaf) || detectFormat(leaf) !== format) {
+    return null;
+  }
+  return realpathSync(resolveManagedFormatPath(root, leaf, format, true)) === path ? leaf : null;
+}
+
+function referencedFormatUsesPath(database: Database, path: string): boolean {
+  const referenced = database
+    .query<{ sourcePath: unknown }, []>(`
+      SELECT source_path AS sourcePath
+      FROM library_item_formats
+      WHERE provenance = 'referenced'
+    `)
+    .all();
+  for (const row of referenced) {
+    if (typeof row.sourcePath !== "string") {
+      continue;
+    }
+    try {
+      if (row.sourcePath === path || realpathSync(row.sourcePath) === realpathSync(path)) {
+        return true;
+      }
+    } catch {
+      // An invalid referenced row cannot own a managed file.
+    }
+  }
+  return false;
+}
+
+function resolveCoverCleanupPath(coversDirectory: string, storedPath: unknown): string {
+  const path = resolveOwnedCover(coversDirectory, storedPath);
+  if (!existsSync(path)) {
+    return path;
+  }
+  const file = lstatSync(path);
+  if (!file.isFile() || file.isSymbolicLink()) {
+    throw new TypeError("Invalid stored cover path");
+  }
+  return path;
+}
+
+function cleanupOwnedFile(
+  database: Database,
+  coversDirectory: string,
+  itemsDirectory: string,
+  job: { sourcePath: unknown; kind: unknown },
+): boolean {
+  if (typeof job.sourcePath !== "string" || (job.kind !== "format" && job.kind !== "cover")) {
+    throw new TypeError("Invalid cleanup job");
+  }
+  const sourcePath = job.sourcePath;
+  const kind: CleanupKind = job.kind;
+  const path =
+    kind === "format"
+      ? (() => {
+          const format = detectFormat(sourcePath);
+          if (!format) {
+            throw new TypeError("Invalid managed cleanup path");
+          }
+          return resolveManagedFormatPath(itemsDirectory, sourcePath, format, false);
+        })()
+      : resolveCoverCleanupPath(coversDirectory, sourcePath);
+
+  return database.transaction(() => {
+    const pending = database
+      .query<{ present: number }, [string, string]>(
+        "SELECT 1 AS present FROM managed_file_cleanup WHERE source_path = ? AND kind = ?",
+      )
+      .get(sourcePath, kind);
+    if (!pending) {
+      return true;
+    }
+    if (kind === "format" && existsSync(path) && referencedFormatUsesPath(database, path)) {
+      database.run(
+        "DELETE FROM managed_file_cleanup WHERE source_path = ? AND kind = 'format'",
+        [sourcePath],
+      );
+      return true;
+    }
+    try {
+      lifecycleTestSeam.beforeManagedFileCleanup?.(path);
+      unlinkSync(path);
+    } catch (error) {
+      if (
+        typeof error !== "object" ||
+        error === null ||
+        !("code" in error) ||
+        error.code !== "ENOENT"
+      ) {
+        return false;
+      }
+    }
+    database.run("DELETE FROM managed_file_cleanup WHERE source_path = ? AND kind = ?", [
+      sourcePath,
+      kind,
+    ]);
+    return true;
+  }).immediate();
+}
+
+function attemptOwnedFileCleanup(
+  database: Database,
+  coversDirectory: string,
+  itemsDirectory: string,
+  job: CleanupJob,
+): boolean {
+  try {
+    return cleanupOwnedFile(database, coversDirectory, itemsDirectory, job);
+  } catch {
+    return false;
+  }
+}
+
+function retryOwnedFileCleanup(
+  database: Database,
+  coversDirectory: string,
+  itemsDirectory: string,
+): boolean {
+  const pending = database
+    .query<StoredCleanupPath, []>(`
+      SELECT source_path AS sourcePath, kind
+      FROM managed_file_cleanup
+      ORDER BY kind, source_path
+    `)
+    .all();
+  let cleanupPending = false;
+  for (const job of pending) {
+    if (!cleanupOwnedFile(database, coversDirectory, itemsDirectory, job)) {
+      cleanupPending = true;
+    }
+  }
+  return cleanupPending;
+}
+
+function installManagedFile(
+  database: Database,
+  coversDirectory: string,
+  itemsDirectory: string,
+  sourcePath: string,
+  format: FormatId,
+): { path: string; storedPath: string } {
+  mkdirSync(itemsDirectory, { recursive: true });
+  validateManagedRoot(itemsDirectory);
+
+  const storedPath = `${crypto.randomUUID()}.${format}`;
+  const path = resolveManagedFormatPath(itemsDirectory, storedPath, format, false);
+  database.run(
+    "INSERT INTO managed_file_cleanup (source_path, kind) VALUES (?, 'format')",
+    [storedPath],
+  );
+  try {
+    copyFileSync(sourcePath, path, constants.COPYFILE_EXCL);
+    lifecycleTestSeam.afterManagedFileInstalled?.(path);
+    return { path, storedPath };
+  } catch (error) {
+    if (
+      typeof error === "object" &&
+      error !== null &&
+      "code" in error &&
+      error.code === "EEXIST"
+    ) {
+      database.run(
+        "DELETE FROM managed_file_cleanup WHERE source_path = ? AND kind = 'format'",
+        [storedPath],
+      );
+    } else {
+      attemptOwnedFileCleanup(database, coversDirectory, itemsDirectory, {
+        sourcePath: storedPath,
+        kind: "format",
+      });
+    }
+    throw error;
+  }
 }
 
 function readTags(database: Database, itemId: string): unknown[] {
@@ -136,12 +422,64 @@ function readV2Item(
     row,
     row.sourcePath,
     row.format,
-    [{ sourcePath: row.sourcePath, format: row.format, addedAt: row.addedAt }],
+    [
+      {
+        sourcePath: row.sourcePath,
+        format: row.format,
+        addedAt: row.addedAt,
+        provenance: "referenced",
+      },
+    ],
     readTags(database, row.id),
   );
 }
 
 function readItem(
+  database: Database,
+  coversDirectory: string,
+  itemsDirectory: string,
+  row: StoredLibraryItem,
+): LibraryStoreResult<LibraryItem> {
+  if (typeof row.id !== "string") {
+    return failure("invalid-stored-data");
+  }
+
+  const storedFormats = database
+    .query<StoredPositionedBookFormat, [string]>(`
+      SELECT source_path AS sourcePath, format, added_at AS addedAt, provenance, position
+      FROM library_item_formats
+      WHERE library_item_id = ?
+      ORDER BY position
+    `)
+    .all(row.id);
+  let publicFormats: unknown[];
+  try {
+    publicFormats = storedFormats.map(({ position: _position, ...format }) => ({
+      ...format,
+      sourcePath:
+        format.provenance === "managed"
+          ? resolveManagedFormatPath(itemsDirectory, format.sourcePath, format.format as FormatId, true)
+          : format.sourcePath,
+    }));
+  } catch {
+    return failure("invalid-stored-data");
+  }
+  const formats = bookFormatsSchema.safeParse(publicFormats);
+  if (storedFormats[0]?.position !== 0 || !formats.success) {
+    return failure("invalid-stored-data");
+  }
+
+  return parseItem(
+    coversDirectory,
+    row,
+    formats.data[0]!.sourcePath,
+    formats.data[0]!.format,
+    formats.data,
+    readTags(database, row.id),
+  );
+}
+
+function readV3Item(
   database: Database,
   coversDirectory: string,
   row: StoredLibraryItem,
@@ -151,7 +489,7 @@ function readItem(
   }
 
   const storedFormats = database
-    .query<StoredPositionedBookFormat, [string]>(`
+    .query<StoredPositionedV3BookFormat, [string]>(`
       SELECT source_path AS sourcePath, format, added_at AS addedAt, position
       FROM library_item_formats
       WHERE library_item_id = ?
@@ -159,7 +497,10 @@ function readItem(
     `)
     .all(row.id);
   const formats = bookFormatsSchema.safeParse(
-    storedFormats.map(({ position: _position, ...format }) => format),
+    storedFormats.map(({ position: _position, ...format }) => ({
+      ...format,
+      provenance: "referenced",
+    })),
   );
   if (storedFormats[0]?.position !== 0 || !formats.success) {
     return failure("invalid-stored-data");
@@ -228,7 +569,7 @@ function createMetadataTables(database: Database): void {
   `);
 }
 
-function createFormatTable(database: Database): void {
+function createV3FormatTable(database: Database): void {
   database.run(`
     CREATE TABLE library_item_formats (
       library_item_id TEXT NOT NULL REFERENCES library_items(id) ON DELETE CASCADE,
@@ -240,6 +581,37 @@ function createFormatTable(database: Database): void {
       UNIQUE (library_item_id, position)
     ) STRICT
   `);
+}
+
+function createFormatTable(database: Database): void {
+  database.run(`
+    CREATE TABLE library_item_formats (
+      library_item_id TEXT NOT NULL REFERENCES library_items(id) ON DELETE CASCADE,
+      format TEXT NOT NULL,
+      source_path TEXT NOT NULL,
+      added_at TEXT NOT NULL,
+      provenance TEXT NOT NULL CHECK (provenance IN ('managed', 'referenced')),
+      position INTEGER NOT NULL CHECK (position >= 0),
+      PRIMARY KEY (library_item_id, format),
+      UNIQUE (library_item_id, position)
+    ) STRICT
+  `);
+}
+
+function ensureManagedCleanupTable(database: Database): void {
+  database.run(`
+    CREATE TABLE IF NOT EXISTS managed_file_cleanup (
+      source_path TEXT PRIMARY KEY,
+      kind TEXT NOT NULL DEFAULT 'format' CHECK (kind IN ('format', 'cover'))
+    ) STRICT
+  `);
+  const columns = database.query<{ name: string }, []>("PRAGMA table_info(managed_file_cleanup)").all();
+  if (!columns.some(({ name }) => name === "kind")) {
+    database.run(
+      `ALTER TABLE managed_file_cleanup
+        ADD COLUMN kind TEXT NOT NULL DEFAULT 'format' CHECK (kind IN ('format', 'cover'))`,
+    );
+  }
 }
 
 function verifyV1Backup(path: string): void {
@@ -264,7 +636,12 @@ function verifyV1Backup(path: string): void {
         !libraryItemSchema.safeParse({
           ...row,
           formats: [
-            { sourcePath: row.sourcePath, format: row.format, addedAt: row.addedAt },
+            {
+              sourcePath: row.sourcePath,
+              format: row.format,
+              addedAt: row.addedAt,
+              provenance: "referenced",
+            },
           ],
         }).success,
     )
@@ -332,7 +709,7 @@ function retainVerifiedV2Backup(
 }
 
 function migrateV2ToV3(database: Database): void {
-  createFormatTable(database);
+  createV3FormatTable(database);
   database.run(`
     INSERT INTO library_item_formats
       (library_item_id, format, source_path, added_at, position)
@@ -362,7 +739,7 @@ function verifyV3Structure(database: Database): void {
     `)
     .get();
   const formats = database
-    .query<StoredPositionedBookFormat, []>(`
+    .query<StoredPositionedV3BookFormat, []>(`
       SELECT source_path AS sourcePath, format, added_at AS addedAt, position
       FROM library_item_formats
       ORDER BY library_item_id, position
@@ -373,7 +750,10 @@ function verifyV3Structure(database: Database): void {
     integrity !== "ok" ||
     foreignKeyViolations.length > 0 ||
     itemWithoutFormat ||
-    formats.some(({ position: _position, ...format }) => !bookFormatSchema.safeParse(format).success)
+    formats.some(
+      ({ position: _position, ...format }) =>
+        !bookFormatSchema.safeParse({ ...format, provenance: "referenced" }).success,
+    )
   ) {
     throw new Error("The library database structure could not be verified.");
   }
@@ -390,8 +770,81 @@ function verifyV3Database(database: Database, coversDirectory: string): void {
     `)
     .all();
 
+  if (rows.some((row) => !readV3Item(database, coversDirectory, row).ok)) {
+    throw new Error("The migrated database could not be verified.");
+  }
+}
+
+function verifyV3Backup(path: string, coversDirectory: string): void {
+  using backup = new Database(path, { strict: true });
+  backup.run("PRAGMA foreign_keys = ON");
+  const version = backup.query<{ user_version: number }, []>("PRAGMA user_version").get()
+    ?.user_version;
+
+  if (version !== 3) {
+    throw new Error("The pre-migration backup could not be verified.");
+  }
+  verifyV3Database(backup, coversDirectory);
+}
+
+function retainVerifiedV3Backup(
+  database: Database,
+  databasePath: string,
+  coversDirectory: string,
+): void {
+  retainVerifiedBackup(database, `${databasePath}.v3.backup`, (path) =>
+    verifyV3Backup(path, coversDirectory),
+  );
+}
+
+function migrateV3ToV4(database: Database): void {
+  database.run("ALTER TABLE library_item_formats RENAME TO library_item_formats_v3");
+  createFormatTable(database);
+  database.run(`
+    INSERT INTO library_item_formats
+      (library_item_id, format, source_path, added_at, provenance, position)
+    SELECT library_item_id, format, source_path, added_at, 'referenced', position
+    FROM library_item_formats_v3
+  `);
+  database.run("DROP TABLE library_item_formats_v3");
+  initializationTestSeam.duringV3ToV4Migration?.();
+}
+
+function verifyV4Database(
+  database: Database,
+  coversDirectory: string,
+  itemsDirectory: string,
+): void {
+  const integrity = database.query<{ integrity_check: string }, []>("PRAGMA integrity_check").get()
+    ?.integrity_check;
+  const foreignKeyViolations = database.query("PRAGMA foreign_key_check").all();
+  const itemWithoutFormat = database
+    .query<{ id: string }, []>(`
+      SELECT library_items.id
+      FROM library_items
+      WHERE NOT EXISTS (
+        SELECT 1
+        FROM library_item_formats
+        WHERE library_item_formats.library_item_id = library_items.id
+          AND library_item_formats.position = 0
+      )
+      LIMIT 1
+    `)
+    .get();
+  const rows = database
+    .query<StoredLibraryItem, []>(`
+      SELECT id, title, added_at AS addedAt,
+        author, description, cover_path AS coverPath, updated_at AS updatedAt
+      FROM library_items
+      ORDER BY rowid
+    `)
+    .all();
+
   if (
-    rows.some((row) => !readItem(database, coversDirectory, row).ok)
+    integrity !== "ok" ||
+    foreignKeyViolations.length > 0 ||
+    itemWithoutFormat ||
+    rows.some((row) => !readItem(database, coversDirectory, itemsDirectory, row).ok)
   ) {
     throw new Error("The migrated database could not be verified.");
   }
@@ -415,6 +868,7 @@ function writeTags(database: Database, itemId: string, tags: readonly string[]):
 function readStoredItem(
   database: Database,
   coversDirectory: string,
+  itemsDirectory: string,
   id: string,
 ): LibraryStoreResult<LibraryItem | null> {
   const row = database
@@ -425,7 +879,7 @@ function readStoredItem(
       WHERE id = ?
     `)
     .get(id);
-  return row ? readItem(database, coversDirectory, row) : success(null);
+  return row ? readItem(database, coversDirectory, itemsDirectory, row) : success(null);
 }
 
 function escapeLike(query: string): string {
@@ -435,6 +889,7 @@ function escapeLike(query: string): string {
 export class BunSqliteLibraryStore implements LibraryStore {
   readonly #databasePath: string;
   readonly #coversDirectory: string;
+  readonly #itemsDirectory: string;
   #database: Database | null = null;
 
   constructor(databasePath: string) {
@@ -444,6 +899,7 @@ export class BunSqliteLibraryStore implements LibraryStore {
 
     this.#databasePath = databasePath;
     this.#coversDirectory = join(dirname(resolve(databasePath)), "covers");
+    this.#itemsDirectory = join(dirname(resolve(databasePath)), "items");
   }
 
   async open(_request: OpenLibraryRequest): Promise<OpenLibraryResult> {
@@ -486,7 +942,7 @@ export class BunSqliteLibraryStore implements LibraryStore {
           `);
           createMetadataTables(database!);
           createFormatTable(database!);
-          verifyV3Database(database!, this.#coversDirectory);
+          verifyV4Database(database!, this.#coversDirectory, this.#itemsDirectory);
           database!.run(`PRAGMA user_version = ${SCHEMA_VERSION}`);
         } else if (version === 1) {
           retainVerifiedV1Backup(database!, this.#databasePath);
@@ -497,18 +953,27 @@ export class BunSqliteLibraryStore implements LibraryStore {
           createMetadataTables(database!);
           initializationTestSeam.duringV1ToV2Migration?.();
           migrateV2ToV3(database!);
-          verifyV3Database(database!, this.#coversDirectory);
+          migrateV3ToV4(database!);
+          verifyV4Database(database!, this.#coversDirectory, this.#itemsDirectory);
           database!.run(`PRAGMA user_version = ${SCHEMA_VERSION}`);
         } else if (version === 2) {
           retainVerifiedV2Backup(database!, this.#databasePath, this.#coversDirectory);
           migrateV2ToV3(database!);
-          verifyV3Database(database!, this.#coversDirectory);
+          migrateV3ToV4(database!);
+          verifyV4Database(database!, this.#coversDirectory, this.#itemsDirectory);
+          database!.run(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+        } else if (version === 3) {
+          retainVerifiedV3Backup(database!, this.#databasePath, this.#coversDirectory);
+          migrateV3ToV4(database!);
+          verifyV4Database(database!, this.#coversDirectory, this.#itemsDirectory);
           database!.run(`PRAGMA user_version = ${SCHEMA_VERSION}`);
         } else if (version !== SCHEMA_VERSION) {
           throw incompatibleSchema;
         }
+        ensureManagedCleanupTable(database!);
       }).immediate();
 
+      retryOwnedFileCleanup(database, this.#coversDirectory, this.#itemsDirectory);
       this.#database = database;
       return success(null);
     } catch (error) {
@@ -533,7 +998,7 @@ export class BunSqliteLibraryStore implements LibraryStore {
         .all();
       const items: LibraryItem[] = [];
       for (const row of rows) {
-        const item = readItem(this.#database, this.#coversDirectory, row);
+        const item = readItem(this.#database, this.#coversDirectory, this.#itemsDirectory, row);
         if (!item.ok) {
           return item;
         }
@@ -551,7 +1016,7 @@ export class BunSqliteLibraryStore implements LibraryStore {
     }
 
     try {
-      return readStoredItem(this.#database, this.#coversDirectory, id);
+      return readStoredItem(this.#database, this.#coversDirectory, this.#itemsDirectory, id);
     } catch {
       return failure("storage-unavailable");
     }
@@ -563,14 +1028,49 @@ export class BunSqliteLibraryStore implements LibraryStore {
     }
 
     const parsed = libraryItemSchema.safeParse(item);
-    if (!parsed.success || parsed.data.coverPath || parsed.data.formats.length !== 1) {
+    if (
+      !parsed.success ||
+      parsed.data.coverPath ||
+      parsed.data.formats.length !== 1 ||
+      parsed.data.formats[0]?.provenance !== "referenced"
+    ) {
       return failure("invalid-stored-data");
     }
 
     const primaryFormat = parsed.data.formats[0]!;
+    let cleanupHandoff: { leaf: string; path: string; format: FormatId } | null = null;
+    const inspected = readSource(primaryFormat.sourcePath);
+    if (inspected && inspected.format === primaryFormat.format) {
+      try {
+        const leaf = managedLeafForReferencedPath(
+          this.#itemsDirectory,
+          inspected.path,
+          inspected.format,
+        );
+        if (leaf) {
+          cleanupHandoff = { leaf, path: inspected.path, format: inspected.format };
+        }
+      } catch {
+        return failure("storage-unavailable");
+      }
+    }
 
     try {
       this.#database.transaction(() => {
+        if (cleanupHandoff) {
+          const revalidated = readSource(primaryFormat.sourcePath);
+          if (
+            !revalidated ||
+            revalidated.path !== cleanupHandoff.path ||
+            revalidated.format !== cleanupHandoff.format
+          ) {
+            throw sourceChanged;
+          }
+          this.#database!.run(
+            "DELETE FROM managed_file_cleanup WHERE source_path = ? AND kind = 'format'",
+            [cleanupHandoff.leaf],
+          );
+        }
         this.#database!.run(
           `INSERT INTO library_items
             (id, title, added_at, author, description, cover_path, updated_at)
@@ -587,8 +1087,8 @@ export class BunSqliteLibraryStore implements LibraryStore {
         );
         this.#database!.run(
           `INSERT INTO library_item_formats
-            (library_item_id, format, source_path, added_at, position)
-            VALUES (?, ?, ?, ?, 0)`,
+            (library_item_id, format, source_path, added_at, provenance, position)
+            VALUES (?, ?, ?, ?, 'referenced', 0)`,
           [
             parsed.data.id,
             primaryFormat.format,
@@ -598,11 +1098,371 @@ export class BunSqliteLibraryStore implements LibraryStore {
         );
         writeTags(this.#database!, parsed.data.id, parsed.data.tags);
       }).immediate();
-      const stored = readStoredItem(this.#database, this.#coversDirectory, parsed.data.id);
+      const stored = readStoredItem(
+        this.#database,
+        this.#coversDirectory,
+        this.#itemsDirectory,
+        parsed.data.id,
+      );
       return stored.ok && stored.value ? success(stored.value) : failure("invalid-stored-data");
     } catch (error) {
       return failure(isDuplicateIdError(error) ? "duplicate-id" : "storage-unavailable");
     }
+  }
+
+  async import({ sourcePath, title }: ImportLibraryItemRequest): Promise<ImportLibraryItemResult> {
+    if (!this.#database) {
+      return failure("storage-unavailable");
+    }
+
+    const source = readSource(sourcePath);
+    const normalizedTitle =
+      title === undefined && source
+        ? basename(source.path, extname(source.path)).trim()
+        : typeof title === "string"
+          ? title.trim()
+          : "";
+    if (!source || normalizedTitle.length === 0) {
+      return failure("invalid-arguments");
+    }
+
+    const id = crypto.randomUUID();
+    const addedAt = new Date().toISOString();
+    let installed: { path: string; storedPath: string };
+    try {
+      installed = installManagedFile(
+        this.#database,
+        this.#coversDirectory,
+        this.#itemsDirectory,
+        source.path,
+        source.format,
+      );
+    } catch {
+      return failure("storage-unavailable");
+    }
+
+    const item = libraryItemSchema.safeParse({
+      id,
+      title: normalizedTitle,
+      sourcePath: installed.path,
+      format: source.format,
+      addedAt,
+      formats: [
+        {
+          sourcePath: installed.path,
+          format: source.format,
+          addedAt,
+          provenance: "managed",
+        },
+      ],
+      tags: [],
+    });
+    if (!item.success) {
+      attemptOwnedFileCleanup(this.#database, this.#coversDirectory, this.#itemsDirectory, {
+        sourcePath: installed.storedPath,
+        kind: "format",
+      });
+      return failure("invalid-stored-data");
+    }
+
+    try {
+      this.#database.transaction(() => {
+        this.#database!.run(
+          `INSERT INTO library_items
+            (id, title, added_at, author, description, cover_path, updated_at)
+            VALUES (?, ?, ?, NULL, NULL, NULL, NULL)`,
+          [id, normalizedTitle, addedAt],
+        );
+        this.#database!.run(
+          `INSERT INTO library_item_formats
+            (library_item_id, format, source_path, added_at, provenance, position)
+            VALUES (?, ?, ?, ?, 'managed', 0)`,
+          [id, source.format, installed.storedPath, addedAt],
+        );
+        this.#database!.run(
+          "DELETE FROM managed_file_cleanup WHERE source_path = ? AND kind = 'format'",
+          [installed.storedPath],
+        );
+      }).immediate();
+    } catch (error) {
+      attemptOwnedFileCleanup(this.#database, this.#coversDirectory, this.#itemsDirectory, {
+        sourcePath: installed.storedPath,
+        kind: "format",
+      });
+      return failure(isDuplicateIdError(error) ? "duplicate-id" : "storage-unavailable");
+    }
+
+    const stored = readStoredItem(
+      this.#database,
+      this.#coversDirectory,
+      this.#itemsDirectory,
+      id,
+    );
+    return stored.ok && stored.value ? success(stored.value) : failure("invalid-stored-data");
+  }
+
+  async attachFormat({ id, source }: AttachLibraryFormatRequest): Promise<AttachLibraryFormatResult> {
+    if (!this.#database) {
+      return failure("storage-unavailable");
+    }
+
+    const current = readStoredItem(
+      this.#database,
+      this.#coversDirectory,
+      this.#itemsDirectory,
+      id,
+    );
+    if (!current.ok || !current.value) {
+      return current;
+    }
+    if (!source || (source.kind !== "copy" && source.kind !== "reference")) {
+      return failure("invalid-arguments");
+    }
+    const inspected = readSource(source.path);
+    if (!inspected) {
+      return failure("invalid-arguments");
+    }
+    if (current.value.formats.some(({ format }) => format === inspected.format)) {
+      return failure("duplicate-format");
+    }
+
+    const addedAt = new Date().toISOString();
+    let installed: { path: string; storedPath: string } | undefined;
+    try {
+      if (source.kind === "copy") {
+        installed = installManagedFile(
+          this.#database,
+          this.#coversDirectory,
+          this.#itemsDirectory,
+          inspected.path,
+          inspected.format,
+        );
+      }
+
+      const outcome = this.#database.transaction(() => {
+        const itemExists = this.#database!
+          .query<{ present: number }, [string]>(
+            "SELECT 1 AS present FROM library_items WHERE id = ?",
+          )
+          .get(id);
+        if (!itemExists) {
+          return "missing" as const;
+        }
+        const duplicate = this.#database!
+          .query<{ present: number }, [string, string]>(
+            "SELECT 1 AS present FROM library_item_formats WHERE library_item_id = ? AND format = ?",
+          )
+          .get(id, inspected.format);
+        if (duplicate) {
+          throw duplicateFormat;
+        }
+
+        let storedSourcePath = installed?.storedPath ?? inspected.path;
+        if (!installed) {
+          const revalidated = readSource(source.path);
+          if (
+            !revalidated ||
+            revalidated.path !== inspected.path ||
+            revalidated.format !== inspected.format
+          ) {
+            throw sourceChanged;
+          }
+          storedSourcePath = revalidated.path;
+          const managedLeaf = managedLeafForReferencedPath(
+            this.#itemsDirectory,
+            revalidated.path,
+            revalidated.format,
+          );
+          if (managedLeaf) {
+            this.#database!.run(
+              "DELETE FROM managed_file_cleanup WHERE source_path = ? AND kind = 'format'",
+              [managedLeaf],
+            );
+          }
+        }
+
+        this.#database!.run(
+          `INSERT INTO library_item_formats
+            (library_item_id, format, source_path, added_at, provenance, position)
+            VALUES (?, ?, ?, ?, ?,
+              (SELECT COALESCE(MAX(position), -1) + 1
+                FROM library_item_formats WHERE library_item_id = ?))`,
+          [
+            id,
+            inspected.format,
+            storedSourcePath,
+            addedAt,
+            installed ? "managed" : "referenced",
+            id,
+          ],
+        );
+        this.#database!.run("UPDATE library_items SET updated_at = ? WHERE id = ?", [addedAt, id]);
+        if (installed) {
+          this.#database!.run(
+            "DELETE FROM managed_file_cleanup WHERE source_path = ? AND kind = 'format'",
+            [installed.storedPath],
+          );
+        }
+        return "attached" as const;
+      }).immediate();
+      if (outcome === "missing") {
+        if (installed) {
+          attemptOwnedFileCleanup(this.#database, this.#coversDirectory, this.#itemsDirectory, {
+            sourcePath: installed.storedPath,
+            kind: "format",
+          });
+        }
+        return success(null);
+      }
+    } catch (error) {
+      if (installed) {
+        attemptOwnedFileCleanup(this.#database, this.#coversDirectory, this.#itemsDirectory, {
+          sourcePath: installed.storedPath,
+          kind: "format",
+        });
+      }
+      if (error === duplicateFormat) {
+        return failure("duplicate-format");
+      }
+      if (isSqliteConstraintError(error)) {
+        const duplicate = this.#database
+          .query<{ present: number }, [string, string]>(
+            "SELECT 1 AS present FROM library_item_formats WHERE library_item_id = ? AND format = ?",
+          )
+          .get(id, inspected.format);
+        if (duplicate) {
+          return failure("duplicate-format");
+        }
+        const exists = this.#database
+          .query<{ present: number }, [string]>("SELECT 1 AS present FROM library_items WHERE id = ?")
+          .get(id);
+        if (!exists) {
+          return success(null);
+        }
+      }
+      return failure("storage-unavailable");
+    }
+
+    return readStoredItem(this.#database, this.#coversDirectory, this.#itemsDirectory, id);
+  }
+
+  async removeFormat({ id, format }: RemoveLibraryFormatRequest): Promise<RemoveLibraryFormatResult> {
+    if (!this.#database) {
+      return failure("storage-unavailable");
+    }
+
+    type Outcome =
+      | { kind: "missing" }
+      | { kind: "unchanged"; item: LibraryItem }
+      | { kind: "removed"; cleanupPath?: string }
+      | { kind: "failure"; code: LibraryStoreErrorCode };
+    let outcome: Outcome;
+    try {
+      outcome = this.#database.transaction((): Outcome => {
+        const current = readStoredItem(
+          this.#database!,
+          this.#coversDirectory,
+          this.#itemsDirectory,
+          id,
+        );
+        if (!current.ok) {
+          return { kind: "failure", code: current.error.code };
+        }
+        if (!current.value) {
+          return { kind: "missing" };
+        }
+        if (!current.value.formats.some((candidate) => candidate.format === format)) {
+          return { kind: "unchanged", item: current.value };
+        }
+        if (current.value.formats.length === 1) {
+          return { kind: "failure", code: "last-format" };
+        }
+
+        const stored = this.#database!
+          .query<StoredPositionedBookFormat, [string, string]>(`
+            SELECT source_path AS sourcePath, format, added_at AS addedAt, provenance, position
+            FROM library_item_formats
+            WHERE library_item_id = ? AND format = ?
+          `)
+          .get(id, format);
+        if (!stored) {
+          return { kind: "unchanged", item: current.value };
+        }
+        const cleanupPath =
+          stored.provenance === "managed" && typeof stored.sourcePath === "string"
+            ? stored.sourcePath
+            : undefined;
+        if (stored.provenance === "managed") {
+          if (!cleanupPath) {
+            return { kind: "failure", code: "invalid-stored-data" };
+          }
+          resolveManagedFormatPath(this.#itemsDirectory, cleanupPath, format, true);
+        }
+        if (cleanupPath !== undefined) {
+          this.#database!.run(
+            "INSERT OR IGNORE INTO managed_file_cleanup (source_path, kind) VALUES (?, 'format')",
+            [cleanupPath],
+          );
+        }
+        this.#database!.run(
+          "DELETE FROM library_item_formats WHERE library_item_id = ? AND format = ?",
+          [id, format],
+        );
+        const remaining = this.#database!
+          .query<{ format: string }, [string]>(`
+            SELECT format
+            FROM library_item_formats
+            WHERE library_item_id = ?
+            ORDER BY position
+          `)
+          .all(id);
+        this.#database!.run(
+          "UPDATE library_item_formats SET position = position + ? WHERE library_item_id = ?",
+          [remaining.length + 1, id],
+        );
+        for (const [position, remainingFormat] of remaining.entries()) {
+          this.#database!.run(
+            "UPDATE library_item_formats SET position = ? WHERE library_item_id = ? AND format = ?",
+            [position, id, remainingFormat.format],
+          );
+        }
+        this.#database!.run("UPDATE library_items SET updated_at = ? WHERE id = ?", [
+          new Date().toISOString(),
+          id,
+        ]);
+        return { kind: "removed", cleanupPath };
+      }).immediate();
+    } catch {
+      return failure("storage-unavailable");
+    }
+
+    if (outcome.kind === "failure") {
+      return failure(outcome.code);
+    }
+    if (outcome.kind === "missing") {
+      return success({ item: null, cleanupPending: false });
+    }
+    if (outcome.kind === "unchanged") {
+      return success({ item: outcome.item, cleanupPending: false });
+    }
+
+    const item = readStoredItem(
+      this.#database,
+      this.#coversDirectory,
+      this.#itemsDirectory,
+      id,
+    );
+    if (!item.ok || !item.value) {
+      return item.ok ? failure("invalid-stored-data") : item;
+    }
+    const cleanupPending =
+      outcome.cleanupPath === undefined
+        ? false
+        : !attemptOwnedFileCleanup(this.#database, this.#coversDirectory, this.#itemsDirectory, {
+            sourcePath: outcome.cleanupPath,
+            kind: "format",
+          });
+    return success({ item: item.value, cleanupPending });
   }
 
   async update({ id, patch }: UpdateLibraryItemRequest): Promise<UpdateLibraryItemResult> {
@@ -615,7 +1475,12 @@ export class BunSqliteLibraryStore implements LibraryStore {
 
     try {
       return this.#database.transaction(() => {
-        const current = readStoredItem(this.#database!, this.#coversDirectory, id);
+        const current = readStoredItem(
+          this.#database!,
+          this.#coversDirectory,
+          this.#itemsDirectory,
+          id,
+        );
         if (!current.ok || !current.value) {
           return current;
         }
@@ -666,7 +1531,12 @@ export class BunSqliteLibraryStore implements LibraryStore {
             WHERE library_item_tags.tag_normalized_name = tags.normalized_name
           )
         `);
-        return readStoredItem(this.#database!, this.#coversDirectory, id);
+        return readStoredItem(
+          this.#database!,
+          this.#coversDirectory,
+          this.#itemsDirectory,
+          id,
+        );
       }).immediate();
     } catch {
       return failure("storage-unavailable");
@@ -680,7 +1550,12 @@ export class BunSqliteLibraryStore implements LibraryStore {
 
     let current: LibraryStoreResult<LibraryItem | null>;
     try {
-      current = readStoredItem(this.#database, this.#coversDirectory, id);
+      current = readStoredItem(
+        this.#database,
+        this.#coversDirectory,
+        this.#itemsDirectory,
+        id,
+      );
       if (!current.ok || !current.value) {
         return current;
       }
@@ -723,7 +1598,12 @@ export class BunSqliteLibraryStore implements LibraryStore {
       return failure("storage-unavailable");
     }
 
-    const updated = readStoredItem(this.#database, this.#coversDirectory, id);
+    const updated = readStoredItem(
+      this.#database,
+      this.#coversDirectory,
+      this.#itemsDirectory,
+      id,
+    );
     if (!updated.ok || !updated.value) {
       return updated;
     }
@@ -747,7 +1627,12 @@ export class BunSqliteLibraryStore implements LibraryStore {
     }
 
     try {
-      const current = readStoredItem(this.#database, this.#coversDirectory, id);
+      const current = readStoredItem(
+        this.#database,
+        this.#coversDirectory,
+        this.#itemsDirectory,
+        id,
+      );
       if (!current.ok || !current.value || !current.value.coverPath) {
         return current;
       }
@@ -758,7 +1643,12 @@ export class BunSqliteLibraryStore implements LibraryStore {
           [new Date().toISOString(), id],
         );
       }).immediate();
-      const updated = readStoredItem(this.#database, this.#coversDirectory, id);
+      const updated = readStoredItem(
+        this.#database,
+        this.#coversDirectory,
+        this.#itemsDirectory,
+        id,
+      );
       removeOwnedCover(this.#coversDirectory, storedCoverPath);
       return updated;
     } catch {
@@ -793,7 +1683,7 @@ export class BunSqliteLibraryStore implements LibraryStore {
         .all(pattern, pattern, pattern, pattern);
       const items: LibraryItem[] = [];
       for (const row of rows) {
-        const item = readItem(this.#database, this.#coversDirectory, row);
+        const item = readItem(this.#database, this.#coversDirectory, this.#itemsDirectory, row);
         if (!item.ok) {
           return item;
         }
@@ -810,8 +1700,13 @@ export class BunSqliteLibraryStore implements LibraryStore {
       return failure("storage-unavailable");
     }
 
+    type Outcome =
+      | { kind: "missing" }
+      | { kind: "removed"; item: LibraryItem; jobs: CleanupJob[] }
+      | { kind: "failure"; code: LibraryStoreErrorCode };
+    let outcome: Outcome;
     try {
-      const removed = this.#database.transaction(() => {
+      outcome = this.#database.transaction((): Outcome => {
         const row = this.#database!
           .query<StoredLibraryItem, [string]>(`
             SELECT id, title, added_at AS addedAt,
@@ -820,16 +1715,60 @@ export class BunSqliteLibraryStore implements LibraryStore {
             WHERE id = ?
           `)
           .get(id);
-
         if (!row) {
-          return success(null);
+          return { kind: "missing" };
+        }
+        const current = readItem(
+          this.#database!,
+          this.#coversDirectory,
+          this.#itemsDirectory,
+          row,
+        );
+        if (!current.ok) {
+          return { kind: "failure", code: current.error.code };
         }
 
-        const item = readItem(this.#database!, this.#coversDirectory, row);
-        if (!item.ok) {
-          return item;
+        lifecycleTestSeam.duringManagedItemRemoval?.();
+        const managedFormats = this.#database!
+          .query<StoredPositionedBookFormat, [string]>(`
+            SELECT source_path AS sourcePath, format, added_at AS addedAt, provenance, position
+            FROM library_item_formats
+            WHERE library_item_id = ? AND provenance = 'managed'
+            ORDER BY position
+          `)
+          .all(id);
+        const jobs: CleanupJob[] = [];
+        for (const managed of managedFormats) {
+          const parsedFormat = bookFormatSchema.safeParse({
+            sourcePath: managed.sourcePath,
+            format: managed.format,
+            addedAt: managed.addedAt,
+            provenance: managed.provenance,
+          });
+          if (!parsedFormat.success || parsedFormat.data.provenance !== "managed") {
+            return { kind: "failure", code: "invalid-stored-data" };
+          }
+          resolveManagedFormatPath(
+            this.#itemsDirectory,
+            parsedFormat.data.sourcePath,
+            parsedFormat.data.format,
+            true,
+          );
+          jobs.push({ sourcePath: parsedFormat.data.sourcePath, kind: "format" });
         }
-
+        if (row.coverPath != null) {
+          if (typeof row.coverPath !== "string") {
+            return { kind: "failure", code: "invalid-stored-data" };
+          }
+          resolveCoverCleanupPath(this.#coversDirectory, row.coverPath);
+          jobs.push({ sourcePath: row.coverPath, kind: "cover" });
+        }
+        for (const job of jobs) {
+          this.#database!.run(
+            "INSERT OR IGNORE INTO managed_file_cleanup (source_path, kind) VALUES (?, ?)",
+            [job.sourcePath, job.kind],
+          );
+        }
         this.#database!.run("DELETE FROM library_items WHERE id = ?", [id]);
         this.#database!.run(`
           DELETE FROM tags
@@ -838,18 +1777,32 @@ export class BunSqliteLibraryStore implements LibraryStore {
             WHERE library_item_tags.tag_normalized_name = tags.normalized_name
           )
         `);
-        return success(item.value);
+        return { kind: "removed", item: current.value, jobs };
       }).immediate();
-      if (removed.ok && removed.value?.coverPath) {
-        removeOwnedCover(
-          this.#coversDirectory,
-          relative(this.#coversDirectory, removed.value.coverPath),
-        );
-      }
-      return removed;
     } catch {
       return failure("storage-unavailable");
     }
+
+    if (outcome.kind === "failure") {
+      return failure(outcome.code);
+    }
+    if (outcome.kind === "missing") {
+      return success({ item: null, cleanupPending: false });
+    }
+    let cleanupPending = false;
+    for (const job of outcome.jobs) {
+      if (
+        !attemptOwnedFileCleanup(
+          this.#database,
+          this.#coversDirectory,
+          this.#itemsDirectory,
+          job,
+        )
+      ) {
+        cleanupPending = true;
+      }
+    }
+    return success({ item: outcome.item, cleanupPending });
   }
 
   close(): void {

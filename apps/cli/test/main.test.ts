@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { Database } from "bun:sqlite";
-import { mkdir, mkdtemp, readdir, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CommanderError } from "commander";
@@ -220,6 +220,10 @@ describe("takio CLI", () => {
     ["help", "library", "list"],
     ["help", "library", "update"],
     ["help", "library", "search"],
+    ["help", "library", "format"],
+    ["help", "library", "format", "import"],
+    ["help", "library", "format", "attach"],
+    ["help", "library", "format", "remove"],
     ["help", "library", "cover"],
     ["help", "library", "cover", "set"],
     ["help", "library", "cover", "remove"],
@@ -343,7 +347,12 @@ describe("takio CLI", () => {
             sourcePath: string;
             format: string;
             addedAt: string;
-            formats: { sourcePath: string; format: string; addedAt: string }[];
+            formats: {
+              sourcePath: string;
+              format: string;
+              addedAt: string;
+              provenance: string;
+            }[];
           };
         };
       };
@@ -353,6 +362,7 @@ describe("takio CLI", () => {
           sourcePath: imported.value.item.sourcePath,
           format: imported.value.item.format,
           addedAt: imported.value.item.addedAt,
+          provenance: "managed",
         },
       ]);
 
@@ -366,7 +376,10 @@ describe("takio CLI", () => {
         parseProcessOutput(
           await invokeProcess(["library", "remove", "--id", imported.value.item.id], env),
         ),
-      ).toEqual({ ok: true, value: { item: imported.value.item } });
+      ).toEqual({
+        ok: true,
+        value: { item: imported.value.item, cleanupPending: false },
+      });
     });
 
     it("adds and durably lists an item through separate invocations", async () => {
@@ -381,6 +394,7 @@ describe("takio CLI", () => {
             sourcePath: "library/left-hand.epub",
             format: "epub",
             addedAt: "2026-07-18T12:00:00.000Z",
+            provenance: "referenced",
           },
         ],
         tags: [],
@@ -756,7 +770,7 @@ describe("takio CLI", () => {
       });
     });
 
-    it("imports an owned copy that survives deletion of the original", async () => {
+    it("imports a managed copy that survives deletion of the original", async () => {
       const sourcePath = join(directory!, "original.epub");
       await Bun.write(sourcePath, "owned contents");
 
@@ -772,7 +786,14 @@ describe("takio CLI", () => {
       ]);
       const result = parseOutput(imported.output) as {
         ok: true;
-        value: { item: { sourcePath: string; title: string; format: string } };
+        value: {
+          item: {
+            sourcePath: string;
+            title: string;
+            format: string;
+            formats: { provenance: string }[];
+          };
+        };
       };
 
       expect(imported.exitCode).toBeUndefined();
@@ -780,6 +801,7 @@ describe("takio CLI", () => {
       expect(result.value.item.title).toBe("Owned book");
       expect(result.value.item.format).toBe("epub");
       expect(result.value.item.sourcePath).toStartWith(join(directory!, "items"));
+      expect(result.value.item.formats[0]?.provenance).toBe("managed");
 
       await rm(sourcePath);
 
@@ -817,7 +839,8 @@ describe("takio CLI", () => {
         });
       }
 
-      expect(await Bun.file(databasePath!).exists()).toBe(false);
+      const listed = await invoke(["library", "list", "--db", databasePath!]);
+      expect(parseOutput(listed.output)).toEqual({ ok: true, value: { items: [] } });
     });
 
     it("removes its copied file when SQLite rejects the imported row", async () => {
@@ -852,6 +875,208 @@ describe("takio CLI", () => {
       expect(await readdir(join(directory!, "items"))).toEqual([]);
     });
 
+    it("imports managed formats, attaches referenced formats, and cleans up by provenance", async () => {
+      const epubPath = join(directory!, "multi.epub");
+      const pdfPath = join(directory!, "multi.pdf");
+      const mobiPath = join(directory!, "multi.mobi");
+      await Promise.all([
+        Bun.write(epubPath, "epub contents"),
+        Bun.write(pdfPath, "pdf contents"),
+        Bun.write(mobiPath, "mobi contents"),
+      ]);
+
+      const imported = parseOutput(
+        (
+          await invoke([
+            "library",
+            "import",
+            "--db",
+            databasePath!,
+            "--source-path",
+            epubPath,
+          ])
+        ).output,
+      ) as { value: { item: { id: string } } };
+      const id = imported.value.item.id;
+
+      const formatImported = await invoke([
+        "library",
+        "format",
+        "import",
+        "--db",
+        databasePath!,
+        "--id",
+        id,
+        "--source-path",
+        pdfPath,
+      ]);
+      const managedItem = parseOutput(formatImported.output) as {
+        value: {
+          item: {
+            formats: { format: string; sourcePath: string; provenance: string }[];
+          };
+        };
+      };
+      const managedPdf = managedItem.value.item.formats.find(
+        (format) => format.format === "pdf",
+      )!;
+      expect(formatImported.exitCode).toBeUndefined();
+      expect(managedPdf.provenance).toBe("managed");
+      expect(managedPdf.sourcePath).toStartWith(join(directory!, "items"));
+      expect(managedPdf.sourcePath).not.toBe(pdfPath);
+      expect(await Bun.file(managedPdf.sourcePath).text()).toBe("pdf contents");
+      expect(await Bun.file(pdfPath).text()).toBe("pdf contents");
+
+      const formatAttached = await invoke([
+        "library",
+        "format",
+        "attach",
+        "--db",
+        databasePath!,
+        "--id",
+        id,
+        "--source-path",
+        mobiPath,
+      ]);
+      const referencedItem = parseOutput(formatAttached.output) as {
+        value: {
+          item: {
+            formats: { format: string; sourcePath: string; provenance: string }[];
+          };
+        };
+      };
+      expect(formatAttached.exitCode).toBeUndefined();
+      expect(
+        referencedItem.value.item.formats.find((format) => format.format === "mobi"),
+      ).toMatchObject({ sourcePath: await realpath(mobiPath), provenance: "referenced" });
+
+      const managedRemoved = await invoke([
+        "library",
+        "format",
+        "remove",
+        "--db",
+        databasePath!,
+        "--id",
+        id,
+        "--format",
+        "pdf",
+      ]);
+      expect(parseOutput(managedRemoved.output)).toMatchObject({
+        ok: true,
+        value: { cleanupPending: false },
+      });
+      expect(await Bun.file(managedPdf.sourcePath).exists()).toBe(false);
+      expect(await Bun.file(pdfPath).text()).toBe("pdf contents");
+
+      const referencedRemoved = await invoke([
+        "library",
+        "format",
+        "remove",
+        "--db",
+        databasePath!,
+        "--id",
+        id,
+        "--format",
+        "mobi",
+      ]);
+      expect(parseOutput(referencedRemoved.output)).toMatchObject({
+        ok: true,
+        value: { cleanupPending: false },
+      });
+      expect(await Bun.file(mobiPath).text()).toBe("mobi contents");
+    });
+
+    it("reports format command errors without exposing a provenance option", async () => {
+      const epubPath = join(directory!, "only.epub");
+      const duplicatePath = join(directory!, "duplicate.epub");
+      await Promise.all([
+        Bun.write(epubPath, "only contents"),
+        Bun.write(duplicatePath, "duplicate contents"),
+      ]);
+      const imported = parseOutput(
+        (
+          await invoke([
+            "library",
+            "import",
+            "--db",
+            databasePath!,
+            "--source-path",
+            epubPath,
+          ])
+        ).output,
+      ) as { value: { item: { id: string } } };
+      const id = imported.value.item.id;
+
+      const duplicate = await invoke([
+        "library",
+        "format",
+        "attach",
+        "--db",
+        databasePath!,
+        "--id",
+        id,
+        "--source-path",
+        duplicatePath,
+      ]);
+      expect(duplicate.exitCode).toBe(1);
+      expect(parseOutput(duplicate.output)).toEqual({
+        ok: false,
+        error: { code: "duplicate-format" },
+      });
+      expect(await Bun.file(duplicatePath).text()).toBe("duplicate contents");
+
+      const lastFormat = await invoke([
+        "library",
+        "format",
+        "remove",
+        "--db",
+        databasePath!,
+        "--id",
+        id,
+        "--format",
+        "epub",
+      ]);
+      expect(lastFormat.exitCode).toBe(1);
+      expect(parseOutput(lastFormat.output)).toEqual({
+        ok: false,
+        error: { code: "last-format" },
+      });
+
+      for (const args of [
+        [
+          "library",
+          "format",
+          "remove",
+          "--db",
+          databasePath!,
+          "--id",
+          id,
+          "--format",
+          "unknown",
+        ],
+        [
+          "library",
+          "format",
+          "attach",
+          "--db",
+          databasePath!,
+          "--id",
+          id,
+          "--source-path",
+          duplicatePath,
+          "--provenance",
+          "managed",
+        ],
+      ]) {
+        const rejected = await invoke(args);
+        expect(rejected.exitCode).toBe(1);
+        expect(parseOutput(rejected.output)).toEqual({
+          ok: false,
+          error: { code: "invalid-arguments" },
+        });
+      }
+    });
+
     it("gets and removes an imported item across separate invocations", async () => {
       const sourcePath = join(directory!, "owned.epub");
       await Bun.write(sourcePath, "owned contents");
@@ -882,10 +1107,12 @@ describe("takio CLI", () => {
         "--id",
         item.id,
       ]);
-      expect((parseOutput(removed.output) as { value: { item: { id: string } } }).value.item.id).toBe(
-        item.id,
-      );
+      expect(parseOutput(removed.output)).toMatchObject({
+        ok: true,
+        value: { item: { id: item.id }, cleanupPending: false },
+      });
       expect(await Bun.file(item.sourcePath).exists()).toBe(false);
+      expect(await Bun.file(sourcePath).text()).toBe("owned contents");
 
       const missing = await invoke(["library", "get", "--db", databasePath!, "--id", item.id]);
       expect(parseOutput(missing.output)).toEqual({ ok: true, value: { item: null } });
@@ -897,7 +1124,10 @@ describe("takio CLI", () => {
         "--id",
         item.id,
       ]);
-      expect(parseOutput(removedAgain.output)).toEqual({ ok: true, value: { item: null } });
+      expect(parseOutput(removedAgain.output)).toEqual({
+        ok: true,
+        value: { item: null, cleanupPending: false },
+      });
     });
 
     it("never deletes an external file referenced by low-level add", async () => {
@@ -934,12 +1164,17 @@ describe("takio CLI", () => {
       ]);
 
       expect(removed.exitCode).toBeUndefined();
+      expect(parseOutput(removed.output)).toMatchObject({
+        ok: true,
+        value: { item: { id: "external-book" }, cleanupPending: false },
+      });
       expect(await Bun.file(sourcePath).text()).toBe("caller owned");
     });
 
-    it("reports an owned-path deletion failure after removing the row", async () => {
-      const ownedDirectory = join(directory!, "items", "not-a-file.epub");
-      await mkdir(ownedDirectory, { recursive: true });
+    it("never deletes a referenced file inside the items directory", async () => {
+      const referencedPath = join(directory!, "items", "referenced.epub");
+      await mkdir(join(directory!, "items"), { recursive: true });
+      await Bun.write(referencedPath, "referenced contents");
       const addedAt = "2026-07-18T12:00:00.000Z";
       await invoke([
         "library",
@@ -947,11 +1182,11 @@ describe("takio CLI", () => {
         "--db",
         databasePath!,
         "--id",
-        "broken-owned-book",
+        "referenced-book",
         "--title",
-        "Broken owned book",
+        "Referenced book",
         "--source-path",
-        ownedDirectory,
+        referencedPath,
         "--format",
         "epub",
         "--added-at",
@@ -964,21 +1199,22 @@ describe("takio CLI", () => {
         "--db",
         databasePath!,
         "--id",
-        "broken-owned-book",
+        "referenced-book",
       ]);
 
-      expect(removed.exitCode).toBe(1);
-      expect(parseOutput(removed.output)).toEqual({
-        ok: false,
-        error: { code: "storage-unavailable" },
+      expect(removed.exitCode).toBeUndefined();
+      expect(parseOutput(removed.output)).toMatchObject({
+        ok: true,
+        value: { item: { id: "referenced-book" }, cleanupPending: false },
       });
+      expect(await Bun.file(referencedPath).text()).toBe("referenced contents");
       const missing = await invoke([
         "library",
         "get",
         "--db",
         databasePath!,
         "--id",
-        "broken-owned-book",
+        "referenced-book",
       ]);
       expect(parseOutput(missing.output)).toEqual({ ok: true, value: { item: null } });
     });

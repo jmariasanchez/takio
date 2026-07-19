@@ -1,10 +1,13 @@
-import type { LibraryItem } from "@takio/core";
+import type { FormatId, LibraryItem } from "@takio/core";
 
 export const LIBRARY_STORE_ERROR_CODES = [
   "duplicate-id",
   "invalid-stored-data",
   "storage-unavailable",
   "incompatible-schema",
+  "invalid-arguments",
+  "duplicate-format",
+  "last-format",
 ] as const;
 
 export type LibraryStoreErrorCode = (typeof LIBRARY_STORE_ERROR_CODES)[number];
@@ -22,6 +25,14 @@ export type OpenLibraryRequest = Readonly<{ config: LibraryStoreConfig }>;
 export type ListLibraryItemsRequest = Readonly<Record<string, never>>;
 export type GetLibraryItemRequest = Readonly<{ id: string }>;
 export type AddLibraryItemRequest = Readonly<{ item: LibraryItem }>;
+export type ImportLibraryItemRequest = Readonly<{ sourcePath: string; title?: string }>;
+export type AttachLibraryFormatRequest = Readonly<{
+  id: string;
+  source:
+    | Readonly<{ kind: "copy"; path: string }>
+    | Readonly<{ kind: "reference"; path: string }>;
+}>;
+export type RemoveLibraryFormatRequest = Readonly<{ id: string; format: FormatId }>;
 export type RemoveLibraryItemRequest = Readonly<{ id: string }>;
 export type LibraryMetadataPatch = Readonly<{
   title?: string;
@@ -41,7 +52,16 @@ export type OpenLibraryResult = LibraryStoreResult<null>;
 export type ListLibraryItemsResult = LibraryStoreResult<readonly LibraryItem[]>;
 export type GetLibraryItemResult = LibraryStoreResult<LibraryItem | null>;
 export type AddLibraryItemResult = LibraryStoreResult<LibraryItem>;
-export type RemoveLibraryItemResult = LibraryStoreResult<LibraryItem | null>;
+export type ImportLibraryItemResult = LibraryStoreResult<LibraryItem>;
+export type AttachLibraryFormatResult = LibraryStoreResult<LibraryItem | null>;
+export type RemoveLibraryFormatResult = LibraryStoreResult<{
+  readonly item: LibraryItem | null;
+  readonly cleanupPending: boolean;
+}>;
+export type RemoveLibraryItemResult = LibraryStoreResult<{
+  readonly item: LibraryItem | null;
+  readonly cleanupPending: boolean;
+}>;
 export type UpdateLibraryItemResult = LibraryStoreResult<LibraryItem | null>;
 export type SetLibraryCoverResult = LibraryStoreResult<LibraryItem | null>;
 export type RemoveLibraryCoverResult = LibraryStoreResult<LibraryItem | null>;
@@ -53,6 +73,7 @@ export type LibraryListWireResult = LibraryStoreResult<{
 export type LibraryImportWireResult = LibraryStoreResult<{ readonly item: LibraryItem }>;
 export type LibraryRemoveWireResult = LibraryStoreResult<{
   readonly item: LibraryItem | null;
+  readonly cleanupPending: boolean;
 }>;
 export type LibraryUpdateWireResult = LibraryStoreResult<{
   readonly item: LibraryItem | null;
@@ -69,6 +90,9 @@ export interface LibraryStore {
   list(request: ListLibraryItemsRequest): Promise<ListLibraryItemsResult>;
   get(request: GetLibraryItemRequest): Promise<GetLibraryItemResult>;
   add(request: AddLibraryItemRequest): Promise<AddLibraryItemResult>;
+  import(request: ImportLibraryItemRequest): Promise<ImportLibraryItemResult>;
+  attachFormat(request: AttachLibraryFormatRequest): Promise<AttachLibraryFormatResult>;
+  removeFormat(request: RemoveLibraryFormatRequest): Promise<RemoveLibraryFormatResult>;
   update(request: UpdateLibraryItemRequest): Promise<UpdateLibraryItemResult>;
   setCover(request: SetLibraryCoverRequest): Promise<SetLibraryCoverResult>;
   removeCover(request: RemoveLibraryCoverRequest): Promise<RemoveLibraryCoverResult>;

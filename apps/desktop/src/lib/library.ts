@@ -77,6 +77,14 @@ function isItemsValue(value: unknown): boolean {
   );
 }
 
+function isRemoveValue(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    isItemValue(value, true) &&
+    typeof value.cleanupPending === "boolean"
+  );
+}
+
 function decodeLibraryResult<T>(
   result: unknown,
   isValue: (value: unknown) => boolean,
@@ -172,9 +180,7 @@ export async function removeLibraryItem(
   invokeCommand: LibraryInvoker = invokeTauri,
 ): Promise<DesktopLibraryRemoveResult> {
   const result = await invokeCommand<unknown>("library_remove", { id });
-  return decodeLibraryResult<LibraryRemoveWireResult>(result, (value) =>
-    isItemValue(value, true),
-  );
+  return decodeLibraryResult<LibraryRemoveWireResult>(result, isRemoveValue);
 }
 
 export async function openLibraryItem(

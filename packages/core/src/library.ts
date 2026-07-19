@@ -33,11 +33,16 @@ const tagsSchema = z
   .readonly()
   .default([]);
 
+export const BOOK_FORMAT_PROVENANCES = ["managed", "referenced"] as const;
+
+export type BookFormatProvenance = (typeof BOOK_FORMAT_PROVENANCES)[number];
+
 export const bookFormatSchema = z
   .object({
     sourcePath: z.string().min(1),
     format: z.enum(FORMAT_IDS),
     addedAt: z.string().datetime(),
+    provenance: z.enum(BOOK_FORMAT_PROVENANCES),
   })
   .strict()
   .readonly();

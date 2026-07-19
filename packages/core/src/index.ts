@@ -13,12 +13,14 @@ export {
   type ConversionSettingsV1,
 } from "./conversion.js";
 export {
+  BOOK_FORMAT_PROVENANCES,
   InMemoryLibraryRepository,
   bookFormatSchema,
   bookFormatsSchema,
   libraryItemSchema,
   normalizeTags,
   type BookFormat,
+  type BookFormatProvenance,
   type LibraryItem,
 } from "./library.js";
 export {

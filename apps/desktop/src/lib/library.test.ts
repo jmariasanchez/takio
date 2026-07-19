@@ -26,11 +26,13 @@ const validItem = {
       sourcePath: "/Books/A title.epub",
       format: "epub",
       addedAt: "2026-07-18T12:00:00.000Z",
+      provenance: "managed",
     },
     {
       sourcePath: "/Books/A title.pdf",
       format: "pdf",
       addedAt: "2026-07-19T10:00:00.000Z",
+      provenance: "referenced",
     },
   ],
   author: "An author",
@@ -51,6 +53,12 @@ test("uses only the fixed desktop library commands and argument names", async ()
       return {
         ok: true,
         value: { id: "item-1", path: "/Books/A title.epub" },
+      } as never;
+    }
+    if (command === "library_remove") {
+      return {
+        ok: true,
+        value: { item: null, cleanupPending: false },
       } as never;
     }
     return { ok: true, value: { item: null } } as never;
@@ -101,7 +109,10 @@ test("uses only the fixed desktop library commands and argument names", async ()
 test("passes valid library responses through with authoritative format order", async () => {
   const listResult = { ok: true, value: { items: [validItem] } } as const;
   const importResult = { ok: true, value: { item: validItem } } as const;
-  const removeResult = { ok: true, value: { item: null } } as const;
+  const removeResult = {
+    ok: true,
+    value: { item: null, cleanupPending: true },
+  } as const;
   const openResult = {
     ok: true,
     value: { id: validItem.id, path: validItem.sourcePath },
@@ -112,9 +123,15 @@ test("passes valid library responses through with authoritative format order", a
   expect(decodedList).toBe(listResult);
   expect(
     decodedList.ok
-      ? decodedList.value.items[0]?.formats.map((bookFormat) => bookFormat.format)
+      ? decodedList.value.items[0]?.formats.map(({ format, provenance }) => ({
+          format,
+          provenance,
+        }))
       : [],
-  ).toEqual(["epub", "pdf"]);
+  ).toEqual([
+    { format: "epub", provenance: "managed" },
+    { format: "pdf", provenance: "referenced" },
+  ]);
   expect(
     await importLibraryItem(validItem.sourcePath, async () => importResult as never),
   ).toBe(importResult);
@@ -124,6 +141,21 @@ test("passes valid library responses through with authoritative format order", a
   expect(await openLibraryItem(validItem.id, async () => openResult as never)).toBe(
     openResult,
   );
+});
+
+test("requires explicit cleanup state after removing a library item", async () => {
+  for (const value of [
+    { item: null },
+    { item: null, cleanupPending: "no" },
+    { item: { ...validItem, formats: [] }, cleanupPending: false },
+  ]) {
+    expect(
+      await removeLibraryItem(validItem.id, async () => ({
+        ok: true,
+        value,
+      }) as never),
+    ).toEqual({ ok: false, error: { code: "protocol-error" } });
+  }
 });
 
 test("rejects malformed nested and scalar library response values", async () => {
@@ -151,6 +183,33 @@ test("rejects malformed nested and scalar library response values", async () => 
         items: [
           {
             ...validItem,
+            formats: validItem.formats.map(({ provenance: _provenance, ...format }) =>
+              format,
+            ),
+          },
+        ],
+      },
+    },
+    {
+      ok: true,
+      value: {
+        items: [
+          {
+            ...validItem,
+            formats: [
+              validItem.formats[0],
+              { ...validItem.formats[1], provenance: "borrowed" },
+            ],
+          },
+        ],
+      },
+    },
+    {
+      ok: true,
+      value: {
+        items: [
+          {
+            ...validItem,
             formats: [{ ...validItem.formats[0], addedAt: "yesterday" }],
           },
         ],
@@ -167,6 +226,7 @@ test("rejects malformed nested and scalar library response values", async () => 
                 sourcePath: "/Books/A title.pdf",
                 format: "pdf",
                 addedAt: validItem.addedAt,
+                provenance: "managed",
               },
             ],
           },

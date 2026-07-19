@@ -12,11 +12,13 @@ const primaryFormat = {
   sourcePath: "library/left-hand.epub",
   format: "epub",
   addedAt: "2026-07-17T12:00:00.000Z",
+  provenance: "referenced",
 } as const;
 const secondaryFormat = {
   sourcePath: "library/left-hand.pdf",
   format: "pdf",
   addedAt: "2026-07-19T12:00:00.000Z",
+  provenance: "referenced",
 } as const;
 const twoFormatItem: LibraryItem = {
   id: "book-1",
@@ -52,7 +54,7 @@ describe("BunSqliteLibraryStore authoritative formats", () => {
     return store;
   }
 
-  async function initializeV3(): Promise<void> {
+  async function initializeV4(): Promise<void> {
     const store = createStore();
     expect(await store.open({ config: {} })).toEqual({ ok: true, value: null });
     store.close();
@@ -66,8 +68,8 @@ describe("BunSqliteLibraryStore authoritative formats", () => {
     expect(database.query("SELECT * FROM tags").all()).toEqual([]);
   }
 
-  it("reads a manual two-format v3 aggregate in position order across reopen", async () => {
-    await initializeV3();
+  it("reads a manual two-format v4 aggregate in position order across reopen", async () => {
+    await initializeV4();
     using database = new Database(databasePath, { strict: true });
     database.run(
       "INSERT INTO library_items (id, title, added_at) VALUES (?, ?, ?)",
@@ -75,7 +77,8 @@ describe("BunSqliteLibraryStore authoritative formats", () => {
     );
     database.run(
       `INSERT INTO library_item_formats
-        (library_item_id, format, source_path, added_at, position) VALUES (?, ?, ?, ?, 0)`,
+        (library_item_id, format, source_path, added_at, provenance, position)
+        VALUES (?, ?, ?, ?, 'referenced', 0)`,
       [
         twoFormatItem.id,
         primaryFormat.format,
@@ -85,7 +88,8 @@ describe("BunSqliteLibraryStore authoritative formats", () => {
     );
     database.run(
       `INSERT INTO library_item_formats
-        (library_item_id, format, source_path, added_at, position) VALUES (?, ?, ?, ?, 1)`,
+        (library_item_id, format, source_path, added_at, provenance, position)
+        VALUES (?, ?, ?, ?, 'referenced', 1)`,
       [
         twoFormatItem.id,
         secondaryFormat.format,
@@ -164,8 +168,8 @@ describe("BunSqliteLibraryStore authoritative formats", () => {
     using database = new Database(databasePath, { strict: true });
     database.run(
       `INSERT INTO library_item_formats
-        (library_item_id, format, source_path, added_at, position)
-        VALUES (?, 'pdf', ?, 'not-a-date', 1)`,
+        (library_item_id, format, source_path, added_at, provenance, position)
+        VALUES (?, 'pdf', ?, 'not-a-date', 'referenced', 1)`,
       [twoFormatItem.id, secondaryFormat.sourcePath],
     );
     database.close();

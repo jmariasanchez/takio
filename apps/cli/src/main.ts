@@ -1,8 +1,8 @@
 #!/usr/bin/env bun
 import { Command, CommanderError } from "commander";
-import { copyFile, lstat, mkdir, realpath, rename, rm, stat } from "node:fs/promises";
+import { lstat, mkdir, realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
-import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, extname, join, resolve } from "node:path";
 import {
   FORMAT_CATALOG,
   FORMAT_IDS,
@@ -198,31 +198,6 @@ async function queuedConversionPaths(input: string, output: string, outputFormat
   } catch (error) {
     if (error instanceof ConversionError) throw error;
     throw new ConversionError("invalid-arguments");
-  }
-}
-
-function isInside(parentPath: string, childPath: string): boolean {
-  const pathFromParent = relative(parentPath, childPath);
-  return (
-    pathFromParent !== "" &&
-    pathFromParent !== ".." &&
-    !pathFromParent.startsWith(`..${sep}`) &&
-    !isAbsolute(pathFromParent)
-  );
-}
-
-async function removeOwnedFile(sourcePath: string, itemsDirectory: string): Promise<void> {
-  const resolvedSourcePath = resolve(sourcePath);
-  if (!isInside(itemsDirectory, resolvedSourcePath)) {
-    return;
-  }
-
-  const [canonicalItemsDirectory, canonicalSourcePath] = await Promise.all([
-    realpath(itemsDirectory),
-    realpath(resolvedSourcePath),
-  ]);
-  if (isInside(canonicalItemsDirectory, canonicalSourcePath)) {
-    await rm(resolvedSourcePath);
   }
 }
 
@@ -618,12 +593,15 @@ export function createProgram(
             sourcePath: options.sourcePath,
             format: options.format as FormatId,
             addedAt: options.addedAt,
+            provenance: "referenced" as const,
           };
           const result = await store.add({
             item: {
               id: options.id,
               title: options.title,
-              ...primaryFormat,
+              sourcePath: primaryFormat.sourcePath,
+              format: primaryFormat.format,
+              addedAt: primaryFormat.addedAt,
               formats: [primaryFormat],
               tags: [],
             },
@@ -664,69 +642,108 @@ export function createProgram(
         options: { db?: string; sourcePath: string; title?: string },
         command: Command,
       ) => {
-        let sourcePath: string;
-        const format = detectFormat(options.sourcePath);
+        const { store } = await openLibraryStore(options.db, command);
         try {
-          const source = await stat(options.sourcePath);
-          if (!source.isFile() || !format) {
-            command.error("", { exitCode: 1, code: "invalid-arguments" });
+          const result = await store.import({
+            sourcePath: options.sourcePath,
+            title: options.title,
+          });
+          if (!result.ok) {
+            command.error("", { exitCode: 1, code: result.error.code });
           }
-          sourcePath = await realpath(options.sourcePath);
-        } catch (error) {
-          if (error instanceof CommanderError) {
-            throw error;
-          }
+          write(JSON.stringify({ ok: true, value: { item: result.value } }));
+        } finally {
+          store.close();
+        }
+      },
+    );
+
+  const format = storageCommand(library.command("format"), writeError)
+    .helpOption(false)
+    .addHelpCommand(false)
+    .description("Manage an item's document formats");
+
+  storageCommand(format.command("import").helpOption(false), writeError)
+    .option("--db <path>", "database path")
+    .requiredOption("--id <id>", "library item ID")
+    .requiredOption("--source-path <path>", "source document path")
+    .action(
+      async (
+        options: { db?: string; id: string; sourcePath: string },
+        command: Command,
+      ) => {
+        if (options.id.length === 0) {
           command.error("", { exitCode: 1, code: "invalid-arguments" });
         }
 
-        const { store, paths } = await openLibraryStore(options.db, command);
-        const id = `item_${crypto.randomUUID()}`;
-        const extension = extname(sourcePath).toLowerCase();
-        const primaryFormat = {
-          sourcePath: join(paths.itemsDirectory, `${id}${extension}`),
-          format: format!,
-          addedAt: new Date().toISOString(),
-        };
-        const item = {
-          id,
-          title: options.title ?? basename(sourcePath, extname(sourcePath)),
-          ...primaryFormat,
-          formats: [primaryFormat],
-          tags: [],
-        };
-        const temporaryPath = `${item.sourcePath}.tmp-${crypto.randomUUID()}`;
-        let committed = false;
-        let failureCode: string | undefined;
-
+        const { store } = await openLibraryStore(options.db, command);
         try {
-          await mkdir(paths.itemsDirectory, { recursive: true });
-          await copyFile(sourcePath, temporaryPath);
-          await rename(temporaryPath, item.sourcePath);
-
-          const result = await store.add({ item });
+          const result = await store.attachFormat({
+            id: options.id,
+            source: { kind: "copy", path: options.sourcePath },
+          });
           if (!result.ok) {
-            failureCode = result.error.code;
-          } else {
-            committed = true;
-            write(JSON.stringify({ ok: true, value: { item: result.value } }));
+            command.error("", { exitCode: 1, code: result.error.code });
           }
-        } catch {
-          failureCode = "storage-unavailable";
+          write(JSON.stringify({ ok: true, value: { item: result.value } }));
         } finally {
-          if (!committed) {
-            const cleanup = await Promise.allSettled([
-              rm(temporaryPath, { force: true }),
-              rm(item.sourcePath, { force: true }),
-            ]);
-            if (cleanup.some((result) => result.status === "rejected")) {
-              failureCode = "storage-unavailable";
-            }
-          }
           store.close();
         }
+      },
+    );
 
-        if (failureCode) {
-          command.error("", { exitCode: 1, code: failureCode });
+  storageCommand(format.command("attach").helpOption(false), writeError)
+    .option("--db <path>", "database path")
+    .requiredOption("--id <id>", "library item ID")
+    .requiredOption("--source-path <path>", "source document path")
+    .action(
+      async (
+        options: { db?: string; id: string; sourcePath: string },
+        command: Command,
+      ) => {
+        if (options.id.length === 0) {
+          command.error("", { exitCode: 1, code: "invalid-arguments" });
+        }
+
+        const { store } = await openLibraryStore(options.db, command);
+        try {
+          const result = await store.attachFormat({
+            id: options.id,
+            source: { kind: "reference", path: options.sourcePath },
+          });
+          if (!result.ok) {
+            command.error("", { exitCode: 1, code: result.error.code });
+          }
+          write(JSON.stringify({ ok: true, value: { item: result.value } }));
+        } finally {
+          store.close();
+        }
+      },
+    );
+
+  storageCommand(format.command("remove").helpOption(false), writeError)
+    .option("--db <path>", "database path")
+    .requiredOption("--id <id>", "library item ID")
+    .requiredOption("--format <format>", `document format: ${FORMAT_IDS.join(", ")}`)
+    .action(
+      async (
+        options: { db?: string; id: string; format: string },
+        command: Command,
+      ) => {
+        const formatId = FORMAT_IDS.find((candidate) => candidate === options.format);
+        if (options.id.length === 0 || !formatId) {
+          command.error("", { exitCode: 1, code: "invalid-arguments" });
+        }
+
+        const { store } = await openLibraryStore(options.db, command);
+        try {
+          const result = await store.removeFormat({ id: options.id, format: formatId });
+          if (!result.ok) {
+            command.error("", { exitCode: 1, code: result.error.code });
+          }
+          write(JSON.stringify({ ok: true, value: result.value }));
+        } finally {
+          store.close();
         }
       },
     );
@@ -963,22 +980,14 @@ export function createProgram(
         command.error("", { exitCode: 1, code: "invalid-arguments" });
       }
 
-      const { store, paths } = await openLibraryStore(options.db, command);
+      const { store } = await openLibraryStore(options.db, command);
       try {
         const result = await store.remove({ id: options.id });
         if (!result.ok) {
           command.error("", { exitCode: 1, code: result.error.code });
         }
 
-        if (result.value) {
-          try {
-            await removeOwnedFile(result.value.sourcePath, paths.itemsDirectory);
-          } catch {
-            command.error("", { exitCode: 1, code: "storage-unavailable" });
-          }
-        }
-
-        write(JSON.stringify({ ok: true, value: { item: result.value } }));
+        write(JSON.stringify({ ok: true, value: result.value }));
       } finally {
         store.close();
       }

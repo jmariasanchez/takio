@@ -20,6 +20,7 @@ const item: LibraryItem = {
       sourcePath: "library/left-hand.epub",
       format: "epub",
       addedAt: "2026-07-19T09:00:00.000Z",
+      provenance: "referenced",
     },
   ],
   tags: [],
@@ -36,6 +37,7 @@ const secondItem: LibraryItem = {
       sourcePath: "library/kindred.epub",
       format: "epub",
       addedAt: "2026-07-18T13:00:00.000Z",
+      provenance: "referenced",
     },
   ],
   tags: [],
@@ -136,22 +138,29 @@ async function createSqlFixture(filename: string): Promise<void> {
 }
 
 describe("BunSqliteLibraryStore", () => {
-  it("persists add, get, list, and remove across injected-path reopenings at schema v3", async () => {
+  it("persists add, get, list, and remove across injected-path reopenings at schema v4", async () => {
     const first = createStore();
     expect(await first.open({ config: {} })).toEqual({ ok: true, value: null });
     expect(await first.add({ item })).toEqual({ ok: true, value: item });
     first.close();
 
-    expect(schemaVersion()).toBe(3);
+    expect(schemaVersion()).toBe(4);
     using stored = new Database(databasePath, { strict: true });
     expect(
       stored
         .query<
-          { libraryItemId: string; sourcePath: string; format: string; addedAt: string; position: number },
+          {
+            libraryItemId: string;
+            sourcePath: string;
+            format: string;
+            addedAt: string;
+            provenance: string;
+            position: number;
+          },
           []
         >(`
           SELECT library_item_id AS libraryItemId, source_path AS sourcePath,
-            format, added_at AS addedAt, position
+            format, added_at AS addedAt, provenance, position
           FROM library_item_formats
         `)
         .all(),
@@ -161,6 +170,7 @@ describe("BunSqliteLibraryStore", () => {
         sourcePath: item.sourcePath,
         format: item.format,
         addedAt: item.formats[0]!.addedAt,
+        provenance: "referenced",
         position: 0,
       },
     ]);
@@ -169,7 +179,10 @@ describe("BunSqliteLibraryStore", () => {
     expect(await second.open({ config: {} })).toEqual({ ok: true, value: null });
     expect(await second.get({ id: item.id })).toEqual({ ok: true, value: item });
     expect(await second.list({})).toEqual({ ok: true, value: [item] });
-    expect(await second.remove({ id: item.id })).toEqual({ ok: true, value: item });
+    expect(await second.remove({ id: item.id })).toEqual({
+      ok: true,
+      value: { item, cleanupPending: false },
+    });
     second.close();
 
     const third = createStore();
@@ -178,7 +191,7 @@ describe("BunSqliteLibraryStore", () => {
     expect(await third.list({})).toEqual({ ok: true, value: [] });
     third.close();
 
-    expect(schemaVersion()).toBe(3);
+    expect(schemaVersion()).toBe(4);
     expect(stored.query("SELECT * FROM library_item_formats").all()).toEqual([]);
   });
 
@@ -202,6 +215,7 @@ describe("BunSqliteLibraryStore", () => {
               sourcePath: "library/kindred.mobi",
               format: "mobi",
               addedAt: "2026-07-16T08:00:00.000Z",
+              provenance: "referenced",
             },
           ],
           tags: [],
@@ -217,6 +231,7 @@ describe("BunSqliteLibraryStore", () => {
               sourcePath: "library/the-dispossessed.epub",
               format: "epub",
               addedAt: "2026-07-17T10:15:00.000Z",
+              provenance: "referenced",
             },
           ],
           author: "Ursula K. Le Guin",
@@ -229,7 +244,7 @@ describe("BunSqliteLibraryStore", () => {
     });
     store.close();
 
-    expect(schemaVersion()).toBe(3);
+    expect(schemaVersion()).toBe(4);
     expect(await readFile(`${databasePath}.v2.backup`)).toEqual(databaseBefore);
     using migrated = new Database(databasePath, { strict: true });
     expect(migrated.query("PRAGMA foreign_key_check").all()).toEqual([]);
@@ -278,7 +293,7 @@ describe("BunSqliteLibraryStore", () => {
     });
     store.close();
 
-    expect(schemaVersion()).toBe(3);
+    expect(schemaVersion()).toBe(4);
     using migrated = new Database(databasePath, { strict: true });
     expect(
       migrated.query<{ integrity_check: string }, []>("PRAGMA integrity_check").get()
@@ -342,7 +357,7 @@ describe("BunSqliteLibraryStore", () => {
     ]);
   });
 
-  it("treats reopening v3 as a no-op", async () => {
+  it("treats reopening v4 as a no-op", async () => {
     createFrozenV1Fixture();
     const first = createStore();
     expect(await first.open({ config: {} })).toEqual({ ok: true, value: null });
@@ -698,7 +713,10 @@ describe("BunSqliteLibraryStore", () => {
     if (!installed.ok || !installed.value?.coverPath) {
       throw new Error("Expected an owned cover");
     }
-    expect(await owner.remove({ id: item.id })).toMatchObject({ ok: true, value: { id: item.id } });
+    expect(await owner.remove({ id: item.id })).toMatchObject({
+      ok: true,
+      value: { item: { id: item.id }, cleanupPending: false },
+    });
     expect(await Bun.file(installed.value.coverPath).exists()).toBe(false);
     expect(await readFile(outsidePath)).toEqual(Buffer.from("outside"));
   });
@@ -715,7 +733,8 @@ describe("BunSqliteLibraryStore", () => {
     );
     database.run(
       `INSERT INTO library_item_formats
-        (library_item_id, format, source_path, added_at, position) VALUES (?, ?, ?, ?, 0)`,
+        (library_item_id, format, source_path, added_at, provenance, position)
+        VALUES (?, ?, ?, ?, 'referenced', 0)`,
       [item.id, "invalid-format", item.sourcePath, item.addedAt],
     );
     const before = await readFile(databasePath);
@@ -762,7 +781,8 @@ describe("BunSqliteLibraryStore", () => {
     using database = new Database(databasePath);
     database.run(
       `INSERT INTO library_item_formats
-        (library_item_id, format, source_path, added_at, position) VALUES (?, 'pdf', ?, 'not-a-date', 1)`,
+        (library_item_id, format, source_path, added_at, provenance, position)
+        VALUES (?, 'pdf', ?, 'not-a-date', 'referenced', 1)`,
       [item.id, "library/left-hand.pdf"],
     );
     const before = await readFile(databasePath);
@@ -857,7 +877,7 @@ describe("BunSqliteLibraryStore", () => {
     expect(
       initializedDatabase.query<{ user_version: number }, []>("PRAGMA user_version").get()
         ?.user_version,
-    ).toBe(3);
+    ).toBe(4);
     expect(
       initializedDatabase
         .query<{ name: string; type: string }, []>(
@@ -868,6 +888,7 @@ describe("BunSqliteLibraryStore", () => {
       { name: "library_item_formats", type: "table" },
       { name: "library_item_tags", type: "table" },
       { name: "library_items", type: "table" },
+      { name: "managed_file_cleanup", type: "table" },
       { name: "tags", type: "table" },
     ]);
   });

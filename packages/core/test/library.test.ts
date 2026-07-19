@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 
 import {
   InMemoryLibraryRepository,
+  BOOK_FORMAT_PROVENANCES,
   bookFormatSchema,
   bookFormatsSchema,
   libraryItemSchema,
@@ -21,11 +22,13 @@ const epubFormat: BookFormat = {
   sourcePath: v1Item.sourcePath,
   format: "epub",
   addedAt: v1Item.addedAt,
+  provenance: "managed",
 };
 const pdfFormat: BookFormat = {
   sourcePath: "library/left-hand.pdf",
   format: "pdf",
   addedAt: "2026-07-19T12:00:00.000Z",
+  provenance: "referenced",
 };
 const item: LibraryItem = { ...v1Item, formats: [epubFormat], tags: [] };
 
@@ -47,7 +50,35 @@ describe("libraryItemSchema", () => {
     expect(() => bookFormatsSchema.parse([])).toThrow();
   });
 
+  it("requires explicit managed or referenced provenance for every format", () => {
+    expect(BOOK_FORMAT_PROVENANCES).toEqual(["managed", "referenced"]);
+    expect(bookFormatSchema.parse(epubFormat)).toEqual(epubFormat);
+    expect(bookFormatSchema.parse(pdfFormat)).toEqual(pdfFormat);
+    expect(() =>
+      bookFormatSchema.parse({
+        sourcePath: epubFormat.sourcePath,
+        format: epubFormat.format,
+        addedAt: epubFormat.addedAt,
+      }),
+    ).toThrow();
+    expect(() =>
+      bookFormatSchema.parse({ ...epubFormat, provenance: "borrowed" }),
+    ).toThrow();
+  });
+
   it("requires the legacy aliases to identify the primary supplied format", () => {
+    expect(
+      libraryItemSchema.parse({
+        ...item,
+        sourcePath: pdfFormat.sourcePath,
+        format: pdfFormat.format,
+        formats: [pdfFormat, epubFormat],
+      }),
+    ).toMatchObject({
+      sourcePath: pdfFormat.sourcePath,
+      format: pdfFormat.format,
+      formats: [pdfFormat, epubFormat],
+    });
     expect(() =>
       libraryItemSchema.parse({ ...item, formats: [pdfFormat, epubFormat] }),
     ).toThrow();
@@ -83,7 +114,11 @@ describe("libraryItemSchema", () => {
     expect(() =>
       bookFormatsSchema.parse([
         epubFormat,
-        { ...epubFormat, sourcePath: "library/left-hand-copy.epub" },
+        {
+          ...epubFormat,
+          sourcePath: "library/left-hand-copy.epub",
+          provenance: "referenced",
+        },
       ]),
     ).toThrow();
   });
