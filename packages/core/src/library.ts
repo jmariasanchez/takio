@@ -44,6 +44,24 @@ export const bookFormatSchema = z
 
 export type BookFormat = z.infer<typeof bookFormatSchema>;
 
+export const bookFormatsSchema = z
+  .array(bookFormatSchema)
+  .min(1)
+  .superRefine((formats, context) => {
+    const seen = new Set<string>();
+    for (const [index, bookFormat] of formats.entries()) {
+      if (seen.has(bookFormat.format)) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [index, "format"],
+          message: "Book formats must be unique.",
+        });
+      }
+      seen.add(bookFormat.format);
+    }
+  })
+  .readonly();
+
 export const libraryItemSchema = z
   .object({
     id: z.string().min(1),
@@ -56,36 +74,6 @@ export const libraryItemSchema = z
     coverPath: optionalText,
     tags: tagsSchema,
     updatedAt: z.string().datetime().optional(),
-    formats: z.array(bookFormatSchema).min(1).readonly().optional(),
-  })
-  .superRefine((item, context) => {
-    if (item.formats === undefined) {
-      return;
-    }
-
-    const [firstFormat] = item.formats;
-    if (
-      firstFormat.sourcePath !== item.sourcePath ||
-      firstFormat.format !== item.format
-    ) {
-      context.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["formats", 0],
-        message: "The first format must match the legacy format aliases.",
-      });
-    }
-
-    const seen = new Set<string>();
-    for (const [index, bookFormat] of item.formats.entries()) {
-      if (seen.has(bookFormat.format)) {
-        context.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: ["formats", index, "format"],
-          message: "Book formats must be unique.",
-        });
-      }
-      seen.add(bookFormat.format);
-    }
   })
   .readonly();
 

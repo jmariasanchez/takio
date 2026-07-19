@@ -10,6 +10,7 @@ export { FORMAT_CATALOG, FORMAT_IDS, detectFormat, type FormatDefinition, type F
 export {
   InMemoryLibraryRepository,
   bookFormatSchema,
+  bookFormatsSchema,
   libraryItemSchema,
   normalizeTags,
   type BookFormat,

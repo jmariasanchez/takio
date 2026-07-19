@@ -3,6 +3,7 @@ import { describe, expect, it } from "bun:test";
 import {
   InMemoryLibraryRepository,
   bookFormatSchema,
+  bookFormatsSchema,
   libraryItemSchema,
   normalizeTags,
   type BookFormat,
@@ -36,47 +37,26 @@ describe("libraryItemSchema", () => {
     expect("formats" in parsed).toBe(false);
   });
 
-  it("represents EPUB and PDF files as formats of one book", () => {
-    expect(
-      libraryItemSchema.parse({ ...item, formats: [epubFormat, pdfFormat] }),
-    ).toEqual({ ...item, formats: [epubFormat, pdfFormat] });
+  it("validates EPUB and PDF as a unique nonempty format list", () => {
+    expect(bookFormatsSchema.parse([epubFormat, pdfFormat])).toEqual([
+      epubFormat,
+      pdfFormat,
+    ]);
+    expect(() => bookFormatsSchema.parse([])).toThrow();
   });
 
   it("rejects duplicate book format IDs", () => {
     expect(() =>
-      libraryItemSchema.parse({
-        ...item,
-        formats: [
-          epubFormat,
-          { ...epubFormat, sourcePath: "library/left-hand-copy.epub" },
-        ],
-      }),
-    ).toThrow();
-  });
-
-  it("rejects legacy aliases that do not match the first book format", () => {
-    expect(() =>
-      libraryItemSchema.parse({
-        ...item,
-        sourcePath: "library/a-different-copy.epub",
-        formats: [epubFormat, pdfFormat],
-      }),
-    ).toThrow();
-    expect(() =>
-      libraryItemSchema.parse({
-        ...item,
-        format: "pdf",
-        formats: [epubFormat, pdfFormat],
-      }),
+      bookFormatsSchema.parse([
+        epubFormat,
+        { ...epubFormat, sourcePath: "library/left-hand-copy.epub" },
+      ]),
     ).toThrow();
   });
 
   it("rejects malformed nested book format data", () => {
     expect(() =>
-      libraryItemSchema.parse({
-        ...item,
-        formats: [{ ...epubFormat, addedAt: "yesterday" }],
-      }),
+      bookFormatsSchema.parse([{ ...epubFormat, addedAt: "yesterday" }]),
     ).toThrow();
     expect(() =>
       bookFormatSchema.parse({ ...epubFormat, checksum: "unexpected" }),
