@@ -771,13 +771,21 @@ export function createProgram(
   storageCommand(library.command("open").helpOption(false), writeError)
     .option("--db <path>", "database path")
     .requiredOption("--id <id>", "library item ID")
+    .option("--format <format>", `document format: ${FORMAT_IDS.join(", ")}`)
     .option("--json", "emit JSON instead of a readable confirmation")
     .action(
       async (
-        options: { db?: string; id: string; json?: boolean },
+        options: { db?: string; id: string; format?: string; json?: boolean },
         command: Command,
       ) => {
-        if (options.id.length === 0) {
+        const requestedFormat =
+          options.format === undefined
+            ? undefined
+            : FORMAT_IDS.find((candidate) => candidate === options.format);
+        if (
+          options.id.length === 0 ||
+          (options.format !== undefined && requestedFormat === undefined)
+        ) {
           command.error("", { exitCode: 1, code: "invalid-arguments" });
         }
 
@@ -791,9 +799,16 @@ export function createProgram(
           if (!item) {
             command.error("", { exitCode: 1, code: "not-found" });
           }
+          const selectedFormat =
+            requestedFormat === undefined
+              ? item.formats[0]
+              : item.formats.find(({ format }) => format === requestedFormat);
+          if (!selectedFormat) {
+            command.error("", { exitCode: 1, code: "format-not-found" });
+          }
 
           try {
-            if (!(await stat(item.sourcePath)).isFile()) {
+            if (!(await stat(selectedFormat.sourcePath)).isFile()) {
               command.error("", { exitCode: 1, code: "missing-file" });
             }
           } catch (error) {
@@ -804,16 +819,18 @@ export function createProgram(
           }
 
           const declaredFormat = FORMAT_CATALOG.find(
-            (format) => format.id === item.format,
+            (format) => format.id === selectedFormat.format,
           );
           if (
-            !declaredFormat?.extensions.includes(extname(item.sourcePath).toLowerCase())
+            !declaredFormat?.extensions.includes(
+              extname(selectedFormat.sourcePath).toLowerCase(),
+            )
           ) {
             command.error("", { exitCode: 1, code: "format-mismatch" });
           }
 
           try {
-            await launch(defaultAppCommand(item.sourcePath));
+            await launch(defaultAppCommand(selectedFormat.sourcePath));
           } catch {
             command.error("", { exitCode: 1, code: "open-failed" });
           }
@@ -822,9 +839,13 @@ export function createProgram(
             options.json
               ? JSON.stringify({
                   ok: true,
-                  value: { id: item.id, path: item.sourcePath },
+                  value: {
+                    id: item.id,
+                    format: selectedFormat.format,
+                    path: selectedFormat.sourcePath,
+                  },
                 })
-              : `Opened ${item.sourcePath}`,
+              : `Opened ${item.id} (${selectedFormat.format}): ${selectedFormat.sourcePath}`,
           );
         } finally {
           store.close();

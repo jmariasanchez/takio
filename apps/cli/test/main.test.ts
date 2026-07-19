@@ -447,7 +447,7 @@ describe("takio CLI", () => {
       expect(opened.exitCode).toBeUndefined();
       expect(parseOutput(opened.output)).toEqual({
         ok: true,
-        value: { id: "open-book", path: sourcePath },
+        value: { id: "open-book", format: "epub", path: sourcePath },
       });
       expect(launches).toEqual([[opener, sourcePath]]);
 
@@ -455,7 +455,88 @@ describe("takio CLI", () => {
         ["library", "open", "--db", databasePath!, "--id", "open-book"],
         launch,
       );
-      expect(human).toEqual({ output: [`Opened ${sourcePath}`] });
+      expect(human).toEqual({
+        output: [`Opened open-book (epub): ${sourcePath}`],
+      });
+    });
+
+    it("opens the exact requested secondary format instead of the primary format", async () => {
+      const epubPath = join(directory!, "multi-format.epub");
+      const pdfPath = join(directory!, "multi-format.pdf");
+      await Bun.write(epubPath, "epub contents");
+      await Bun.write(pdfPath, "pdf contents");
+      const canonicalPdfPath = await realpath(pdfPath);
+      await addItem("multi-format", epubPath);
+      const attached = await invoke([
+        "library",
+        "format",
+        "attach",
+        "--db",
+        databasePath!,
+        "--id",
+        "multi-format",
+        "--source-path",
+        pdfPath,
+      ]);
+      expect(attached.exitCode).toBeUndefined();
+      const launches: string[][] = [];
+
+      const opened = await invoke(
+        [
+          "library",
+          "open",
+          "--db",
+          databasePath!,
+          "--id",
+          "multi-format",
+          "--format",
+          "pdf",
+          "--json",
+        ],
+        (argv) => launches.push([...argv]),
+      );
+
+      const opener =
+        process.platform === "darwin"
+          ? "open"
+          : process.platform === "win32"
+            ? "explorer.exe"
+            : "xdg-open";
+      expect(opened.exitCode).toBeUndefined();
+      expect(parseOutput(opened.output)).toEqual({
+        ok: true,
+        value: { id: "multi-format", format: "pdf", path: canonicalPdfPath },
+      });
+      expect(launches).toEqual([[opener, canonicalPdfPath]]);
+    });
+
+    it("does not open another format when the requested format is missing", async () => {
+      const epubPath = join(directory!, "single-format.epub");
+      await Bun.write(epubPath, "epub contents");
+      await addItem("single-format", epubPath);
+      const launches: string[][] = [];
+
+      const result = await invoke(
+        [
+          "library",
+          "open",
+          "--db",
+          databasePath!,
+          "--id",
+          "single-format",
+          "--format",
+          "pdf",
+          "--json",
+        ],
+        (argv) => launches.push([...argv]),
+      );
+
+      expect(result.exitCode).toBe(1);
+      expect(parseOutput(result.output)).toEqual({
+        ok: false,
+        error: { code: "format-not-found" },
+      });
+      expect(launches).toEqual([]);
     });
 
     it("reports not-found without launching for an unknown item", async () => {
