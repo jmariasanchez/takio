@@ -124,6 +124,14 @@ export function describeLibraryError(code: string): string {
       return "The local library engine is unavailable.";
     case "protocol-error":
       return "The local library returned an invalid response.";
+    case "not-found":
+      return "That library item no longer exists.";
+    case "missing-file":
+      return "The library item’s source file is missing.";
+    case "format-mismatch":
+      return "The source file no longer matches its library format.";
+    case "open-failed":
+      return "The source file could not be opened.";
     default:
       return "The local library is unavailable.";
   }

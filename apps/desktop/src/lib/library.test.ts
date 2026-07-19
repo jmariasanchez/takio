@@ -87,6 +87,15 @@ test("gives boundary and storage failures specific user-facing messages", () => 
   expect(describeLibraryError("storage-unavailable")).toBe(
     "The local library is unavailable.",
   );
+  expect(describeLibraryError("missing-file")).toBe(
+    "The library item’s source file is missing.",
+  );
+  expect(describeLibraryError("format-mismatch")).toBe(
+    "The source file no longer matches its library format.",
+  );
+  expect(describeLibraryError("open-failed")).toBe(
+    "The source file could not be opened.",
+  );
 });
 
 test("does not expose unexpected implementation details in user-facing errors", () => {

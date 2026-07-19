@@ -1,13 +1,22 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { confirm, open } from "@tauri-apps/plugin-dialog";
-import { FORMAT_CATALOG, type LibraryItem } from "@takio/core";
+import { FORMAT_CATALOG, type Destination, type LibraryItem } from "@takio/core";
 
+import {
+  describeDestinationError,
+  describeUnexpectedDestinationError,
+  ejectDestination,
+  listDestinations,
+  sendLibraryItem,
+} from "./lib/destinations";
+import { formatFileSize } from "./lib/format";
 import {
   describeLibraryError,
   describeUnexpectedLibraryError,
   importLibraryItem,
   listLibraryItems,
+  openLibraryItem,
   parseLibraryTags,
   removeLibraryCover,
   removeLibraryItem,
@@ -54,7 +63,12 @@ export default function App() {
   const [query, setQuery] = useState("");
   const [searchPending, setSearchPending] = useState(false);
   const [draft, setDraft] = useState<MetadataDraft | null>(null);
+  const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
+  const [destinations, setDestinations] = useState<readonly Destination[]>([]);
+  const [destinationsLoading, setDestinationsLoading] = useState(true);
+  const [selectedDestinationId, setSelectedDestinationId] = useState<string | null>(null);
   const requestSequence = useRef(0);
+  const deviceMutationPending = useRef(false);
 
   const loadLibrary = useCallback(
     async (showLoading = true, searchQuery = ""): Promise<boolean> => {
@@ -78,6 +92,11 @@ export default function App() {
         }
 
         setItems(result.value.items);
+        setSelectedItemId((currentId) =>
+          currentId && result.value.items.some((item) => item.id === currentId)
+            ? currentId
+            : null,
+        );
         setLibraryState("ready");
         return true;
       } catch (error) {
@@ -96,9 +115,35 @@ export default function App() {
     [],
   );
 
+  const loadDestinations = useCallback(async (): Promise<boolean> => {
+    setDestinationsLoading(true);
+    try {
+      const result = await listDestinations();
+      if (!result.ok) {
+        setNotice({ kind: "error", text: describeDestinationError(result.error.code) });
+        return false;
+      }
+
+      setDestinations(result.value.destinations);
+      setSelectedDestinationId((currentId) =>
+        currentId &&
+        result.value.destinations.some((destination) => destination.id === currentId)
+          ? currentId
+          : null,
+      );
+      return true;
+    } catch (error) {
+      setNotice({ kind: "error", text: describeUnexpectedDestinationError(error) });
+      return false;
+    } finally {
+      setDestinationsLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     void loadLibrary();
-  }, [loadLibrary]);
+    void loadDestinations();
+  }, [loadDestinations, loadLibrary]);
 
   function replaceItem(updated: LibraryItem): void {
     setItems((currentItems) =>
@@ -286,6 +331,7 @@ export default function App() {
 
       setItems((currentItems) => currentItems.filter((candidate) => candidate.id !== item.id));
       setDraft((currentDraft) => (currentDraft?.id === item.id ? null : currentDraft));
+      setSelectedItemId((currentId) => (currentId === item.id ? null : currentId));
       setLibraryState("ready");
       setNotice({ kind: "status", text: `Removed “${item.title}”.` });
     } catch (error) {
@@ -295,7 +341,99 @@ export default function App() {
     }
   }
 
+  async function openItem(item: LibraryItem) {
+    setSelectedItemId(item.id);
+    setPendingAction(`open:${item.id}`);
+    setNotice(null);
+    try {
+      const result = await openLibraryItem(item.id);
+      if (!result.ok) {
+        setNotice({ kind: "error", text: describeLibraryError(result.error.code) });
+        return;
+      }
+
+      setNotice({ kind: "status", text: `Opened “${item.title}”.` });
+    } catch (error) {
+      setNotice({ kind: "error", text: describeUnexpectedLibraryError(error) });
+    } finally {
+      setPendingAction(null);
+    }
+  }
+
+  async function refreshDestinations() {
+    setNotice(null);
+    if (await loadDestinations()) {
+      setNotice({ kind: "status", text: "Reader list refreshed." });
+    }
+  }
+
+  async function sendItem(item: LibraryItem) {
+    if (deviceMutationPending.current) {
+      return;
+    }
+    setSelectedItemId(item.id);
+    if (!selectedDestination) {
+      setNotice({ kind: "error", text: "Choose a reader before sending." });
+      return;
+    }
+
+    deviceMutationPending.current = true;
+    setPendingAction(`send:${item.id}`);
+    setNotice(null);
+    try {
+      const result = await sendLibraryItem(item.id, selectedDestination.path);
+      if (!result.ok) {
+        setNotice({ kind: "error", text: describeDestinationError(result.error.code) });
+        return;
+      }
+
+      setNotice({
+        kind: "status",
+        text: `Sent to ${result.value.path} · ${result.value.bytes.toLocaleString()} bytes · SHA-256 ${result.value.sha256}`,
+      });
+    } catch (error) {
+      setNotice({ kind: "error", text: describeUnexpectedDestinationError(error) });
+    } finally {
+      deviceMutationPending.current = false;
+      setPendingAction(null);
+    }
+  }
+
+  async function ejectSelectedDestination() {
+    if (deviceMutationPending.current) {
+      return;
+    }
+    if (!selectedDestination) {
+      setNotice({ kind: "error", text: "Choose a reader before ejecting." });
+      return;
+    }
+
+    const destination = selectedDestination;
+    deviceMutationPending.current = true;
+    setPendingAction("eject");
+    setNotice(null);
+    try {
+      const result = await ejectDestination(destination.path);
+      if (!result.ok) {
+        setNotice({ kind: "error", text: describeDestinationError(result.error.code) });
+        return;
+      }
+
+      setSelectedDestinationId(null);
+      if (await loadDestinations()) {
+        setNotice({ kind: "status", text: `Ejected ${destination.name}.` });
+      }
+    } catch (error) {
+      setNotice({ kind: "error", text: describeUnexpectedDestinationError(error) });
+    } finally {
+      deviceMutationPending.current = false;
+      setPendingAction(null);
+    }
+  }
+
   const actionsPending = pendingAction !== null;
+  const selectedDestination =
+    destinations.find((destination) => destination.id === selectedDestinationId) ?? null;
 
   return (
     <main className="app-shell">
@@ -327,6 +465,55 @@ export default function App() {
           <button className="primary-button" disabled={actionsPending} onClick={importFile}>
             {pendingAction === "import" ? "Importing…" : "Choose file"}
           </button>
+        </section>
+
+        <section className="reader-bar" aria-label="Connected readers">
+          <div className="reader-heading">
+            <p className="eyebrow">READER</p>
+            <strong>Send to a mounted device</strong>
+          </div>
+          <div className="reader-controls">
+            <select
+              aria-label="Selected reader"
+              value={selectedDestinationId ?? ""}
+              disabled={actionsPending || destinationsLoading}
+              onChange={(event) =>
+                setSelectedDestinationId(event.currentTarget.value || null)
+              }
+            >
+              <option value="">Choose a reader…</option>
+              {destinations.map((destination) => (
+                <option key={destination.id} value={destination.id}>
+                  {destination.name}
+                </option>
+              ))}
+            </select>
+            <span className="reader-detail" aria-live="polite">
+              {destinationsLoading
+                ? "Scanning…"
+                : selectedDestination
+                  ? `${selectedDestination.kind[0]?.toUpperCase()}${selectedDestination.kind.slice(1)} · ${
+                      selectedDestination.freeBytes === undefined
+                        ? "Free space unavailable"
+                        : `${formatFileSize(selectedDestination.freeBytes)} free`
+                    }`
+                  : `${destinations.length} ${destinations.length === 1 ? "reader" : "readers"} found`}
+            </span>
+            <button
+              className="quiet-button"
+              disabled={actionsPending || destinationsLoading}
+              onClick={() => void refreshDestinations()}
+            >
+              {destinationsLoading ? "Refreshing…" : "Refresh"}
+            </button>
+            <button
+              className="quiet-button"
+              disabled={!selectedDestination || actionsPending || destinationsLoading}
+              onClick={() => void ejectSelectedDestination()}
+            >
+              {pendingAction === "eject" ? "Ejecting…" : "Eject"}
+            </button>
+          </div>
         </section>
 
         {notice ? (
@@ -393,8 +580,16 @@ export default function App() {
             <div className="book-list">
               {items.map((item) => {
                 const editing = draft?.id === item.id;
+                const selected = selectedItemId === item.id;
                 return (
-                  <article className="book-card" key={item.id}>
+                  <article
+                    className={`book-card${selected ? " selected" : ""}`}
+                    key={item.id}
+                    tabIndex={0}
+                    aria-current={selected ? "true" : undefined}
+                    onClick={() => setSelectedItemId(item.id)}
+                    onFocus={() => setSelectedItemId(item.id)}
+                  >
                     <div className="book-row">
                       {item.coverPath ? (
                         <img
@@ -416,8 +611,25 @@ export default function App() {
                         {item.tags.length > 0 && (
                           <span className="tag-summary">{item.tags.join(" · ")}</span>
                         )}
+                        {selected && <span className="selection-label">Selected</span>}
                       </div>
                       <div className="row-actions">
+                        <button
+                          className="row-button"
+                          aria-label={`Open ${item.title}`}
+                          disabled={actionsPending}
+                          onClick={() => void openItem(item)}
+                        >
+                          {pendingAction === `open:${item.id}` ? "Opening…" : "Open"}
+                        </button>
+                        <button
+                          className="row-button send-button"
+                          aria-label={`Send ${item.title} to the selected reader`}
+                          disabled={actionsPending || !selectedDestination}
+                          onClick={() => void sendItem(item)}
+                        >
+                          {pendingAction === `send:${item.id}` ? "Sending…" : "Send"}
+                        </button>
                         <button
                           className="row-button"
                           aria-expanded={editing}
