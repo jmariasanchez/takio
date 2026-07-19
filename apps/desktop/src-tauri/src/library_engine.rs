@@ -25,14 +25,6 @@ fn validate_nonempty(value: &str) -> Result<(), ()> {
     }
 }
 
-fn validate_jobs_enqueue(input: &str, to: &str, output: &str) -> Result<(), ()> {
-    if validate_nonempty(input).is_err() || to != "pdf" || validate_nonempty(output).is_err() {
-        Err(())
-    } else {
-        Ok(())
-    }
-}
-
 fn validate_library_open(id: &str, format: &str) -> Result<(), ()> {
     validate_nonempty(id)?;
     validate_nonempty(format)
@@ -119,17 +111,36 @@ fn jobs_list_arguments() -> Vec<String> {
     vec!["jobs".into(), "list".into()]
 }
 
-fn jobs_enqueue_arguments(input: String, to: String, output: String) -> Vec<String> {
-    vec![
-        "jobs".into(),
-        "enqueue".into(),
-        "--input".into(),
-        input,
-        "--to".into(),
-        to,
-        "--output".into(),
-        output,
-    ]
+fn jobs_enqueue_arguments(
+    input: Option<String>,
+    library_item_id: Option<String>,
+    from: Option<String>,
+    to: String,
+    output: String,
+) -> Result<Vec<String>, ()> {
+    if validate_nonempty(&to).is_err() || validate_nonempty(&output).is_err() {
+        return Err(());
+    }
+
+    let mut args = vec!["jobs".into(), "enqueue".into()];
+    match (input, library_item_id, from) {
+        (Some(input), None, None) if validate_nonempty(&input).is_ok() => {
+            args.extend(["--input".into(), input]);
+        }
+        (None, Some(library_item_id), Some(from))
+            if validate_nonempty(&library_item_id).is_ok() && validate_nonempty(&from).is_ok() =>
+        {
+            args.extend([
+                "--library-item-id".into(),
+                library_item_id,
+                "--from".into(),
+                from,
+            ]);
+        }
+        _ => return Err(()),
+    }
+    args.extend(["--to".into(), to, "--output".into(), output]);
+    Ok(args)
 }
 
 fn jobs_run_next_arguments() -> Vec<String> {
@@ -419,15 +430,17 @@ pub async fn jobs_list(app: tauri::AppHandle) -> Value {
 #[tauri::command]
 pub async fn jobs_enqueue(
     app: tauri::AppHandle,
-    input: String,
+    input: Option<String>,
+    library_item_id: Option<String>,
+    from: Option<String>,
     to: String,
     output: String,
 ) -> Value {
-    if validate_jobs_enqueue(&input, &to, &output).is_err() {
+    let Ok(args) = jobs_enqueue_arguments(input, library_item_id, from, to, output) else {
         return failure("invalid-arguments");
-    }
+    };
 
-    run_engine(&app, jobs_enqueue_arguments(input, to, output)).await
+    run_engine(&app, args).await
 }
 
 #[tauri::command]
@@ -454,15 +467,6 @@ mod tests {
         assert!(validate_nonempty("/Volumes/Reader").is_ok());
         assert!(validate_nonempty("  ").is_err());
         assert!(validate_file_source(Path::new("definitely-missing.epub")).is_err());
-        assert!(validate_jobs_enqueue(
-            "/Books/A real - title.epub",
-            "pdf",
-            "/Exports/A real - title.pdf",
-        )
-        .is_ok());
-        assert!(validate_jobs_enqueue("book.epub", "epub", "book.pdf").is_err());
-        assert!(validate_jobs_enqueue(" ", "pdf", "book.pdf").is_err());
-        assert!(validate_jobs_enqueue("book.epub", "pdf", " ").is_err());
     }
 
     #[test]
@@ -585,10 +589,13 @@ mod tests {
         assert_eq!(jobs_list_arguments(), vec!["jobs", "list"]);
         assert_eq!(
             jobs_enqueue_arguments(
-                "/Books/A real - title.epub".into(),
+                Some("/Books/A real - title.epub".into()),
+                None,
+                None,
                 "pdf".into(),
                 "/Exports/A real - title.pdf".into(),
-            ),
+            )
+            .unwrap(),
             vec![
                 "jobs",
                 "enqueue",
@@ -600,11 +607,69 @@ mod tests {
                 "/Exports/A real - title.pdf",
             ]
         );
+        assert_eq!(
+            jobs_enqueue_arguments(
+                None,
+                Some("book-1".into()),
+                Some("epub".into()),
+                "pdf".into(),
+                "/Exports/A real - title.pdf".into(),
+            )
+            .unwrap(),
+            vec![
+                "jobs",
+                "enqueue",
+                "--library-item-id",
+                "book-1",
+                "--from",
+                "epub",
+                "--to",
+                "pdf",
+                "--output",
+                "/Exports/A real - title.pdf",
+            ]
+        );
         assert_eq!(jobs_run_next_arguments(), vec!["jobs", "run-next"]);
         assert_eq!(
             jobs_cancel_arguments("job-1".into()),
             vec!["jobs", "cancel", "--id", "job-1"]
         );
+    }
+
+    #[test]
+    fn validates_job_enqueue_source_shape_without_owning_conversion_semantics() {
+        let arguments = |input: Option<&str>,
+                         library_item_id: Option<&str>,
+                         from: Option<&str>,
+                         to: &str,
+                         output: &str| {
+            jobs_enqueue_arguments(
+                input.map(str::to_owned),
+                library_item_id.map(str::to_owned),
+                from.map(str::to_owned),
+                to.into(),
+                output.into(),
+            )
+        };
+
+        assert!(arguments(Some("book.epub"), None, None, "epub", "book.epub").is_ok());
+        assert!(arguments(None, Some("book-1"), Some("pdf"), "epub", "book.epub").is_ok());
+        assert!(arguments(None, None, None, "pdf", "book.pdf").is_err());
+        assert!(arguments(
+            Some("book.epub"),
+            Some("book-1"),
+            Some("epub"),
+            "pdf",
+            "book.pdf"
+        )
+        .is_err());
+        assert!(arguments(None, Some("book-1"), None, "pdf", "book.pdf").is_err());
+        assert!(arguments(None, None, Some("epub"), "pdf", "book.pdf").is_err());
+        assert!(arguments(Some(" "), None, None, "pdf", "book.pdf").is_err());
+        assert!(arguments(None, Some(" "), Some("epub"), "pdf", "book.pdf").is_err());
+        assert!(arguments(None, Some("book-1"), Some(" "), "pdf", "book.pdf").is_err());
+        assert!(arguments(Some("book.epub"), None, None, " ", "book.pdf").is_err());
+        assert!(arguments(Some("book.epub"), None, None, "pdf", " ").is_err());
     }
 
     #[test]
