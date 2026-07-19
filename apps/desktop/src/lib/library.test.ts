@@ -5,7 +5,12 @@ import {
   describeUnexpectedLibraryError,
   importLibraryItem,
   listLibraryItems,
+  parseLibraryTags,
+  removeLibraryCover,
   removeLibraryItem,
+  searchLibraryItems,
+  setLibraryCover,
+  updateLibraryItem,
   type LibraryInvoker,
 } from "./library";
 
@@ -21,17 +26,58 @@ test("uses only the fixed desktop library commands and argument names", async ()
 
   await listLibraryItems(invokeCommand);
   await importLibraryItem("/Books/A title.epub", invokeCommand);
+  await updateLibraryItem(
+    "item-1",
+    {
+      title: "A new title",
+      author: null,
+      description: "A description",
+      tags: ["Classic", "Science Fiction"],
+    },
+    invokeCommand,
+  );
+  await searchLibraryItems("classic", invokeCommand);
+  await setLibraryCover("item-1", "/Pictures/A cover.jpg", invokeCommand);
+  await removeLibraryCover("item-1", invokeCommand);
   await removeLibraryItem("item-1", invokeCommand);
 
   expect(calls).toEqual([
     { command: "library_list", args: undefined },
     { command: "library_import", args: { sourcePath: "/Books/A title.epub" } },
+    {
+      command: "library_update",
+      args: {
+        id: "item-1",
+        title: "A new title",
+        author: "",
+        description: "A description",
+        tags: ["Classic", "Science Fiction"],
+      },
+    },
+    { command: "library_search", args: { query: "classic" } },
+    {
+      command: "library_cover_set",
+      args: { id: "item-1", sourcePath: "/Pictures/A cover.jpg" },
+    },
+    { command: "library_cover_remove", args: { id: "item-1" } },
     { command: "library_remove", args: { id: "item-1" } },
   ]);
 });
 
+test("normalizes comma-separated tags and rejects ambiguous replacements", () => {
+  expect(parseLibraryTags("  Science   Fiction, Classic ")).toEqual([
+    "Science Fiction",
+    "Classic",
+  ]);
+  expect(parseLibraryTags("  ")).toEqual([]);
+  expect(() => parseLibraryTags("Classic, classic")).toThrow();
+  expect(() => parseLibraryTags("Classic,")).toThrow();
+});
+
 test("gives boundary and storage failures specific user-facing messages", () => {
-  expect(describeLibraryError("invalid-arguments")).toBe("That file could not be imported.");
+  expect(describeLibraryError("invalid-arguments")).toBe(
+    "That file or metadata could not be used.",
+  );
   expect(describeLibraryError("engine-unavailable")).toBe(
     "The local library engine is unavailable.",
   );

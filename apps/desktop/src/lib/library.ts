@@ -1,8 +1,13 @@
 import { invoke } from "@tauri-apps/api/core";
+import { normalizeTags } from "@takio/core";
 import type {
+  LibraryCoverWireResult,
   LibraryImportWireResult,
   LibraryListWireResult,
+  LibraryMetadataPatch,
   LibraryRemoveWireResult,
+  LibrarySearchWireResult,
+  LibraryUpdateWireResult,
 } from "@takio/library-contract";
 
 export type LibraryBridgeErrorCode =
@@ -18,6 +23,9 @@ type LibraryBridgeFailure = {
 export type DesktopLibraryListResult = LibraryListWireResult | LibraryBridgeFailure;
 export type DesktopLibraryImportResult = LibraryImportWireResult | LibraryBridgeFailure;
 export type DesktopLibraryRemoveResult = LibraryRemoveWireResult | LibraryBridgeFailure;
+export type DesktopLibraryUpdateResult = LibraryUpdateWireResult | LibraryBridgeFailure;
+export type DesktopLibraryCoverResult = LibraryCoverWireResult | LibraryBridgeFailure;
+export type DesktopLibrarySearchResult = LibrarySearchWireResult | LibraryBridgeFailure;
 
 export type LibraryInvoker = <T>(
   command: string,
@@ -39,6 +47,42 @@ export function importLibraryItem(
   return invokeCommand("library_import", { sourcePath });
 }
 
+export function updateLibraryItem(
+  id: string,
+  patch: LibraryMetadataPatch,
+  invokeCommand: LibraryInvoker = invokeTauri,
+): Promise<DesktopLibraryUpdateResult> {
+  return invokeCommand("library_update", {
+    id,
+    title: patch.title,
+    author: patch.author === null ? "" : patch.author,
+    description: patch.description === null ? "" : patch.description,
+    tags: [...patch.tags],
+  });
+}
+
+export function searchLibraryItems(
+  query: string,
+  invokeCommand: LibraryInvoker = invokeTauri,
+): Promise<DesktopLibrarySearchResult> {
+  return invokeCommand("library_search", { query });
+}
+
+export function setLibraryCover(
+  id: string,
+  sourcePath: string,
+  invokeCommand: LibraryInvoker = invokeTauri,
+): Promise<DesktopLibraryCoverResult> {
+  return invokeCommand("library_cover_set", { id, sourcePath });
+}
+
+export function removeLibraryCover(
+  id: string,
+  invokeCommand: LibraryInvoker = invokeTauri,
+): Promise<DesktopLibraryCoverResult> {
+  return invokeCommand("library_cover_remove", { id });
+}
+
 export function removeLibraryItem(
   id: string,
   invokeCommand: LibraryInvoker = invokeTauri,
@@ -46,10 +90,14 @@ export function removeLibraryItem(
   return invokeCommand("library_remove", { id });
 }
 
+export function parseLibraryTags(value: string): readonly string[] {
+  return value.trim() === "" ? [] : normalizeTags(value.split(","));
+}
+
 export function describeLibraryError(code: string): string {
   switch (code) {
     case "invalid-arguments":
-      return "That file could not be imported.";
+      return "That file or metadata could not be used.";
     case "invalid-stored-data":
       return "The library contains data Takio cannot read.";
     case "incompatible-schema":
