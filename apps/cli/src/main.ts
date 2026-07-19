@@ -327,22 +327,90 @@ export function createProgram(
 
   storageCommand(jobs.command("enqueue").helpOption(false), writeError)
     .option("--db <path>", "jobs database path")
-    .requiredOption("--input <path>", "source document path")
+    .option("--input <path>", "source document path")
+    .option("--library-item-id <id>", "library item ID")
+    .option("--from <format>", `source library format: ${FORMAT_IDS.join(", ")}`)
     .requiredOption("--to <format>", `target format: ${FORMAT_IDS.join(", ")}`)
     .requiredOption("--output <path>", "output artifact path")
     .action(async (
-      options: { db?: string; input: string; to: string; output: string },
+      options: {
+        db?: string;
+        input?: string;
+        libraryItemId?: string;
+        from?: string;
+        to: string;
+        output: string;
+      },
       command: Command,
     ) => {
-      let queued;
-      try {
-        queued = await queuedConversionPaths(options.input, options.output, options.to);
-      } catch (error) {
-        if (error instanceof ConversionError) {
-          command.error("", { exitCode: 1, code: error.code });
-        }
-        throw error;
+      const pathSource = options.input !== undefined &&
+        options.libraryItemId === undefined && options.from === undefined;
+      const librarySource = options.input === undefined &&
+        options.libraryItemId !== undefined && options.from !== undefined;
+      if (!pathSource && !librarySource) {
+        command.error("", { exitCode: 1, code: "invalid-arguments" });
       }
+
+      let queued;
+      if (pathSource) {
+        try {
+          queued = await queuedConversionPaths(options.input!, options.output, options.to);
+        } catch (error) {
+          if (error instanceof ConversionError) {
+            command.error("", { exitCode: 1, code: error.code });
+          }
+          throw error;
+        }
+      } else {
+        if (
+          options.db !== undefined || options.libraryItemId!.length === 0 ||
+          !FORMAT_IDS.includes(options.from as FormatId) ||
+          !FORMAT_IDS.includes(options.to as FormatId)
+        ) {
+          command.error("", { exitCode: 1, code: "invalid-arguments" });
+        }
+
+        const { store: libraryStore } = await openLibraryStore(undefined, command);
+        try {
+          const found = await libraryStore.get({ id: options.libraryItemId! });
+          if (!found.ok) {
+            command.error("", { exitCode: 1, code: found.error.code });
+          }
+          if (!found.value) {
+            command.error("", { exitCode: 1, code: "not-found" });
+          }
+          const source = found.value.formats.find(({ format }) => format === options.from);
+          if (!source) {
+            command.error("", { exitCode: 1, code: "format-not-found" });
+          }
+          if (!LOCAL_CONVERSION_CAPABILITIES.some(
+            ({ from, to }) => from === options.from && to === options.to,
+          )) {
+            command.error("", { exitCode: 1, code: "unsupported-conversion" });
+          }
+          if (found.value.formats.some(({ format }) => format === options.to)) {
+            command.error("", { exitCode: 1, code: "duplicate-format" });
+          }
+          if (detectFormat(source.sourcePath) !== options.from) {
+            command.error("", { exitCode: 1, code: "format-mismatch" });
+          }
+
+          try {
+            queued = {
+              ...(await queuedConversionPaths(source.sourcePath, options.output, options.to)),
+              libraryItemId: options.libraryItemId!,
+            };
+          } catch (error) {
+            if (error instanceof ConversionError) {
+              command.error("", { exitCode: 1, code: error.code });
+            }
+            throw error;
+          }
+        } finally {
+          libraryStore.close();
+        }
+      }
+
       const store = await openJobStore(options.db, command);
       try {
         const result = store.enqueue(queued);
