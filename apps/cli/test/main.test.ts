@@ -455,9 +455,7 @@ describe("takio CLI", () => {
         ["library", "open", "--db", databasePath!, "--id", "open-book"],
         launch,
       );
-      expect(human).toEqual({
-        output: [`Opened open-book (epub): ${sourcePath}`],
-      });
+      expect(human).toEqual({ output: [`Opened ${sourcePath}`] });
     });
 
     it("opens the exact requested secondary format instead of the primary format", async () => {
@@ -535,6 +533,79 @@ describe("takio CLI", () => {
       expect(parseOutput(result.output)).toEqual({
         ok: false,
         error: { code: "format-not-found" },
+      });
+      expect(launches).toEqual([]);
+    });
+
+    it("rejects an unsupported requested format without opening the primary format", async () => {
+      const epubPath = join(directory!, "unsupported-request.epub");
+      await Bun.write(epubPath, "epub contents");
+      await addItem("unsupported-request", epubPath);
+      const launches: string[][] = [];
+
+      const result = await invoke(
+        [
+          "library",
+          "open",
+          "--db",
+          databasePath!,
+          "--id",
+          "unsupported-request",
+          "--format",
+          "rtf",
+          "--json",
+        ],
+        (argv) => launches.push([...argv]),
+      );
+
+      expect(result.exitCode).toBe(1);
+      expect(parseOutput(result.output)).toEqual({
+        ok: false,
+        error: { code: "invalid-arguments" },
+      });
+      expect(launches).toEqual([]);
+    });
+
+    it("reports a missing selected secondary without opening the healthy primary", async () => {
+      const epubPath = join(directory!, "healthy-primary.epub");
+      const pdfPath = join(directory!, "missing-secondary.pdf");
+      await Bun.write(epubPath, "epub contents");
+      await Bun.write(pdfPath, "pdf contents");
+      await addItem("missing-secondary", epubPath);
+      const attached = await invoke([
+        "library",
+        "format",
+        "attach",
+        "--db",
+        databasePath!,
+        "--id",
+        "missing-secondary",
+        "--source-path",
+        pdfPath,
+      ]);
+      expect(attached.exitCode).toBeUndefined();
+      await rm(pdfPath);
+      const launches: string[][] = [];
+
+      const result = await invoke(
+        [
+          "library",
+          "open",
+          "--db",
+          databasePath!,
+          "--id",
+          "missing-secondary",
+          "--format",
+          "pdf",
+          "--json",
+        ],
+        (argv) => launches.push([...argv]),
+      );
+
+      expect(result.exitCode).toBe(1);
+      expect(parseOutput(result.output)).toEqual({
+        ok: false,
+        error: { code: "missing-file" },
       });
       expect(launches).toEqual([]);
     });

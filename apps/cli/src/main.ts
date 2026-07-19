@@ -508,6 +508,7 @@ export function createProgram(
     .description("Send a library item to a mounted destination")
     .option("--db <path>", "database path")
     .requiredOption("--id <id>", "library item ID")
+    .option("--format <format>", `document format: ${FORMAT_IDS.join(", ")}`)
     .requiredOption("--dest <volume-path>", "mounted destination path")
     .option("--subdir <dir>", "destination subdirectory")
     .option("--overwrite", "replace an existing destination file")
@@ -519,6 +520,7 @@ export function createProgram(
       options: {
         db?: string;
         id: string;
+        format?: string;
         dest: string;
         subdir?: string;
         overwrite?: boolean;
@@ -526,6 +528,14 @@ export function createProgram(
       },
       command: Command,
     ) => {
+      const requestedFormat =
+        options.format === undefined
+          ? undefined
+          : FORMAT_IDS.find((candidate) => candidate === options.format);
+      if (options.format !== undefined && requestedFormat === undefined) {
+        command.error("", { exitCode: 1, code: "invalid-arguments" });
+      }
+
       const destination = await authorizeDestination(options.dest, options.volumesRoot);
       if (!destination) {
         command.error("", { exitCode: 1, code: "unknown-destination" });
@@ -540,11 +550,18 @@ export function createProgram(
         if (!item.value) {
           command.error("", { exitCode: 1, code: "unknown-item" });
         }
+        const selectedFormat =
+          requestedFormat === undefined
+            ? item.value.formats[0]
+            : item.value.formats.find(({ format }) => format === requestedFormat);
+        if (!selectedFormat) {
+          command.error("", { exitCode: 1, code: "format-not-found" });
+        }
 
         try {
           const result = await sendToDestination({
             itemId: item.value.id,
-            sourcePath: item.value.sourcePath,
+            sourcePath: selectedFormat.sourcePath,
             destination,
             subdir: options.subdir,
             overwrite: options.overwrite,
@@ -845,7 +862,7 @@ export function createProgram(
                     path: selectedFormat.sourcePath,
                   },
                 })
-              : `Opened ${item.id} (${selectedFormat.format}): ${selectedFormat.sourcePath}`,
+              : `Opened ${selectedFormat.sourcePath}`,
           );
         } finally {
           store.close();
