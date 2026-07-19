@@ -64,7 +64,10 @@ fn parse_engine_record(exit_code: Option<i32>, stdout: &[u8], stderr: &[u8]) -> 
     let has_payload = if ok {
         record.get("value").is_some()
     } else {
-        record.pointer("/error/code").and_then(Value::as_str).is_some()
+        record
+            .pointer("/error/code")
+            .and_then(Value::as_str)
+            .is_some()
     };
 
     let exit_matches_record = match exit_code {
@@ -161,33 +164,20 @@ pub async fn library_update(
         return failure("invalid-arguments");
     }
 
-    run_engine(
-        &app,
-        update_arguments(id, title, author, description, tags),
-    )
-    .await
+    run_engine(&app, update_arguments(id, title, author, description, tags)).await
 }
 
 #[tauri::command]
 pub async fn library_search(app: tauri::AppHandle, query: String) -> Value {
     run_engine(
         &app,
-        vec![
-            "library".into(),
-            "search".into(),
-            "--query".into(),
-            query,
-        ],
+        vec!["library".into(), "search".into(), "--query".into(), query],
     )
     .await
 }
 
 #[tauri::command]
-pub async fn library_cover_set(
-    app: tauri::AppHandle,
-    id: String,
-    source_path: String,
-) -> Value {
+pub async fn library_cover_set(app: tauri::AppHandle, id: String, source_path: String) -> Value {
     if validate_id(&id).is_err() || validate_file_source(Path::new(&source_path)).is_err() {
         return failure("invalid-arguments");
     }
