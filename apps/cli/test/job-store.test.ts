@@ -33,6 +33,115 @@ afterEach(async () => {
 });
 
 describe("JobStore", () => {
+  it("migrates v1 jobs without changing their durable records or adding a foreign key", async () => {
+    const path = await databasePath();
+    const root = dirname(path);
+    const database = new Database(path, { create: true, strict: true });
+    database.run(`
+      CREATE TABLE jobs (
+        enqueue_sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+        id TEXT NOT NULL UNIQUE,
+        status TEXT NOT NULL CHECK(status IN ('queued','running','completed','failed','canceled')),
+        input_path TEXT NOT NULL,
+        input_format TEXT NOT NULL,
+        output_format TEXT NOT NULL,
+        output_path TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        started_at TEXT,
+        finished_at TEXT,
+        owner_pid INTEGER,
+        error_code TEXT,
+        artifact_bytes INTEGER,
+        artifact_sha256 TEXT
+      ) STRICT
+    `);
+    database.run("CREATE INDEX jobs_status_order ON jobs(status, enqueue_sequence)");
+    database.run(`
+      INSERT INTO jobs
+        (id, status, input_path, input_format, output_format, output_path, created_at)
+      VALUES ('job_legacy', 'queued', ?, 'epub', 'pdf', ?, '2026-07-19T12:00:00.000Z')
+    `, [join(root, "legacy.epub"), join(root, "legacy.pdf")]);
+    database.run(`
+      INSERT INTO jobs
+        (id, status, input_path, input_format, output_format, output_path, created_at,
+          started_at, finished_at, artifact_bytes, artifact_sha256)
+      VALUES ('job_legacy_completed', 'completed', ?, 'epub', 'pdf', ?,
+        '2026-07-19T12:01:00.000Z', '2026-07-19T12:02:00.000Z',
+        '2026-07-19T12:03:00.000Z', 512, ?)
+    `, [join(root, "completed.epub"), join(root, "completed.pdf"), "a".repeat(64)]);
+    database.run("PRAGMA user_version = 1");
+    database.close();
+
+    const store = new JobStore(path);
+    expect(store.open()).toEqual({ ok: true, value: null });
+    expect(store.list()).toEqual({
+      ok: true,
+      value: [{
+        id: "job_legacy",
+        status: "queued",
+        inputPath: join(root, "legacy.epub"),
+        inputFormat: "epub",
+        outputFormat: "pdf",
+        outputPath: join(root, "legacy.pdf"),
+        createdAt: "2026-07-19T12:00:00.000Z",
+      }, {
+        id: "job_legacy_completed",
+        status: "completed",
+        inputPath: join(root, "completed.epub"),
+        inputFormat: "epub",
+        outputFormat: "pdf",
+        outputPath: join(root, "completed.pdf"),
+        createdAt: "2026-07-19T12:01:00.000Z",
+        startedAt: "2026-07-19T12:02:00.000Z",
+        finishedAt: "2026-07-19T12:03:00.000Z",
+        artifact: {
+          path: join(root, "completed.pdf"),
+          bytes: 512,
+          sha256: "a".repeat(64),
+        },
+      }],
+    });
+    store.close();
+
+    using migrated = new Database(path, { strict: true });
+    expect(migrated.query<{ user_version: number }, []>("PRAGMA user_version").get()?.user_version).toBe(2);
+    expect(migrated.query<{ name: string }, []>("PRAGMA table_info(jobs)").all().map(({ name }) => name)).toContain("library_item_id");
+    expect(migrated.query("PRAGMA foreign_key_list(jobs)").all()).toEqual([]);
+  });
+
+  it("round-trips optional library item linkage while legacy enqueues remain unlinked", async () => {
+    const path = await databasePath();
+    const root = dirname(path);
+    const store = new JobStore(path);
+    expect(store.open()).toEqual({ ok: true, value: null });
+
+    const linked = store.enqueue({
+      ...queuedInput(1, root),
+      libraryItemId: "book-1",
+    });
+    const unlinked = store.enqueue(queuedInput(2, root));
+    expect(linked).toMatchObject({ ok: true, value: { libraryItemId: "book-1" } });
+    if (!linked.ok || !unlinked.ok) throw new Error("enqueue failed");
+    expect(unlinked.value.id.startsWith("job_")).toBe(true);
+    expect("libraryItemId" in unlinked.value).toBe(false);
+    store.close();
+
+    const reopened = new JobStore(path);
+    expect(reopened.open()).toEqual({ ok: true, value: null });
+    expect(reopened.get(linked.value.id)).toMatchObject({
+      ok: true,
+      value: { libraryItemId: "book-1" },
+    });
+    const reopenedUnlinked = reopened.get(unlinked.value.id);
+    expect(reopenedUnlinked).toMatchObject({
+      ok: true,
+      value: { id: unlinked.value.id },
+    });
+    if (!reopenedUnlinked.ok || !reopenedUnlinked.value) throw new Error("missing job");
+    expect("libraryItemId" in reopenedUnlinked.value).toBe(false);
+    reopened.close();
+  });
+
   it("claims rapidly enqueued jobs in insertion order and persists terminal truth", async () => {
     const path = await databasePath();
     const root = dirname(path);

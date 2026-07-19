@@ -18,6 +18,7 @@ export type JobStatus = (typeof JOB_STATUSES)[number];
 export type ConversionJob = {
   readonly id: string;
   readonly status: JobStatus;
+  readonly libraryItemId?: string;
   readonly inputPath: string;
   readonly inputFormat: FormatId;
   readonly outputFormat: FormatId;
@@ -37,6 +38,7 @@ export type ConversionJob = {
 type StoredJob = {
   id: unknown;
   status: unknown;
+  libraryItemId: unknown;
   inputPath: unknown;
   inputFormat: unknown;
   outputFormat: unknown;
@@ -63,7 +65,8 @@ export type JobStoreResult<T> =
   | { readonly ok: false; readonly error: { readonly code: JobStoreErrorCode } };
 
 const selectJob = `
-  SELECT id, status, input_path AS inputPath, input_format AS inputFormat,
+  SELECT id, status, library_item_id AS libraryItemId,
+    input_path AS inputPath, input_format AS inputFormat,
     output_format AS outputFormat, output_path AS outputPath,
     created_at AS createdAt, started_at AS startedAt, finished_at AS finishedAt,
     owner_pid AS ownerPid, error_code AS errorCode,
@@ -93,6 +96,8 @@ function readJob(row: StoredJob): JobStoreResult<ConversionJob> {
   if (
     typeof row.id !== "string" || !row.id.startsWith("job_") ||
     !JOB_STATUSES.includes(row.status as JobStatus) ||
+    (row.libraryItemId !== null &&
+      (typeof row.libraryItemId !== "string" || row.libraryItemId.length === 0)) ||
     typeof row.inputPath !== "string" || !isAbsolute(row.inputPath) ||
     !isFormat(row.inputFormat) || !isFormat(row.outputFormat) ||
     typeof row.outputPath !== "string" || !isAbsolute(row.outputPath) ||
@@ -104,6 +109,7 @@ function readJob(row: StoredJob): JobStoreResult<ConversionJob> {
   const base = {
     id: row.id,
     status: row.status as JobStatus,
+    ...(typeof row.libraryItemId === "string" ? { libraryItemId: row.libraryItemId } : {}),
     inputPath: row.inputPath,
     inputFormat: row.inputFormat,
     outputFormat: row.outputFormat,
@@ -227,6 +233,7 @@ export class JobStore {
               enqueue_sequence INTEGER PRIMARY KEY AUTOINCREMENT,
               id TEXT NOT NULL UNIQUE,
               status TEXT NOT NULL CHECK(status IN ('queued','running','completed','failed','canceled')),
+              library_item_id TEXT,
               input_path TEXT NOT NULL,
               input_format TEXT NOT NULL,
               output_format TEXT NOT NULL,
@@ -241,8 +248,11 @@ export class JobStore {
             ) STRICT
           `);
           database!.run("CREATE INDEX jobs_status_order ON jobs(status, enqueue_sequence)");
-          database!.run("PRAGMA user_version = 1");
-        } else if (version !== 1) {
+          database!.run("PRAGMA user_version = 2");
+        } else if (version === 1) {
+          database!.run("ALTER TABLE jobs ADD COLUMN library_item_id TEXT");
+          database!.run("PRAGMA user_version = 2");
+        } else if (version !== 2) {
           throw incompatibleSchema;
         }
       }).immediate();
@@ -265,6 +275,7 @@ export class JobStore {
   }
 
   enqueue(input: {
+    libraryItemId?: string;
     inputPath: string;
     inputFormat: FormatId;
     outputFormat: FormatId;
@@ -273,6 +284,7 @@ export class JobStore {
     if (!this.#database) return failure("storage-unavailable");
     if (
       !isAbsolute(input.inputPath) || !isAbsolute(input.outputPath) ||
+      (input.libraryItemId !== undefined && input.libraryItemId.length === 0) ||
       !isFormat(input.inputFormat) || !isFormat(input.outputFormat)
     ) {
       return failure("invalid-stored-data");
@@ -281,9 +293,18 @@ export class JobStore {
     const createdAt = new Date().toISOString();
     try {
       this.#database.transaction(() => this.#database!.run(
-        `INSERT INTO jobs (id, status, input_path, input_format, output_format, output_path, created_at)
-         VALUES (?, 'queued', ?, ?, ?, ?, ?)`,
-        [id, input.inputPath, input.inputFormat, input.outputFormat, input.outputPath, createdAt],
+        `INSERT INTO jobs
+          (id, status, library_item_id, input_path, input_format, output_format, output_path, created_at)
+         VALUES (?, 'queued', ?, ?, ?, ?, ?, ?)`,
+        [
+          id,
+          input.libraryItemId ?? null,
+          input.inputPath,
+          input.inputFormat,
+          input.outputFormat,
+          input.outputPath,
+          createdAt,
+        ],
       )).immediate();
       return this.get(id) as JobStoreResult<ConversionJob>;
     } catch {
@@ -328,7 +349,8 @@ export class JobStore {
         UPDATE jobs SET status = 'running', started_at = ?, owner_pid = ?
         WHERE id = (SELECT id FROM jobs WHERE status = 'queued' ORDER BY enqueue_sequence LIMIT 1)
           AND status = 'queued'
-        RETURNING id, status, input_path AS inputPath, input_format AS inputFormat,
+        RETURNING id, status, library_item_id AS libraryItemId,
+          input_path AS inputPath, input_format AS inputFormat,
           output_format AS outputFormat, output_path AS outputPath,
           created_at AS createdAt, started_at AS startedAt, finished_at AS finishedAt,
           owner_pid AS ownerPid, error_code AS errorCode,
@@ -376,7 +398,8 @@ export class JobStore {
         const row = this.#database!.query<StoredJob, [string, string]>(`
           UPDATE jobs SET status = 'canceled', finished_at = ?
           WHERE id = ? AND status = 'queued'
-          RETURNING id, status, input_path AS inputPath, input_format AS inputFormat,
+          RETURNING id, status, library_item_id AS libraryItemId,
+            input_path AS inputPath, input_format AS inputFormat,
             output_format AS outputFormat, output_path AS outputPath,
             created_at AS createdAt, started_at AS startedAt, finished_at AS finishedAt,
             owner_pid AS ownerPid, error_code AS errorCode,
@@ -405,7 +428,8 @@ export class JobStore {
           UPDATE jobs SET status = ?, finished_at = ?, owner_pid = NULL, error_code = ?,
             artifact_bytes = ?, artifact_sha256 = ?
           WHERE id = ? AND status = 'running'
-          RETURNING id, status, input_path AS inputPath, input_format AS inputFormat,
+          RETURNING id, status, library_item_id AS libraryItemId,
+            input_path AS inputPath, input_format AS inputFormat,
             output_format AS outputFormat, output_path AS outputPath,
             created_at AS createdAt, started_at AS startedAt, finished_at AS finishedAt,
             owner_pid AS ownerPid, error_code AS errorCode,
