@@ -5,6 +5,7 @@ import { confirm, open, save } from "@tauri-apps/plugin-dialog";
 import {
   FORMAT_CATALOG,
   sanitizeDestinationFileName,
+  type BookFormat,
   type Destination,
   type LibraryItem,
 } from "@takio/core";
@@ -34,6 +35,7 @@ import {
   type ConversionJob,
 } from "./lib/jobs";
 import {
+  attachLibraryFormat,
   describeLibraryError,
   describeUnexpectedLibraryError,
   importLibraryItem,
@@ -41,6 +43,7 @@ import {
   openLibraryItem,
   parseLibraryTags,
   removeLibraryCover,
+  removeLibraryFormat,
   removeLibraryItem,
   searchLibraryItems,
   setLibraryCover,
@@ -84,10 +87,12 @@ export default function App() {
   const destinationRequestSequence = useRef(0);
   const jobRequestSequence = useRef(0);
   const deviceMutationPending = useRef(false);
+  const formatMutationPending = useRef(false);
   const importPending = useRef(false);
   const importButton = useRef<HTMLButtonElement>(null);
   const itemsRef = useRef(items);
   const postRemoveFocusItemId = useRef<string | null | undefined>(undefined);
+  const postFormatFocusControlId = useRef<string | undefined>(undefined);
   const queryRef = useRef(query);
   const searchInput = useRef<HTMLInputElement>(null);
   const menuActionHandlers = useRef<MenuActionHandlers | null>(null);
@@ -104,6 +109,16 @@ export default function App() {
     const target =
       itemId === null ? importButton.current : document.getElementById(`library-item-${itemId}`);
     (target ?? importButton.current)?.focus();
+  }, [items, pendingAction]);
+
+  useEffect(() => {
+    if (pendingAction !== null || postFormatFocusControlId.current === undefined) {
+      return;
+    }
+
+    const controlId = postFormatFocusControlId.current;
+    postFormatFocusControlId.current = undefined;
+    (document.getElementById(controlId) ?? importButton.current)?.focus();
   }, [items, pendingAction]);
 
   const loadLibrary = useCallback(
@@ -236,6 +251,29 @@ export default function App() {
     setItems((currentItems) =>
       currentItems.map((item) => (item.id === updated.id ? updated : item)),
     );
+  }
+
+  function supersedePendingLibraryRequest(): void {
+    requestSequence.current += 1;
+    setSearchPending(false);
+    setLibraryState("ready");
+  }
+
+  function discardMissingItem(item: LibraryItem): void {
+    const staleIndex = itemsRef.current.findIndex((candidate) => candidate.id === item.id);
+    const remainingItems = itemsRef.current.filter((candidate) => candidate.id !== item.id);
+    const focusItem =
+      staleIndex < 0
+        ? remainingItems[0]
+        : (remainingItems[staleIndex] ?? remainingItems[staleIndex - 1]);
+    postFormatFocusControlId.current = undefined;
+    postRemoveFocusItemId.current = focusItem?.id ?? null;
+    setItems(remainingItems);
+    setDraft((currentDraft) => (currentDraft?.id === item.id ? null : currentDraft));
+    setConversionDraft((currentDraft) =>
+      currentDraft?.id === item.id ? null : currentDraft,
+    );
+    setSelectedItemId((currentId) => (currentId === item.id ? null : currentId));
   }
 
   function changeSearch(searchQuery: string): void {
@@ -414,6 +452,191 @@ export default function App() {
       setNotice({ kind: "error", text: describeUnexpectedLibraryError(error) });
     } finally {
       setPendingAction(null);
+    }
+  }
+
+  async function attachFormat(
+    item: LibraryItem,
+    mode: "copy" | "reference",
+    focusControlId: string,
+  ): Promise<void> {
+    if (formatMutationPending.current) {
+      return;
+    }
+    formatMutationPending.current = true;
+
+    try {
+      let selection: string | string[] | null;
+      try {
+        selection = await open({
+          multiple: false,
+          filters: [{ name: "Supported books and documents", extensions: supportedExtensions }],
+        });
+      } catch (error) {
+        setNotice({ kind: "error", text: describeUnexpectedLibraryError(error) });
+        document.getElementById(focusControlId)?.focus();
+        return;
+      }
+
+      if (typeof selection !== "string") {
+        document.getElementById(focusControlId)?.focus();
+        return;
+      }
+
+      postFormatFocusControlId.current = focusControlId;
+      setPendingAction(`format-attach:${item.id}:${mode}`);
+      setNotice(null);
+      try {
+        const result = await attachLibraryFormat(item.id, selection, mode);
+        if (result.ok) {
+          supersedePendingLibraryRequest();
+        }
+        if (!result.ok) {
+          setNotice({
+            kind: "error",
+            text:
+              result.error.code === "duplicate-format"
+                ? "That format is already attached to this library item."
+                : describeLibraryError(result.error.code),
+          });
+          return;
+        }
+
+        const updated = result.value.item;
+        if (!updated) {
+          discardMissingItem(item);
+          setNotice({ kind: "error", text: "That library item no longer exists." });
+          return;
+        }
+        const addedFormat = updated.formats.find(
+          ({ format }) => !item.formats.some((current) => current.format === format),
+        );
+        const label = addedFormat
+          ? FORMAT_CATALOG.find((definition) => definition.id === addedFormat.format)!.label
+          : "format";
+        replaceItem(updated);
+        setSelectedItemId(updated.id);
+        setNotice({
+          kind: "status",
+          text:
+            mode === "copy"
+              ? `Imported a managed ${label} copy for “${updated.title}”. The selected source file remains in place.`
+              : `Attached a referenced ${label} file to “${updated.title}”. The original file remains in place.`,
+        });
+      } catch (error) {
+        setNotice({ kind: "error", text: describeUnexpectedLibraryError(error) });
+      } finally {
+        setPendingAction(null);
+      }
+    } finally {
+      formatMutationPending.current = false;
+    }
+  }
+
+  async function removeFormat(
+    item: LibraryItem,
+    bookFormat: BookFormat,
+    focusControlId: string,
+  ): Promise<void> {
+    if (formatMutationPending.current) {
+      return;
+    }
+    formatMutationPending.current = true;
+
+    try {
+      if (item.formats.length === 1) {
+        setNotice({ kind: "error", text: "Add another format before removing this one." });
+        return;
+      }
+
+      const removedIndex = item.formats.findIndex(
+        (candidate) => candidate.format === bookFormat.format,
+      );
+      const label = FORMAT_CATALOG.find(
+        (definition) => definition.id === bookFormat.format,
+      )!.label;
+      const nextPrimary = removedIndex === 0 ? item.formats[1] : undefined;
+      const nextPrimaryLabel = nextPrimary
+        ? FORMAT_CATALOG.find((definition) => definition.id === nextPrimary.format)!.label
+        : null;
+      const primaryConsequence = nextPrimaryLabel
+        ? ` ${nextPrimaryLabel} will become the primary format used by Open, Send, and Convert.`
+        : "";
+      const managed = bookFormat.provenance === "managed";
+
+      let approved: boolean;
+      try {
+        approved = await confirm(
+          managed
+            ? `Remove ${label} from “${item.title}” and permanently delete Takio’s managed copy? This cannot be undone. Files outside Takio will not be changed.${primaryConsequence}`
+            : `Remove the ${label} reference from “${item.title}”? The original file will stay on your Mac.${primaryConsequence}`,
+          {
+            title: managed ? `Delete managed ${label}?` : `Detach referenced ${label}?`,
+            kind: "warning",
+            okLabel: managed ? "Delete managed copy" : "Detach reference",
+            cancelLabel: "Cancel",
+          },
+        );
+      } catch (error) {
+        setNotice({ kind: "error", text: describeUnexpectedLibraryError(error) });
+        document.getElementById(focusControlId)?.focus();
+        return;
+      }
+
+      if (!approved) {
+        document.getElementById(focusControlId)?.focus();
+        return;
+      }
+
+      setPendingAction(`format-remove:${item.id}:${bookFormat.format}`);
+      setNotice(null);
+      try {
+        const result = await removeLibraryFormat(item.id, bookFormat.format);
+        if (result.ok) {
+          supersedePendingLibraryRequest();
+        }
+        if (!result.ok) {
+          postFormatFocusControlId.current = focusControlId;
+          setNotice({
+            kind: "error",
+            text:
+              result.error.code === "last-format"
+                ? "Add another format before removing this one."
+                : describeLibraryError(result.error.code),
+          });
+          return;
+        }
+
+        if (!result.value.item) {
+          discardMissingItem(item);
+          setNotice({ kind: "error", text: "That library item no longer exists." });
+          return;
+        }
+
+        const updated = result.value.item;
+        const focusFormat = updated.formats[removedIndex] ?? updated.formats[removedIndex - 1];
+        postFormatFocusControlId.current =
+          updated.formats.length > 1 && focusFormat
+            ? `format-remove-${updated.id}-${focusFormat.format}`
+            : `format-import-copy-${updated.id}`;
+        replaceItem(updated);
+        setSelectedItemId(updated.id);
+        setNotice({
+          kind: "status",
+          text: managed
+            ? result.value.cleanupPending
+              ? `Removed managed ${label} from “${updated.title}”. Cleanup could not be completed and will be retried.`
+              : `Deleted Takio’s managed ${label} copy and removed the format from “${updated.title}”.`
+            : `Detached referenced ${label} from “${updated.title}”. The original file was not changed.`,
+        });
+      } catch (error) {
+        postFormatFocusControlId.current = focusControlId;
+        setNotice({ kind: "error", text: describeUnexpectedLibraryError(error) });
+      } finally {
+        setPendingAction(null);
+      }
+    } finally {
+      formatMutationPending.current = false;
     }
   }
 
@@ -869,12 +1092,14 @@ export default function App() {
           searchPending={searchPending}
           selectedDestination={selectedDestination}
           selectedItemId={selectedItemId}
+          onAttachFormat={attachFormat}
           onChangeSearch={changeSearch}
           onChooseCover={chooseCover}
           onClearCover={clearCover}
           onEnqueueConversion={enqueueConversion}
           onOpenItem={openItem}
           onRemoveItem={removeItem}
+          onRemoveFormat={removeFormat}
           onRetry={() => loadLibrary(true, query)}
           onSaveMetadata={saveMetadata}
           onSelectItem={setSelectedItemId}

@@ -1,6 +1,11 @@
 import type { FormEvent, RefObject } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
-import { FORMAT_CATALOG, type Destination, type LibraryItem } from "@takio/core";
+import {
+  FORMAT_CATALOG,
+  type BookFormat,
+  type Destination,
+  type LibraryItem,
+} from "@takio/core";
 
 export type LibraryState = "loading" | "ready" | "error";
 export type MetadataDraft = {
@@ -24,11 +29,21 @@ type LibraryWorkspaceProps = {
   readonly searchPending: boolean;
   readonly selectedDestination: Destination | null;
   readonly selectedItemId: string | null;
+  readonly onAttachFormat: (
+    item: LibraryItem,
+    mode: "copy" | "reference",
+    focusControlId: string,
+  ) => Promise<void>;
   readonly onChangeSearch: (query: string) => void;
   readonly onChooseCover: (item: LibraryItem) => Promise<void>;
   readonly onClearCover: (item: LibraryItem) => Promise<void>;
   readonly onEnqueueConversion: (event: FormEvent, item: LibraryItem) => Promise<void>;
   readonly onOpenItem: (item: LibraryItem) => Promise<void>;
+  readonly onRemoveFormat: (
+    item: LibraryItem,
+    bookFormat: BookFormat,
+    focusControlId: string,
+  ) => Promise<void>;
   readonly onRemoveItem: (item: LibraryItem) => Promise<void>;
   readonly onRetry: () => Promise<boolean>;
   readonly onSaveMetadata: (event: FormEvent, item: LibraryItem) => Promise<void>;
@@ -64,11 +79,13 @@ export function LibraryWorkspace({
   searchPending,
   selectedDestination,
   selectedItemId,
+  onAttachFormat,
   onChangeSearch,
   onChooseCover,
   onClearCover,
   onEnqueueConversion,
   onOpenItem,
+  onRemoveFormat,
   onRemoveItem,
   onRetry,
   onSaveMetadata,
@@ -244,12 +261,50 @@ export function LibraryWorkspace({
                   <section
                     className="format-panel"
                     aria-labelledby={`formats-heading-${item.id}`}
+                    aria-busy={
+                      pendingAction?.startsWith(`format-attach:${item.id}:`) ||
+                      pendingAction?.startsWith(`format-remove:${item.id}:`)
+                    }
                   >
                     <div className="format-panel-heading">
-                      <h3 id={`formats-heading-${item.id}`}>Formats</h3>
-                      <span>
-                        {item.formats.length} {item.formats.length === 1 ? "format" : "formats"}
-                      </span>
+                      <div className="format-panel-title">
+                        <h3 id={`formats-heading-${item.id}`}>Formats</h3>
+                        <span>
+                          {item.formats.length} {item.formats.length === 1 ? "format" : "formats"}
+                        </span>
+                      </div>
+                      <div className="format-panel-actions">
+                        <button
+                          type="button"
+                          className="quiet-button"
+                          id={`format-import-copy-${item.id}`}
+                          aria-label={`Import a managed format copy for “${item.title}”`}
+                          disabled={actionsPending}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            void onAttachFormat(item, "copy", event.currentTarget.id);
+                          }}
+                        >
+                          {pendingAction === `format-attach:${item.id}:copy`
+                            ? "Importing…"
+                            : "Import a copy…"}
+                        </button>
+                        <button
+                          type="button"
+                          className="quiet-button"
+                          id={`format-attach-reference-${item.id}`}
+                          aria-label={`Attach an external format reference for “${item.title}”`}
+                          disabled={actionsPending}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            void onAttachFormat(item, "reference", event.currentTarget.id);
+                          }}
+                        >
+                          {pendingAction === `format-attach:${item.id}:reference`
+                            ? "Attaching…"
+                            : "Attach a reference…"}
+                        </button>
+                      </div>
                     </div>
                     <ol className="format-list" role="list">
                       {item.formats.map((bookFormat, index) => {
@@ -273,6 +328,47 @@ export function LibraryWorkspace({
                                 ? "Stored in Takio library"
                                 : bookFormat.sourcePath}
                             </code>
+                            <div className="format-row-actions">
+                              <button
+                                type="button"
+                                className={`quiet-button format-remove-button${
+                                  item.formats.length === 1 ? " format-last-button" : ""
+                                }`}
+                                id={`format-remove-${item.id}-${bookFormat.format}`}
+                                aria-label={`${
+                                  bookFormat.provenance === "managed"
+                                    ? "Delete managed copy"
+                                    : "Detach reference"
+                                } for ${label} from “${item.title}”`}
+                                aria-describedby={
+                                  item.formats.length === 1
+                                    ? `last-format-help-${item.id}-${bookFormat.format}`
+                                    : undefined
+                                }
+                                disabled={actionsPending || item.formats.length === 1}
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  void onRemoveFormat(item, bookFormat, event.currentTarget.id);
+                                }}
+                              >
+                                {pendingAction ===
+                                `format-remove:${item.id}:${bookFormat.format}`
+                                  ? bookFormat.provenance === "managed"
+                                    ? "Deleting…"
+                                    : "Detaching…"
+                                  : bookFormat.provenance === "managed"
+                                    ? "Delete managed copy"
+                                    : "Detach reference"}
+                              </button>
+                              {item.formats.length === 1 && (
+                                <small
+                                  className="format-last-help"
+                                  id={`last-format-help-${item.id}-${bookFormat.format}`}
+                                >
+                                  Add another format before removing this one.
+                                </small>
+                              )}
+                            </div>
                           </li>
                         );
                       })}
