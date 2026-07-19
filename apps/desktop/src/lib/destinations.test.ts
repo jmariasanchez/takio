@@ -33,12 +33,15 @@ test("uses only the fixed desktop destination commands and argument names", asyn
   ]);
 });
 
-test("keeps reader collision, availability, verification, and eject failures distinct", () => {
+test("keeps reader collision, availability, format, verification, and eject failures distinct", () => {
   expect(describeDestinationError("destination-file-exists")).toBe(
     "The destination file already exists on that reader.",
   );
   expect(describeDestinationError("unknown-destination")).toBe(
     "That reader is no longer available.",
+  );
+  expect(describeDestinationError("format-not-found")).toBe(
+    "That format is no longer available for this item.",
   );
   expect(describeDestinationError("verification-failed")).toBe(
     "The copied file could not be verified.",

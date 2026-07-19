@@ -76,6 +76,8 @@ export function describeDestinationError(code: string): string {
       return "The reader could not be ejected.";
     case "unknown-item":
       return "That library item no longer exists.";
+    case "format-not-found":
+      return "That format is no longer available for this item.";
     case "source-unavailable":
       return "The library item’s source file is unavailable.";
     case "destination-file-exists":
