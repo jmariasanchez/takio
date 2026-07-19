@@ -60,7 +60,10 @@ once with both EPUB and PDF formats.
 
 Exit: import, find, select, edit, merge, convert, and send work without opening
 the filesystem. At 1280x800 the library and search are immediately visible and
-at least eight rows fit.
+at least eight rows fit. With 10,000 seeded books and at least 15,000 formats,
+paging, filtering, and sorting stay database-backed; warm query-plus-facet-plus-
+sort p95 is at most 150 ms for the first 100 results, launch-to-usable is at most
+two seconds, and a saved view restores its query, facets, and sort after relaunch.
 
 ### 3. Conversion and device daily driver
 
