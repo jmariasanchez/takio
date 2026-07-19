@@ -2,8 +2,13 @@ import { useCallback, useEffect, useRef, useState, type FormEvent } from "react"
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { confirm, open } from "@tauri-apps/plugin-dialog";
-import { FORMAT_CATALOG, type Destination, type LibraryItem } from "@takio/core";
+import { confirm, open, save } from "@tauri-apps/plugin-dialog";
+import {
+  FORMAT_CATALOG,
+  sanitizeDestinationFileName,
+  type Destination,
+  type LibraryItem,
+} from "@takio/core";
 
 import {
   describeDestinationError,
@@ -13,6 +18,15 @@ import {
   sendLibraryItem,
 } from "./lib/destinations";
 import { formatFileSize } from "./lib/format";
+import {
+  cancelConversionJob,
+  describeJobError,
+  describeUnexpectedJobError,
+  enqueueConversionJob,
+  listConversionJobs,
+  runNextConversionJob,
+  type ConversionJob,
+} from "./lib/jobs";
 import {
   describeLibraryError,
   describeUnexpectedLibraryError,
@@ -34,6 +48,7 @@ const supportedExtensions = FORMAT_CATALOG.flatMap((format) =>
 const coverExtensions = ["png", "jpg", "jpeg", "webp", "gif"];
 
 type LibraryState = "loading" | "ready" | "error";
+type JobsState = "loading" | "ready" | "error";
 type Notice = { readonly kind: "status" | "error"; readonly text: string } | null;
 type MetadataDraft = {
   readonly id: string;
@@ -42,6 +57,7 @@ type MetadataDraft = {
   readonly description: string;
   readonly tags: string;
 };
+type ConversionDraft = { readonly id: string };
 type MenuActionHandlers = {
   readonly importFiles: () => Promise<void>;
   readonly importPaths: (paths: readonly string[]) => Promise<void>;
@@ -73,13 +89,17 @@ export default function App() {
   const [query, setQuery] = useState("");
   const [searchPending, setSearchPending] = useState(false);
   const [draft, setDraft] = useState<MetadataDraft | null>(null);
+  const [conversionDraft, setConversionDraft] = useState<ConversionDraft | null>(null);
   const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
   const [destinations, setDestinations] = useState<readonly Destination[]>([]);
   const [destinationsLoading, setDestinationsLoading] = useState(true);
+  const [jobs, setJobs] = useState<readonly ConversionJob[]>([]);
+  const [jobsState, setJobsState] = useState<JobsState>("loading");
   const [selectedDestinationId, setSelectedDestinationId] = useState<string | null>(null);
   const [dropActive, setDropActive] = useState(false);
   const requestSequence = useRef(0);
   const destinationRequestSequence = useRef(0);
+  const jobRequestSequence = useRef(0);
   const deviceMutationPending = useRef(false);
   const importPending = useRef(false);
   const queryRef = useRef(query);
@@ -168,9 +188,39 @@ export default function App() {
     }
   }, []);
 
+  const loadJobs = useCallback(async (showLoading = true): Promise<boolean> => {
+    const request = ++jobRequestSequence.current;
+    if (showLoading) {
+      setJobsState("loading");
+    }
+    try {
+      const result = await listConversionJobs();
+      if (request !== jobRequestSequence.current) {
+        return false;
+      }
+      if (!result.ok) {
+        setJobsState("error");
+        setNotice({ kind: "error", text: describeJobError(result.error.code) });
+        return false;
+      }
+
+      setJobs(result.value.jobs);
+      setJobsState("ready");
+      return true;
+    } catch (error) {
+      if (request !== jobRequestSequence.current) {
+        return false;
+      }
+      setJobsState("error");
+      setNotice({ kind: "error", text: describeUnexpectedJobError(error) });
+      return false;
+    }
+  }, []);
+
   useEffect(() => {
     void loadLibrary();
     void loadDestinations();
+    void loadJobs();
 
     // ponytail: passive polling is enough for Calibre-style reader discovery;
     // replace it with mount events only if polling becomes measurably expensive.
@@ -181,7 +231,7 @@ export default function App() {
     }, 10_000);
 
     return () => window.clearInterval(destinationRefresh);
-  }, [loadDestinations, loadLibrary]);
+  }, [loadDestinations, loadJobs, loadLibrary]);
 
   function replaceItem(updated: LibraryItem): void {
     setItems((currentItems) =>
@@ -395,6 +445,9 @@ export default function App() {
 
       setItems((currentItems) => currentItems.filter((candidate) => candidate.id !== item.id));
       setDraft((currentDraft) => (currentDraft?.id === item.id ? null : currentDraft));
+      setConversionDraft((currentDraft) =>
+        currentDraft?.id === item.id ? null : currentDraft,
+      );
       setSelectedItemId((currentId) => (currentId === item.id ? null : currentId));
       setLibraryState("ready");
       setNotice({ kind: "status", text: `Removed “${item.title}”.` });
@@ -428,6 +481,112 @@ export default function App() {
     setNotice(null);
     if (await loadDestinations()) {
       setNotice({ kind: "status", text: "Reader list refreshed." });
+    }
+  }
+
+  async function enqueueConversion(event: FormEvent, item: LibraryItem): Promise<void> {
+    event.preventDefault();
+    if (conversionDraft?.id !== item.id || item.format !== "epub") {
+      return;
+    }
+
+    let output: string | null;
+    try {
+      output = await save({
+        title: `Convert “${item.title}” to PDF`,
+        defaultPath: sanitizeDestinationFileName(`${item.title}.pdf`) ?? "converted.pdf",
+        filters: [{ name: "PDF document", extensions: ["pdf"] }],
+      });
+    } catch (error) {
+      setNotice({ kind: "error", text: describeUnexpectedJobError(error) });
+      return;
+    }
+    if (output === null) {
+      return;
+    }
+
+    setPendingAction(`job-enqueue:${item.id}`);
+    setNotice(null);
+    try {
+      const result = await enqueueConversionJob(item.sourcePath, output);
+      if (!result.ok) {
+        setNotice({ kind: "error", text: describeJobError(result.error.code) });
+        return;
+      }
+
+      setConversionDraft(null);
+      if (await loadJobs(false)) {
+        setNotice({ kind: "status", text: `Queued “${item.title}” for PDF conversion.` });
+      }
+    } catch (error) {
+      setNotice({ kind: "error", text: describeUnexpectedJobError(error) });
+    } finally {
+      setPendingAction(null);
+    }
+  }
+
+  async function refreshJobs(): Promise<void> {
+    setNotice(null);
+    if (await loadJobs()) {
+      setNotice({ kind: "status", text: "Conversion list refreshed." });
+    }
+  }
+
+  async function runNextJob(): Promise<void> {
+    setPendingAction("job-run-next");
+    setNotice(null);
+    try {
+      const result = await runNextConversionJob();
+      if (!result.ok) {
+        setNotice({ kind: "error", text: describeJobError(result.error.code) });
+        return;
+      }
+
+      if (!(await loadJobs(false))) {
+        return;
+      }
+      if (result.value.job === null) {
+        setNotice({ kind: "status", text: "No queued conversions." });
+      } else if (result.value.job.status === "completed") {
+        setNotice({
+          kind: "status",
+          text: `Conversion completed: ${result.value.job.outputPath}`,
+        });
+      } else if (result.value.job.status === "failed") {
+        setNotice({
+          kind: "error",
+          text: describeJobError(result.value.job.errorCode ?? "conversion-failed"),
+        });
+      } else {
+        setNotice({ kind: "status", text: "Conversion list updated." });
+      }
+    } catch (error) {
+      setNotice({ kind: "error", text: describeUnexpectedJobError(error) });
+    } finally {
+      setPendingAction(null);
+    }
+  }
+
+  async function cancelJob(job: ConversionJob): Promise<void> {
+    if (job.status !== "queued") {
+      return;
+    }
+    setPendingAction(`job-cancel:${job.id}`);
+    setNotice(null);
+    try {
+      const result = await cancelConversionJob(job.id);
+      if (!result.ok) {
+        setNotice({ kind: "error", text: describeJobError(result.error.code) });
+        return;
+      }
+
+      if (await loadJobs(false)) {
+        setNotice({ kind: "status", text: `Canceled conversion to ${job.outputPath}.` });
+      }
+    } catch (error) {
+      setNotice({ kind: "error", text: describeUnexpectedJobError(error) });
+    } finally {
+      setPendingAction(null);
     }
   }
 
@@ -499,6 +658,7 @@ export default function App() {
   const selectedDestination =
     destinations.find((destination) => destination.id === selectedDestinationId) ?? null;
   const selectedItem = items.find((item) => item.id === selectedItemId) ?? null;
+  const queuedJobs = jobs.filter((job) => job.status === "queued");
 
   async function openSelectedItem(): Promise<void> {
     if (!selectedItem) {
@@ -697,6 +857,96 @@ export default function App() {
           </div>
         </section>
 
+        <section
+          className="jobs-section"
+          aria-labelledby="conversions-heading"
+          aria-busy={jobsState === "loading" || pendingAction?.startsWith("job-") === true}
+        >
+          <div className="jobs-heading">
+            <div>
+              <p className="eyebrow">CONVERSIONS</p>
+              <h2 id="conversions-heading">Conversion queue</h2>
+            </div>
+            <div className="jobs-controls">
+              <span className="jobs-summary" aria-live="polite">
+                {queuedJobs.length} queued · {jobs.length} total
+              </span>
+              <button
+                className="quiet-button"
+                disabled={actionsPending || jobsState === "loading"}
+                onClick={() => void refreshJobs()}
+              >
+                {jobsState === "loading" ? "Refreshing…" : "Refresh"}
+              </button>
+              <button
+                className="quiet-button run-next-button"
+                disabled={actionsPending || jobsState === "loading" || queuedJobs.length === 0}
+                onClick={() => void runNextJob()}
+              >
+                {pendingAction === "job-run-next" ? "Converting…" : "Run next"}
+              </button>
+            </div>
+          </div>
+
+          {jobsState === "loading" && jobs.length === 0 && (
+            <div className="state-panel compact-state">Loading conversions…</div>
+          )}
+
+          {jobsState === "error" && jobs.length === 0 && (
+            <div className="state-panel compact-state error-panel">
+              <strong>Conversions unavailable</strong>
+              <span>Takio could not load the conversion list.</span>
+            </div>
+          )}
+
+          {jobsState === "ready" && jobs.length === 0 && (
+            <div className="state-panel compact-state">
+              <span>No conversions queued.</span>
+            </div>
+          )}
+
+          {jobs.length > 0 && (
+            <ol className="job-list">
+              {jobs.map((job) => {
+                const sourceTitle =
+                  items.find((item) => item.sourcePath === job.inputPath)?.title ?? "Conversion";
+                return (
+                  <li className="job-row" key={job.id}>
+                    <div className="job-primary">
+                      <strong>{sourceTitle}</strong>
+                      <span>
+                        {job.inputFormat.toUpperCase()} → {job.outputFormat.toUpperCase()}
+                      </span>
+                    </div>
+                    <div className="job-details">
+                      <span className={`job-status status-${job.status}`}>
+                        Status: {job.status[0].toUpperCase() + job.status.slice(1)}
+                      </span>
+                      <span className="job-output-label">Output</span>
+                      <code title={job.outputPath}>{job.outputPath}</code>
+                      {job.status === "failed" && (
+                        <span className="job-error">
+                          Reason: {describeJobError(job.errorCode ?? "conversion-failed")}
+                        </span>
+                      )}
+                    </div>
+                    {job.status === "queued" && (
+                      <button
+                        className="row-button danger-button job-cancel"
+                        aria-label={`Cancel ${job.inputFormat.toUpperCase()} to ${job.outputFormat.toUpperCase()} conversion to ${job.outputPath}`}
+                        disabled={actionsPending}
+                        onClick={() => void cancelJob(job)}
+                      >
+                        {pendingAction === `job-cancel:${job.id}` ? "Canceling…" : "Cancel"}
+                      </button>
+                    )}
+                  </li>
+                );
+              })}
+            </ol>
+          )}
+        </section>
+
         {notice ? (
           <p className={`notice ${notice.kind}`} role={notice.kind === "error" ? "alert" : "status"}>
             {notice.text}
@@ -762,6 +1012,7 @@ export default function App() {
             <div className="book-list">
               {items.map((item) => {
                 const editing = draft?.id === item.id;
+                const converting = conversionDraft?.id === item.id;
                 const selected = selectedItemId === item.id;
                 return (
                   <article
@@ -812,11 +1063,34 @@ export default function App() {
                         >
                           {pendingAction === `send:${item.id}` ? "Sending…" : "Send"}
                         </button>
+                        {item.format === "epub" && (
+                          <button
+                            className="row-button"
+                            aria-label={
+                              converting
+                                ? `Cancel conversion for ${item.title}`
+                                : `Convert ${item.title}`
+                            }
+                            aria-expanded={converting}
+                            aria-controls={`conversion-${item.id}`}
+                            disabled={actionsPending}
+                            onClick={() => {
+                              setDraft(null);
+                              setConversionDraft(converting ? null : { id: item.id });
+                            }}
+                          >
+                            {converting ? "Cancel convert" : "Convert"}
+                          </button>
+                        )}
                         <button
                           className="row-button"
                           aria-expanded={editing}
+                          aria-controls={`edit-${item.id}`}
                           disabled={actionsPending}
-                          onClick={() => setDraft(editing ? null : draftFor(item))}
+                          onClick={() => {
+                            setConversionDraft(null);
+                            setDraft(editing ? null : draftFor(item));
+                          }}
                         >
                           {editing ? "Cancel edit" : "Edit"}
                         </button>
@@ -831,9 +1105,51 @@ export default function App() {
                       </div>
                     </div>
 
+                    {converting && (
+                      <form
+                        className="conversion-panel"
+                        id={`conversion-${item.id}`}
+                        aria-labelledby={`conversion-heading-${item.id}`}
+                        onSubmit={(event) => void enqueueConversion(event, item)}
+                      >
+                        <div className="conversion-copy">
+                          <strong id={`conversion-heading-${item.id}`}>Convert EPUB</strong>
+                          <span id={`conversion-help-${item.id}`}>
+                            Choose where to save the PDF, then run it from the queue.
+                          </span>
+                        </div>
+                        <label htmlFor={`conversion-format-${item.id}`}>
+                          <span>Output format</span>
+                          <select
+                            id={`conversion-format-${item.id}`}
+                            defaultValue="pdf"
+                            aria-describedby={`conversion-help-${item.id}`}
+                          >
+                            <option value="pdf">PDF</option>
+                          </select>
+                        </label>
+                        <div className="conversion-actions">
+                          <button
+                            type="button"
+                            className="quiet-button"
+                            disabled={actionsPending}
+                            onClick={() => setConversionDraft(null)}
+                          >
+                            Cancel
+                          </button>
+                          <button className="primary-button" disabled={actionsPending} type="submit">
+                            {pendingAction === `job-enqueue:${item.id}`
+                              ? "Queueing…"
+                              : "Choose output…"}
+                          </button>
+                        </div>
+                      </form>
+                    )}
+
                     {editing && draft && (
                       <form
                         className="edit-panel"
+                        id={`edit-${item.id}`}
                         aria-label={`Edit ${item.title}`}
                         onSubmit={(event) => void saveMetadata(event, item)}
                       >
