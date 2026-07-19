@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { confirm, open } from "@tauri-apps/plugin-dialog";
 import { FORMAT_CATALOG, type Destination, type LibraryItem } from "@takio/core";
 
@@ -40,6 +42,14 @@ type MetadataDraft = {
   readonly description: string;
   readonly tags: string;
 };
+type MenuActionHandlers = {
+  readonly importFiles: () => Promise<void>;
+  readonly importPaths: (paths: readonly string[]) => Promise<void>;
+  readonly openSelected: () => Promise<void>;
+  readonly sendSelected: () => Promise<void>;
+  readonly ejectSelected: () => Promise<void>;
+  readonly find: () => void;
+};
 
 function addedDate(value: string): string {
   return new Intl.DateTimeFormat(undefined, { dateStyle: "medium" }).format(new Date(value));
@@ -67,8 +77,14 @@ export default function App() {
   const [destinations, setDestinations] = useState<readonly Destination[]>([]);
   const [destinationsLoading, setDestinationsLoading] = useState(true);
   const [selectedDestinationId, setSelectedDestinationId] = useState<string | null>(null);
+  const [dropActive, setDropActive] = useState(false);
   const requestSequence = useRef(0);
   const deviceMutationPending = useRef(false);
+  const importPending = useRef(false);
+  const queryRef = useRef(query);
+  const searchInput = useRef<HTMLInputElement>(null);
+  const menuActionHandlers = useRef<MenuActionHandlers | null>(null);
+  queryRef.current = query;
 
   const loadLibrary = useCallback(
     async (showLoading = true, searchQuery = ""): Promise<boolean> => {
@@ -156,11 +172,52 @@ export default function App() {
     void loadLibrary(false, searchQuery);
   }
 
-  async function importFile() {
+  const importPaths = useCallback(
+    async (paths: readonly string[]): Promise<void> => {
+      if (paths.length === 0 || importPending.current) {
+        return;
+      }
+
+      importPending.current = true;
+      setPendingAction("import");
+      setNotice(null);
+
+      let imported = 0;
+      const rejected: string[] = [];
+      for (const path of paths) {
+        try {
+          const result = await importLibraryItem(path);
+          if (result.ok) {
+            imported += 1;
+          } else {
+            rejected.push(`${path}: ${describeLibraryError(result.error.code)}`);
+          }
+        } catch (error) {
+          rejected.push(`${path}: ${describeUnexpectedLibraryError(error)}`);
+        }
+      }
+
+      const refreshed = await loadLibrary(false, queryRef.current);
+      const summary = `${imported} ${imported === 1 ? "item" : "items"} imported; ${rejected.length} rejected.`;
+      const details = rejected.map((error) => `• ${error}`);
+      if (!refreshed) {
+        details.push("• The library could not be refreshed.");
+      }
+      setNotice({
+        kind: rejected.length > 0 || !refreshed ? "error" : "status",
+        text: [summary, ...details].join("\n"),
+      });
+      importPending.current = false;
+      setPendingAction(null);
+    },
+    [loadLibrary],
+  );
+
+  async function importFile(): Promise<void> {
     let selection: string | string[] | null;
     try {
       selection = await open({
-        multiple: false,
+        multiple: true,
         filters: [{ name: "Supported books and documents", extensions: supportedExtensions }],
       });
     } catch (error) {
@@ -168,26 +225,11 @@ export default function App() {
       return;
     }
 
-    if (typeof selection !== "string") {
+    if (selection === null) {
       return;
     }
 
-    setPendingAction("import");
-    setNotice(null);
-    try {
-      const result = await importLibraryItem(selection);
-      if (!result.ok) {
-        setNotice({ kind: "error", text: describeLibraryError(result.error.code) });
-        return;
-      }
-
-      setNotice({ kind: "status", text: `Imported “${result.value.item.title}”.` });
-      await loadLibrary(false, query);
-    } catch (error) {
-      setNotice({ kind: "error", text: describeUnexpectedLibraryError(error) });
-    } finally {
-      setPendingAction(null);
-    }
+    await importPaths(typeof selection === "string" ? [selection] : selection);
   }
 
   async function saveMetadata(event: FormEvent, item: LibraryItem) {
@@ -434,9 +476,126 @@ export default function App() {
   const actionsPending = pendingAction !== null;
   const selectedDestination =
     destinations.find((destination) => destination.id === selectedDestinationId) ?? null;
+  const selectedItem = items.find((item) => item.id === selectedItemId) ?? null;
+
+  async function openSelectedItem(): Promise<void> {
+    if (!selectedItem) {
+      setNotice({ kind: "error", text: "Choose a library item before opening." });
+      return;
+    }
+    await openItem(selectedItem);
+  }
+
+  async function sendSelectedItem(): Promise<void> {
+    if (!selectedItem) {
+      setNotice({ kind: "error", text: "Choose a library item before sending." });
+      return;
+    }
+    await sendItem(selectedItem);
+  }
+
+  menuActionHandlers.current = {
+    importFiles: importFile,
+    importPaths,
+    openSelected: openSelectedItem,
+    sendSelected: sendSelectedItem,
+    ejectSelected: ejectSelectedDestination,
+    find: () => searchInput.current?.focus(),
+  };
+
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+
+    void listen<string>(
+      "takio://menu-action",
+      ({ payload }) => {
+        const handlers = menuActionHandlers.current;
+        if (!handlers) {
+          return;
+        }
+
+        switch (payload) {
+          case "import":
+            void handlers.importFiles();
+            break;
+          case "open-selected":
+            void handlers.openSelected();
+            break;
+          case "send-selected":
+            void handlers.sendSelected();
+            break;
+          case "eject-selected":
+            void handlers.ejectSelected();
+            break;
+          case "find":
+            handlers.find();
+            break;
+        }
+      },
+      { target: { kind: "WebviewWindow", label: "main" } },
+    )
+      .then((stopListening) => {
+        if (disposed) {
+          stopListening();
+        } else {
+          unlisten = stopListening;
+        }
+      })
+      .catch((error) => {
+        if (!disposed) {
+          setNotice({ kind: "error", text: describeUnexpectedLibraryError(error) });
+        }
+      });
+
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
+
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+
+    void getCurrentWindow()
+      .onDragDropEvent(({ payload }) => {
+        if (payload.type === "enter" || payload.type === "over") {
+          setDropActive(true);
+          return;
+        }
+
+        setDropActive(false);
+        if (payload.type === "drop") {
+          void menuActionHandlers.current?.importPaths(payload.paths);
+        }
+      })
+      .then((stopListening) => {
+        if (disposed) {
+          stopListening();
+        } else {
+          unlisten = stopListening;
+        }
+      })
+      .catch((error) => {
+        if (!disposed) {
+          setNotice({ kind: "error", text: describeUnexpectedLibraryError(error) });
+        }
+      });
+
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
 
   return (
-    <main className="app-shell">
+    <main className={`app-shell${dropActive ? " drop-active" : ""}`}>
+      {dropActive && (
+        <div className="drop-affordance" role="status">
+          Drop files to import
+        </div>
+      )}
       <aside className="sidebar">
         <div className="brand">
           <span className="brand-mark">T</span>
@@ -541,6 +700,7 @@ export default function App() {
           <label className="search-field" htmlFor="library-search">
             <span>Search your library</span>
             <input
+              ref={searchInput}
               id="library-search"
               type="search"
               value={query}

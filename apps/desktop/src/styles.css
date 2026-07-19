@@ -6,6 +6,7 @@ button:not(:disabled) { cursor: pointer; }
 button:disabled { cursor: wait; opacity: .6; }
 button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 2px solid #d9ff72; outline-offset: 3px; }
 .app-shell { display: grid; grid-template-columns: 218px minmax(0, 1fr); min-height: 100vh; background: #101112; }
+.drop-affordance { align-items: center; background: rgba(16, 17, 18, .9); border: 2px dashed #d9ff72; border-radius: 14px; color: #d9ff72; display: flex; font-size: 20px; font-weight: 700; inset: 18px; justify-content: center; pointer-events: none; position: fixed; z-index: 10; }
 .sidebar { border-right: 1px solid #292a2c; display: flex; flex-direction: column; padding: 27px 16px 18px; }
 .brand { align-items: center; display: flex; font-size: 21px; font-weight: 700; gap: 9px; letter-spacing: -1px; margin: 0 10px 42px; }
 .brand-mark { align-items: center; background: #d9ff72; border-radius: 7px; color: #101112; display: inline-flex; font-size: 16px; height: 26px; justify-content: center; width: 26px; }
@@ -33,7 +34,7 @@ h2 { font-size: 20px; letter-spacing: -.6px; margin-bottom: 0; }
 .reader-controls { align-items: center; display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; min-width: 0; }
 .reader-controls select { background: #1b1c1d; border: 1px solid #3a3c3e; border-radius: 7px; color: #eeeef0; min-width: 170px; padding: 8px 30px 8px 10px; }
 .reader-detail { color: #92969a; font-size: 11px; min-width: 130px; }
-.notice { color: #9ea3a7; font-size: 12px; min-height: 31px; margin-bottom: 0; padding: 10px 2px 0; }
+.notice { color: #9ea3a7; font-size: 12px; min-height: 31px; margin-bottom: 0; padding: 10px 2px 0; white-space: pre-line; }
 .notice.error { color: #ffaaa3; }
 .notice.status { color: #b9dc8f; }
 .library-section { margin-top: 27px; }
