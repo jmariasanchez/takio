@@ -79,6 +79,7 @@ export default function App() {
   const [selectedDestinationId, setSelectedDestinationId] = useState<string | null>(null);
   const [dropActive, setDropActive] = useState(false);
   const requestSequence = useRef(0);
+  const destinationRequestSequence = useRef(0);
   const deviceMutationPending = useRef(false);
   const importPending = useRef(false);
   const queryRef = useRef(query);
@@ -131,10 +132,16 @@ export default function App() {
     [],
   );
 
-  const loadDestinations = useCallback(async (): Promise<boolean> => {
-    setDestinationsLoading(true);
+  const loadDestinations = useCallback(async (showLoading = true): Promise<boolean> => {
+    const request = ++destinationRequestSequence.current;
+    if (showLoading) {
+      setDestinationsLoading(true);
+    }
     try {
       const result = await listDestinations();
+      if (request !== destinationRequestSequence.current) {
+        return false;
+      }
       if (!result.ok) {
         setNotice({ kind: "error", text: describeDestinationError(result.error.code) });
         return false;
@@ -149,16 +156,31 @@ export default function App() {
       );
       return true;
     } catch (error) {
+      if (request !== destinationRequestSequence.current) {
+        return false;
+      }
       setNotice({ kind: "error", text: describeUnexpectedDestinationError(error) });
       return false;
     } finally {
-      setDestinationsLoading(false);
+      if (request === destinationRequestSequence.current) {
+        setDestinationsLoading(false);
+      }
     }
   }, []);
 
   useEffect(() => {
     void loadLibrary();
     void loadDestinations();
+
+    // ponytail: passive polling is enough for Calibre-style reader discovery;
+    // replace it with mount events only if polling becomes measurably expensive.
+    const destinationRefresh = window.setInterval(() => {
+      if (!deviceMutationPending.current) {
+        void loadDestinations(false);
+      }
+    }, 10_000);
+
+    return () => window.clearInterval(destinationRefresh);
   }, [loadDestinations, loadLibrary]);
 
   function replaceItem(updated: LibraryItem): void {
