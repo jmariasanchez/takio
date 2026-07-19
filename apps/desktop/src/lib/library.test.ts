@@ -15,12 +15,31 @@ import {
   type LibraryInvoker,
 } from "./library";
 
+const validItem = {
+  id: "item-1",
+  title: "A title",
+  sourcePath: "/Books/A title.epub",
+  format: "epub",
+  addedAt: "2026-07-18T12:00:00.000Z",
+  author: "An author",
+  description: "A description",
+  coverPath: "/Covers/item-1.jpg",
+  tags: ["Classic"],
+  updatedAt: "2026-07-19T12:00:00.000Z",
+} as const;
+
 test("uses only the fixed desktop library commands and argument names", async () => {
   const calls: Array<{ command: string; args?: Record<string, unknown> }> = [];
   const invokeCommand: LibraryInvoker = async (command, args) => {
     calls.push({ command, args });
     if (command === "library_list") {
       return { ok: true, value: { items: [] } } as never;
+    }
+    if (command === "library_open") {
+      return {
+        ok: true,
+        value: { id: "item-1", path: "/Books/A title.epub" },
+      } as never;
     }
     return { ok: true, value: { item: null } } as never;
   };
@@ -65,6 +84,56 @@ test("uses only the fixed desktop library commands and argument names", async ()
     { command: "library_remove", args: { id: "item-1" } },
     { command: "library_open", args: { id: "item-1" } },
   ]);
+});
+
+test("passes valid v2 library responses through unchanged", async () => {
+  const listResult = { ok: true, value: { items: [validItem] } } as const;
+  const importResult = { ok: true, value: { item: validItem } } as const;
+  const removeResult = { ok: true, value: { item: null } } as const;
+  const openResult = {
+    ok: true,
+    value: { id: validItem.id, path: validItem.sourcePath },
+  } as const;
+
+  expect(await listLibraryItems(async () => listResult as never)).toBe(listResult);
+  expect(
+    await importLibraryItem(validItem.sourcePath, async () => importResult as never),
+  ).toBe(importResult);
+  expect(await removeLibraryItem(validItem.id, async () => removeResult as never)).toBe(
+    removeResult,
+  );
+  expect(await openLibraryItem(validItem.id, async () => openResult as never)).toBe(
+    openResult,
+  );
+});
+
+test("rejects malformed nested and scalar library response values", async () => {
+  const malformedResults = [
+    { ok: true, value: { items: [{ ...validItem, tags: "Classic" }] } },
+    { ok: true, value: { items: [{ ...validItem, format: "mp3" }] } },
+    { ok: false, error: { code: 42 } },
+  ];
+
+  for (const result of malformedResults) {
+    expect(await listLibraryItems(async () => result as never)).toEqual({
+      ok: false,
+      error: { code: "protocol-error" },
+    });
+  }
+
+  expect(
+    await importLibraryItem(validItem.sourcePath, async () => ({
+      ok: true,
+      value: { item: { ...validItem, addedAt: "yesterday" } },
+    }) as never),
+  ).toEqual({ ok: false, error: { code: "protocol-error" } });
+
+  expect(
+    await openLibraryItem(validItem.id, async () => ({
+      ok: true,
+      value: { id: validItem.id, path: 42 },
+    }) as never),
+  ).toEqual({ ok: false, error: { code: "protocol-error" } });
 });
 
 test("normalizes comma-separated tags and rejects ambiguous replacements", () => {
