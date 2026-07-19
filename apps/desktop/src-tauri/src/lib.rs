@@ -20,6 +20,10 @@ pub fn run() {
             library_engine::destination_list,
             library_engine::destination_send,
             library_engine::destination_eject,
+            library_engine::jobs_list,
+            library_engine::jobs_enqueue,
+            library_engine::jobs_run_next,
+            library_engine::jobs_cancel,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Takio");

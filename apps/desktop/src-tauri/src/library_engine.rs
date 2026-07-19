@@ -25,6 +25,14 @@ fn validate_nonempty(value: &str) -> Result<(), ()> {
     }
 }
 
+fn validate_jobs_enqueue(input: &str, to: &str, output: &str) -> Result<(), ()> {
+    if validate_nonempty(input).is_err() || to != "pdf" || validate_nonempty(output).is_err() {
+        Err(())
+    } else {
+        Ok(())
+    }
+}
+
 fn library_open_arguments(id: String) -> Vec<String> {
     vec![
         "library".into(),
@@ -56,6 +64,31 @@ fn destination_eject_arguments(destination_path: String) -> Vec<String> {
         "--dest".into(),
         destination_path,
     ]
+}
+
+fn jobs_list_arguments() -> Vec<String> {
+    vec!["jobs".into(), "list".into()]
+}
+
+fn jobs_enqueue_arguments(input: String, to: String, output: String) -> Vec<String> {
+    vec![
+        "jobs".into(),
+        "enqueue".into(),
+        "--input".into(),
+        input,
+        "--to".into(),
+        to,
+        "--output".into(),
+        output,
+    ]
+}
+
+fn jobs_run_next_arguments() -> Vec<String> {
+    vec!["jobs".into(), "run-next".into()]
+}
+
+fn jobs_cancel_arguments(id: String) -> Vec<String> {
+    vec!["jobs".into(), "cancel".into(), "--id".into(), id]
 }
 
 fn update_arguments(
@@ -298,6 +331,39 @@ pub async fn destination_eject(app: tauri::AppHandle, destination_path: String) 
     run_engine(&app, destination_eject_arguments(destination_path)).await
 }
 
+#[tauri::command]
+pub async fn jobs_list(app: tauri::AppHandle) -> Value {
+    run_engine(&app, jobs_list_arguments()).await
+}
+
+#[tauri::command]
+pub async fn jobs_enqueue(
+    app: tauri::AppHandle,
+    input: String,
+    to: String,
+    output: String,
+) -> Value {
+    if validate_jobs_enqueue(&input, &to, &output).is_err() {
+        return failure("invalid-arguments");
+    }
+
+    run_engine(&app, jobs_enqueue_arguments(input, to, output)).await
+}
+
+#[tauri::command]
+pub async fn jobs_run_next(app: tauri::AppHandle) -> Value {
+    run_engine(&app, jobs_run_next_arguments()).await
+}
+
+#[tauri::command]
+pub async fn jobs_cancel(app: tauri::AppHandle, id: String) -> Value {
+    if validate_nonempty(&id).is_err() {
+        return failure("invalid-arguments");
+    }
+
+    run_engine(&app, jobs_cancel_arguments(id)).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -308,6 +374,15 @@ mod tests {
         assert!(validate_nonempty("/Volumes/Reader").is_ok());
         assert!(validate_nonempty("  ").is_err());
         assert!(validate_file_source(Path::new("definitely-missing.epub")).is_err());
+        assert!(validate_jobs_enqueue(
+            "/Books/A real - title.epub",
+            "pdf",
+            "/Exports/A real - title.pdf",
+        )
+        .is_ok());
+        assert!(validate_jobs_enqueue("book.epub", "epub", "book.pdf").is_err());
+        assert!(validate_jobs_enqueue(" ", "pdf", "book.pdf").is_err());
+        assert!(validate_jobs_enqueue("book.epub", "pdf", " ").is_err());
     }
 
     #[test]
@@ -351,6 +426,33 @@ mod tests {
                 "--tag",
                 "Science Fiction",
             ]
+        );
+    }
+
+    #[test]
+    fn builds_fixed_job_arguments() {
+        assert_eq!(jobs_list_arguments(), vec!["jobs", "list"]);
+        assert_eq!(
+            jobs_enqueue_arguments(
+                "/Books/A real - title.epub".into(),
+                "pdf".into(),
+                "/Exports/A real - title.pdf".into(),
+            ),
+            vec![
+                "jobs",
+                "enqueue",
+                "--input",
+                "/Books/A real - title.epub",
+                "--to",
+                "pdf",
+                "--output",
+                "/Exports/A real - title.pdf",
+            ]
+        );
+        assert_eq!(jobs_run_next_arguments(), vec!["jobs", "run-next"]);
+        assert_eq!(
+            jobs_cancel_arguments("job-1".into()),
+            vec!["jobs", "cancel", "--id", "job-1"]
         );
     }
 
