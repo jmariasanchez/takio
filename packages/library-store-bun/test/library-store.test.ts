@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { Database } from "bun:sqlite";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -15,6 +15,16 @@ const item: LibraryItem = {
   sourcePath: "library/left-hand.epub",
   format: "epub",
   addedAt: "2026-07-18T12:00:00.000Z",
+  tags: [],
+};
+
+const secondItem: LibraryItem = {
+  id: "book-2",
+  title: "Kindred",
+  sourcePath: "library/kindred.epub",
+  format: "epub",
+  addedAt: "2026-07-18T13:00:00.000Z",
+  tags: [],
 };
 
 let directory: string;
@@ -29,6 +39,7 @@ beforeEach(async () => {
 
 afterEach(async () => {
   delete initializationTestSeam.afterVersionZeroPreflight;
+  delete initializationTestSeam.duringV1ToV2Migration;
 
   const closeErrors: unknown[] = [];
   for (const store of stores) {
@@ -61,14 +72,40 @@ function schemaVersion(): number | undefined {
   return database.query<{ user_version: number }, []>("PRAGMA user_version").get()?.user_version;
 }
 
+function createFrozenV1Fixture(): void {
+  using database = new Database(databasePath, { create: true, strict: true });
+  database.run(`
+    CREATE TABLE library_items (
+      id TEXT PRIMARY KEY,
+      title TEXT NOT NULL,
+      source_path TEXT NOT NULL,
+      format TEXT NOT NULL,
+      added_at TEXT NOT NULL
+    ) STRICT
+  `);
+  for (const fixtureItem of [item, secondItem]) {
+    database.run(
+      "INSERT INTO library_items (id, title, source_path, format, added_at) VALUES (?, ?, ?, ?, ?)",
+      [
+        fixtureItem.id,
+        fixtureItem.title,
+        fixtureItem.sourcePath,
+        fixtureItem.format,
+        fixtureItem.addedAt,
+      ],
+    );
+  }
+  database.run("PRAGMA user_version = 1");
+}
+
 describe("BunSqliteLibraryStore", () => {
-  it("persists add, get, list, and remove across injected-path reopenings at schema v1", async () => {
+  it("persists add, get, list, and remove across injected-path reopenings at schema v2", async () => {
     const first = createStore();
     expect(await first.open({ config: {} })).toEqual({ ok: true, value: null });
     expect(await first.add({ item })).toEqual({ ok: true, value: item });
     first.close();
 
-    expect(schemaVersion()).toBe(1);
+    expect(schemaVersion()).toBe(2);
 
     const second = createStore();
     expect(await second.open({ config: {} })).toEqual({ ok: true, value: null });
@@ -83,7 +120,103 @@ describe("BunSqliteLibraryStore", () => {
     expect(await third.list({})).toEqual({ ok: true, value: [] });
     third.close();
 
-    expect(schemaVersion()).toBe(1);
+    expect(schemaVersion()).toBe(2);
+  });
+
+  it("backs up and migrates a frozen v1 library without changing original fields", async () => {
+    createFrozenV1Fixture();
+
+    const store = createStore();
+    expect(await store.open({ config: {} })).toEqual({ ok: true, value: null });
+    expect(await store.list({})).toEqual({ ok: true, value: [item, secondItem] });
+    store.close();
+
+    expect(schemaVersion()).toBe(2);
+    using migrated = new Database(databasePath, { strict: true });
+    expect(
+      migrated.query<{ integrity_check: string }, []>("PRAGMA integrity_check").get()
+        ?.integrity_check,
+    ).toBe("ok");
+    using backup = new Database(`${databasePath}.v1.backup`, { strict: true });
+    expect(backup.query<{ user_version: number }, []>("PRAGMA user_version").get()?.user_version).toBe(
+      1,
+    );
+    expect(
+      backup.query<{ integrity_check: string }, []>("PRAGMA integrity_check").get()
+        ?.integrity_check,
+    ).toBe("ok");
+    expect(
+      backup
+        .query<
+          Pick<LibraryItem, "id" | "title" | "sourcePath" | "format" | "addedAt">,
+          []
+        >(`
+          SELECT id, title, source_path AS sourcePath, format, added_at AS addedAt
+          FROM library_items ORDER BY rowid
+        `)
+        .all(),
+    ).toEqual([
+      {
+        id: item.id,
+        title: item.title,
+        sourcePath: item.sourcePath,
+        format: item.format,
+        addedAt: item.addedAt,
+      },
+      {
+        id: secondItem.id,
+        title: secondItem.title,
+        sourcePath: secondItem.sourcePath,
+        format: secondItem.format,
+        addedAt: secondItem.addedAt,
+      },
+    ]);
+  });
+
+  it("treats reopening v2 as a no-op", async () => {
+    createFrozenV1Fixture();
+    const first = createStore();
+    expect(await first.open({ config: {} })).toEqual({ ok: true, value: null });
+    first.close();
+    const backupBefore = await readFile(`${databasePath}.v1.backup`);
+    const databaseBefore = await readFile(databasePath);
+
+    const second = createStore();
+    expect(await second.open({ config: {} })).toEqual({ ok: true, value: null });
+    expect(await second.list({})).toEqual({ ok: true, value: [item, secondItem] });
+    second.close();
+
+    expect(await readFile(`${databasePath}.v1.backup`)).toEqual(backupBefore);
+    expect(await readFile(databasePath)).toEqual(databaseBefore);
+  });
+
+  it("rolls back an interrupted migration and leaves the frozen v1 database readable", async () => {
+    createFrozenV1Fixture();
+    initializationTestSeam.duringV1ToV2Migration = () => {
+      throw new Error("injected migration failure");
+    };
+
+    const store = createStore();
+    expect(await store.open({ config: {} })).toEqual({
+      ok: false,
+      error: { code: "storage-unavailable" },
+    });
+
+    using database = new Database(databasePath, { strict: true });
+    expect(database.query<{ user_version: number }, []>("PRAGMA user_version").get()?.user_version).toBe(
+      1,
+    );
+    expect(
+      database
+        .query<{ name: string }, []>(
+          "SELECT name FROM sqlite_schema WHERE type = 'table' AND name NOT GLOB 'sqlite_*' ORDER BY name",
+        )
+        .all(),
+    ).toEqual([{ name: "library_items" }]);
+    expect(database.query<{ id: string }, []>("SELECT id FROM library_items ORDER BY rowid").all()).toEqual([
+      { id: item.id },
+      { id: secondItem.id },
+    ]);
   });
 
   it("maps duplicate primary keys to the contract error", async () => {
@@ -119,16 +252,18 @@ describe("BunSqliteLibraryStore", () => {
     reopened.close();
   });
 
-  it("rejects schemas other than v1", async () => {
+  it("rejects future schemas byte-for-byte without mutation", async () => {
     using database = new Database(databasePath);
-    database.run("PRAGMA user_version = 2");
+    database.run("PRAGMA user_version = 3");
     database.close();
+    const before = await readFile(databasePath);
 
     const store = createStore();
     expect(await store.open({ config: {} })).toEqual({
       ok: false,
       error: { code: "incompatible-schema" },
     });
+    expect(await readFile(databasePath)).toEqual(before);
   });
 
   it("rejects a nonempty version-0 database without claiming or mutating it", async () => {
@@ -183,14 +318,48 @@ describe("BunSqliteLibraryStore", () => {
     expect(
       initializedDatabase.query<{ user_version: number }, []>("PRAGMA user_version").get()
         ?.user_version,
-    ).toBe(1);
+    ).toBe(2);
     expect(
       initializedDatabase
         .query<{ name: string; type: string }, []>(
           "SELECT name, type FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' ORDER BY name",
         )
         .all(),
-    ).toEqual([{ name: "library_items", type: "table" }]);
+    ).toEqual([
+      { name: "library_item_tags", type: "table" },
+      { name: "library_items", type: "table" },
+      { name: "tags", type: "table" },
+    ]);
+  });
+
+  it("reports malformed metadata and tag rows instead of leaking partial items", async () => {
+    const store = createStore();
+    await store.open({ config: {} });
+    await store.add({ item });
+    store.close();
+
+    using database = new Database(databasePath);
+    database.run("UPDATE library_items SET author = '   ' WHERE id = ?", [item.id]);
+    const malformedMetadata = createStore();
+    expect(await malformedMetadata.open({ config: {} })).toEqual({ ok: true, value: null });
+    expect(await malformedMetadata.get({ id: item.id })).toEqual({
+      ok: false,
+      error: { code: "invalid-stored-data" },
+    });
+    malformedMetadata.close();
+
+    database.run("UPDATE library_items SET author = NULL WHERE id = ?", [item.id]);
+    database.run("INSERT INTO tags (normalized_name, name) VALUES ('blank', '   ')");
+    database.run(
+      "INSERT INTO library_item_tags (library_item_id, tag_normalized_name, position) VALUES (?, 'blank', 0)",
+      [item.id],
+    );
+    const malformedTag = createStore();
+    expect(await malformedTag.open({ config: {} })).toEqual({ ok: true, value: null });
+    expect(await malformedTag.list({})).toEqual({
+      ok: false,
+      error: { code: "invalid-stored-data" },
+    });
   });
 
   it("requires the caller to inject a database path", () => {
