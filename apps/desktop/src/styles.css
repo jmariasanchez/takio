@@ -1,10 +1,10 @@
 * { box-sizing: border-box; }
 :root { color: #eeeef0; background: #101112; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-synthesis: none; }
 body { margin: 0; min-width: 720px; min-height: 100vh; }
-button { font: inherit; }
+button, input, textarea { font: inherit; }
 button:not(:disabled) { cursor: pointer; }
 button:disabled { cursor: wait; opacity: .6; }
-button:focus-visible { outline: 2px solid #d9ff72; outline-offset: 3px; }
+button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px solid #d9ff72; outline-offset: 3px; }
 .app-shell { display: grid; grid-template-columns: 218px minmax(0, 1fr); min-height: 100vh; background: #101112; }
 .sidebar { border-right: 1px solid #292a2c; display: flex; flex-direction: column; padding: 27px 16px 18px; }
 .brand { align-items: center; display: flex; font-size: 21px; font-weight: 700; gap: 9px; letter-spacing: -1px; margin: 0 10px 42px; }
@@ -32,15 +32,31 @@ h2 { font-size: 20px; letter-spacing: -.6px; margin-bottom: 0; }
 .library-section { margin-top: 27px; }
 .section-heading { justify-content: space-between; margin-bottom: 17px; }
 .item-count { color: #92969a; font-size: 12px; }
+.search-field { display: grid; gap: 8px; margin-bottom: 18px; }
+.search-field span, .edit-panel label > span, .cover-actions > span { color: #c8cbce; font-size: 12px; font-weight: 600; }
+.search-field input, .edit-panel input, .edit-panel textarea { background: #171819; border: 1px solid #36383a; border-radius: 8px; color: #eeeef0; padding: 10px 12px; width: 100%; }
+.search-field input::placeholder { color: #74787b; }
+.edit-panel textarea { resize: vertical; }
 .state-panel { align-items: flex-start; border-bottom: 1px solid #292a2c; border-top: 1px solid #292a2c; color: #92969a; display: flex; flex-direction: column; font-size: 13px; gap: 8px; padding: 27px 0; }
 .state-panel strong { color: #ececef; font-size: 15px; }
 .state-panel .quiet-button { margin-top: 6px; }
 .error-panel strong { color: #ffaaa3; }
 .book-list { border-top: 1px solid #292a2c; }
-.book-row { border-bottom: 1px solid #292a2c; gap: 14px; min-height: 78px; }
-.cover { align-items: center; background: linear-gradient(145deg, #a4b189, #4e5d46); border-radius: 4px; color: #f7f7f7; display: flex; font-family: Georgia, serif; font-size: 24px; height: 45px; justify-content: center; width: 32px; }
-.book-title { display: grid; gap: 5px; min-width: 0; }
+.book-card { border-bottom: 1px solid #292a2c; }
+.book-row { gap: 14px; min-height: 78px; }
+.cover { align-items: center; background: linear-gradient(145deg, #a4b189, #4e5d46); border-radius: 4px; color: #f7f7f7; display: flex; flex: 0 0 auto; font-family: Georgia, serif; font-size: 24px; height: 51px; justify-content: center; width: 36px; }
+.cover-image { object-fit: cover; }
+.book-title { display: grid; flex: 1; gap: 5px; min-width: 0; }
 .book-title strong { font-size: 14px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .book-title span { color: #92969a; font-size: 12px; }
-.row-button { margin-left: auto; }
-@media (max-width: 820px) { .content { padding: 38px; }.hero-card { align-items: flex-start; flex-direction: column; } }
+.book-title .tag-summary { color: #b9dc8f; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.row-actions { display: flex; gap: 8px; margin-left: auto; }
+.danger-button { color: #ffaaa3; }
+.edit-panel { background: #151617; border-top: 1px solid #292a2c; display: grid; gap: 16px; grid-template-columns: repeat(2, minmax(0, 1fr)); padding: 22px 50px; }
+.edit-panel label { display: grid; gap: 7px; }
+.edit-panel small { color: #85898c; font-size: 11px; }
+.full-field { grid-column: 1 / -1; }
+.cover-actions, .edit-actions { align-items: center; display: flex; gap: 9px; }
+.cover-actions > span { margin-right: 5px; }
+.edit-actions { justify-content: flex-end; }
+@media (max-width: 820px) { .content { padding: 38px; }.hero-card { align-items: flex-start; flex-direction: column; }.edit-panel { grid-template-columns: 1fr; padding: 20px; }.full-field { grid-column: 1; } }

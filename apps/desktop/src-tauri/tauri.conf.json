@@ -20,7 +20,17 @@
         "resizable": true
       }
     ],
-    "security": { "csp": null }
+    "security": {
+      "csp": null,
+      "assetProtocol": {
+        "enable": true,
+        "scope": [
+          "$DATA/Takio/covers/**",
+          "$LOCALDATA/Takio/covers/**",
+          "$DATA/takio/covers/**"
+        ]
+      }
+    }
   },
   "bundle": {
     "active": true,
