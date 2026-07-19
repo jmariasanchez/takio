@@ -10,6 +10,8 @@ import {
   type LibraryItem,
 } from "@takio/core";
 
+import { DeviceControls } from "./components/DeviceControls";
+import { JobsPanel } from "./components/JobsPanel";
 import {
   describeDestinationError,
   describeUnexpectedDestinationError,
@@ -17,7 +19,6 @@ import {
   listDestinations,
   sendLibraryItem,
 } from "./lib/destinations";
-import { formatFileSize } from "./lib/format";
 import {
   cancelConversionJob,
   describeJobError,
@@ -40,7 +41,6 @@ import {
   setLibraryCover,
   updateLibraryItem,
 } from "./lib/library";
-import { JobsPanel } from "./components/JobsPanel";
 import "./styles.css";
 
 const supportedExtensions = FORMAT_CATALOG.flatMap((format) =>
@@ -808,54 +808,17 @@ export default function App() {
           </button>
         </section>
 
-        <section className="reader-bar" aria-label="Connected readers">
-          <div className="reader-heading">
-            <p className="eyebrow">READER</p>
-            <strong>Send to a mounted device</strong>
-          </div>
-          <div className="reader-controls">
-            <select
-              aria-label="Selected reader"
-              value={selectedDestinationId ?? ""}
-              disabled={actionsPending || destinationsLoading}
-              onChange={(event) =>
-                setSelectedDestinationId(event.currentTarget.value || null)
-              }
-            >
-              <option value="">Choose a reader…</option>
-              {destinations.map((destination) => (
-                <option key={destination.id} value={destination.id}>
-                  {destination.name}
-                </option>
-              ))}
-            </select>
-            <span className="reader-detail" aria-live="polite">
-              {destinationsLoading
-                ? "Scanning…"
-                : selectedDestination
-                  ? `${selectedDestination.kind[0]?.toUpperCase()}${selectedDestination.kind.slice(1)} · ${
-                      selectedDestination.freeBytes === undefined
-                        ? "Free space unavailable"
-                        : `${formatFileSize(selectedDestination.freeBytes)} free`
-                    }`
-                  : `${destinations.length} ${destinations.length === 1 ? "reader" : "readers"} found`}
-            </span>
-            <button
-              className="quiet-button"
-              disabled={actionsPending || destinationsLoading}
-              onClick={() => void refreshDestinations()}
-            >
-              {destinationsLoading ? "Refreshing…" : "Refresh"}
-            </button>
-            <button
-              className="quiet-button"
-              disabled={!selectedDestination || actionsPending || destinationsLoading}
-              onClick={() => void ejectSelectedDestination()}
-            >
-              {pendingAction === "eject" ? "Ejecting…" : "Eject"}
-            </button>
-          </div>
-        </section>
+        <DeviceControls
+          actionsPending={actionsPending}
+          destinations={destinations}
+          destinationsLoading={destinationsLoading}
+          pendingAction={pendingAction}
+          selectedDestination={selectedDestination}
+          selectedDestinationId={selectedDestinationId}
+          onEject={ejectSelectedDestination}
+          onRefresh={refreshDestinations}
+          onSelectDestination={setSelectedDestinationId}
+        />
 
         <JobsPanel
           actionsPending={actionsPending}
