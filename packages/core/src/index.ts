@@ -1,3 +1,11 @@
+export {
+  DESTINATION_KINDS,
+  classifyDestinationKind,
+  defaultDestinationSubdir,
+  sanitizeDestinationFileName,
+  type Destination,
+  type DestinationKind,
+} from "./destinations.js";
 export { FORMAT_CATALOG, FORMAT_IDS, detectFormat, type FormatDefinition, type FormatId } from "./formats.js";
 export {
   InMemoryLibraryRepository,
