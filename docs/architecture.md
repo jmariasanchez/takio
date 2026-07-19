@@ -17,7 +17,10 @@ Takio replaces the heavyweight, application-centric Calibre workflow with a focu
 | `@takio/desktop` | Tauri v2 native shell and minimalist React interface | Implemented: UI shell |
 | Converter adapters | Declare supported pairs and invoke a real engine safely | Planned |
 | Controller/queue | Persist jobs, retries, cancellation, and event history | Planned |
+| Destination transfer | Detect mounted USB mass-storage recipients and copy verified library files | Implemented: macOS |
 | Device agent | Authenticated worker that advertises adapters and capacity | Planned |
+
+A `Destination` is a passive mounted recipient volume, distinct from the planned device agent that will act as an authenticated remote execution worker.
 
 ## Agent-first CLI principles
 

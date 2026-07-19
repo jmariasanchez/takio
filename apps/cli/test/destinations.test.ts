@@ -16,7 +16,7 @@ import { join, relative } from "node:path";
 import { CommanderError } from "commander";
 
 import { destinationTestSeam } from "../src/destination-test-seam.js";
-import { listDestinations } from "../src/destinations.js";
+import { ejectDestination, listDestinations } from "../src/destinations.js";
 import { createProgram } from "../src/main.js";
 
 const temporaryRoots = new Set<string>();
@@ -45,12 +45,17 @@ async function invokeProcess(
 
 async function invoke(
   args: readonly string[],
+  eject?: (destinationPath: string) => Promise<number>,
+  platform: NodeJS.Platform = process.platform,
 ): Promise<{ output: string[]; exitCode?: number }> {
   const output: string[] = [];
   try {
     await createProgram(
       (line) => output.push(line),
       (line) => output.push(line),
+      undefined,
+      eject,
+      platform,
     ).parseAsync(["bun", "takio", ...args]);
     return { output };
   } catch (error) {
@@ -218,6 +223,110 @@ describe("mounted destinations", () => {
     expect(result.stderr).toBe("");
     expect(result.stdout).toBe(expected);
     expect(result.stdout).not.toMatch(/Usage:|Options:|Commands:/);
+  });
+
+  test("ejects an authorized destination with an exact argv array", async () => {
+    const root = await temporaryRoot();
+    const volumesRoot = join(root, "Volumes");
+    const destination = join(volumesRoot, "Reader");
+    await mkdir(join(destination, ".kobo"), { recursive: true });
+    const canonicalDestination = await realpath(destination);
+    const argvCalls: readonly string[][] = [];
+
+    const directExitCode = await ejectDestination(
+      canonicalDestination,
+      async (argv) => {
+        argvCalls.push([...argv]);
+        return 0;
+      },
+    );
+    expect(directExitCode).toBe(0);
+    expect(argvCalls).toEqual([
+      ["diskutil", "eject", canonicalDestination],
+    ]);
+
+    const ejectCalls: string[] = [];
+    const result = await invoke(
+      [
+        "destination",
+        "eject",
+        "--dest",
+        destination,
+        "--volumes-root",
+        volumesRoot,
+      ],
+      async (destinationPath) => {
+        ejectCalls.push(destinationPath);
+        return 0;
+      },
+      "darwin",
+    );
+
+    expect(result.exitCode).toBeUndefined();
+    expect(parseRecord(result)).toEqual({
+      ok: true,
+      value: { destinationId: "Reader" },
+    });
+    expect(ejectCalls).toEqual([canonicalDestination]);
+  });
+
+  test("isolates eject authorization, platform, and process failures", async () => {
+    const root = await temporaryRoot();
+    const volumesRoot = join(root, "Volumes");
+    const destination = join(volumesRoot, "Reader");
+    const outside = join(root, "Outside");
+    await Promise.all([
+      mkdir(join(destination, ".kobo"), { recursive: true }),
+      mkdir(join(outside, ".kobo"), { recursive: true }),
+    ]);
+    const args = [
+      "destination",
+      "eject",
+      "--dest",
+      destination,
+      "--volumes-root",
+      volumesRoot,
+    ];
+    let calls = 0;
+    const eject = async () => {
+      calls += 1;
+      return 9;
+    };
+
+    const unauthorized = await invoke(
+      [
+        "destination",
+        "eject",
+        "--dest",
+        outside,
+        "--volumes-root",
+        volumesRoot,
+      ],
+      eject,
+      "darwin",
+    );
+    expect(unauthorized.exitCode).toBe(1);
+    expect(parseRecord(unauthorized)).toEqual({
+      ok: false,
+      error: { code: "unknown-destination" },
+    });
+    expect(calls).toBe(0);
+
+    const unsupported = await invoke(args, eject, "linux");
+    expect(unsupported.exitCode).toBe(1);
+    expect(parseRecord(unsupported)).toEqual({
+      ok: false,
+      error: { code: "unsupported-platform" },
+    });
+    expect(calls).toBe(0);
+
+    const failed = await invoke(args, eject, "darwin");
+    expect(failed.exitCode).toBe(1);
+    expect(parseRecord(failed)).toEqual({
+      ok: false,
+      error: { code: "eject-failed" },
+    });
+    expect(calls).toBe(1);
   });
 
   test("sends and independently verifies a library source through one JSON record", async () => {

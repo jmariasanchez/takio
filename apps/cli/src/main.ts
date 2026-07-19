@@ -16,6 +16,7 @@ import { BunSqliteLibraryStore } from "@takio/library-store-bun";
 import {
   DestinationTransferError,
   authorizeDestination,
+  ejectDestination,
   listDestinations,
   sendToDestination,
 } from "./destinations.js";
@@ -26,6 +27,7 @@ type LibraryPaths = {
 };
 
 type Launcher = (argv: readonly string[]) => void | Promise<void>;
+type Ejector = (destinationPath: string) => Promise<number>;
 
 function openWithDefaultApp(argv: readonly string[]): void {
   Bun.spawn({ cmd: [...argv], stdin: "ignore", stdout: "ignore", stderr: "ignore" });
@@ -143,6 +145,8 @@ export function createProgram(
   write: (message: string) => void = console.log,
   writeError: (message: string) => void = write,
   launch: Launcher = openWithDefaultApp,
+  eject: Ejector = ejectDestination,
+  platform: NodeJS.Platform = process.platform,
 ): Command {
   const program = new Command();
 
@@ -192,6 +196,43 @@ export function createProgram(
         command.error("", { exitCode: 1, code: "destination-unavailable" });
       }
     });
+
+  storageCommand(destination.command("eject").helpOption(false), writeError)
+    .requiredOption("--dest <volume-path>", "mounted destination path")
+    .option("--volumes-root <path>", "mounted-volume root", "/Volumes")
+    .action(
+      async (
+        options: { dest: string; volumesRoot: string },
+        command: Command,
+      ) => {
+        const mountedDestination = await authorizeDestination(
+          options.dest,
+          options.volumesRoot,
+        );
+        if (!mountedDestination) {
+          command.error("", { exitCode: 1, code: "unknown-destination" });
+        }
+        if (platform !== "darwin") {
+          command.error("", { exitCode: 1, code: "unsupported-platform" });
+        }
+
+        let exitCode: number;
+        try {
+          exitCode = await eject(mountedDestination.path);
+        } catch {
+          command.error("", { exitCode: 1, code: "eject-failed" });
+        }
+        if (exitCode !== 0) {
+          command.error("", { exitCode: 1, code: "eject-failed" });
+        }
+        write(
+          JSON.stringify({
+            ok: true,
+            value: { destinationId: mountedDestination.id },
+          }),
+        );
+      },
+    );
 
   const send = storageCommand(new Command("send"), writeError)
     .helpOption(false)

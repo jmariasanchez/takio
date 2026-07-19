@@ -65,6 +65,26 @@ export interface SendToDestinationResult {
   readonly sha256: string;
 }
 
+export type DestinationCommandRunner = (
+  argv: readonly string[],
+) => Promise<number>;
+
+async function runDestinationCommand(argv: readonly string[]): Promise<number> {
+  const child = Bun.spawn([...argv], {
+    stdin: "ignore",
+    stdout: "ignore",
+    stderr: "ignore",
+  });
+  return child.exited;
+}
+
+export async function ejectDestination(
+  destinationPath: string,
+  run: DestinationCommandRunner = runDestinationCommand,
+): Promise<number> {
+  return run(["diskutil", "eject", destinationPath]);
+}
+
 export async function listDestinations(
   volumesRoot: string,
 ): Promise<readonly Destination[]> {
