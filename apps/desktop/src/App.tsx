@@ -89,6 +89,7 @@ export default function App() {
   const deviceMutationPending = useRef(false);
   const formatMutationPending = useRef(false);
   const importPending = useRef(false);
+  const openPending = useRef(false);
   const importButton = useRef<HTMLButtonElement>(null);
   const itemsRef = useRef(items);
   const postRemoveFocusItemId = useRef<string | null | undefined>(undefined);
@@ -697,21 +698,39 @@ export default function App() {
     }
   }
 
-  async function openItem(item: LibraryItem) {
+  async function openItem(
+    item: LibraryItem,
+    bookFormat: BookFormat,
+    focusControlId: string,
+  ): Promise<void> {
+    if (openPending.current) {
+      return;
+    }
+
+    openPending.current = true;
+    postFormatFocusControlId.current = focusControlId;
     setSelectedItemId(item.id);
-    setPendingAction(`open:${item.id}`);
+    setPendingAction(`open:${item.id}:${bookFormat.format}`);
     setNotice(null);
     try {
-      const result = await openLibraryItem(item.id);
+      const result = await openLibraryItem(item.id, bookFormat.format);
       if (!result.ok) {
-        setNotice({ kind: "error", text: describeLibraryError(result.error.code) });
+        const errorText = describeLibraryError(result.error.code);
+        if (result.error.code === "format-not-found" || result.error.code === "not-found") {
+          await loadLibrary(false, queryRef.current);
+        }
+        setNotice({ kind: "error", text: errorText });
         return;
       }
 
-      setNotice({ kind: "status", text: `Opened “${item.title}”.` });
+      const label = FORMAT_CATALOG.find(
+        (definition) => definition.id === bookFormat.format,
+      )!.label;
+      setNotice({ kind: "status", text: `Opened ${label} for “${item.title}”.` });
     } catch (error) {
       setNotice({ kind: "error", text: describeUnexpectedLibraryError(error) });
     } finally {
+      openPending.current = false;
       setPendingAction(null);
     }
   }
@@ -903,7 +922,11 @@ export default function App() {
       setNotice({ kind: "error", text: "Choose a library item before opening." });
       return;
     }
-    await openItem(selectedItem);
+    await openItem(
+      selectedItem,
+      selectedItem.formats[0],
+      `library-primary-open-${selectedItem.id}`,
+    );
   }
 
   async function sendSelectedItem(): Promise<void> {

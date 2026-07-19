@@ -38,7 +38,11 @@ type LibraryWorkspaceProps = {
   readonly onChooseCover: (item: LibraryItem) => Promise<void>;
   readonly onClearCover: (item: LibraryItem) => Promise<void>;
   readonly onEnqueueConversion: (event: FormEvent, item: LibraryItem) => Promise<void>;
-  readonly onOpenItem: (item: LibraryItem) => Promise<void>;
+  readonly onOpenItem: (
+    item: LibraryItem,
+    bookFormat: BookFormat,
+    focusControlId: string,
+  ) => Promise<void>;
   readonly onRemoveFormat: (
     item: LibraryItem,
     bookFormat: BookFormat,
@@ -201,11 +205,20 @@ export function LibraryWorkspace({
                   <div className="row-actions">
                     <button
                       className="row-button"
-                      aria-label={`Open ${item.title}`}
+                      id={`library-primary-open-${item.id}`}
+                      aria-label={`Open ${
+                        FORMAT_CATALOG.find(
+                          (definition) => definition.id === item.formats[0].format,
+                        )!.label
+                      } for “${item.title}” in your default app`}
                       disabled={actionsPending}
-                      onClick={() => void onOpenItem(item)}
+                      onClick={(event) =>
+                        void onOpenItem(item, item.formats[0], event.currentTarget.id)
+                      }
                     >
-                      {pendingAction === `open:${item.id}` ? "Opening…" : "Open"}
+                      {pendingAction === `open:${item.id}:${item.formats[0].format}`
+                        ? "Opening…"
+                        : "Open"}
                     </button>
                     <button
                       className="row-button send-button"
@@ -262,6 +275,7 @@ export function LibraryWorkspace({
                     className="format-panel"
                     aria-labelledby={`formats-heading-${item.id}`}
                     aria-busy={
+                      pendingAction?.startsWith(`open:${item.id}:`) ||
                       pendingAction?.startsWith(`format-attach:${item.id}:`) ||
                       pendingAction?.startsWith(`format-remove:${item.id}:`)
                     }
@@ -329,6 +343,21 @@ export function LibraryWorkspace({
                                 : bookFormat.sourcePath}
                             </code>
                             <div className="format-row-actions">
+                              <button
+                                type="button"
+                                className="quiet-button"
+                                id={`format-open-${item.id}-${bookFormat.format}`}
+                                aria-label={`Open ${label} for “${item.title}” in your default app`}
+                                disabled={actionsPending}
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  void onOpenItem(item, bookFormat, event.currentTarget.id);
+                                }}
+                              >
+                                {pendingAction === `open:${item.id}:${bookFormat.format}`
+                                  ? "Opening…"
+                                  : "Open"}
+                              </button>
                               <button
                                 type="button"
                                 className={`quiet-button format-remove-button${
