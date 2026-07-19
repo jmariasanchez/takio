@@ -11,6 +11,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             library_engine::library_list,
             library_engine::library_import,
+            library_engine::library_attach_format,
+            library_engine::library_remove_format,
             library_engine::library_update,
             library_engine::library_search,
             library_engine::library_cover_set,

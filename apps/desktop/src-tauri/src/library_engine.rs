@@ -43,6 +43,40 @@ fn library_open_arguments(id: String) -> Vec<String> {
     ]
 }
 
+fn library_attach_format_arguments(
+    id: String,
+    source_path: String,
+    mode: &str,
+) -> Result<Vec<String>, ()> {
+    let action = match mode {
+        "copy" => "import",
+        "reference" => "attach",
+        _ => return Err(()),
+    };
+
+    Ok(vec![
+        "library".into(),
+        "format".into(),
+        action.into(),
+        "--id".into(),
+        id,
+        "--source-path".into(),
+        source_path,
+    ])
+}
+
+fn library_remove_format_arguments(id: String, format: String) -> Vec<String> {
+    vec![
+        "library".into(),
+        "format".into(),
+        "remove".into(),
+        "--id".into(),
+        id,
+        "--format".into(),
+        format,
+    ]
+}
+
 fn destination_list_arguments() -> Vec<String> {
     vec!["destination".into(), "list".into()]
 }
@@ -215,6 +249,32 @@ pub async fn library_import(app: tauri::AppHandle, source_path: String) -> Value
         ],
     )
     .await
+}
+
+#[tauri::command]
+pub async fn library_attach_format(
+    app: tauri::AppHandle,
+    id: String,
+    source_path: String,
+    mode: String,
+) -> Value {
+    if validate_nonempty(&id).is_err() || validate_file_source(Path::new(&source_path)).is_err() {
+        return failure("invalid-arguments");
+    }
+    let Ok(args) = library_attach_format_arguments(id, source_path, &mode) else {
+        return failure("invalid-arguments");
+    };
+
+    run_engine(&app, args).await
+}
+
+#[tauri::command]
+pub async fn library_remove_format(app: tauri::AppHandle, id: String, format: String) -> Value {
+    if validate_nonempty(&id).is_err() || validate_nonempty(&format).is_err() {
+        return failure("invalid-arguments");
+    }
+
+    run_engine(&app, library_remove_format_arguments(id, format)).await
 }
 
 #[tauri::command]
@@ -403,6 +463,54 @@ mod tests {
     }
 
     #[test]
+    fn builds_fixed_format_lifecycle_arguments() {
+        assert_eq!(
+            library_attach_format_arguments(
+                "book-1".into(),
+                "/Books/A real title.pdf".into(),
+                "copy",
+            )
+            .unwrap(),
+            vec![
+                "library",
+                "format",
+                "import",
+                "--id",
+                "book-1",
+                "--source-path",
+                "/Books/A real title.pdf",
+            ]
+        );
+        assert_eq!(
+            library_attach_format_arguments(
+                "book-1".into(),
+                "/Books/A real title.pdf".into(),
+                "reference",
+            )
+            .unwrap(),
+            vec![
+                "library",
+                "format",
+                "attach",
+                "--id",
+                "book-1",
+                "--source-path",
+                "/Books/A real title.pdf",
+            ]
+        );
+        assert!(library_attach_format_arguments(
+            "book-1".into(),
+            "/Books/A real title.pdf".into(),
+            "managed",
+        )
+        .is_err());
+        assert_eq!(
+            library_remove_format_arguments("book-1".into(), "pdf".into()),
+            vec!["library", "format", "remove", "--id", "book-1", "--format", "pdf",]
+        );
+    }
+
+    #[test]
     fn builds_complete_metadata_replacement_arguments() {
         assert_eq!(
             update_arguments(
@@ -459,6 +567,7 @@ mod tests {
     #[test]
     fn parses_success_and_domain_failure_records() {
         let success = br#"{"ok":true,"value":{"items":[]}}"#;
+        let cleanup_pending = br#"{"ok":true,"value":{"item":null,"cleanupPending":true}}"#;
         let failure_record = br#"{"ok":false,"error":{"code":"storage-unavailable"}}"#;
 
         assert_eq!(
@@ -466,6 +575,13 @@ mod tests {
             json!({
               "ok": true,
               "value": { "items": [] },
+            })
+        );
+        assert_eq!(
+            parse_engine_record(Some(0), cleanup_pending, b""),
+            json!({
+              "ok": true,
+              "value": { "item": null, "cleanupPending": true },
             })
         );
         assert_eq!(
