@@ -1,4 +1,9 @@
-import { bookFormatSchema, libraryItemSchema, type LibraryItem } from "@takio/core";
+import {
+  bookFormatSchema,
+  bookFormatsSchema,
+  libraryItemSchema,
+  type LibraryItem,
+} from "@takio/core";
 import type {
   AddLibraryItemRequest,
   AddLibraryItemResult,
@@ -93,6 +98,7 @@ function parseItem(
   row: StoredLibraryItem,
   sourcePath: unknown,
   format: unknown,
+  formats: unknown,
   tags: unknown[],
 ): LibraryStoreResult<LibraryItem> {
   let coverPath: string | undefined;
@@ -106,6 +112,7 @@ function parseItem(
     ...row,
     sourcePath,
     format,
+    formats,
     author: row.author ?? undefined,
     description: row.description ?? undefined,
     coverPath,
@@ -124,7 +131,14 @@ function readV2Item(
     return failure("invalid-stored-data");
   }
 
-  return parseItem(coversDirectory, row, row.sourcePath, row.format, readTags(database, row.id));
+  return parseItem(
+    coversDirectory,
+    row,
+    row.sourcePath,
+    row.format,
+    [{ sourcePath: row.sourcePath, format: row.format, addedAt: row.addedAt }],
+    readTags(database, row.id),
+  );
 }
 
 function readItem(
@@ -144,7 +158,7 @@ function readItem(
       ORDER BY position
     `)
     .all(row.id);
-  const formats = bookFormatSchema.array().safeParse(
+  const formats = bookFormatsSchema.safeParse(
     storedFormats.map(({ position: _position, ...format }) => format),
   );
   if (storedFormats[0]?.position !== 0 || !formats.success) {
@@ -156,6 +170,7 @@ function readItem(
     row,
     formats.data[0]!.sourcePath,
     formats.data[0]!.format,
+    formats.data,
     readTags(database, row.id),
   );
 }
@@ -241,7 +256,19 @@ function verifyV1Backup(path: string): void {
     `)
     .all();
 
-  if (version !== 1 || integrity !== "ok" || !libraryItemSchema.array().safeParse(rows).success) {
+  if (
+    version !== 1 ||
+    integrity !== "ok" ||
+    rows.some(
+      (row) =>
+        !libraryItemSchema.safeParse({
+          ...row,
+          formats: [
+            { sourcePath: row.sourcePath, format: row.format, addedAt: row.addedAt },
+          ],
+        }).success,
+    )
+  ) {
     throw new Error("The pre-migration backup could not be verified.");
   }
 }
@@ -536,9 +563,11 @@ export class BunSqliteLibraryStore implements LibraryStore {
     }
 
     const parsed = libraryItemSchema.safeParse(item);
-    if (!parsed.success || parsed.data.coverPath) {
+    if (!parsed.success || parsed.data.coverPath || parsed.data.formats.length !== 1) {
       return failure("invalid-stored-data");
     }
+
+    const primaryFormat = parsed.data.formats[0]!;
 
     try {
       this.#database.transaction(() => {
@@ -560,7 +589,12 @@ export class BunSqliteLibraryStore implements LibraryStore {
           `INSERT INTO library_item_formats
             (library_item_id, format, source_path, added_at, position)
             VALUES (?, ?, ?, ?, 0)`,
-          [parsed.data.id, parsed.data.format, parsed.data.sourcePath, parsed.data.addedAt],
+          [
+            parsed.data.id,
+            primaryFormat.format,
+            primaryFormat.sourcePath,
+            primaryFormat.addedAt,
+          ],
         );
         writeTags(this.#database!, parsed.data.id, parsed.data.tags);
       }).immediate();

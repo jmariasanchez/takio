@@ -69,11 +69,25 @@ export const libraryItemSchema = z
     sourcePath: z.string().min(1),
     format: z.enum(FORMAT_IDS),
     addedAt: z.string().datetime(),
+    formats: bookFormatsSchema,
     author: optionalText,
     description: optionalText,
     coverPath: optionalText,
     tags: tagsSchema,
     updatedAt: z.string().datetime().optional(),
+  })
+  .superRefine((item, context) => {
+    const primaryFormat = item.formats[0];
+    if (
+      primaryFormat &&
+      (primaryFormat.sourcePath !== item.sourcePath || primaryFormat.format !== item.format)
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["formats", 0],
+        message: "The primary format must match the legacy source path and format aliases.",
+      });
+    }
   })
   .readonly();
 

@@ -17,7 +17,6 @@ const v1Item = {
   format: "epub",
   addedAt: "2026-07-18T12:00:00.000Z",
 } as const;
-const item: LibraryItem = { ...v1Item, tags: [] };
 const epubFormat: BookFormat = {
   sourcePath: v1Item.sourcePath,
   format: "epub",
@@ -28,13 +27,13 @@ const pdfFormat: BookFormat = {
   format: "pdf",
   addedAt: "2026-07-19T12:00:00.000Z",
 };
+const item: LibraryItem = { ...v1Item, formats: [epubFormat], tags: [] };
 
 describe("libraryItemSchema", () => {
-  it("gives v1 items a lossless empty metadata representation", () => {
-    const parsed = libraryItemSchema.parse(v1Item);
-
-    expect(parsed).toEqual(item);
-    expect("formats" in parsed).toBe(false);
+  it("requires the authoritative nonempty format aggregate", () => {
+    expect(libraryItemSchema.parse(item)).toEqual(item);
+    expect(() => libraryItemSchema.parse(v1Item)).toThrow();
+    expect(() => libraryItemSchema.parse({ ...item, formats: [] })).toThrow();
   });
 
   it("validates EPUB and PDF as a unique nonempty format list", () => {
@@ -42,7 +41,42 @@ describe("libraryItemSchema", () => {
       epubFormat,
       pdfFormat,
     ]);
+    expect(
+      libraryItemSchema.parse({ ...item, formats: [epubFormat, pdfFormat] }),
+    ).toMatchObject({ formats: [epubFormat, pdfFormat] });
     expect(() => bookFormatsSchema.parse([])).toThrow();
+  });
+
+  it("requires the legacy aliases to identify the primary supplied format", () => {
+    expect(() =>
+      libraryItemSchema.parse({ ...item, formats: [pdfFormat, epubFormat] }),
+    ).toThrow();
+    expect(() =>
+      libraryItemSchema.parse({
+        ...item,
+        sourcePath: "library/another.epub",
+        formats: [epubFormat, pdfFormat],
+      }),
+    ).toThrow();
+    expect(() =>
+      libraryItemSchema.parse({
+        ...item,
+        format: "pdf",
+        formats: [epubFormat, pdfFormat],
+      }),
+    ).toThrow();
+  });
+
+  it("keeps the item and per-format added timestamps independent", () => {
+    expect(
+      libraryItemSchema.parse({
+        ...item,
+        formats: [{ ...epubFormat, addedAt: "2026-07-19T09:00:00.000Z" }],
+      }),
+    ).toMatchObject({
+      addedAt: item.addedAt,
+      formats: [{ addedAt: "2026-07-19T09:00:00.000Z" }],
+    });
   });
 
   it("rejects duplicate book format IDs", () => {
@@ -69,16 +103,16 @@ describe("libraryItemSchema", () => {
       "Classic",
     ]);
     expect(
-      libraryItemSchema.parse({ ...v1Item, tags: ["  Science   Fiction  ", "Classic"] }),
+      libraryItemSchema.parse({ ...item, tags: ["  Science   Fiction  ", "Classic"] }),
     ).toMatchObject({ tags: ["Science Fiction", "Classic"] });
   });
 
   it("rejects blank optional metadata and duplicate normalized tags", () => {
-    expect(() => libraryItemSchema.parse({ ...v1Item, author: "  " })).toThrow();
-    expect(() => libraryItemSchema.parse({ ...v1Item, description: "" })).toThrow();
-    expect(() => libraryItemSchema.parse({ ...v1Item, coverPath: " " })).toThrow();
-    expect(() => libraryItemSchema.parse({ ...v1Item, tags: ["Classic", " classic "] })).toThrow();
-    expect(() => libraryItemSchema.parse({ ...v1Item, tags: [" "] })).toThrow();
+    expect(() => libraryItemSchema.parse({ ...item, author: "  " })).toThrow();
+    expect(() => libraryItemSchema.parse({ ...item, description: "" })).toThrow();
+    expect(() => libraryItemSchema.parse({ ...item, coverPath: " " })).toThrow();
+    expect(() => libraryItemSchema.parse({ ...item, tags: ["Classic", " classic "] })).toThrow();
+    expect(() => libraryItemSchema.parse({ ...item, tags: [" "] })).toThrow();
   });
 
   it("rejects missing or invalid library fields", () => {

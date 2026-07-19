@@ -334,12 +334,33 @@ describe("takio CLI", () => {
 
       const imported = parseProcessOutput(
         await invokeProcess(["library", "import", "--source-path", sourcePath], env),
-      ) as { ok: true; value: { item: { id: string; title: string } } };
+      ) as {
+        ok: true;
+        value: {
+          item: {
+            id: string;
+            title: string;
+            sourcePath: string;
+            format: string;
+            addedAt: string;
+            formats: { sourcePath: string; format: string; addedAt: string }[];
+          };
+        };
+      };
       expect(imported.value.item.title).toBe("process-book");
+      expect(imported.value.item.formats).toEqual([
+        {
+          sourcePath: imported.value.item.sourcePath,
+          format: imported.value.item.format,
+          addedAt: imported.value.item.addedAt,
+        },
+      ]);
 
-      expect(
-        parseProcessOutput(await invokeProcess(["library", "list"], env)),
-      ).toEqual({ ok: true, value: { items: [imported.value.item] } });
+      const listed = parseProcessOutput(
+        await invokeProcess(["library", "list"], env),
+      ) as { ok: true; value: { items: Array<typeof imported.value.item> } };
+      expect(listed.value.items[0]?.formats).toEqual(imported.value.item.formats);
+      expect(listed).toEqual({ ok: true, value: { items: [imported.value.item] } });
 
       expect(
         parseProcessOutput(
@@ -355,6 +376,13 @@ describe("takio CLI", () => {
         sourcePath: "library/left-hand.epub",
         format: "epub",
         addedAt: "2026-07-18T12:00:00.000Z",
+        formats: [
+          {
+            sourcePath: "library/left-hand.epub",
+            format: "epub",
+            addedAt: "2026-07-18T12:00:00.000Z",
+          },
+        ],
         tags: [],
       };
       const added = await invoke([

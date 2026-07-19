@@ -21,6 +21,18 @@ const validItem = {
   sourcePath: "/Books/A title.epub",
   format: "epub",
   addedAt: "2026-07-18T12:00:00.000Z",
+  formats: [
+    {
+      sourcePath: "/Books/A title.epub",
+      format: "epub",
+      addedAt: "2026-07-18T12:00:00.000Z",
+    },
+    {
+      sourcePath: "/Books/A title.pdf",
+      format: "pdf",
+      addedAt: "2026-07-19T10:00:00.000Z",
+    },
+  ],
   author: "An author",
   description: "A description",
   coverPath: "/Covers/item-1.jpg",
@@ -86,7 +98,7 @@ test("uses only the fixed desktop library commands and argument names", async ()
   ]);
 });
 
-test("passes valid v2 library responses through unchanged", async () => {
+test("passes valid library responses through with authoritative format order", async () => {
   const listResult = { ok: true, value: { items: [validItem] } } as const;
   const importResult = { ok: true, value: { item: validItem } } as const;
   const removeResult = { ok: true, value: { item: null } } as const;
@@ -95,7 +107,14 @@ test("passes valid v2 library responses through unchanged", async () => {
     value: { id: validItem.id, path: validItem.sourcePath },
   } as const;
 
-  expect(await listLibraryItems(async () => listResult as never)).toBe(listResult);
+  const decodedList = await listLibraryItems(async () => listResult as never);
+
+  expect(decodedList).toBe(listResult);
+  expect(
+    decodedList.ok
+      ? decodedList.value.items[0]?.formats.map((bookFormat) => bookFormat.format)
+      : [],
+  ).toEqual(["epub", "pdf"]);
   expect(
     await importLibraryItem(validItem.sourcePath, async () => importResult as never),
   ).toBe(importResult);
@@ -108,9 +127,52 @@ test("passes valid v2 library responses through unchanged", async () => {
 });
 
 test("rejects malformed nested and scalar library response values", async () => {
+  const { formats: _formats, ...itemWithoutFormats } = validItem;
   const malformedResults = [
     { ok: true, value: { items: [{ ...validItem, tags: "Classic" }] } },
     { ok: true, value: { items: [{ ...validItem, format: "mp3" }] } },
+    { ok: true, value: { items: [itemWithoutFormats] } },
+    { ok: true, value: { items: [{ ...validItem, formats: "epub" }] } },
+    { ok: true, value: { items: [{ ...validItem, formats: [] }] } },
+    {
+      ok: true,
+      value: {
+        items: [
+          {
+            ...validItem,
+            formats: [validItem.formats[0], { ...validItem.formats[1], format: "epub" }],
+          },
+        ],
+      },
+    },
+    {
+      ok: true,
+      value: {
+        items: [
+          {
+            ...validItem,
+            formats: [{ ...validItem.formats[0], addedAt: "yesterday" }],
+          },
+        ],
+      },
+    },
+    {
+      ok: true,
+      value: {
+        items: [
+          {
+            ...validItem,
+            formats: [
+              {
+                sourcePath: "/Books/A title.pdf",
+                format: "pdf",
+                addedAt: validItem.addedAt,
+              },
+            ],
+          },
+        ],
+      },
+    },
     { ok: false, error: { code: 42 } },
   ];
 

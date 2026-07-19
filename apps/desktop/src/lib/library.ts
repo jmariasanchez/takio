@@ -55,6 +55,8 @@ function isLibraryItem(value: unknown): boolean {
   return (
     isRecord(value) &&
     Array.isArray(value.tags) &&
+    Array.isArray(value.formats) &&
+    value.formats.length > 0 &&
     libraryItemSchema.safeParse(value).success
   );
 }

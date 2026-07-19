@@ -614,13 +614,17 @@ export function createProgram(
       ) => {
         const { store } = await openLibraryStore(options.db, command);
         try {
+          const primaryFormat = {
+            sourcePath: options.sourcePath,
+            format: options.format as FormatId,
+            addedAt: options.addedAt,
+          };
           const result = await store.add({
             item: {
               id: options.id,
               title: options.title,
-              sourcePath: options.sourcePath,
-              format: options.format as FormatId,
-              addedAt: options.addedAt,
+              ...primaryFormat,
+              formats: [primaryFormat],
               tags: [],
             },
           });
@@ -678,12 +682,16 @@ export function createProgram(
         const { store, paths } = await openLibraryStore(options.db, command);
         const id = `item_${crypto.randomUUID()}`;
         const extension = extname(sourcePath).toLowerCase();
-        const item = {
-          id,
-          title: options.title ?? basename(sourcePath, extname(sourcePath)),
+        const primaryFormat = {
           sourcePath: join(paths.itemsDirectory, `${id}${extension}`),
           format: format!,
           addedAt: new Date().toISOString(),
+        };
+        const item = {
+          id,
+          title: options.title ?? basename(sourcePath, extname(sourcePath)),
+          ...primaryFormat,
+          formats: [primaryFormat],
           tags: [],
         };
         const temporaryPath = `${item.sourcePath}.tmp-${crypto.randomUUID()}`;

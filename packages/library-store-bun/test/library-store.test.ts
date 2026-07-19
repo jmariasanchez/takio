@@ -15,6 +15,13 @@ const item: LibraryItem = {
   sourcePath: "library/left-hand.epub",
   format: "epub",
   addedAt: "2026-07-18T12:00:00.000Z",
+  formats: [
+    {
+      sourcePath: "library/left-hand.epub",
+      format: "epub",
+      addedAt: "2026-07-19T09:00:00.000Z",
+    },
+  ],
   tags: [],
 };
 
@@ -24,7 +31,30 @@ const secondItem: LibraryItem = {
   sourcePath: "library/kindred.epub",
   format: "epub",
   addedAt: "2026-07-18T13:00:00.000Z",
+  formats: [
+    {
+      sourcePath: "library/kindred.epub",
+      format: "epub",
+      addedAt: "2026-07-18T13:00:00.000Z",
+    },
+  ],
   tags: [],
+};
+
+const migratedV1Item: LibraryItem = {
+  ...item,
+  formats: [{ ...item.formats[0]!, addedAt: item.addedAt }],
+  author: undefined,
+  description: undefined,
+  coverPath: undefined,
+  updatedAt: undefined,
+};
+const migratedV1SecondItem: LibraryItem = {
+  ...secondItem,
+  author: undefined,
+  description: undefined,
+  coverPath: undefined,
+  updatedAt: undefined,
 };
 
 let directory: string;
@@ -130,7 +160,7 @@ describe("BunSqliteLibraryStore", () => {
         libraryItemId: item.id,
         sourcePath: item.sourcePath,
         format: item.format,
-        addedAt: item.addedAt,
+        addedAt: item.formats[0]!.addedAt,
         position: 0,
       },
     ]);
@@ -167,6 +197,13 @@ describe("BunSqliteLibraryStore", () => {
           sourcePath: "library/kindred.mobi",
           format: "mobi",
           addedAt: "2026-07-16T08:00:00.000Z",
+          formats: [
+            {
+              sourcePath: "library/kindred.mobi",
+              format: "mobi",
+              addedAt: "2026-07-16T08:00:00.000Z",
+            },
+          ],
           tags: [],
         },
         {
@@ -175,6 +212,13 @@ describe("BunSqliteLibraryStore", () => {
           sourcePath: "library/the-dispossessed.epub",
           format: "epub",
           addedAt: "2026-07-17T10:15:00.000Z",
+          formats: [
+            {
+              sourcePath: "library/the-dispossessed.epub",
+              format: "epub",
+              addedAt: "2026-07-17T10:15:00.000Z",
+            },
+          ],
           author: "Ursula K. Le Guin",
           description: "An ambiguous utopia.",
           coverPath: join(directory, "covers", "the-dispossessed.png"),
@@ -228,7 +272,10 @@ describe("BunSqliteLibraryStore", () => {
 
     const store = createStore();
     expect(await store.open({ config: {} })).toEqual({ ok: true, value: null });
-    expect(await store.list({})).toEqual({ ok: true, value: [secondItem, item] });
+    expect(await store.list({})).toEqual({
+      ok: true,
+      value: [migratedV1SecondItem, migratedV1Item],
+    });
     store.close();
 
     expect(schemaVersion()).toBe(3);
@@ -305,7 +352,10 @@ describe("BunSqliteLibraryStore", () => {
 
     const second = createStore();
     expect(await second.open({ config: {} })).toEqual({ ok: true, value: null });
-    expect(await second.list({})).toEqual({ ok: true, value: [secondItem, item] });
+    expect(await second.list({})).toEqual({
+      ok: true,
+      value: [migratedV1SecondItem, migratedV1Item],
+    });
     second.close();
 
     expect(await readFile(`${databasePath}.v1.backup`)).toEqual(backupBefore);
