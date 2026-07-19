@@ -19,6 +19,23 @@ type LibraryPaths = {
   readonly itemsDirectory: string;
 };
 
+type Launcher = (argv: readonly string[]) => void | Promise<void>;
+
+function openWithDefaultApp(argv: readonly string[]): void {
+  Bun.spawn({ cmd: [...argv], stdin: "ignore", stdout: "ignore", stderr: "ignore" });
+}
+
+function defaultAppCommand(sourcePath: string): readonly string[] {
+  return [
+    process.platform === "darwin"
+      ? "open"
+      : process.platform === "win32"
+        ? "explorer.exe"
+        : "xdg-open",
+    sourcePath,
+  ];
+}
+
 function libraryPaths(databasePath?: string): LibraryPaths {
   if (databasePath === "") {
     throw new TypeError("A database path is required.");
@@ -119,6 +136,7 @@ function storageCommand(command: Command, write: (message: string) => void): Com
 export function createProgram(
   write: (message: string) => void = console.log,
   writeError: (message: string) => void = write,
+  launch: Launcher = openWithDefaultApp,
 ): Command {
   const program = new Command();
 
@@ -307,6 +325,70 @@ export function createProgram(
         store.close();
       }
     });
+
+  storageCommand(library.command("open").helpOption(false), writeError)
+    .option("--db <path>", "database path")
+    .requiredOption("--id <id>", "library item ID")
+    .option("--json", "emit JSON instead of a readable confirmation")
+    .action(
+      async (
+        options: { db?: string; id: string; json?: boolean },
+        command: Command,
+      ) => {
+        if (options.id.length === 0) {
+          command.error("", { exitCode: 1, code: "invalid-arguments" });
+        }
+
+        const { store } = await openLibraryStore(options.db, command);
+        try {
+          const result = await store.get({ id: options.id });
+          if (!result.ok) {
+            command.error("", { exitCode: 1, code: result.error.code });
+          }
+          const item = result.value;
+          if (!item) {
+            command.error("", { exitCode: 1, code: "not-found" });
+          }
+
+          try {
+            if (!(await stat(item.sourcePath)).isFile()) {
+              command.error("", { exitCode: 1, code: "missing-file" });
+            }
+          } catch (error) {
+            if (error instanceof CommanderError) {
+              throw error;
+            }
+            command.error("", { exitCode: 1, code: "missing-file" });
+          }
+
+          const declaredFormat = FORMAT_CATALOG.find(
+            (format) => format.id === item.format,
+          );
+          if (
+            !declaredFormat?.extensions.includes(extname(item.sourcePath).toLowerCase())
+          ) {
+            command.error("", { exitCode: 1, code: "format-mismatch" });
+          }
+
+          try {
+            await launch(defaultAppCommand(item.sourcePath));
+          } catch {
+            command.error("", { exitCode: 1, code: "open-failed" });
+          }
+
+          write(
+            options.json
+              ? JSON.stringify({
+                  ok: true,
+                  value: { id: item.id, path: item.sourcePath },
+                })
+              : `Opened ${item.sourcePath}`,
+          );
+        } finally {
+          store.close();
+        }
+      },
+    );
 
   storageCommand(library.command("update").helpOption(false), writeError)
     .option("--db <path>", "database path")
