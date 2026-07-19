@@ -29,9 +29,11 @@ async function temporaryRoot(): Promise<string> {
 
 async function invokeProcess(
   args: readonly string[],
+  env?: Record<string, string>,
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
   const child = Bun.spawn({
     cmd: [process.execPath, join(import.meta.dir, "../src/main.ts"), ...args],
+    env: { ...process.env, ...env },
     stdout: "pipe",
     stderr: "pipe",
   });
@@ -359,6 +361,44 @@ describe("mounted destinations", () => {
         bytes: destinationBytes.byteLength,
         sha256,
       },
+    });
+  });
+
+  test("uses the default durable library when send omits --db", async () => {
+    const fixture = await transferFixture();
+    const dataDirectory = join(fixture.root, "default-library");
+    const env = { TAKIO_DATA_DIR: dataDirectory };
+    const added = await invokeProcess([
+      "library",
+      "add",
+      "--id",
+      "book-1",
+      "--title",
+      "Transfer Book",
+      "--source-path",
+      fixture.sourcePath,
+      "--format",
+      "epub",
+      "--added-at",
+      "2026-07-18T00:00:00.000Z",
+    ], env);
+    expect(added.exitCode).toBe(0);
+
+    const sent = await invokeProcess([
+      "send",
+      "--id",
+      "book-1",
+      "--dest",
+      fixture.destination,
+      "--volumes-root",
+      fixture.volumesRoot,
+    ], env);
+
+    expect(sent.exitCode).toBe(0);
+    expect(sent.stderr).toBe("");
+    expect(JSON.parse(sent.stdout)).toMatchObject({
+      ok: true,
+      value: { itemId: "book-1", destinationId: "Reader" },
     });
   });
 

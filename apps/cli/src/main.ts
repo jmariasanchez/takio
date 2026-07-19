@@ -237,7 +237,7 @@ export function createProgram(
   const send = storageCommand(new Command("send"), writeError)
     .helpOption(false)
     .description("Send a library item to a mounted destination")
-    .requiredOption("--db <path>", "database path")
+    .option("--db <path>", "database path")
     .requiredOption("--id <id>", "library item ID")
     .requiredOption("--dest <volume-path>", "mounted destination path")
     .option("--subdir <dir>", "destination subdirectory")
@@ -248,7 +248,7 @@ export function createProgram(
   send.action(
     async (
       options: {
-        db: string;
+        db?: string;
         id: string;
         dest: string;
         subdir?: string;
