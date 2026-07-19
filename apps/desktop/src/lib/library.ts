@@ -26,6 +26,15 @@ export type DesktopLibraryRemoveResult = LibraryRemoveWireResult | LibraryBridge
 export type DesktopLibraryUpdateResult = LibraryUpdateWireResult | LibraryBridgeFailure;
 export type DesktopLibraryCoverResult = LibraryCoverWireResult | LibraryBridgeFailure;
 export type DesktopLibrarySearchResult = LibrarySearchWireResult | LibraryBridgeFailure;
+export type DesktopLibraryOpenResult =
+  | {
+      readonly ok: true;
+      readonly value: { readonly id: string; readonly path: string };
+    }
+  | {
+      readonly ok: false;
+      readonly error: { readonly code: string };
+    };
 
 export type LibraryInvoker = <T>(
   command: string,
@@ -88,6 +97,13 @@ export function removeLibraryItem(
   invokeCommand: LibraryInvoker = invokeTauri,
 ): Promise<DesktopLibraryRemoveResult> {
   return invokeCommand("library_remove", { id });
+}
+
+export function openLibraryItem(
+  id: string,
+  invokeCommand: LibraryInvoker = invokeTauri,
+): Promise<DesktopLibraryOpenResult> {
+  return invokeCommand("library_open", { id });
 }
 
 export function parseLibraryTags(value: string): readonly string[] {

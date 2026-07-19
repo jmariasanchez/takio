@@ -5,6 +5,7 @@ import {
   describeUnexpectedLibraryError,
   importLibraryItem,
   listLibraryItems,
+  openLibraryItem,
   parseLibraryTags,
   removeLibraryCover,
   removeLibraryItem,
@@ -40,6 +41,7 @@ test("uses only the fixed desktop library commands and argument names", async ()
   await setLibraryCover("item-1", "/Pictures/A cover.jpg", invokeCommand);
   await removeLibraryCover("item-1", invokeCommand);
   await removeLibraryItem("item-1", invokeCommand);
+  await openLibraryItem("item-1", invokeCommand);
 
   expect(calls).toEqual([
     { command: "library_list", args: undefined },
@@ -61,6 +63,7 @@ test("uses only the fixed desktop library commands and argument names", async ()
     },
     { command: "library_cover_remove", args: { id: "item-1" } },
     { command: "library_remove", args: { id: "item-1" } },
+    { command: "library_open", args: { id: "item-1" } },
   ]);
 });
 

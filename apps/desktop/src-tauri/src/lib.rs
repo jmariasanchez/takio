@@ -13,6 +13,10 @@ pub fn run() {
             library_engine::library_cover_set,
             library_engine::library_cover_remove,
             library_engine::library_remove,
+            library_engine::library_open,
+            library_engine::destination_list,
+            library_engine::destination_send,
+            library_engine::destination_eject,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Takio");

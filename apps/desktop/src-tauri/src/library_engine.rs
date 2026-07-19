@@ -17,12 +17,45 @@ fn validate_file_source(path: &Path) -> Result<(), ()> {
     }
 }
 
-fn validate_id(id: &str) -> Result<(), ()> {
-    if id.trim().is_empty() {
+fn validate_nonempty(value: &str) -> Result<(), ()> {
+    if value.trim().is_empty() {
         Err(())
     } else {
         Ok(())
     }
+}
+
+fn library_open_arguments(id: String) -> Vec<String> {
+    vec![
+        "library".into(),
+        "open".into(),
+        "--id".into(),
+        id,
+        "--json".into(),
+    ]
+}
+
+fn destination_list_arguments() -> Vec<String> {
+    vec!["destination".into(), "list".into()]
+}
+
+fn destination_send_arguments(id: String, destination_path: String) -> Vec<String> {
+    vec![
+        "send".into(),
+        "--id".into(),
+        id,
+        "--dest".into(),
+        destination_path,
+    ]
+}
+
+fn destination_eject_arguments(destination_path: String) -> Vec<String> {
+    vec![
+        "destination".into(),
+        "eject".into(),
+        "--dest".into(),
+        destination_path,
+    ]
 }
 
 fn update_arguments(
@@ -160,7 +193,7 @@ pub async fn library_update(
     description: Option<String>,
     tags: Vec<String>,
 ) -> Value {
-    if validate_id(&id).is_err() {
+    if validate_nonempty(&id).is_err() {
         return failure("invalid-arguments");
     }
 
@@ -178,7 +211,7 @@ pub async fn library_search(app: tauri::AppHandle, query: String) -> Value {
 
 #[tauri::command]
 pub async fn library_cover_set(app: tauri::AppHandle, id: String, source_path: String) -> Value {
-    if validate_id(&id).is_err() || validate_file_source(Path::new(&source_path)).is_err() {
+    if validate_nonempty(&id).is_err() || validate_file_source(Path::new(&source_path)).is_err() {
         return failure("invalid-arguments");
     }
 
@@ -199,7 +232,7 @@ pub async fn library_cover_set(app: tauri::AppHandle, id: String, source_path: S
 
 #[tauri::command]
 pub async fn library_cover_remove(app: tauri::AppHandle, id: String) -> Value {
-    if validate_id(&id).is_err() {
+    if validate_nonempty(&id).is_err() {
         return failure("invalid-arguments");
     }
 
@@ -218,7 +251,7 @@ pub async fn library_cover_remove(app: tauri::AppHandle, id: String) -> Value {
 
 #[tauri::command]
 pub async fn library_remove(app: tauri::AppHandle, id: String) -> Value {
-    if validate_id(&id).is_err() {
+    if validate_nonempty(&id).is_err() {
         return failure("invalid-arguments");
     }
 
@@ -229,15 +262,69 @@ pub async fn library_remove(app: tauri::AppHandle, id: String) -> Value {
     .await
 }
 
+#[tauri::command]
+pub async fn library_open(app: tauri::AppHandle, id: String) -> Value {
+    if validate_nonempty(&id).is_err() {
+        return failure("invalid-arguments");
+    }
+
+    run_engine(&app, library_open_arguments(id)).await
+}
+
+#[tauri::command]
+pub async fn destination_list(app: tauri::AppHandle) -> Value {
+    run_engine(&app, destination_list_arguments()).await
+}
+
+#[tauri::command]
+pub async fn destination_send(
+    app: tauri::AppHandle,
+    id: String,
+    destination_path: String,
+) -> Value {
+    if validate_nonempty(&id).is_err() || validate_nonempty(&destination_path).is_err() {
+        return failure("invalid-arguments");
+    }
+
+    run_engine(&app, destination_send_arguments(id, destination_path)).await
+}
+
+#[tauri::command]
+pub async fn destination_eject(app: tauri::AppHandle, destination_path: String) -> Value {
+    if validate_nonempty(&destination_path).is_err() {
+        return failure("invalid-arguments");
+    }
+
+    run_engine(&app, destination_eject_arguments(destination_path)).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn validates_boundary_arguments() {
-        assert!(validate_id("book-1").is_ok());
-        assert!(validate_id("  ").is_err());
+        assert!(validate_nonempty("book-1").is_ok());
+        assert!(validate_nonempty("/Volumes/Reader").is_ok());
+        assert!(validate_nonempty("  ").is_err());
         assert!(validate_file_source(Path::new("definitely-missing.epub")).is_err());
+    }
+
+    #[test]
+    fn builds_fixed_open_and_destination_arguments() {
+        assert_eq!(
+            library_open_arguments("book-1".into()),
+            vec!["library", "open", "--id", "book-1", "--json"]
+        );
+        assert_eq!(destination_list_arguments(), vec!["destination", "list"]);
+        assert_eq!(
+            destination_send_arguments("book-1".into(), "/Volumes/Reader".into()),
+            vec!["send", "--id", "book-1", "--dest", "/Volumes/Reader"]
+        );
+        assert_eq!(
+            destination_eject_arguments("/Volumes/Reader".into()),
+            vec!["destination", "eject", "--dest", "/Volumes/Reader"]
+        );
     }
 
     #[test]
