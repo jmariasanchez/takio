@@ -41,6 +41,19 @@ export type DesktopJobRunNextResult =
   | { readonly ok: true; readonly value: { readonly job: ConversionJob | null } }
   | JobFailure;
 
+export type EnqueueConversionJobRequest =
+  | {
+      readonly inputPath: string;
+      readonly outputFormat: FormatId;
+      readonly outputPath: string;
+    }
+  | {
+      readonly libraryItemId: string;
+      readonly inputFormat: FormatId;
+      readonly outputFormat: FormatId;
+      readonly outputPath: string;
+    };
+
 export type JobInvoker = <T>(
   command: string,
   args?: Record<string, unknown>,
@@ -203,11 +216,23 @@ async function invokeJobMutation(
 }
 
 export function enqueueConversionJob(
-  input: string,
-  output: string,
+  request: EnqueueConversionJobRequest,
   invokeCommand: JobInvoker = invokeTauri,
 ): Promise<DesktopJobResult> {
-  return invokeJobMutation("jobs_enqueue", { input, to: "pdf", output }, invokeCommand);
+  const args =
+    "libraryItemId" in request
+      ? {
+          libraryItemId: request.libraryItemId,
+          from: request.inputFormat,
+          to: request.outputFormat,
+          output: request.outputPath,
+        }
+      : {
+          input: request.inputPath,
+          to: request.outputFormat,
+          output: request.outputPath,
+        };
+  return invokeJobMutation("jobs_enqueue", args, invokeCommand);
 }
 
 export async function runNextConversionJob(

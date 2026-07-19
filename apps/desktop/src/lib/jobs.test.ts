@@ -46,7 +46,23 @@ test("uses only the fixed desktop job commands and argument names", async () => 
   };
 
   await listConversionJobs(invokeCommand);
-  await enqueueConversionJob(queuedJob.inputPath, queuedJob.outputPath, invokeCommand);
+  await enqueueConversionJob(
+    {
+      inputPath: queuedJob.inputPath,
+      outputFormat: "mobi",
+      outputPath: "/Exports/A title.mobi",
+    },
+    invokeCommand,
+  );
+  await enqueueConversionJob(
+    {
+      libraryItemId: "book-1",
+      inputFormat: queuedJob.inputFormat,
+      outputFormat: queuedJob.outputFormat,
+      outputPath: queuedJob.outputPath,
+    },
+    invokeCommand,
+  );
   await runNextConversionJob(invokeCommand);
   await cancelConversionJob(queuedJob.id, invokeCommand);
 
@@ -54,7 +70,16 @@ test("uses only the fixed desktop job commands and argument names", async () => 
     { command: "jobs_list", args: undefined },
     {
       command: "jobs_enqueue",
-      args: { input: "/Books/A title.epub", to: "pdf", output: "/Exports/A title.pdf" },
+      args: { input: "/Books/A title.epub", to: "mobi", output: "/Exports/A title.mobi" },
+    },
+    {
+      command: "jobs_enqueue",
+      args: {
+        libraryItemId: "book-1",
+        from: "epub",
+        to: "pdf",
+        output: "/Exports/A title.pdf",
+      },
     },
     { command: "jobs_run_next", args: undefined },
     { command: "jobs_cancel", args: { id: "job_1" } },
