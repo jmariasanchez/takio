@@ -1,6 +1,6 @@
 import type { FormEvent, RefObject } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
-import type { Destination, LibraryItem } from "@takio/core";
+import { FORMAT_CATALOG, type Destination, type LibraryItem } from "@takio/core";
 
 export type LibraryState = "loading" | "ready" | "error";
 export type MetadataDraft = {
@@ -164,7 +164,13 @@ export function LibraryWorkspace({
                     <strong>{item.title}</strong>
                     <span>
                       {item.author ? `${item.author} · ` : ""}
-                      {item.format.toUpperCase()} · Added {addedDate(item.addedAt)}
+                      {item.formats
+                        .map(
+                          ({ format }) =>
+                            FORMAT_CATALOG.find((definition) => definition.id === format)!
+                              .label,
+                        )
+                        .join(", ")} · Added {addedDate(item.addedAt)}
                     </span>
                     {item.tags.length > 0 && (
                       <span className="tag-summary">{item.tags.join(" · ")}</span>
