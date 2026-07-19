@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { libraryItemSchema, normalizeTags } from "@takio/core";
+import type { FormatId, LibraryItem } from "@takio/core";
 import type {
   LibraryCoverWireResult,
   LibraryImportWireResult,
@@ -7,6 +8,7 @@ import type {
   LibraryMetadataPatch,
   LibraryRemoveWireResult,
   LibrarySearchWireResult,
+  LibraryStoreResult,
   LibraryUpdateWireResult,
 } from "@takio/library-contract";
 
@@ -22,6 +24,10 @@ type LibraryBridgeFailure = {
 
 export type DesktopLibraryListResult = LibraryListWireResult | LibraryBridgeFailure;
 export type DesktopLibraryImportResult = LibraryImportWireResult | LibraryBridgeFailure;
+export type DesktopLibraryAttachFormatResult =
+  | LibraryStoreResult<{ readonly item: LibraryItem }>
+  | LibraryBridgeFailure;
+export type DesktopLibraryRemoveFormatResult = LibraryRemoveWireResult | LibraryBridgeFailure;
 export type DesktopLibraryRemoveResult = LibraryRemoveWireResult | LibraryBridgeFailure;
 export type DesktopLibraryUpdateResult = LibraryUpdateWireResult | LibraryBridgeFailure;
 export type DesktopLibraryCoverResult = LibraryCoverWireResult | LibraryBridgeFailure;
@@ -40,6 +46,7 @@ export type LibraryInvoker = <T>(
   command: string,
   args?: Record<string, unknown>,
 ) => Promise<T>;
+export type LibraryFormatAttachMode = "copy" | "reference";
 
 const invokeTauri: LibraryInvoker = (command, args) => invoke(command, args);
 
@@ -124,6 +131,32 @@ export async function importLibraryItem(
   return decodeLibraryResult<LibraryImportWireResult>(result, (value) =>
     isItemValue(value, false),
   );
+}
+
+export async function attachLibraryFormat(
+  id: string,
+  sourcePath: string,
+  mode: LibraryFormatAttachMode,
+  invokeCommand: LibraryInvoker = invokeTauri,
+): Promise<DesktopLibraryAttachFormatResult> {
+  const result = await invokeCommand<unknown>("library_attach_format", {
+    id,
+    sourcePath,
+    mode,
+  });
+  return decodeLibraryResult<LibraryStoreResult<{ readonly item: LibraryItem }>>(
+    result,
+    (value) => isItemValue(value, false),
+  );
+}
+
+export async function removeLibraryFormat(
+  id: string,
+  format: FormatId,
+  invokeCommand: LibraryInvoker = invokeTauri,
+): Promise<DesktopLibraryRemoveFormatResult> {
+  const result = await invokeCommand<unknown>("library_remove_format", { id, format });
+  return decodeLibraryResult<LibraryRemoveWireResult>(result, isRemoveValue);
 }
 
 export async function updateLibraryItem(
@@ -213,6 +246,10 @@ export function describeLibraryError(code: string): string {
       return "This library was created by an incompatible Takio version.";
     case "duplicate-id":
       return "That item already exists in the library.";
+    case "duplicate-format":
+      return "This item already has that format.";
+    case "last-format":
+      return "The item’s only format cannot be removed.";
     case "engine-unavailable":
       return "The local library engine is unavailable.";
     case "protocol-error":

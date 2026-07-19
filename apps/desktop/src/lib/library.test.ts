@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 
 import {
+  attachLibraryFormat,
   describeLibraryError,
   describeUnexpectedLibraryError,
   importLibraryItem,
@@ -8,6 +9,7 @@ import {
   openLibraryItem,
   parseLibraryTags,
   removeLibraryCover,
+  removeLibraryFormat,
   removeLibraryItem,
   searchLibraryItems,
   setLibraryCover,
@@ -61,11 +63,33 @@ test("uses only the fixed desktop library commands and argument names", async ()
         value: { item: null, cleanupPending: false },
       } as never;
     }
+    if (command === "library_attach_format") {
+      return { ok: true, value: { item: validItem } } as never;
+    }
+    if (command === "library_remove_format") {
+      return {
+        ok: true,
+        value: { item: null, cleanupPending: false },
+      } as never;
+    }
     return { ok: true, value: { item: null } } as never;
   };
 
   await listLibraryItems(invokeCommand);
   await importLibraryItem("/Books/A title.epub", invokeCommand);
+  await attachLibraryFormat(
+    "item-1",
+    "/Books/A title.pdf",
+    "copy",
+    invokeCommand,
+  );
+  await attachLibraryFormat(
+    "item-1",
+    "/Books/A title.mobi",
+    "reference",
+    invokeCommand,
+  );
+  await removeLibraryFormat("item-1", "pdf", invokeCommand);
   await updateLibraryItem(
     "item-1",
     {
@@ -85,6 +109,26 @@ test("uses only the fixed desktop library commands and argument names", async ()
   expect(calls).toEqual([
     { command: "library_list", args: undefined },
     { command: "library_import", args: { sourcePath: "/Books/A title.epub" } },
+    {
+      command: "library_attach_format",
+      args: {
+        id: "item-1",
+        sourcePath: "/Books/A title.pdf",
+        mode: "copy",
+      },
+    },
+    {
+      command: "library_attach_format",
+      args: {
+        id: "item-1",
+        sourcePath: "/Books/A title.mobi",
+        mode: "reference",
+      },
+    },
+    {
+      command: "library_remove_format",
+      args: { id: "item-1", format: "pdf" },
+    },
     {
       command: "library_update",
       args: {
@@ -135,6 +179,17 @@ test("passes valid library responses through with authoritative format order", a
   expect(
     await importLibraryItem(validItem.sourcePath, async () => importResult as never),
   ).toBe(importResult);
+  expect(
+    await attachLibraryFormat(
+      validItem.id,
+      "/Books/A title.mobi",
+      "reference",
+      async () => importResult as never,
+    ),
+  ).toBe(importResult);
+  expect(
+    await removeLibraryFormat(validItem.id, "pdf", async () => removeResult as never),
+  ).toBe(removeResult);
   expect(await removeLibraryItem(validItem.id, async () => removeResult as never)).toBe(
     removeResult,
   );
@@ -151,6 +206,36 @@ test("requires explicit cleanup state after removing a library item", async () =
   ]) {
     expect(
       await removeLibraryItem(validItem.id, async () => ({
+        ok: true,
+        value,
+      }) as never),
+    ).toEqual({ ok: false, error: { code: "protocol-error" } });
+  }
+});
+
+test("rejects malformed format lifecycle success payloads", async () => {
+  for (const value of [
+    { item: null },
+    {},
+    { item: { ...validItem, formats: [] } },
+  ]) {
+    expect(
+      await attachLibraryFormat(
+        validItem.id,
+        "/Books/A title.mobi",
+        "reference",
+        async () => ({ ok: true, value }) as never,
+      ),
+    ).toEqual({ ok: false, error: { code: "protocol-error" } });
+  }
+
+  for (const value of [
+    { item: null },
+    { item: null, cleanupPending: "no" },
+    { item: { ...validItem, formats: [] }, cleanupPending: false },
+  ]) {
+    expect(
+      await removeLibraryFormat(validItem.id, "pdf", async () => ({
         ok: true,
         value,
       }) as never),
@@ -274,6 +359,12 @@ test("gives boundary and storage failures specific user-facing messages", () => 
   );
   expect(describeLibraryError("engine-unavailable")).toBe(
     "The local library engine is unavailable.",
+  );
+  expect(describeLibraryError("duplicate-format")).toBe(
+    "This item already has that format.",
+  );
+  expect(describeLibraryError("last-format")).toBe(
+    "The item’s only format cannot be removed.",
   );
   expect(describeLibraryError("storage-unavailable")).toBe(
     "The local library is unavailable.",
