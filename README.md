@@ -11,7 +11,7 @@ The domain package (`@takio/core`) is shared by both surfaces, so a conversion r
 
 ## Current milestone
 
-The workspace currently includes a polished Tauri/React desktop shell and a functional CLI conversion planner. It validates formats, plans jobs, and selects a compatible device. Converter adapters and real remote-device execution are the next milestone.
+The workspace currently includes a polished Tauri/React desktop app, a capability-aware CLI conversion planner, and verified EPUB-to-PDF conversion through a discovered Calibre `ebook-convert` backend. Conversion can run immediately or through a durable local queue, but always runs in the foreground.
 
 ## Requirements
 
@@ -45,8 +45,18 @@ The CLI is deliberately deterministic and supports JSON responses for consumptio
 | `takio formats --json` | Reads the built-in format catalogue. |
 | `takio devices` | Lists known conversion devices. |
 | `takio plan --input <path> --to <format> --json` | Validates a request and creates a machine-readable conversion plan. |
+| `takio convert --input <epub> --to pdf --output <path>` | Executes one EPUB-to-PDF conversion synchronously and reports a verified artifact. |
+| `takio jobs enqueue --input <epub> --to pdf --output <path>` | Adds a conversion to the durable local queue. |
+| `takio jobs list [--status <status>]` | Lists all jobs or filters by status. |
+| `takio jobs get --id <id>` | Reads one durable job record. |
+| `takio jobs cancel --id <id>` | Cancels a queued job. |
+| `takio jobs run-next` | Runs at most one queued job in the foreground. |
 
-A plan is not execution. Until a converter adapter is installed, Takio never misrepresents a planned job as a converted artifact.
+A plan is not execution. `takio convert` bypasses the queue, while `takio jobs enqueue` records work in `jobs.sqlite`, a database separate from `library.sqlite`. Jobs move through `queued`, `running`, `completed`, `failed`, and `canceled`; cancellation is queued-only. `run-next` claims the oldest queued job, runs it synchronously, and records either a failure or a completed artifact whose path, nonzero size, and SHA-256 digest have been verified.
+
+The caller chooses and owns the output path. Takio refuses to overwrite an existing file, including one that appears after enqueue. In the desktop app, an EPUB item's **Convert** control opens the native save dialog and adds the job to the conversion ledger; **Refresh**, **Run next**, and queued-job **Cancel** expose the same durable queue.
+
+This focused v1 intentionally has no daemon or detached worker, live progress stream, automatic retry, priorities, batching, active cancellation, overwrite mode for queued jobs, remote execution, or conversion pairs beyond EPUB-to-PDF. The discovered `ebook-convert` executable is trusted local configuration and runs without a hostile-input sandbox.
 
 ## Workspace
 

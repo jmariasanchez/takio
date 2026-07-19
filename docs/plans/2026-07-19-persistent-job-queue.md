@@ -1,5 +1,7 @@
 # Takio Persistent Job Queue Plan
 
+> **Superseded implementation plan.** This document is retained as historical design input, not current product or API truth. The shipped focused v1 is documented in the [README](../../README.md) and [architecture](../architecture.md): a separate `jobs.sqlite` queue with `enqueue`, `list`, `get`, queued-only `cancel`, and one-shot foreground `run-next`. Where the details below differ—including the proposed `attempts` field, configurable worker timeout, broader package boundaries, wire shapes, and deferred desktop wiring—they are superseded by the implemented scope.
+
 > Drafted with `claude-fable-5` on 2026-07-19. Its dependency handoff was aligned to the later Fable-generated capability-planning correction; a fresh Fable alignment pass was unavailable because the Claude session reset gate had been reached.
 
 **Goal:** The first persistent local conversion job queue: durable SQLite-backed job records, a truthful state machine, and a one-shot `takio jobs run-next` worker that executes the already-landed synchronous local conversion executor. Persistence step of a strict waterfall behind capability-aware planning and `docs/plans/2026-07-19-local-conversion.md`.
