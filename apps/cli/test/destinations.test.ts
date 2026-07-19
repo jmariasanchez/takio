@@ -331,7 +331,7 @@ describe("mounted destinations", () => {
     expect(calls).toBe(1);
   });
 
-  test("sends and independently verifies a library source through one JSON record", async () => {
+  test("omits --format to send and independently verify the authoritative primary format", async () => {
     const fixture = await transferFixture();
 
     const result = await invoke([
@@ -362,6 +362,89 @@ describe("mounted destinations", () => {
         sha256,
       },
     });
+  });
+
+  test("sends the exact requested secondary format with its bytes, extension, and hash", async () => {
+    const fixture = await transferFixture();
+    const pdfPath = join(fixture.root, "source", "book.pdf");
+    const pdfBytes = Buffer.from("exact secondary PDF bytes\n");
+    await writeFile(pdfPath, pdfBytes);
+    const attached = await invoke([
+      "library",
+      "format",
+      "attach",
+      "--db",
+      fixture.databasePath,
+      "--id",
+      "book-1",
+      "--source-path",
+      pdfPath,
+    ]);
+    expect(attached.exitCode).toBeUndefined();
+    expect(parseRecord(attached)).toMatchObject({ ok: true });
+
+    const result = await invoke([
+      "send",
+      "--db",
+      fixture.databasePath,
+      "--id",
+      "book-1",
+      "--format",
+      "pdf",
+      "--dest",
+      fixture.destination,
+      "--volumes-root",
+      fixture.volumesRoot,
+    ]);
+
+    expect(result.exitCode).toBeUndefined();
+    const record = parseRecord(result);
+    const finalPath = join(await realpath(fixture.destination), "book.pdf");
+    const destinationBytes = await readFile(finalPath);
+    const sha256 = createHash("sha256").update(pdfBytes).digest("hex");
+    expect(destinationBytes).toEqual(pdfBytes);
+    expect(await Bun.file(join(fixture.destination, "book.epub")).exists()).toBe(false);
+    expect(record).toEqual({
+      ok: true,
+      value: {
+        itemId: "book-1",
+        destinationId: "Reader",
+        path: finalPath,
+        bytes: pdfBytes.byteLength,
+        sha256,
+      },
+    });
+  });
+
+  test("does not copy the primary when an explicit format is missing or unsupported", async () => {
+    const fixture = await transferFixture();
+    const baseArgs = [
+      "send",
+      "--db",
+      fixture.databasePath,
+      "--id",
+      "book-1",
+      "--dest",
+      fixture.destination,
+      "--volumes-root",
+      fixture.volumesRoot,
+    ];
+
+    const missing = await invoke([...baseArgs, "--format", "pdf"]);
+    expect(missing.exitCode).toBe(1);
+    expect(parseRecord(missing)).toEqual({
+      ok: false,
+      error: { code: "format-not-found" },
+    });
+
+    const unsupported = await invoke([...baseArgs, "--format", "rtf"]);
+    expect(unsupported.exitCode).toBe(1);
+    expect(parseRecord(unsupported)).toEqual({
+      ok: false,
+      error: { code: "invalid-arguments" },
+    });
+
+    expect(await readdir(fixture.destination)).toEqual([".kobo"]);
   });
 
   test("uses the default durable library when send omits --db", async () => {
