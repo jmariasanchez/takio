@@ -25,7 +25,7 @@ type LibraryBridgeFailure = {
 export type DesktopLibraryListResult = LibraryListWireResult | LibraryBridgeFailure;
 export type DesktopLibraryImportResult = LibraryImportWireResult | LibraryBridgeFailure;
 export type DesktopLibraryAttachFormatResult =
-  | LibraryStoreResult<{ readonly item: LibraryItem }>
+  | LibraryStoreResult<{ readonly item: LibraryItem | null }>
   | LibraryBridgeFailure;
 export type DesktopLibraryRemoveFormatResult = LibraryRemoveWireResult | LibraryBridgeFailure;
 export type DesktopLibraryRemoveResult = LibraryRemoveWireResult | LibraryBridgeFailure;
@@ -144,9 +144,9 @@ export async function attachLibraryFormat(
     sourcePath,
     mode,
   });
-  return decodeLibraryResult<LibraryStoreResult<{ readonly item: LibraryItem }>>(
+  return decodeLibraryResult<LibraryStoreResult<{ readonly item: LibraryItem | null }>>(
     result,
-    (value) => isItemValue(value, false),
+    (value) => isItemValue(value, true),
   );
 }
 

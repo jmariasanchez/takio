@@ -187,6 +187,15 @@ test("passes valid library responses through with authoritative format order", a
       async () => importResult as never,
     ),
   ).toBe(importResult);
+  const missingAttachResult = { ok: true, value: { item: null } } as const;
+  expect(
+    await attachLibraryFormat(
+      validItem.id,
+      "/Books/A title.mobi",
+      "reference",
+      async () => missingAttachResult as never,
+    ),
+  ).toBe(missingAttachResult);
   expect(
     await removeLibraryFormat(validItem.id, "pdf", async () => removeResult as never),
   ).toBe(removeResult);
@@ -215,7 +224,6 @@ test("requires explicit cleanup state after removing a library item", async () =
 
 test("rejects malformed format lifecycle success payloads", async () => {
   for (const value of [
-    { item: null },
     {},
     { item: { ...validItem, formats: [] } },
   ]) {
