@@ -5,19 +5,29 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CommanderError } from "commander";
 
+import type { EbookConvertDiscovery } from "../src/convert.js";
 import { createProgram } from "../src/main.js";
+
+const AVAILABLE_BACKEND = {
+  ok: true,
+  path: "/configured/ebook-convert",
+} as const satisfies EbookConvertDiscovery;
 
 async function invoke(
   args: string[],
   launch?: (argv: readonly string[]) => void | Promise<void>,
+  conversionBackend?: EbookConvertDiscovery,
 ): Promise<{ output: string[]; exitCode?: number }> {
   const output: string[] = [];
   try {
-    await createProgram((line) => output.push(line), undefined, launch).parseAsync([
-      "bun",
-      "takio",
-      ...args,
-    ]);
+    await createProgram(
+      (line) => output.push(line),
+      undefined,
+      launch,
+      undefined,
+      undefined,
+      conversionBackend,
+    ).parseAsync(["bun", "takio", ...args]);
     return { output };
   } catch (error) {
     if (error instanceof CommanderError) {
@@ -91,20 +101,87 @@ describe("takio CLI", () => {
     expect(output.some((line) => line.startsWith("epub"))).toBe(true);
   });
 
-  it("plans a conversion with the local device", async () => {
-    const output: string[] = [];
-    await createProgram((line) => output.push(line)).parseAsync([
-      "bun",
-      "takio",
+  it("does not fabricate a plan when no local conversion capability is configured", async () => {
+    const result = await invokeProcess(
+      ["plan", "--input", "book.epub", "--to", "pdf"],
+      { TAKIO_EBOOK_CONVERT: join(import.meta.dir, "missing-ebook-convert") },
+    );
+
+    expect(result.exitCode).toBe(2);
+    expect(result.stdout).toBe("");
+    expect(result.stderr).toBe("No online execution target can convert EPUB → PDF.\n");
+  });
+
+  it("plans when the local target declares the exact conversion capability", async () => {
+    const result = await invoke(
+      ["plan", "--input", "book.epub", "--to", "pdf"],
+      undefined,
+      AVAILABLE_BACKEND,
+    );
+
+    expect(result.exitCode).toBeUndefined();
+    expect(result.output[0]).toStartWith("Planned job_");
+    expect(result.output).toContain("  EPUB → PDF");
+    expect(result.output).toContain("  target: This Mac (local)");
+  });
+
+  it("reports the assigned target, not the removed device shape, in JSON plans", async () => {
+    const result = await invoke(
+      ["plan", "--input", "book.epub", "--to", "pdf", "--json"],
+      undefined,
+      AVAILABLE_BACKEND,
+    );
+
+    expect(result.exitCode).toBeUndefined();
+    expect(result.output).toHaveLength(1);
+    const job = JSON.parse(result.output[0]!) as Record<string, unknown>;
+    expect(job.assignedTarget).toEqual({ id: "local", name: "This Mac" });
+    expect("assignedDevice" in job).toBe(false);
+  });
+
+  it("lists only the local conversion pairs that are actually configured", async () => {
+    expect(await invoke(["devices"])).toEqual({
+      output: [
+        "ID     STATUS  NAME      CONVERSIONS",
+        "local  online  This Mac  (none)",
+      ],
+    });
+
+    expect(
+      await invoke(["devices"], undefined, AVAILABLE_BACKEND),
+    ).toEqual({
+      output: [
+        "ID     STATUS  NAME      CONVERSIONS",
+        "local  online  This Mac  epub→pdf",
+      ],
+    });
+  });
+
+  it("reports an unsupported --to value without exposing a validation stack trace", async () => {
+    const result = await invokeProcess([
       "plan",
       "--input",
       "book.epub",
       "--to",
-      "pdf",
+      "nonsense",
     ]);
 
-    expect(output[0]).toStartWith("Planned job_");
-    expect(output).toContain("  EPUB → PDF");
+    expect(result.exitCode).toBe(2);
+    expect(result.stdout).toBe("");
+    expect(result.stderr).toBe("Unsupported output format 'nonsense'.\n");
+    expect(result.stderr).not.toContain("ZodError");
+  });
+
+  it("reports an empty --input as a stable planning error without a schema stack", async () => {
+    const result = await invokeProcess(
+      ["plan", "--input", "", "--to", "pdf"],
+      { TAKIO_EBOOK_CONVERT: join(import.meta.dir, "missing-ebook-convert") },
+    );
+
+    expect(result.exitCode).toBe(2);
+    expect(result.stdout).toBe("");
+    expect(result.stderr).toBe("Invalid conversion request.\n");
+    expect(result.stderr).not.toContain("ZodError");
   });
 
   for (const args of [

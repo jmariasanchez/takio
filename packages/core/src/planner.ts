@@ -4,19 +4,26 @@ import { FORMAT_IDS, detectFormat, type FormatId } from "./formats.js";
 
 const formatSchema = z.enum(FORMAT_IDS);
 
-export const deviceSchema = z.object({
+export const conversionCapabilitySchema = z.object({
+  from: formatSchema,
+  to: formatSchema,
+});
+
+export type ConversionCapability = z.infer<typeof conversionCapabilitySchema>;
+
+export const executionTargetSchema = z.object({
   id: z.string().min(1),
   name: z.string().min(1),
-  supportedOutputs: z.array(formatSchema).min(1),
+  capabilities: z.array(conversionCapabilitySchema),
   status: z.enum(["online", "offline"]),
 });
 
-export type Device = z.infer<typeof deviceSchema>;
+export type ExecutionTarget = z.infer<typeof executionTargetSchema>;
 
 export const conversionRequestSchema = z.object({
   input: z.string().min(1),
   outputFormat: formatSchema,
-  devices: z.array(deviceSchema).default([]),
+  targets: z.array(executionTargetSchema).default([]),
 });
 
 export type ConversionRequest = z.input<typeof conversionRequestSchema>;
@@ -26,7 +33,7 @@ export interface PlannedJob {
   input: string;
   inputFormat: FormatId;
   outputFormat: FormatId;
-  assignedDevice: Pick<Device, "id" | "name">;
+  assignedTarget: Pick<ExecutionTarget, "id" | "name">;
   status: "planned";
 }
 
@@ -35,7 +42,11 @@ export class PlanningError extends Error {
 }
 
 export function planConversion(request: ConversionRequest): PlannedJob {
-  const parsed = conversionRequestSchema.parse(request);
+  const result = conversionRequestSchema.safeParse(request);
+  if (!result.success) {
+    throw new PlanningError("Invalid conversion request.");
+  }
+  const parsed = result.data;
   const inputFormat = detectFormat(parsed.input);
 
   if (!inputFormat) {
@@ -48,14 +59,18 @@ export function planConversion(request: ConversionRequest): PlannedJob {
     throw new PlanningError("Input and output formats must be different.");
   }
 
-  const assignedDevice = parsed.devices.find(
-    (device) =>
-      device.status === "online" && device.supportedOutputs.includes(parsed.outputFormat),
+  const assignedTarget = parsed.targets.find(
+    (target) =>
+      target.status === "online" &&
+      target.capabilities.some(
+        (capability) =>
+          capability.from === inputFormat && capability.to === parsed.outputFormat,
+      ),
   );
 
-  if (!assignedDevice) {
+  if (!assignedTarget) {
     throw new PlanningError(
-      `No online device can produce ${parsed.outputFormat.toUpperCase()}.`,
+      `No online execution target can convert ${inputFormat.toUpperCase()} → ${parsed.outputFormat.toUpperCase()}.`,
     );
   }
 
@@ -64,14 +79,7 @@ export function planConversion(request: ConversionRequest): PlannedJob {
     input: parsed.input,
     inputFormat,
     outputFormat: parsed.outputFormat,
-    assignedDevice: { id: assignedDevice.id, name: assignedDevice.name },
+    assignedTarget: { id: assignedTarget.id, name: assignedTarget.name },
     status: "planned",
   };
 }
-
-export const localDevice: Device = {
-  id: "local",
-  name: "This Mac",
-  supportedOutputs: [...FORMAT_IDS],
-  status: "online",
-};

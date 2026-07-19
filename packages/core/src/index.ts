@@ -15,11 +15,12 @@ export {
 } from "./library.js";
 export {
   PlanningError,
+  conversionCapabilitySchema,
   conversionRequestSchema,
-  deviceSchema,
-  localDevice,
+  executionTargetSchema,
   planConversion,
+  type ConversionCapability,
   type ConversionRequest,
-  type Device,
+  type ExecutionTarget,
   type PlannedJob,
 } from "./planner.js";

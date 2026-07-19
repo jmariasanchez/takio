@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 import { Command, CommanderError } from "commander";
-import { copyFile, mkdir, realpath, rename, rm, stat } from "node:fs/promises";
+import { copyFile, lstat, mkdir, realpath, rename, rm, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import {
@@ -8,11 +8,17 @@ import {
   FORMAT_IDS,
   PlanningError,
   detectFormat,
-  localDevice,
   planConversion,
   type FormatId,
 } from "@takio/core";
 import { BunSqliteLibraryStore } from "@takio/library-store-bun";
+import {
+  ConversionError,
+  LOCAL_CONVERSION_CAPABILITIES,
+  convertLocal,
+  discoverEbookConvert,
+  type EbookConvertDiscovery,
+} from "./convert.js";
 import {
   DestinationTransferError,
   authorizeDestination,
@@ -20,6 +26,7 @@ import {
   listDestinations,
   sendToDestination,
 } from "./destinations.js";
+import { JOB_STATUSES, JobStore, type ConversionJob, type JobStatus } from "./job-store.js";
 
 type LibraryPaths = {
   readonly databasePath: string;
@@ -104,6 +111,96 @@ async function openLibraryStore(
   return { store, paths };
 }
 
+function jobsDatabasePath(databasePath?: string): string {
+  if (databasePath === "") {
+    throw new TypeError("A database path is required.");
+  }
+  return databasePath
+    ? resolve(databasePath)
+    : join(dirname(libraryPaths().databasePath), "jobs.sqlite");
+}
+
+async function openJobStore(databasePath: string | undefined, command: Command): Promise<JobStore> {
+  let path: string;
+  try {
+    path = jobsDatabasePath(databasePath);
+  } catch {
+    command.error("", { exitCode: 1, code: "invalid-arguments" });
+  }
+  try {
+    await mkdir(dirname(path), { recursive: true });
+  } catch {
+    command.error("", { exitCode: 1, code: "storage-unavailable" });
+  }
+  const store = new JobStore(path);
+  const opened = store.open();
+  if (!opened.ok) {
+    store.close();
+    command.error("", { exitCode: 1, code: opened.error.code });
+  }
+  return store;
+}
+
+async function queuedConversionPaths(input: string, output: string, outputFormat: string): Promise<{
+  inputPath: string;
+  inputFormat: FormatId;
+  outputPath: string;
+  outputFormat: FormatId;
+}> {
+  if (input === "" || output === "" || !FORMAT_IDS.includes(outputFormat as FormatId)) {
+    throw new ConversionError("invalid-arguments");
+  }
+  const inputFormat = detectFormat(input);
+  if (!inputFormat || !LOCAL_CONVERSION_CAPABILITIES.some(
+    (capability) => capability.from === inputFormat && capability.to === outputFormat,
+  )) {
+    throw new ConversionError("unsupported-conversion");
+  }
+
+  let inputPath: string;
+  try {
+    inputPath = await realpath(resolve(input));
+    const source = await stat(inputPath);
+    if (!source.isFile() || source.size === 0) {
+      throw new ConversionError("source-unavailable");
+    }
+  } catch (error) {
+    if (error instanceof ConversionError) throw error;
+    throw new ConversionError("source-unavailable");
+  }
+
+  const definition = FORMAT_CATALOG.find((format) => format.id === outputFormat)!;
+  const requestedOutput = resolve(output);
+  if (!definition.extensions.includes(extname(requestedOutput).toLowerCase())) {
+    throw new ConversionError("invalid-arguments");
+  }
+  try {
+    const parent = await realpath(dirname(requestedOutput));
+    if (!(await stat(parent)).isDirectory()) {
+      throw new ConversionError("invalid-arguments");
+    }
+    const outputPath = join(parent, basename(requestedOutput));
+    try {
+      await lstat(outputPath);
+      throw new ConversionError("output-file-exists");
+    } catch (error) {
+      if (error instanceof ConversionError) throw error;
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        throw new ConversionError("invalid-arguments");
+      }
+    }
+    return {
+      inputPath,
+      inputFormat,
+      outputPath,
+      outputFormat: outputFormat as FormatId,
+    };
+  } catch (error) {
+    if (error instanceof ConversionError) throw error;
+    throw new ConversionError("invalid-arguments");
+  }
+}
+
 function isInside(parentPath: string, childPath: string): boolean {
   const pathFromParent = relative(parentPath, childPath);
   return (
@@ -147,8 +244,21 @@ export function createProgram(
   launch: Launcher = openWithDefaultApp,
   eject: Ejector = ejectDestination,
   platform: NodeJS.Platform = process.platform,
+  conversionBackend: EbookConvertDiscovery = {
+    ok: false,
+    code: "backend-unavailable",
+  },
 ): Command {
   const program = new Command();
+  const localCapabilities = conversionBackend.ok
+    ? LOCAL_CONVERSION_CAPABILITIES
+    : [];
+  const localTarget = {
+    id: "local",
+    name: "This Mac",
+    capabilities: [...localCapabilities],
+    status: "online" as const,
+  };
 
   program
     .name("takio")
@@ -174,10 +284,194 @@ export function createProgram(
     .command("devices")
     .description("List devices known to this Takio controller")
     .action(() => {
-      write("ID     STATUS  NAME      OUTPUTS");
+      const conversions = localTarget.capabilities.length
+        ? localTarget.capabilities
+            .map((capability) => `${capability.from}→${capability.to}`)
+            .join(", ")
+        : "(none)";
+      write("ID     STATUS  NAME      CONVERSIONS");
       write(
-        `${localDevice.id.padEnd(6)} ${localDevice.status.padEnd(7)} ${localDevice.name.padEnd(9)} ${localDevice.supportedOutputs.join(", ")}`,
+        `${localTarget.id.padEnd(6)} ${localTarget.status.padEnd(7)} ${localTarget.name.padEnd(9)} ${conversions}`,
       );
+    });
+
+  const convert = storageCommand(new Command("convert"), writeError)
+    .helpOption(false)
+    .description("Convert a local document with Calibre ebook-convert")
+    .requiredOption("--input <path>", "source document path")
+    .requiredOption("--to <format>", `target format: ${FORMAT_IDS.join(", ")}`)
+    .requiredOption("--output <path>", "output artifact path")
+    .option("--timeout-seconds <seconds>", "conversion timeout", "300");
+  program.addCommand(convert);
+
+  convert.action(
+    async (
+      options: {
+        input: string;
+        to: string;
+        output: string;
+        timeoutSeconds: string;
+      },
+      command: Command,
+    ) => {
+      const timeoutSeconds = Number(options.timeoutSeconds);
+      if (
+        !Number.isSafeInteger(timeoutSeconds) ||
+        timeoutSeconds <= 0 ||
+        timeoutSeconds > Math.floor(2_147_483_647 / 1000)
+      ) {
+        command.error("", { exitCode: 1, code: "invalid-arguments" });
+      }
+      if (!conversionBackend.ok) {
+        command.error("", { exitCode: 1, code: conversionBackend.code });
+      }
+
+      try {
+        const job = await convertLocal({
+          backendPath: conversionBackend.path,
+          input: options.input,
+          output: options.output,
+          outputFormat: options.to,
+          timeoutMs: timeoutSeconds * 1000,
+        });
+        write(JSON.stringify({ ok: true, value: { job } }));
+      } catch (error) {
+        if (error instanceof ConversionError) {
+          command.error("", { exitCode: 1, code: error.code });
+        }
+        throw error;
+      }
+    },
+  );
+
+  const jobs = storageCommand(new Command("jobs"), writeError)
+    .helpOption(false)
+    .addHelpCommand(false)
+    .description("Manage durable foreground conversion jobs");
+  program.addCommand(jobs);
+
+  storageCommand(jobs.command("enqueue").helpOption(false), writeError)
+    .option("--db <path>", "jobs database path")
+    .requiredOption("--input <path>", "source document path")
+    .requiredOption("--to <format>", `target format: ${FORMAT_IDS.join(", ")}`)
+    .requiredOption("--output <path>", "output artifact path")
+    .action(async (
+      options: { db?: string; input: string; to: string; output: string },
+      command: Command,
+    ) => {
+      let queued;
+      try {
+        queued = await queuedConversionPaths(options.input, options.output, options.to);
+      } catch (error) {
+        if (error instanceof ConversionError) {
+          command.error("", { exitCode: 1, code: error.code });
+        }
+        throw error;
+      }
+      const store = await openJobStore(options.db, command);
+      try {
+        const result = store.enqueue(queued);
+        if (!result.ok) command.error("", { exitCode: 1, code: result.error.code });
+        write(JSON.stringify({ ok: true, value: { job: result.value } }));
+      } finally {
+        store.close();
+      }
+    });
+
+  storageCommand(jobs.command("list").helpOption(false), writeError)
+    .option("--db <path>", "jobs database path")
+    .option("--status <status>", `job status: ${JOB_STATUSES.join(", ")}`)
+    .action(async (options: { db?: string; status?: string }, command: Command) => {
+      if (options.status && !JOB_STATUSES.includes(options.status as JobStatus)) {
+        command.error("", { exitCode: 1, code: "invalid-arguments" });
+      }
+      const store = await openJobStore(options.db, command);
+      try {
+        const result = store.list(options.status as JobStatus | undefined);
+        if (!result.ok) command.error("", { exitCode: 1, code: result.error.code });
+        write(JSON.stringify({ ok: true, value: { jobs: result.value } }));
+      } finally {
+        store.close();
+      }
+    });
+
+  storageCommand(jobs.command("get").helpOption(false), writeError)
+    .option("--db <path>", "jobs database path")
+    .requiredOption("--id <id>", "job ID")
+    .action(async (options: { db?: string; id: string }, command: Command) => {
+      if (options.id === "") command.error("", { exitCode: 1, code: "invalid-arguments" });
+      const store = await openJobStore(options.db, command);
+      try {
+        const result = store.get(options.id);
+        if (!result.ok) command.error("", { exitCode: 1, code: result.error.code });
+        write(JSON.stringify({ ok: true, value: { job: result.value } }));
+      } finally {
+        store.close();
+      }
+    });
+
+  storageCommand(jobs.command("cancel").helpOption(false), writeError)
+    .option("--db <path>", "jobs database path")
+    .requiredOption("--id <id>", "job ID")
+    .action(async (options: { db?: string; id: string }, command: Command) => {
+      if (options.id === "") command.error("", { exitCode: 1, code: "invalid-arguments" });
+      const store = await openJobStore(options.db, command);
+      try {
+        const result = store.cancel(options.id);
+        if (!result.ok) command.error("", { exitCode: 1, code: result.error.code });
+        write(JSON.stringify({ ok: true, value: { job: result.value } }));
+      } finally {
+        store.close();
+      }
+    });
+
+  storageCommand(jobs.command("run-next").helpOption(false), writeError)
+    .option("--db <path>", "jobs database path")
+    .action(async (options: { db?: string }, command: Command) => {
+      const store = await openJobStore(options.db, command);
+      try {
+        if (!conversionBackend.ok) {
+          command.error("", { exitCode: 1, code: conversionBackend.code });
+        }
+        const claimed = store.claimNext();
+        if (!claimed.ok) command.error("", { exitCode: 1, code: claimed.error.code });
+        if (!claimed.value) {
+          write(JSON.stringify({ ok: true, value: { job: null } }));
+          return;
+        }
+
+        let result: { ok: true; value: ConversionJob } | { ok: false; error: { code: string } } | undefined;
+        let converted: Awaited<ReturnType<typeof convertLocal>> | undefined;
+        try {
+          converted = await convertLocal({
+            backendPath: conversionBackend.path,
+            input: claimed.value.inputPath,
+            output: claimed.value.outputPath,
+            outputFormat: claimed.value.outputFormat,
+            timeoutMs: 300_000,
+          });
+        } catch (error) {
+          result = store.fail(
+            claimed.value.id,
+            error instanceof ConversionError ? error.code : "conversion-failed",
+          );
+        }
+        if (converted) {
+          const completed = await store.complete(claimed.value.id, {
+            path: converted.artifact.path,
+            bytes: converted.artifact.bytes,
+            sha256: converted.artifact.sha256,
+          });
+          result = !completed.ok && completed.error.code === "artifact-invalid"
+            ? store.fail(claimed.value.id, "artifact-invalid")
+            : completed;
+        }
+        if (!result) throw new Error("Conversion finished without a durable job result.");
+        if (!result.ok) command.error("", { exitCode: 1, code: result.error.code });
+        write(JSON.stringify({ ok: true, value: { job: result.value } }));
+      } finally {
+        store.close();
+      }
     });
 
   const destination = storageCommand(new Command("destination"), writeError)
@@ -684,16 +978,21 @@ export function createProgram(
 
   program
     .command("plan")
-    .description("Create a conversion plan; execution adapters will be added next")
+    .description("Create a conversion plan for an available execution target")
     .requiredOption("--input <path>", "source document path")
     .requiredOption("--to <format>", `target format: ${FORMAT_IDS.join(", ")}`)
     .option("--json", "emit JSON instead of a readable summary")
     .action((options: { input: string; to: string; json?: boolean }) => {
       try {
+        const outputFormat = FORMAT_IDS.find((format) => format === options.to);
+        if (!outputFormat) {
+          program.error(`Unsupported output format '${options.to}'.`, { exitCode: 2 });
+          return;
+        }
         const job = planConversion({
           input: options.input,
-          outputFormat: options.to as FormatId,
-          devices: [localDevice],
+          outputFormat,
+          targets: [localTarget],
         });
         if (options.json) {
           write(JSON.stringify(job, null, 2));
@@ -701,8 +1000,8 @@ export function createProgram(
         }
         write(`Planned ${job.id}`);
         write(`  ${job.inputFormat.toUpperCase()} → ${job.outputFormat.toUpperCase()}`);
-        write(`  device: ${job.assignedDevice.name} (${job.assignedDevice.id})`);
-        write("  status: planned (no converter adapter is configured yet)");
+        write(`  target: ${job.assignedTarget.name} (${job.assignedTarget.id})`);
+        write("  status: planned (run takio convert to execute locally)");
       } catch (error) {
         if (error instanceof PlanningError) {
           program.error(error.message, { exitCode: 2 });
@@ -716,7 +1015,15 @@ export function createProgram(
 
 export async function run(argv: string[]): Promise<void> {
   try {
-    await createProgram(console.log, (message) => process.stdout.write(message)).parseAsync(argv);
+    const conversionBackend = await discoverEbookConvert();
+    await createProgram(
+      console.log,
+      (message) => process.stdout.write(message),
+      undefined,
+      undefined,
+      process.platform,
+      conversionBackend,
+    ).parseAsync(argv);
   } catch (error) {
     if (error instanceof CommanderError) {
       process.exitCode = error.exitCode;
