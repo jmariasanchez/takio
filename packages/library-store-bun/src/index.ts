@@ -1,4 +1,4 @@
-import { libraryItemSchema, type LibraryItem } from "@takio/core";
+import { bookFormatSchema, libraryItemSchema, type LibraryItem } from "@takio/core";
 import type {
   AddLibraryItemRequest,
   AddLibraryItemResult,
@@ -38,14 +38,12 @@ import { dirname, extname, isAbsolute, join, relative, resolve, sep } from "node
 
 import { initializationTestSeam } from "./initialization-test-seam.js";
 
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 const incompatibleSchema = Symbol("incompatible-schema");
 
 type StoredLibraryItem = {
   id: unknown;
   title: unknown;
-  sourcePath: unknown;
-  format: unknown;
   addedAt: unknown;
   author: unknown;
   description: unknown;
@@ -53,10 +51,13 @@ type StoredLibraryItem = {
   updatedAt: unknown;
 };
 
-type StoredV1LibraryItem = Pick<
-  StoredLibraryItem,
-  "id" | "title" | "sourcePath" | "format" | "addedAt"
->;
+type StoredV2LibraryItem = StoredLibraryItem & {
+  sourcePath: unknown;
+  format: unknown;
+};
+type StoredV1LibraryItem = Pick<StoredV2LibraryItem, "id" | "title" | "sourcePath" | "format" | "addedAt">;
+type StoredBookFormat = { sourcePath: unknown; format: unknown; addedAt: unknown };
+type StoredPositionedBookFormat = StoredBookFormat & { position: unknown };
 type StoredTag = { name: unknown };
 
 const success = <T>(value: T): LibraryStoreResult<T> => ({ ok: true, value });
@@ -74,16 +75,8 @@ function isDuplicateIdError(error: unknown): boolean {
   );
 }
 
-function readItem(
-  database: Database,
-  coversDirectory: string,
-  row: StoredLibraryItem,
-): LibraryStoreResult<LibraryItem> {
-  if (typeof row.id !== "string") {
-    return failure("invalid-stored-data");
-  }
-
-  const tags = database
+function readTags(database: Database, itemId: string): unknown[] {
+  return database
     .query<StoredTag, [string]>(`
       SELECT tags.name
       FROM library_item_tags
@@ -91,8 +84,17 @@ function readItem(
       WHERE library_item_tags.library_item_id = ?
       ORDER BY library_item_tags.position
     `)
-    .all(row.id)
+    .all(itemId)
     .map(({ name }) => name);
+}
+
+function parseItem(
+  coversDirectory: string,
+  row: StoredLibraryItem,
+  sourcePath: unknown,
+  format: unknown,
+  tags: unknown[],
+): LibraryStoreResult<LibraryItem> {
   let coverPath: string | undefined;
   try {
     coverPath = row.coverPath == null ? undefined : resolveOwnedCover(coversDirectory, row.coverPath);
@@ -102,6 +104,8 @@ function readItem(
 
   const parsed = libraryItemSchema.safeParse({
     ...row,
+    sourcePath,
+    format,
     author: row.author ?? undefined,
     description: row.description ?? undefined,
     coverPath,
@@ -109,6 +113,51 @@ function readItem(
     tags,
   });
   return parsed.success ? success(parsed.data) : failure("invalid-stored-data");
+}
+
+function readV2Item(
+  database: Database,
+  coversDirectory: string,
+  row: StoredV2LibraryItem,
+): LibraryStoreResult<LibraryItem> {
+  if (typeof row.id !== "string") {
+    return failure("invalid-stored-data");
+  }
+
+  return parseItem(coversDirectory, row, row.sourcePath, row.format, readTags(database, row.id));
+}
+
+function readItem(
+  database: Database,
+  coversDirectory: string,
+  row: StoredLibraryItem,
+): LibraryStoreResult<LibraryItem> {
+  if (typeof row.id !== "string") {
+    return failure("invalid-stored-data");
+  }
+
+  const storedFormats = database
+    .query<StoredPositionedBookFormat, [string]>(`
+      SELECT source_path AS sourcePath, format, added_at AS addedAt, position
+      FROM library_item_formats
+      WHERE library_item_id = ?
+      ORDER BY position
+    `)
+    .all(row.id);
+  const formats = bookFormatSchema.array().safeParse(
+    storedFormats.map(({ position: _position, ...format }) => format),
+  );
+  if (storedFormats[0]?.position !== 0 || !formats.success) {
+    return failure("invalid-stored-data");
+  }
+
+  return parseItem(
+    coversDirectory,
+    row,
+    formats.data[0]!.sourcePath,
+    formats.data[0]!.format,
+    readTags(database, row.id),
+  );
 }
 
 function isInside(parentPath: string, childPath: string): boolean {
@@ -164,6 +213,20 @@ function createMetadataTables(database: Database): void {
   `);
 }
 
+function createFormatTable(database: Database): void {
+  database.run(`
+    CREATE TABLE library_item_formats (
+      library_item_id TEXT NOT NULL REFERENCES library_items(id) ON DELETE CASCADE,
+      format TEXT NOT NULL,
+      source_path TEXT NOT NULL,
+      added_at TEXT NOT NULL,
+      position INTEGER NOT NULL CHECK (position >= 0),
+      PRIMARY KEY (library_item_id, format),
+      UNIQUE (library_item_id, position)
+    ) STRICT
+  `);
+}
+
 function verifyV1Backup(path: string): void {
   using backup = new Database(path, { strict: true });
   const version = backup.query<{ user_version: number }, []>("PRAGMA user_version").get()
@@ -183,13 +246,16 @@ function verifyV1Backup(path: string): void {
   }
 }
 
-function retainVerifiedV1Backup(database: Database, databasePath: string): void {
-  const backupPath = `${databasePath}.v1.backup`;
+function retainVerifiedBackup(
+  database: Database,
+  backupPath: string,
+  verify: (path: string) => void,
+): void {
   const temporaryPath = `${backupPath}.${crypto.randomUUID()}.tmp`;
 
   try {
     writeFileSync(temporaryPath, database.serialize());
-    verifyV1Backup(temporaryPath);
+    verify(temporaryPath);
     renameSync(temporaryPath, backupPath);
   } catch (error) {
     rmSync(temporaryPath, { force: true });
@@ -197,11 +263,20 @@ function retainVerifiedV1Backup(database: Database, databasePath: string): void 
   }
 }
 
-function verifyV2Database(database: Database, coversDirectory: string): void {
-  const integrity = database.query<{ integrity_check: string }, []>("PRAGMA integrity_check").get()
+function retainVerifiedV1Backup(database: Database, databasePath: string): void {
+  retainVerifiedBackup(database, `${databasePath}.v1.backup`, verifyV1Backup);
+}
+
+function verifyV2Backup(path: string, coversDirectory: string): void {
+  using backup = new Database(path, { strict: true });
+  backup.run("PRAGMA foreign_keys = ON");
+  const version = backup.query<{ user_version: number }, []>("PRAGMA user_version").get()
+    ?.user_version;
+  const integrity = backup.query<{ integrity_check: string }, []>("PRAGMA integrity_check").get()
     ?.integrity_check;
-  const rows = database
-    .query<StoredLibraryItem, []>(`
+  const foreignKeyViolations = backup.query("PRAGMA foreign_key_check").all();
+  const rows = backup
+    .query<StoredV2LibraryItem, []>(`
       SELECT id, title, source_path AS sourcePath, format, added_at AS addedAt,
         author, description, cover_path AS coverPath, updated_at AS updatedAt
       FROM library_items
@@ -209,7 +284,88 @@ function verifyV2Database(database: Database, coversDirectory: string): void {
     `)
     .all();
 
-  if (integrity !== "ok" || rows.some((row) => !readItem(database, coversDirectory, row).ok)) {
+  if (
+    version !== 2 ||
+    integrity !== "ok" ||
+    foreignKeyViolations.length > 0 ||
+    rows.some((row) => !readV2Item(backup, coversDirectory, row).ok)
+  ) {
+    throw new Error("The pre-migration backup could not be verified.");
+  }
+}
+
+function retainVerifiedV2Backup(
+  database: Database,
+  databasePath: string,
+  coversDirectory: string,
+): void {
+  retainVerifiedBackup(database, `${databasePath}.v2.backup`, (path) =>
+    verifyV2Backup(path, coversDirectory),
+  );
+}
+
+function migrateV2ToV3(database: Database): void {
+  createFormatTable(database);
+  database.run(`
+    INSERT INTO library_item_formats
+      (library_item_id, format, source_path, added_at, position)
+    SELECT id, format, source_path, added_at, 0
+    FROM library_items
+  `);
+  database.run("ALTER TABLE library_items DROP COLUMN source_path");
+  database.run("ALTER TABLE library_items DROP COLUMN format");
+  initializationTestSeam.duringV2ToV3Migration?.();
+}
+
+function verifyV3Structure(database: Database): void {
+  const integrity = database.query<{ integrity_check: string }, []>("PRAGMA integrity_check").get()
+    ?.integrity_check;
+  const foreignKeyViolations = database.query("PRAGMA foreign_key_check").all();
+  const itemWithoutFormat = database
+    .query<{ id: string }, []>(`
+      SELECT library_items.id
+      FROM library_items
+      WHERE NOT EXISTS (
+        SELECT 1
+        FROM library_item_formats
+        WHERE library_item_formats.library_item_id = library_items.id
+          AND library_item_formats.position = 0
+      )
+      LIMIT 1
+    `)
+    .get();
+  const formats = database
+    .query<StoredPositionedBookFormat, []>(`
+      SELECT source_path AS sourcePath, format, added_at AS addedAt, position
+      FROM library_item_formats
+      ORDER BY library_item_id, position
+    `)
+    .all();
+
+  if (
+    integrity !== "ok" ||
+    foreignKeyViolations.length > 0 ||
+    itemWithoutFormat ||
+    formats.some(({ position: _position, ...format }) => !bookFormatSchema.safeParse(format).success)
+  ) {
+    throw new Error("The library database structure could not be verified.");
+  }
+}
+
+function verifyV3Database(database: Database, coversDirectory: string): void {
+  verifyV3Structure(database);
+  const rows = database
+    .query<StoredLibraryItem, []>(`
+      SELECT id, title, added_at AS addedAt,
+        author, description, cover_path AS coverPath, updated_at AS updatedAt
+      FROM library_items
+      ORDER BY rowid
+    `)
+    .all();
+
+  if (
+    rows.some((row) => !readItem(database, coversDirectory, row).ok)
+  ) {
     throw new Error("The migrated database could not be verified.");
   }
 }
@@ -236,7 +392,7 @@ function readStoredItem(
 ): LibraryStoreResult<LibraryItem | null> {
   const row = database
     .query<StoredLibraryItem, [string]>(`
-      SELECT id, title, source_path AS sourcePath, format, added_at AS addedAt,
+      SELECT id, title, added_at AS addedAt,
         author, description, cover_path AS coverPath, updated_at AS updatedAt
       FROM library_items
       WHERE id = ?
@@ -294,8 +450,6 @@ export class BunSqliteLibraryStore implements LibraryStore {
             CREATE TABLE library_items (
               id TEXT PRIMARY KEY,
               title TEXT NOT NULL,
-              source_path TEXT NOT NULL,
-              format TEXT NOT NULL,
               added_at TEXT NOT NULL,
               author TEXT,
               description TEXT,
@@ -304,7 +458,8 @@ export class BunSqliteLibraryStore implements LibraryStore {
             ) STRICT
           `);
           createMetadataTables(database!);
-          verifyV2Database(database!, this.#coversDirectory);
+          createFormatTable(database!);
+          verifyV3Database(database!, this.#coversDirectory);
           database!.run(`PRAGMA user_version = ${SCHEMA_VERSION}`);
         } else if (version === 1) {
           retainVerifiedV1Backup(database!, this.#databasePath);
@@ -314,7 +469,13 @@ export class BunSqliteLibraryStore implements LibraryStore {
           database!.run("ALTER TABLE library_items ADD COLUMN updated_at TEXT");
           createMetadataTables(database!);
           initializationTestSeam.duringV1ToV2Migration?.();
-          verifyV2Database(database!, this.#coversDirectory);
+          migrateV2ToV3(database!);
+          verifyV3Database(database!, this.#coversDirectory);
+          database!.run(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+        } else if (version === 2) {
+          retainVerifiedV2Backup(database!, this.#databasePath, this.#coversDirectory);
+          migrateV2ToV3(database!);
+          verifyV3Database(database!, this.#coversDirectory);
           database!.run(`PRAGMA user_version = ${SCHEMA_VERSION}`);
         } else if (version !== SCHEMA_VERSION) {
           throw incompatibleSchema;
@@ -337,7 +498,7 @@ export class BunSqliteLibraryStore implements LibraryStore {
     try {
       const rows = this.#database
         .query<StoredLibraryItem, []>(`
-          SELECT id, title, source_path AS sourcePath, format, added_at AS addedAt,
+          SELECT id, title, added_at AS addedAt,
             author, description, cover_path AS coverPath, updated_at AS updatedAt
           FROM library_items
           ORDER BY title COLLATE NOCASE, id
@@ -383,19 +544,23 @@ export class BunSqliteLibraryStore implements LibraryStore {
       this.#database.transaction(() => {
         this.#database!.run(
           `INSERT INTO library_items
-            (id, title, source_path, format, added_at, author, description, cover_path, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            (id, title, added_at, author, description, cover_path, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)`,
           [
             parsed.data.id,
             parsed.data.title,
-            parsed.data.sourcePath,
-            parsed.data.format,
             parsed.data.addedAt,
             parsed.data.author ?? null,
             parsed.data.description ?? null,
             parsed.data.coverPath ?? null,
             parsed.data.updatedAt ?? null,
           ],
+        );
+        this.#database!.run(
+          `INSERT INTO library_item_formats
+            (library_item_id, format, source_path, added_at, position)
+            VALUES (?, ?, ?, ?, 0)`,
+          [parsed.data.id, parsed.data.format, parsed.data.sourcePath, parsed.data.addedAt],
         );
         writeTags(this.#database!, parsed.data.id, parsed.data.tags);
       }).immediate();
@@ -576,7 +741,7 @@ export class BunSqliteLibraryStore implements LibraryStore {
       const pattern = `%${escapeLike(query)}%`;
       const rows = this.#database
         .query<StoredLibraryItem, [string, string, string, string]>(`
-          SELECT id, title, source_path AS sourcePath, format, added_at AS addedAt,
+          SELECT id, title, added_at AS addedAt,
             author, description, cover_path AS coverPath, updated_at AS updatedAt
           FROM library_items
           WHERE title LIKE ? ESCAPE '\\' COLLATE NOCASE
@@ -615,7 +780,7 @@ export class BunSqliteLibraryStore implements LibraryStore {
       const removed = this.#database.transaction(() => {
         const row = this.#database!
           .query<StoredLibraryItem, [string]>(`
-            SELECT id, title, source_path AS sourcePath, format, added_at AS addedAt,
+            SELECT id, title, added_at AS addedAt,
               author, description, cover_path AS coverPath, updated_at AS updatedAt
             FROM library_items
             WHERE id = ?

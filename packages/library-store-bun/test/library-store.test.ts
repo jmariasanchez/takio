@@ -40,6 +40,7 @@ beforeEach(async () => {
 afterEach(async () => {
   delete initializationTestSeam.afterVersionZeroPreflight;
   delete initializationTestSeam.duringV1ToV2Migration;
+  delete initializationTestSeam.duringV2ToV3Migration;
 
   const closeErrors: unknown[] = [];
   for (const store of stores) {
@@ -105,13 +106,34 @@ async function createSqlFixture(filename: string): Promise<void> {
 }
 
 describe("BunSqliteLibraryStore", () => {
-  it("persists add, get, list, and remove across injected-path reopenings at schema v2", async () => {
+  it("persists add, get, list, and remove across injected-path reopenings at schema v3", async () => {
     const first = createStore();
     expect(await first.open({ config: {} })).toEqual({ ok: true, value: null });
     expect(await first.add({ item })).toEqual({ ok: true, value: item });
     first.close();
 
-    expect(schemaVersion()).toBe(2);
+    expect(schemaVersion()).toBe(3);
+    using stored = new Database(databasePath, { strict: true });
+    expect(
+      stored
+        .query<
+          { libraryItemId: string; sourcePath: string; format: string; addedAt: string; position: number },
+          []
+        >(`
+          SELECT library_item_id AS libraryItemId, source_path AS sourcePath,
+            format, added_at AS addedAt, position
+          FROM library_item_formats
+        `)
+        .all(),
+    ).toEqual([
+      {
+        libraryItemId: item.id,
+        sourcePath: item.sourcePath,
+        format: item.format,
+        addedAt: item.addedAt,
+        position: 0,
+      },
+    ]);
 
     const second = createStore();
     expect(await second.open({ config: {} })).toEqual({ ok: true, value: null });
@@ -126,10 +148,11 @@ describe("BunSqliteLibraryStore", () => {
     expect(await third.list({})).toEqual({ ok: true, value: [] });
     third.close();
 
-    expect(schemaVersion()).toBe(2);
+    expect(schemaVersion()).toBe(3);
+    expect(stored.query("SELECT * FROM library_item_formats").all()).toEqual([]);
   });
 
-  it("opens the independent frozen v2 fixture without changing any stored fields", async () => {
+  it("backs up and migrates the independent frozen v2 fixture without changing fields", async () => {
     await createSqlFixture("schema-v2.sql");
     const databaseBefore = await readFile(databasePath);
 
@@ -162,8 +185,42 @@ describe("BunSqliteLibraryStore", () => {
     });
     store.close();
 
-    expect(schemaVersion()).toBe(2);
-    expect(await readFile(databasePath)).toEqual(databaseBefore);
+    expect(schemaVersion()).toBe(3);
+    expect(await readFile(`${databasePath}.v2.backup`)).toEqual(databaseBefore);
+    using migrated = new Database(databasePath, { strict: true });
+    expect(migrated.query("PRAGMA foreign_key_check").all()).toEqual([]);
+    expect(
+      migrated.query<{ integrity_check: string }, []>("PRAGMA integrity_check").get()
+        ?.integrity_check,
+    ).toBe("ok");
+    expect(
+      migrated
+        .query<
+          { libraryItemId: string; sourcePath: string; format: string; addedAt: string; position: number },
+          []
+        >(`
+          SELECT library_item_id AS libraryItemId, source_path AS sourcePath,
+            format, added_at AS addedAt, position
+          FROM library_item_formats
+          ORDER BY library_item_id
+        `)
+        .all(),
+    ).toEqual([
+      {
+        libraryItemId: "book-v2-complete",
+        sourcePath: "library/the-dispossessed.epub",
+        format: "epub",
+        addedAt: "2026-07-17T10:15:00.000Z",
+        position: 0,
+      },
+      {
+        libraryItemId: "book-v2-minimal",
+        sourcePath: "library/kindred.mobi",
+        format: "mobi",
+        addedAt: "2026-07-16T08:00:00.000Z",
+        position: 0,
+      },
+    ]);
   });
 
   it("backs up and migrates a frozen v1 library without changing original fields", async () => {
@@ -174,12 +231,34 @@ describe("BunSqliteLibraryStore", () => {
     expect(await store.list({})).toEqual({ ok: true, value: [secondItem, item] });
     store.close();
 
-    expect(schemaVersion()).toBe(2);
+    expect(schemaVersion()).toBe(3);
     using migrated = new Database(databasePath, { strict: true });
     expect(
       migrated.query<{ integrity_check: string }, []>("PRAGMA integrity_check").get()
         ?.integrity_check,
     ).toBe("ok");
+    expect(migrated.query("PRAGMA foreign_key_check").all()).toEqual([]);
+    expect(
+      migrated
+        .query<{ libraryItemId: string; sourcePath: string; format: string; position: number }, []>(`
+          SELECT library_item_id AS libraryItemId, source_path AS sourcePath, format, position
+          FROM library_item_formats ORDER BY library_item_id
+        `)
+        .all(),
+    ).toEqual([
+      {
+        libraryItemId: item.id,
+        sourcePath: item.sourcePath,
+        format: item.format,
+        position: 0,
+      },
+      {
+        libraryItemId: secondItem.id,
+        sourcePath: secondItem.sourcePath,
+        format: secondItem.format,
+        position: 0,
+      },
+    ]);
     using backup = new Database(`${databasePath}.v1.backup`, { strict: true });
     expect(backup.query<{ user_version: number }, []>("PRAGMA user_version").get()?.user_version).toBe(
       1,
@@ -216,7 +295,7 @@ describe("BunSqliteLibraryStore", () => {
     ]);
   });
 
-  it("treats reopening v2 as a no-op", async () => {
+  it("treats reopening v3 as a no-op", async () => {
     createFrozenV1Fixture();
     const first = createStore();
     expect(await first.open({ config: {} })).toEqual({ ok: true, value: null });
@@ -233,9 +312,10 @@ describe("BunSqliteLibraryStore", () => {
     expect(await readFile(databasePath)).toEqual(databaseBefore);
   });
 
-  it("rolls back an interrupted migration and leaves the frozen v1 database readable", async () => {
+  it("rolls a v1 library back when the v2-to-v3 migration is interrupted", async () => {
     createFrozenV1Fixture();
-    initializationTestSeam.duringV1ToV2Migration = () => {
+    const databaseBefore = await readFile(databasePath);
+    initializationTestSeam.duringV2ToV3Migration = () => {
       throw new Error("injected migration failure");
     };
 
@@ -244,6 +324,7 @@ describe("BunSqliteLibraryStore", () => {
       ok: false,
       error: { code: "storage-unavailable" },
     });
+    expect(await readFile(databasePath)).toEqual(databaseBefore);
 
     using database = new Database(databasePath, { strict: true });
     expect(database.query<{ user_version: number }, []>("PRAGMA user_version").get()?.user_version).toBe(
@@ -262,6 +343,41 @@ describe("BunSqliteLibraryStore", () => {
     ]);
   });
 
+  it("rolls a frozen v2 library back when the v2-to-v3 migration is interrupted", async () => {
+    await createSqlFixture("schema-v2.sql");
+    const databaseBefore = await readFile(databasePath);
+    initializationTestSeam.duringV2ToV3Migration = () => {
+      throw new Error("injected migration failure");
+    };
+
+    const store = createStore();
+    expect(await store.open({ config: {} })).toEqual({
+      ok: false,
+      error: { code: "storage-unavailable" },
+    });
+
+    expect(await readFile(databasePath)).toEqual(databaseBefore);
+    expect(await readFile(`${databasePath}.v2.backup`)).toEqual(databaseBefore);
+    using database = new Database(databasePath, { strict: true });
+    expect(database.query<{ user_version: number }, []>("PRAGMA user_version").get()).toEqual({
+      user_version: 2,
+    });
+    expect(
+      database
+        .query<{ name: string }, []>(
+          "SELECT name FROM sqlite_schema WHERE type = 'table' AND name NOT GLOB 'sqlite_*' ORDER BY name",
+        )
+        .all(),
+    ).toEqual([
+      { name: "library_item_tags" },
+      { name: "library_items" },
+      { name: "tags" },
+    ]);
+    expect(
+      database.query<{ id: string }, []>("SELECT id FROM library_items ORDER BY rowid").all(),
+    ).toEqual([{ id: "book-v2-complete" }, { id: "book-v2-minimal" }]);
+  });
+
   it("maps duplicate primary keys to the contract error", async () => {
     const store = createStore();
     await store.open({ config: {} });
@@ -269,6 +385,26 @@ describe("BunSqliteLibraryStore", () => {
     expect(await store.add({ item })).toEqual({ ok: true, value: item });
     expect(await store.add({ item })).toEqual({ ok: false, error: { code: "duplicate-id" } });
     store.close();
+  });
+
+  it("rolls back the parent item when its primary format cannot be inserted", async () => {
+    const store = createStore();
+    await store.open({ config: {} });
+    using database = new Database(databasePath);
+    database.run(`
+      CREATE TRIGGER reject_primary_format
+      BEFORE INSERT ON library_item_formats
+      BEGIN
+        SELECT RAISE(ABORT, 'injected format failure');
+      END
+    `);
+
+    expect(await store.add({ item })).toEqual({
+      ok: false,
+      error: { code: "storage-unavailable" },
+    });
+    expect(database.query("SELECT * FROM library_items").all()).toEqual([]);
+    expect(database.query("SELECT * FROM library_item_formats").all()).toEqual([]);
   });
 
   it("updates only editable metadata and replaces tags across close and reopen", async () => {
@@ -517,16 +653,22 @@ describe("BunSqliteLibraryStore", () => {
     expect(await readFile(outsidePath)).toEqual(Buffer.from("outside"));
   });
 
-  it("revalidates rows read from durable storage", async () => {
+  it("reports a malformed primary format row when the item is read", async () => {
     const store = createStore();
     await store.open({ config: {} });
     store.close();
 
     using database = new Database(databasePath);
     database.run(
-      `INSERT INTO library_items (id, title, source_path, format, added_at) VALUES (?, ?, ?, ?, ?)`,
-      [item.id, item.title, item.sourcePath, "invalid-format", item.addedAt],
+      "INSERT INTO library_items (id, title, added_at) VALUES (?, ?, ?)",
+      [item.id, item.title, item.addedAt],
     );
+    database.run(
+      `INSERT INTO library_item_formats
+        (library_item_id, format, source_path, added_at, position) VALUES (?, ?, ?, ?, 0)`,
+      [item.id, "invalid-format", item.sourcePath, item.addedAt],
+    );
+    const before = await readFile(databasePath);
 
     const reopened = createStore();
     expect(await reopened.open({ config: {} })).toEqual({ ok: true, value: null });
@@ -538,7 +680,54 @@ describe("BunSqliteLibraryStore", () => {
       ok: false,
       error: { code: "invalid-stored-data" },
     });
-    reopened.close();
+    expect(await readFile(databasePath)).toEqual(before);
+  });
+
+  it("reports an item without a position-zero format when the item is read", async () => {
+    const store = createStore();
+    await store.open({ config: {} });
+    await store.add({ item });
+    store.close();
+
+    using database = new Database(databasePath);
+    database.run("DELETE FROM library_item_formats WHERE library_item_id = ?", [item.id]);
+    const before = await readFile(databasePath);
+
+    const reopened = createStore();
+    expect(await reopened.open({ config: {} })).toEqual({ ok: true, value: null });
+    expect(await reopened.get({ id: item.id })).toEqual({
+      ok: false,
+      error: { code: "invalid-stored-data" },
+    });
+    expect(await readFile(databasePath)).toEqual(before);
+    expect(database.query("SELECT id FROM library_items").all()).toEqual([{ id: item.id }]);
+  });
+
+  it("reports an invalid secondary format when the item is read", async () => {
+    const store = createStore();
+    await store.open({ config: {} });
+    await store.add({ item });
+    store.close();
+
+    using database = new Database(databasePath);
+    database.run(
+      `INSERT INTO library_item_formats
+        (library_item_id, format, source_path, added_at, position) VALUES (?, 'pdf', ?, 'not-a-date', 1)`,
+      [item.id, "library/left-hand.pdf"],
+    );
+    const before = await readFile(databasePath);
+
+    const reopened = createStore();
+    expect(await reopened.open({ config: {} })).toEqual({ ok: true, value: null });
+    expect(await reopened.get({ id: item.id })).toEqual({
+      ok: false,
+      error: { code: "invalid-stored-data" },
+    });
+    expect(await reopened.list({})).toEqual({
+      ok: false,
+      error: { code: "invalid-stored-data" },
+    });
+    expect(await readFile(databasePath)).toEqual(before);
   });
 
   it("rejects future schemas byte-for-byte without mutation", async () => {
@@ -618,7 +807,7 @@ describe("BunSqliteLibraryStore", () => {
     expect(
       initializedDatabase.query<{ user_version: number }, []>("PRAGMA user_version").get()
         ?.user_version,
-    ).toBe(2);
+    ).toBe(3);
     expect(
       initializedDatabase
         .query<{ name: string; type: string }, []>(
@@ -626,6 +815,7 @@ describe("BunSqliteLibraryStore", () => {
         )
         .all(),
     ).toEqual([
+      { name: "library_item_formats", type: "table" },
       { name: "library_item_tags", type: "table" },
       { name: "library_items", type: "table" },
       { name: "tags", type: "table" },
