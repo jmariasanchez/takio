@@ -2,7 +2,7 @@
 
 Runtime-neutral application contract for Takio library storage.
 
-`LibraryStore` provides asynchronous `open`, `list`, `get`, `add`, and `remove` operations using the canonical `LibraryItem` from `@takio/core`. Every operation returns a JSON-safe `LibraryStoreResult`; missing `get` and `remove` records are successful results with `value: null`.
+`LibraryStore` provides asynchronous CRUD, metadata update, owned-cover, and literal search operations using the canonical `LibraryItem` from `@takio/core`. Every operation returns a JSON-safe `LibraryStoreResult`; operations targeting missing records succeed with `value: null`.
 
 Stable error codes are `duplicate-id`, `invalid-stored-data`, `storage-unavailable`, and `incompatible-schema`. Consumers should branch on these codes, not driver messages.
 

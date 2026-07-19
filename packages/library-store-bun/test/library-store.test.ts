@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { Database } from "bun:sqlite";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 
 import type { LibraryItem } from "@takio/core";
 
@@ -128,7 +128,7 @@ describe("BunSqliteLibraryStore", () => {
 
     const store = createStore();
     expect(await store.open({ config: {} })).toEqual({ ok: true, value: null });
-    expect(await store.list({})).toEqual({ ok: true, value: [item, secondItem] });
+    expect(await store.list({})).toEqual({ ok: true, value: [secondItem, item] });
     store.close();
 
     expect(schemaVersion()).toBe(2);
@@ -183,7 +183,7 @@ describe("BunSqliteLibraryStore", () => {
 
     const second = createStore();
     expect(await second.open({ config: {} })).toEqual({ ok: true, value: null });
-    expect(await second.list({})).toEqual({ ok: true, value: [item, secondItem] });
+    expect(await second.list({})).toEqual({ ok: true, value: [secondItem, item] });
     second.close();
 
     expect(await readFile(`${databasePath}.v1.backup`)).toEqual(backupBefore);
@@ -226,6 +226,252 @@ describe("BunSqliteLibraryStore", () => {
     expect(await store.add({ item })).toEqual({ ok: true, value: item });
     expect(await store.add({ item })).toEqual({ ok: false, error: { code: "duplicate-id" } });
     store.close();
+  });
+
+  it("updates only editable metadata and replaces tags across close and reopen", async () => {
+    const first = createStore();
+    await first.open({ config: {} });
+    await first.add({ item });
+
+    const result = await first.update({
+      id: item.id,
+      patch: {
+        title: "  Left Hand  ",
+        author: "  Ursula K. Le Guin  ",
+        description: "  A classic.  ",
+        tags: ["  Science   Fiction  ", "Classic"],
+      },
+    });
+    expect(result).toEqual({
+      ok: true,
+      value: {
+        ...item,
+        title: "Left Hand",
+        author: "Ursula K. Le Guin",
+        description: "A classic.",
+        tags: ["Science Fiction", "Classic"],
+        updatedAt: expect.any(String),
+      },
+    });
+    if (!result.ok || !result.value) {
+      throw new Error("Expected the updated item");
+    }
+    expect({
+      id: result.value.id,
+      sourcePath: result.value.sourcePath,
+      format: result.value.format,
+      addedAt: result.value.addedAt,
+    }).toEqual({
+      id: item.id,
+      sourcePath: item.sourcePath,
+      format: item.format,
+      addedAt: item.addedAt,
+    });
+    first.close();
+
+    const reopened = createStore();
+    await reopened.open({ config: {} });
+    expect(await reopened.get({ id: item.id })).toEqual(result);
+    expect(
+      await reopened.update({
+        id: item.id,
+        patch: { author: null, description: null, tags: [] },
+      }),
+    ).toMatchObject({
+      ok: true,
+      value: { author: undefined, description: undefined, tags: [] },
+    });
+  });
+
+  it("rolls scalar and tag changes back together when tag replacement fails", async () => {
+    const store = createStore();
+    await store.open({ config: {} });
+    await store.add({ item: { ...item, author: "Original", tags: ["Classic"] } });
+    const before = await store.get({ id: item.id });
+
+    using database = new Database(databasePath);
+    database.run(`
+      CREATE TRIGGER reject_tag_replacement
+      BEFORE INSERT ON library_item_tags
+      BEGIN
+        SELECT RAISE(ABORT, 'injected tag failure');
+      END
+    `);
+    expect(
+      await store.update({
+        id: item.id,
+        patch: { author: "Changed", tags: ["New"] },
+      }),
+    ).toEqual({ ok: false, error: { code: "storage-unavailable" } });
+    expect(await store.get({ id: item.id })).toEqual(before);
+  });
+
+  it("searches metadata and tags literally with stable, duplicate-free ordering", async () => {
+    const store = createStore();
+    await store.open({ config: {} });
+    const fixtures: LibraryItem[] = [
+      { ...item, id: "percent", title: "100% Real", tags: ["Classic"] },
+      { ...item, id: "underscore", title: "Under_score", tags: [] },
+      { ...item, id: "slash", title: "Back\\slash", tags: [] },
+      {
+        ...item,
+        id: "alpha-2",
+        title: "alpha",
+        author: "OCTAVIA BUTLER",
+        description: "Classic speculative fiction",
+        tags: ["Classic"],
+      },
+      { ...item, id: "alpha-1", title: "Alpha", tags: ["Solo"] },
+    ];
+    for (const fixture of fixtures) {
+      await store.add({ item: fixture });
+    }
+
+    expect(await store.search({ query: "%" })).toMatchObject({
+      ok: true,
+      value: [{ id: "percent" }],
+    });
+    expect(await store.search({ query: "_" })).toMatchObject({
+      ok: true,
+      value: [{ id: "underscore" }],
+    });
+    expect(await store.search({ query: "\\" })).toMatchObject({
+      ok: true,
+      value: [{ id: "slash" }],
+    });
+    expect(await store.search({ query: "classic" })).toMatchObject({
+      ok: true,
+      value: [{ id: "percent" }, { id: "alpha-2" }],
+    });
+    expect(await store.search({ query: "alpha" })).toMatchObject({
+      ok: true,
+      value: [{ id: "alpha-1" }, { id: "alpha-2" }],
+    });
+    expect(await store.search({ query: "octavia" })).toMatchObject({
+      ok: true,
+      value: [{ id: "alpha-2" }],
+    });
+    expect(await store.search({ query: "" })).toEqual(await store.list({}));
+  });
+
+  it("copies, replaces, persists, and removes owned covers without changing originals", async () => {
+    const firstSource = join(directory, "selected-one.png");
+    const secondSource = join(directory, "selected-two.jpg");
+    await writeFile(firstSource, "first-original");
+    await writeFile(secondSource, "second-original");
+    const firstOriginal = await readFile(firstSource);
+    const secondOriginal = await readFile(secondSource);
+
+    const first = createStore();
+    await first.open({ config: {} });
+    await first.add({ item });
+    const installed = await first.setCover({ id: item.id, sourcePath: firstSource });
+    expect(installed).toMatchObject({ ok: true, value: { id: item.id } });
+    if (!installed.ok || !installed.value?.coverPath) {
+      throw new Error("Expected an installed cover");
+    }
+    const firstOwnedPath = installed.value.coverPath;
+    expect(await readFile(firstOwnedPath)).toEqual(firstOriginal);
+    expect(await readFile(firstSource)).toEqual(firstOriginal);
+    using storedCover = new Database(databasePath);
+    expect(
+      storedCover
+        .query<{ coverPath: string }, [string]>(
+          "SELECT cover_path AS coverPath FROM library_items WHERE id = ?",
+        )
+        .get(item.id)?.coverPath,
+    ).toBe(basename(firstOwnedPath));
+    first.close();
+
+    const reopened = createStore();
+    await reopened.open({ config: {} });
+    expect(await reopened.get({ id: item.id })).toEqual(installed);
+    const replaced = await reopened.setCover({ id: item.id, sourcePath: secondSource });
+    if (!replaced.ok || !replaced.value?.coverPath) {
+      throw new Error("Expected a replaced cover");
+    }
+    expect(await Bun.file(firstOwnedPath).exists()).toBe(false);
+    expect(await readFile(replaced.value.coverPath)).toEqual(secondOriginal);
+    expect(await readFile(secondSource)).toEqual(secondOriginal);
+
+    const removedCover = await reopened.removeCover({ id: item.id });
+    expect(removedCover).toMatchObject({ ok: true, value: { id: item.id } });
+    expect(removedCover.ok && removedCover.value?.coverPath).toBeUndefined();
+    expect(await Bun.file(replaced.value.coverPath).exists()).toBe(false);
+    expect(await readFile(firstSource)).toEqual(firstOriginal);
+    expect(await readFile(secondSource)).toEqual(secondOriginal);
+  });
+
+  it("keeps the prior cover pair when replacement cannot update SQLite", async () => {
+    const firstSource = join(directory, "first.png");
+    const secondSource = join(directory, "second.png");
+    await writeFile(firstSource, "first");
+    await writeFile(secondSource, "second");
+    const store = createStore();
+    await store.open({ config: {} });
+    await store.add({ item });
+    const firstCover = await store.setCover({ id: item.id, sourcePath: firstSource });
+    if (!firstCover.ok || !firstCover.value?.coverPath) {
+      throw new Error("Expected a first cover");
+    }
+
+    using database = new Database(databasePath);
+    database.run(`
+      CREATE TRIGGER reject_cover_replacement
+      BEFORE UPDATE OF cover_path ON library_items
+      BEGIN
+        SELECT RAISE(ABORT, 'injected cover failure');
+      END
+    `);
+    expect(await store.setCover({ id: item.id, sourcePath: secondSource })).toEqual({
+      ok: false,
+      error: { code: "storage-unavailable" },
+    });
+    expect(await store.get({ id: item.id })).toEqual(firstCover);
+    expect(await readFile(firstCover.value.coverPath)).toEqual(Buffer.from("first"));
+    expect(await readdir(join(directory, "covers"))).toEqual([
+      basename(firstCover.value.coverPath),
+    ]);
+    expect(await readFile(secondSource)).toEqual(Buffer.from("second"));
+  });
+
+  it("rejects cover traversal and deletes only the owned cover when removing an item", async () => {
+    const outsidePath = join(directory, "outside.png");
+    await writeFile(outsidePath, "outside");
+    const store = createStore();
+    await store.open({ config: {} });
+    expect(await store.add({ item: { ...item, coverPath: outsidePath } })).toEqual({
+      ok: false,
+      error: { code: "invalid-stored-data" },
+    });
+    await store.add({ item });
+    store.close();
+
+    using database = new Database(databasePath);
+    database.run("UPDATE library_items SET cover_path = '../outside.png' WHERE id = ?", [item.id]);
+    const rejected = createStore();
+    await rejected.open({ config: {} });
+    expect(await rejected.get({ id: item.id })).toEqual({
+      ok: false,
+      error: { code: "invalid-stored-data" },
+    });
+    expect(await rejected.remove({ id: item.id })).toEqual({
+      ok: false,
+      error: { code: "invalid-stored-data" },
+    });
+    expect(await readFile(outsidePath)).toEqual(Buffer.from("outside"));
+
+    rejected.close();
+    database.run("UPDATE library_items SET cover_path = NULL WHERE id = ?", [item.id]);
+    const owner = createStore();
+    await owner.open({ config: {} });
+    const installed = await owner.setCover({ id: item.id, sourcePath: outsidePath });
+    if (!installed.ok || !installed.value?.coverPath) {
+      throw new Error("Expected an owned cover");
+    }
+    expect(await owner.remove({ id: item.id })).toMatchObject({ ok: true, value: { id: item.id } });
+    expect(await Bun.file(installed.value.coverPath).exists()).toBe(false);
+    expect(await readFile(outsidePath)).toEqual(Buffer.from("outside"));
   });
 
   it("revalidates rows read from durable storage", async () => {
