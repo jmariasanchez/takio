@@ -13,7 +13,12 @@ import {
   type FormatId,
 } from "@takio/core";
 import { BunSqliteLibraryStore } from "@takio/library-store-bun";
-import { listDestinations } from "./destinations.js";
+import {
+  DestinationTransferError,
+  authorizeDestination,
+  listDestinations,
+  sendToDestination,
+} from "./destinations.js";
 
 type LibraryPaths = {
   readonly databasePath: string;
@@ -187,6 +192,65 @@ export function createProgram(
         command.error("", { exitCode: 1, code: "destination-unavailable" });
       }
     });
+
+  const send = storageCommand(new Command("send"), writeError)
+    .helpOption(false)
+    .description("Send a library item to a mounted destination")
+    .requiredOption("--db <path>", "database path")
+    .requiredOption("--id <id>", "library item ID")
+    .requiredOption("--dest <volume-path>", "mounted destination path")
+    .option("--subdir <dir>", "destination subdirectory")
+    .option("--overwrite", "replace an existing destination file")
+    .option("--volumes-root <path>", "mounted-volume root", "/Volumes");
+  program.addCommand(send);
+
+  send.action(
+    async (
+      options: {
+        db: string;
+        id: string;
+        dest: string;
+        subdir?: string;
+        overwrite?: boolean;
+        volumesRoot: string;
+      },
+      command: Command,
+    ) => {
+      const destination = await authorizeDestination(options.dest, options.volumesRoot);
+      if (!destination) {
+        command.error("", { exitCode: 1, code: "unknown-destination" });
+      }
+
+      const { store } = await openLibraryStore(options.db, command);
+      try {
+        const item = await store.get({ id: options.id });
+        if (!item.ok) {
+          command.error("", { exitCode: 1, code: item.error.code });
+        }
+        if (!item.value) {
+          command.error("", { exitCode: 1, code: "unknown-item" });
+        }
+
+        try {
+          const result = await sendToDestination({
+            itemId: item.value.id,
+            sourcePath: item.value.sourcePath,
+            destination,
+            subdir: options.subdir,
+            overwrite: options.overwrite,
+          });
+          write(JSON.stringify({ ok: true, value: result }));
+        } catch (error) {
+          if (error instanceof DestinationTransferError) {
+            command.error("", { exitCode: 1, code: error.code });
+          }
+          throw error;
+        }
+      } finally {
+        store.close();
+      }
+    },
+  );
 
   const library = storageCommand(new Command("library"), writeError)
     .helpOption(false)
