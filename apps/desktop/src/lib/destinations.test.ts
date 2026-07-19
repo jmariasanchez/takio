@@ -17,14 +17,14 @@ test("uses only the fixed desktop destination commands and argument names", asyn
   };
 
   await listDestinations(invokeCommand);
-  await sendLibraryItem("item-1", "/Volumes/Reader", invokeCommand);
+  await sendLibraryItem("item-1", "pdf", "/Volumes/Reader", invokeCommand);
   await ejectDestination("/Volumes/Reader", invokeCommand);
 
   expect(calls).toEqual([
     { command: "destination_list", args: undefined },
     {
       command: "destination_send",
-      args: { id: "item-1", destinationPath: "/Volumes/Reader" },
+      args: { id: "item-1", format: "pdf", destinationPath: "/Volumes/Reader" },
     },
     {
       command: "destination_eject",

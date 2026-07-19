@@ -1,4 +1,4 @@
-import type { Destination } from "@takio/core";
+import type { Destination, FormatId } from "@takio/core";
 import { invoke } from "@tauri-apps/api/core";
 
 export type DestinationFailure = {
@@ -48,10 +48,11 @@ export function listDestinations(
 
 export function sendLibraryItem(
   id: string,
+  format: FormatId,
   destinationPath: string,
   invokeCommand: DestinationInvoker = invokeTauri,
 ): Promise<DesktopDestinationSendResult> {
-  return invokeCommand("destination_send", { id, destinationPath });
+  return invokeCommand("destination_send", { id, format, destinationPath });
 }
 
 export function ejectDestination(
