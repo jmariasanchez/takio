@@ -9,8 +9,10 @@ export {
 export { FORMAT_CATALOG, FORMAT_IDS, detectFormat, type FormatDefinition, type FormatId } from "./formats.js";
 export {
   InMemoryLibraryRepository,
+  bookFormatSchema,
   libraryItemSchema,
   normalizeTags,
+  type BookFormat,
   type LibraryItem,
 } from "./library.js";
 export {
