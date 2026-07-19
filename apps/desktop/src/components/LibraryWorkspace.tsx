@@ -52,7 +52,7 @@ type LibraryWorkspaceProps = {
   readonly onRetry: () => Promise<boolean>;
   readonly onSaveMetadata: (event: FormEvent, item: LibraryItem) => Promise<void>;
   readonly onSelectItem: (id: string) => void;
-  readonly onSendItem: (item: LibraryItem) => Promise<void>;
+  readonly onSendItem: (item: LibraryItem, bookFormat: BookFormat) => Promise<void>;
   readonly onSetConversionDraft: (draft: ConversionDraft | null) => void;
   readonly onSetDraft: (draft: MetadataDraft | null) => void;
 };
@@ -222,11 +222,19 @@ export function LibraryWorkspace({
                     </button>
                     <button
                       className="row-button send-button"
-                      aria-label={`Send ${item.title} to the selected reader`}
+                      aria-label={`Send ${
+                        FORMAT_CATALOG.find(
+                          (definition) => definition.id === item.formats[0].format,
+                        )!.label
+                      } for “${item.title}” to ${
+                        selectedDestination?.name ?? "the selected reader"
+                      }`}
                       disabled={actionsPending || !selectedDestination}
-                      onClick={() => void onSendItem(item)}
+                      onClick={() => void onSendItem(item, item.formats[0])}
                     >
-                      {pendingAction === `send:${item.id}` ? "Sending…" : "Send"}
+                      {pendingAction === `send:${item.id}:${item.formats[0].format}`
+                        ? "Sending…"
+                        : "Send"}
                     </button>
                     {item.format === "epub" && (
                       <button
@@ -276,6 +284,7 @@ export function LibraryWorkspace({
                     aria-labelledby={`formats-heading-${item.id}`}
                     aria-busy={
                       pendingAction?.startsWith(`open:${item.id}:`) ||
+                      pendingAction?.startsWith(`send:${item.id}:`) ||
                       pendingAction?.startsWith(`format-attach:${item.id}:`) ||
                       pendingAction?.startsWith(`format-remove:${item.id}:`)
                     }
@@ -357,6 +366,22 @@ export function LibraryWorkspace({
                                 {pendingAction === `open:${item.id}:${bookFormat.format}`
                                   ? "Opening…"
                                   : "Open"}
+                              </button>
+                              <button
+                                type="button"
+                                className="quiet-button"
+                                aria-label={`Send ${label} for “${item.title}” to ${
+                                  selectedDestination?.name ?? "the selected reader"
+                                }`}
+                                disabled={actionsPending || !selectedDestination}
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  void onSendItem(item, bookFormat);
+                                }}
+                              >
+                                {pendingAction === `send:${item.id}:${bookFormat.format}`
+                                  ? "Sending…"
+                                  : "Send"}
                               </button>
                               <button
                                 type="button"

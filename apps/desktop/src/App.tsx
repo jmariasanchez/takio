@@ -717,7 +717,10 @@ export default function App() {
       if (!result.ok) {
         const errorText = describeLibraryError(result.error.code);
         if (result.error.code === "format-not-found" || result.error.code === "not-found") {
-          await loadLibrary(false, queryRef.current);
+          const refreshed = await loadLibrary(false, queryRef.current);
+          if (result.error.code === "format-not-found" && refreshed) {
+            postFormatFocusControlId.current = `library-primary-open-${item.id}`;
+          }
         }
         setNotice({ kind: "error", text: errorText });
         return;
@@ -848,7 +851,7 @@ export default function App() {
     }
   }
 
-  async function sendItem(item: LibraryItem) {
+  async function sendItem(item: LibraryItem, bookFormat: BookFormat) {
     if (deviceMutationPending.current) {
       return;
     }
@@ -859,18 +862,29 @@ export default function App() {
     }
 
     deviceMutationPending.current = true;
-    setPendingAction(`send:${item.id}`);
+    setPendingAction(`send:${item.id}:${bookFormat.format}`);
     setNotice(null);
     try {
-      const result = await sendLibraryItem(item.id, selectedDestination.path);
+      const result = await sendLibraryItem(
+        item.id,
+        bookFormat.format,
+        selectedDestination.path,
+      );
       if (!result.ok) {
-        setNotice({ kind: "error", text: describeDestinationError(result.error.code) });
+        const errorText = describeDestinationError(result.error.code);
+        if (result.error.code === "format-not-found" || result.error.code === "unknown-item") {
+          await loadLibrary(false, queryRef.current);
+        }
+        setNotice({ kind: "error", text: errorText });
         return;
       }
 
+      const label = FORMAT_CATALOG.find(
+        (definition) => definition.id === bookFormat.format,
+      )!.label;
       setNotice({
         kind: "status",
-        text: `Sent to ${result.value.path} · ${result.value.bytes.toLocaleString()} bytes · SHA-256 ${result.value.sha256}`,
+        text: `Sent ${label} to ${result.value.path} · ${result.value.bytes.toLocaleString()} bytes · SHA-256 ${result.value.sha256}`,
       });
     } catch (error) {
       setNotice({ kind: "error", text: describeUnexpectedDestinationError(error) });
@@ -934,7 +948,7 @@ export default function App() {
       setNotice({ kind: "error", text: "Choose a library item before sending." });
       return;
     }
-    await sendItem(selectedItem);
+    await sendItem(selectedItem, selectedItem.formats[0]);
   }
 
   menuActionHandlers.current = {
