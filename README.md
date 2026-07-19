@@ -11,14 +11,18 @@ The domain package (`@takio/core`) is shared by both surfaces, so a conversion r
 
 ## Current milestone
 
-The workspace currently includes a polished Tauri/React desktop app, a capability-aware CLI conversion planner, and verified EPUB-to-PDF conversion through a discovered Calibre `ebook-convert` backend. Conversion can run immediately or through a durable local queue, but always runs in the foreground.
+The workspace currently includes a polished Tauri/React desktop app, a durable
+local library, a capability-aware CLI conversion planner, and verified
+EPUB-to-PDF conversion through a discovered Calibre `ebook-convert` backend.
+Library items can hold multiple formats, with each format recorded explicitly as
+either a Takio-managed copy or a reference to a caller-owned file. Conversion
+can run immediately or through a durable local queue, but always runs in the
+foreground.
 
 ## Requirements
 
 - [Bun](https://bun.sh/) 1.3+
 - Rust/Cargo plus Xcode Command Line Tools for Tauri desktop builds
-
-> This machine currently has Bun, but Rust/Cargo is not installed. The CLI and web UI build can be verified now; `bun run desktop` requires installing Rust first.
 
 ## Quick start
 
@@ -32,9 +36,30 @@ bun run takio formats --json
 bun run takio devices
 bun run takio plan --input ~/Books/example.epub --to pdf --json
 
-# Native desktop app (after Rust/Cargo is installed)
+# Native desktop app
 bun run desktop
 ```
+
+## Library storage and schema v4
+
+Importing a library item or attaching a format as a copy leaves the selected
+source in place and creates a Takio-managed copy. Attaching a reference records
+the external file without copying it. Removing a format or item deletes only
+Takio-managed copies; referenced files remain caller-owned and are never
+deleted. If immediate managed-file cleanup fails, Takio records the obligation
+and retries it when the library is next opened.
+
+The first time the current storage implementation opens a schema-v1, v2, or v3
+library, it migrates the database atomically to schema v4 after retaining a
+verified backup named `<database>.v1.backup`, `<database>.v2.backup`, or
+`<database>.v3.backup`. Migrated legacy formats are treated as references
+because the older schemas did not record ownership. There is no in-place
+downgrade: older binaries reject a v4 database, and restoring a pre-v4 backup
+loses database changes made after that backup.
+
+Migration backups contain database metadata only. Preserve and move
+`library.sqlite` together with its sibling `items` and `covers` directories so
+Takio-managed books and covers remain recoverable.
 
 ## CLI contract for skills and agents
 

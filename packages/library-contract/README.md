@@ -2,8 +2,31 @@
 
 Runtime-neutral application contract for Takio library storage.
 
-`LibraryStore` provides asynchronous CRUD, metadata update, owned-cover, and literal search operations using the canonical `LibraryItem` from `@takio/core`. Every operation returns a JSON-safe `LibraryStoreResult`; operations targeting missing records succeed with `value: null`.
+`LibraryStore` provides asynchronous CRUD, managed import, format attachment and
+removal, metadata update, owned-cover, and literal search operations using the
+canonical `LibraryItem` from `@takio/core`. Every operation returns a JSON-safe
+`LibraryStoreResult`.
 
-Stable error codes are `duplicate-id`, `invalid-stored-data`, `storage-unavailable`, and `incompatible-schema`. Consumers should branch on these codes, not driver messages.
+`import` creates a managed library copy. `attachFormat` requires an explicit
+`copy` or `reference` source: a copy becomes `managed`, while a reference remains
+caller-owned. Every format in a returned `LibraryItem` therefore has explicit
+`managed` or `referenced` provenance. `removeFormat` refuses to remove an item's
+last format.
 
-`LibraryStoreConfig` is intentionally empty until a runtime adapter establishes a real cross-runtime configuration need. Database paths, schema versions, migrations, and Bun or Tauri setup belong to later adapter packages.
+Missing records are represented without exceptions. `get`, `attachFormat`,
+`update`, `setCover`, and `removeCover` succeed with `value: null`.
+`removeFormat` and whole-item `remove` instead succeed with
+`value: { item: null, cleanupPending: false }`. For an existing item, both
+removal operations return `{ item, cleanupPending }`; `cleanupPending: true`
+means metadata removal committed but at least one Takio-owned file still awaits
+cleanup.
+
+Stable error codes are `duplicate-id`, `invalid-stored-data`,
+`storage-unavailable`, `incompatible-schema`, `invalid-arguments`,
+`duplicate-format`, and `last-format`. Consumers should branch on these codes,
+not driver messages.
+
+`LibraryStoreConfig` is intentionally empty until a runtime adapter establishes
+a real cross-runtime configuration need. Database paths, schema versions,
+migrations, and Bun or Tauri setup belong to runtime adapters rather than this
+contract.
