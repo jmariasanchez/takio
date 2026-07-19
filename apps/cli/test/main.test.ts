@@ -105,11 +105,19 @@ describe("takio CLI", () => {
     ["library", "add", "--help"],
     ["library", "import", "--help"],
     ["library", "get", "--help"],
+    ["library", "update", "--help"],
+    ["library", "search", "--help"],
+    ["library", "cover", "--help"],
+    ["library", "cover", "set", "--help"],
+    ["library", "cover", "remove", "--help"],
     ["library", "remove", "--help"],
     ["library", "help", "add"],
     ["library", "help", "import"],
     ["library", "help", "get"],
     ["library", "help", "list"],
+    ["library", "help", "update"],
+    ["library", "help", "search"],
+    ["library", "help", "cover"],
     ["library", "help", "remove"],
   ]) {
     it(`reports ${args.join(" ")} as one JSON failure record`, async () => {
@@ -123,6 +131,11 @@ describe("takio CLI", () => {
     ["help", "library", "import"],
     ["help", "library", "get"],
     ["help", "library", "list"],
+    ["help", "library", "update"],
+    ["help", "library", "search"],
+    ["help", "library", "cover"],
+    ["help", "library", "cover", "set"],
+    ["help", "library", "cover", "remove"],
     ["help", "library", "remove"],
   ]) {
     it(`preserves root-owned ${args.join(" ")} help`, async () => {
@@ -235,6 +248,7 @@ describe("takio CLI", () => {
         sourcePath: "library/left-hand.epub",
         format: "epub",
         addedAt: "2026-07-18T12:00:00.000Z",
+        tags: [],
       };
       const added = await invoke([
         "library",
@@ -259,6 +273,208 @@ describe("takio CLI", () => {
       const listed = await invoke(["library", "list", "--db", databasePath!]);
       expect(listed.exitCode).toBeUndefined();
       expect(parseOutput(listed.output)).toEqual({ ok: true, value: { items: [item] } });
+    });
+
+    it("replaces editable metadata and tags durably across process invocations", async () => {
+      const sourcePath = join(directory!, "editable.epub");
+      await Bun.write(sourcePath, "owned contents");
+      const env = { TAKIO_DATA_DIR: directory };
+      const imported = parseProcessOutput(
+        await invokeProcess(["library", "import", "--source-path", sourcePath], env),
+      ) as { value: { item: { id: string } } };
+
+      const updated = parseProcessOutput(
+        await invokeProcess(
+          [
+            "library",
+            "update",
+            "--id",
+            imported.value.item.id,
+            "--title",
+            "The Dispossessed",
+            "--author",
+            "Ursula K. Le Guin",
+            "--description",
+            "An anarchist physicist crosses worlds.",
+            "--tag",
+            "Science Fiction",
+            "--tag",
+            "Classic",
+          ],
+          env,
+        ),
+      ) as {
+        value: {
+          item: {
+            id: string;
+            title: string;
+            author: string;
+            description: string;
+            tags: string[];
+            updatedAt: string;
+          };
+        };
+      };
+
+      expect(updated.value.item).toMatchObject({
+        id: imported.value.item.id,
+        title: "The Dispossessed",
+        author: "Ursula K. Le Guin",
+        description: "An anarchist physicist crosses worlds.",
+        tags: ["Science Fiction", "Classic"],
+      });
+      expect(new Date(updated.value.item.updatedAt).toISOString()).toBe(
+        updated.value.item.updatedAt,
+      );
+
+      const cleared = parseProcessOutput(
+        await invokeProcess(
+          [
+            "library",
+            "update",
+            "--id",
+            imported.value.item.id,
+            "--author",
+            "",
+            "--description",
+            "",
+          ],
+          env,
+        ),
+      ) as { value: { item: Record<string, unknown> } };
+      expect(cleared.value.item.author).toBeUndefined();
+      expect(cleared.value.item.description).toBeUndefined();
+      expect(cleared.value.item.tags).toEqual([]);
+
+      const reopened = parseProcessOutput(
+        await invokeProcess(["library", "get", "--id", imported.value.item.id], env),
+      ) as { value: { item: Record<string, unknown> } };
+      expect(reopened.value.item).toEqual(cleared.value.item);
+    });
+
+    it("sets and removes an owned cover while preserving the prior cover on failure", async () => {
+      const sourcePath = join(directory!, "covered.epub");
+      const firstCoverPath = join(directory!, "first-cover.jpg");
+      const rejectedCoverPath = join(directory!, "rejected-cover.png");
+      await Promise.all([
+        Bun.write(sourcePath, "book contents"),
+        Bun.write(firstCoverPath, "first cover"),
+        Bun.write(rejectedCoverPath, "rejected cover"),
+      ]);
+      const env = { TAKIO_DATA_DIR: directory };
+      const imported = parseProcessOutput(
+        await invokeProcess(["library", "import", "--source-path", sourcePath], env),
+      ) as { value: { item: { id: string } } };
+
+      const covered = parseProcessOutput(
+        await invokeProcess(
+          [
+            "library",
+            "cover",
+            "set",
+            "--id",
+            imported.value.item.id,
+            "--source-path",
+            firstCoverPath,
+          ],
+          env,
+        ),
+      ) as { value: { item: { coverPath: string } } };
+      const ownedCoverPath = covered.value.item.coverPath;
+      expect(ownedCoverPath).toStartWith(join(directory!, "covers"));
+      expect(await Bun.file(ownedCoverPath).text()).toBe("first cover");
+      expect(await Bun.file(firstCoverPath).text()).toBe("first cover");
+
+      using database = new Database(join(directory!, "library.sqlite"));
+      database.run(`
+        CREATE TRIGGER reject_cover_update
+        BEFORE UPDATE OF cover_path ON library_items
+        BEGIN
+          SELECT RAISE(ABORT, 'reject cover update');
+        END
+      `);
+
+      const rejected = await invokeProcess(
+        [
+          "library",
+          "cover",
+          "set",
+          "--id",
+          imported.value.item.id,
+          "--source-path",
+          rejectedCoverPath,
+        ],
+        env,
+      );
+      expect(rejected.exitCode).not.toBe(0);
+      expect(rejected.stderr).toBe("");
+      expect(rejected.stdout).toBe(
+        JSON.stringify({ ok: false, error: { code: "storage-unavailable" } }),
+      );
+
+      const afterFailure = parseProcessOutput(
+        await invokeProcess(["library", "get", "--id", imported.value.item.id], env),
+      ) as { value: { item: { coverPath: string } } };
+      expect(afterFailure.value.item.coverPath).toBe(ownedCoverPath);
+      expect(await Bun.file(ownedCoverPath).text()).toBe("first cover");
+      expect(await Bun.file(rejectedCoverPath).text()).toBe("rejected cover");
+
+      database.run("DROP TRIGGER reject_cover_update");
+      const removed = parseProcessOutput(
+        await invokeProcess(
+          ["library", "cover", "remove", "--id", imported.value.item.id],
+          env,
+        ),
+      ) as { value: { item: Record<string, unknown> } };
+      expect(removed.value.item.coverPath).toBeUndefined();
+      expect(await Bun.file(ownedCoverPath).exists()).toBe(false);
+    });
+
+    it("searches literal wildcard characters with stable ordering across processes", async () => {
+      const items = [
+        { id: "book-b", title: "100% Useful" },
+        { id: "book-a", title: "100% Useful" },
+        { id: "book-underscore", title: "Under_score" },
+        { id: "book-slash", title: String.raw`Back\\slash` },
+      ];
+      for (const item of items) {
+        parseProcessOutput(
+          await invokeProcess([
+            "library",
+            "add",
+            "--db",
+            databasePath!,
+            "--id",
+            item.id,
+            "--title",
+            item.title,
+            "--source-path",
+            `${item.id}.epub`,
+            "--format",
+            "epub",
+            "--added-at",
+            "2026-07-18T12:00:00.000Z",
+          ]),
+        );
+      }
+
+      for (const [query, expectedIds] of [
+        ["%", ["book-a", "book-b"]],
+        ["_", ["book-underscore"]],
+        ["\\", ["book-slash"]],
+      ] as const) {
+        const result = parseProcessOutput(
+          await invokeProcess([
+            "library",
+            "search",
+            "--db",
+            databasePath!,
+            "--query",
+            query,
+          ]),
+        ) as { value: { items: { id: string }[] } };
+        expect(result.value.items.map((item) => item.id)).toEqual(expectedIds);
+      }
     });
 
     it("reports a duplicate add as JSON with a nonzero exit", async () => {

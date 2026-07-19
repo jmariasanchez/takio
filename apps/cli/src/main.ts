@@ -186,6 +186,7 @@ export function createProgram(
               sourcePath: options.sourcePath,
               format: options.format as FormatId,
               addedAt: options.addedAt,
+              tags: [],
             },
           });
           if (!result.ok) {
@@ -248,6 +249,7 @@ export function createProgram(
           sourcePath: join(paths.itemsDirectory, `${id}${extension}`),
           format: format!,
           addedAt: new Date().toISOString(),
+          tags: [],
         };
         const temporaryPath = `${item.sourcePath}.tmp-${crypto.randomUUID()}`;
         let committed = false;
@@ -297,6 +299,146 @@ export function createProgram(
       const { store } = await openLibraryStore(options.db, command);
       try {
         const result = await store.get({ id: options.id });
+        if (!result.ok) {
+          command.error("", { exitCode: 1, code: result.error.code });
+        }
+        write(JSON.stringify({ ok: true, value: { item: result.value } }));
+      } finally {
+        store.close();
+      }
+    });
+
+  storageCommand(library.command("update").helpOption(false), writeError)
+    .option("--db <path>", "database path")
+    .requiredOption("--id <id>", "library item ID")
+    .option("--title <title>", "replacement title")
+    .option("--author <author>", "replacement author; empty clears it")
+    .option("--description <description>", "replacement description; empty clears it")
+    .option(
+      "--tag <tag>",
+      "replacement tag (repeatable; omitted clears all tags)",
+      (tag: string, tags: string[]) => [...tags, tag],
+      [],
+    )
+    .action(
+      async (
+        options: {
+          db?: string;
+          id: string;
+          title?: string;
+          author?: string;
+          description?: string;
+          tag: string[];
+        },
+        command: Command,
+      ) => {
+        if (options.id.length === 0) {
+          command.error("", { exitCode: 1, code: "invalid-arguments" });
+        }
+
+        const { store } = await openLibraryStore(options.db, command);
+        try {
+          const result = await store.update({
+            id: options.id,
+            patch: {
+              title: options.title,
+              author:
+                options.author === undefined
+                  ? undefined
+                  : options.author.trim() === ""
+                    ? null
+                    : options.author,
+              description:
+                options.description === undefined
+                  ? undefined
+                  : options.description.trim() === ""
+                    ? null
+                    : options.description,
+              tags: options.tag,
+            },
+          });
+          if (!result.ok) {
+            command.error("", { exitCode: 1, code: result.error.code });
+          }
+          write(JSON.stringify({ ok: true, value: { item: result.value } }));
+        } finally {
+          store.close();
+        }
+      },
+    );
+
+  storageCommand(library.command("search").helpOption(false), writeError)
+    .option("--db <path>", "database path")
+    .requiredOption("--query <query>", "title, author, description, or tag query")
+    .action(async (options: { db?: string; query: string }, command: Command) => {
+      const { store } = await openLibraryStore(options.db, command);
+      try {
+        const result = await store.search({ query: options.query });
+        if (!result.ok) {
+          command.error("", { exitCode: 1, code: result.error.code });
+        }
+        write(JSON.stringify({ ok: true, value: { items: result.value } }));
+      } finally {
+        store.close();
+      }
+    });
+
+  const cover = storageCommand(library.command("cover"), writeError)
+    .helpOption(false)
+    .addHelpCommand(false)
+    .description("Manage an item's owned cover image");
+
+  storageCommand(cover.command("set").helpOption(false), writeError)
+    .option("--db <path>", "database path")
+    .requiredOption("--id <id>", "library item ID")
+    .requiredOption("--source-path <path>", "source image path")
+    .action(
+      async (
+        options: { db?: string; id: string; sourcePath: string },
+        command: Command,
+      ) => {
+        if (options.id.length === 0) {
+          command.error("", { exitCode: 1, code: "invalid-arguments" });
+        }
+
+        let sourcePath: string;
+        try {
+          const source = await stat(options.sourcePath);
+          if (!source.isFile()) {
+            command.error("", { exitCode: 1, code: "invalid-arguments" });
+          }
+          sourcePath = await realpath(options.sourcePath);
+        } catch (error) {
+          if (error instanceof CommanderError) {
+            throw error;
+          }
+          command.error("", { exitCode: 1, code: "invalid-arguments" });
+        }
+
+        const { store } = await openLibraryStore(options.db, command);
+        try {
+          const result = await store.setCover({ id: options.id, sourcePath });
+          if (!result.ok) {
+            command.error("", { exitCode: 1, code: result.error.code });
+          }
+          write(JSON.stringify({ ok: true, value: { item: result.value } }));
+        } finally {
+          store.close();
+        }
+      },
+    );
+
+  storageCommand(cover.command("remove").helpOption(false), writeError)
+    .option("--db <path>", "database path")
+    .requiredOption("--id <id>", "library item ID")
+    .action(async (options: { db?: string; id: string }, command: Command) => {
+      if (options.id.length === 0) {
+        command.error("", { exitCode: 1, code: "invalid-arguments" });
+      }
+
+      const { store } = await openLibraryStore(options.db, command);
+      try {
+        const result = await store.removeCover({ id: options.id });
         if (!result.ok) {
           command.error("", { exitCode: 1, code: result.error.code });
         }
