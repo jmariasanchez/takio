@@ -15,10 +15,16 @@ export const JOB_STATUSES = [
 
 export type JobStatus = (typeof JOB_STATUSES)[number];
 
+export type JobAttachment =
+  | { readonly status: "pending" }
+  | { readonly status: "attached"; readonly finishedAt: string }
+  | { readonly status: "failed"; readonly errorCode: string; readonly finishedAt: string };
+
 export type ConversionJob = {
   readonly id: string;
   readonly status: JobStatus;
   readonly libraryItemId?: string;
+  readonly attachment?: JobAttachment;
   readonly inputPath: string;
   readonly inputFormat: FormatId;
   readonly outputFormat: FormatId;
@@ -50,6 +56,9 @@ type StoredJob = {
   errorCode: unknown;
   artifactBytes: unknown;
   artifactSha256: unknown;
+  attachmentStatus: unknown;
+  attachmentFinishedAt: unknown;
+  attachmentErrorCode: unknown;
 };
 
 export type JobStoreErrorCode =
@@ -70,7 +79,10 @@ const selectJob = `
     output_format AS outputFormat, output_path AS outputPath,
     created_at AS createdAt, started_at AS startedAt, finished_at AS finishedAt,
     owner_pid AS ownerPid, error_code AS errorCode,
-    artifact_bytes AS artifactBytes, artifact_sha256 AS artifactSha256
+    artifact_bytes AS artifactBytes, artifact_sha256 AS artifactSha256,
+    attachment_status AS attachmentStatus,
+    attachment_finished_at AS attachmentFinishedAt,
+    attachment_error_code AS attachmentErrorCode
   FROM jobs
 `;
 
@@ -117,38 +129,70 @@ function readJob(row: StoredJob): JobStoreResult<ConversionJob> {
     createdAt: row.createdAt,
   };
   const absent = (value: unknown) => value === null;
+  const attachmentAbsent = () => [
+    row.attachmentStatus,
+    row.attachmentFinishedAt,
+    row.attachmentErrorCode,
+  ].every(absent);
 
   if (row.status === "queued") {
-    return [row.startedAt, row.finishedAt, row.ownerPid, row.errorCode, row.artifactBytes, row.artifactSha256].every(absent)
+    return [row.startedAt, row.finishedAt, row.ownerPid, row.errorCode, row.artifactBytes, row.artifactSha256].every(absent) &&
+      attachmentAbsent()
       ? success(base)
       : failure("invalid-stored-data");
   }
   if (row.status === "running") {
     return isTimestamp(row.startedAt) && Number.isSafeInteger(row.ownerPid) && (row.ownerPid as number) > 0 &&
-      [row.finishedAt, row.errorCode, row.artifactBytes, row.artifactSha256].every(absent)
+      [row.finishedAt, row.errorCode, row.artifactBytes, row.artifactSha256].every(absent) && attachmentAbsent()
       ? success({ ...base, startedAt: row.startedAt, ownerPid: row.ownerPid as number })
       : failure("invalid-stored-data");
   }
   if (row.status === "completed") {
-    return isTimestamp(row.startedAt) && isTimestamp(row.finishedAt) && absent(row.ownerPid) &&
+    if (!(isTimestamp(row.startedAt) && isTimestamp(row.finishedAt) && absent(row.ownerPid) &&
       absent(row.errorCode) && Number.isSafeInteger(row.artifactBytes) && (row.artifactBytes as number) > 0 &&
-      typeof row.artifactSha256 === "string" && /^[a-f0-9]{64}$/.test(row.artifactSha256)
-      ? success({
-          ...base,
-          startedAt: row.startedAt,
-          finishedAt: row.finishedAt,
-          artifact: {
-            path: row.outputPath,
-            bytes: row.artifactBytes as number,
-            sha256: row.artifactSha256,
-          },
-        })
-      : failure("invalid-stored-data");
+      typeof row.artifactSha256 === "string" && /^[a-f0-9]{64}$/.test(row.artifactSha256))) {
+      return failure("invalid-stored-data");
+    }
+    let attachment: JobAttachment | undefined;
+    if (typeof row.libraryItemId === "string") {
+      if (row.attachmentStatus === "pending" && absent(row.attachmentFinishedAt) && absent(row.attachmentErrorCode)) {
+        attachment = { status: "pending" };
+      } else if (
+        row.attachmentStatus === "attached" && isTimestamp(row.attachmentFinishedAt) &&
+        absent(row.attachmentErrorCode)
+      ) {
+        attachment = { status: "attached", finishedAt: row.attachmentFinishedAt };
+      } else if (
+        row.attachmentStatus === "failed" && isTimestamp(row.attachmentFinishedAt) &&
+        typeof row.attachmentErrorCode === "string" && row.attachmentErrorCode.length > 0
+      ) {
+        attachment = {
+          status: "failed",
+          errorCode: row.attachmentErrorCode,
+          finishedAt: row.attachmentFinishedAt,
+        };
+      } else {
+        return failure("invalid-stored-data");
+      }
+    } else if (!attachmentAbsent()) {
+      return failure("invalid-stored-data");
+    }
+    return success({
+      ...base,
+      ...(attachment ? { attachment } : {}),
+      startedAt: row.startedAt,
+      finishedAt: row.finishedAt,
+      artifact: {
+        path: row.outputPath,
+        bytes: row.artifactBytes as number,
+        sha256: row.artifactSha256,
+      },
+    });
   }
   if (row.status === "failed") {
     return isTimestamp(row.startedAt) && isTimestamp(row.finishedAt) && absent(row.ownerPid) &&
       typeof row.errorCode === "string" && row.errorCode.length > 0 &&
-      absent(row.artifactBytes) && absent(row.artifactSha256)
+      absent(row.artifactBytes) && absent(row.artifactSha256) && attachmentAbsent()
       ? success({
           ...base,
           startedAt: row.startedAt,
@@ -158,7 +202,7 @@ function readJob(row: StoredJob): JobStoreResult<ConversionJob> {
       : failure("invalid-stored-data");
   }
   return absent(row.startedAt) && isTimestamp(row.finishedAt) &&
-    [row.ownerPid, row.errorCode, row.artifactBytes, row.artifactSha256].every(absent)
+    [row.ownerPid, row.errorCode, row.artifactBytes, row.artifactSha256].every(absent) && attachmentAbsent()
     ? success({ ...base, finishedAt: row.finishedAt })
     : failure("invalid-stored-data");
 }
@@ -244,16 +288,33 @@ export class JobStore {
               owner_pid INTEGER,
               error_code TEXT,
               artifact_bytes INTEGER,
-              artifact_sha256 TEXT
+              artifact_sha256 TEXT,
+              attachment_status TEXT CHECK(attachment_status IN ('pending','attached','failed')),
+              attachment_finished_at TEXT,
+              attachment_error_code TEXT
             ) STRICT
           `);
           database!.run("CREATE INDEX jobs_status_order ON jobs(status, enqueue_sequence)");
-          database!.run("PRAGMA user_version = 2");
-        } else if (version === 1) {
-          database!.run("ALTER TABLE jobs ADD COLUMN library_item_id TEXT");
-          database!.run("PRAGMA user_version = 2");
-        } else if (version !== 2) {
-          throw incompatibleSchema;
+          database!.run("PRAGMA user_version = 3");
+        } else {
+          let migratedVersion = version;
+          if (migratedVersion === 1) {
+            database!.run("ALTER TABLE jobs ADD COLUMN library_item_id TEXT");
+            database!.run("PRAGMA user_version = 2");
+            migratedVersion = 2;
+          }
+          if (migratedVersion === 2) {
+            database!.run("ALTER TABLE jobs ADD COLUMN attachment_status TEXT CHECK(attachment_status IN ('pending','attached','failed'))");
+            database!.run("ALTER TABLE jobs ADD COLUMN attachment_finished_at TEXT");
+            database!.run("ALTER TABLE jobs ADD COLUMN attachment_error_code TEXT");
+            database!.run(`
+              UPDATE jobs SET attachment_status = 'pending'
+              WHERE status = 'completed' AND library_item_id IS NOT NULL
+            `);
+            database!.run("PRAGMA user_version = 3");
+            migratedVersion = 3;
+          }
+          if (migratedVersion !== 3) throw incompatibleSchema;
         }
       }).immediate();
       this.#database = database;
@@ -354,7 +415,10 @@ export class JobStore {
           output_format AS outputFormat, output_path AS outputPath,
           created_at AS createdAt, started_at AS startedAt, finished_at AS finishedAt,
           owner_pid AS ownerPid, error_code AS errorCode,
-          artifact_bytes AS artifactBytes, artifact_sha256 AS artifactSha256
+          artifact_bytes AS artifactBytes, artifact_sha256 AS artifactSha256,
+          attachment_status AS attachmentStatus,
+          attachment_finished_at AS attachmentFinishedAt,
+          attachment_error_code AS attachmentErrorCode
       `).get(startedAt, pid)).immediate();
       return row ? readJob(row) : success(null);
     } catch {
@@ -385,6 +449,58 @@ export class JobStore {
     return this.#finish(id, "completed", null, artifact);
   }
 
+  nextPendingAttachment(): JobStoreResult<ConversionJob | null> {
+    if (!this.#database) return failure("storage-unavailable");
+    try {
+      const row = this.#database.query<StoredJob, []>(`
+        ${selectJob}
+        WHERE status = 'completed' AND attachment_status = 'pending'
+        ORDER BY enqueue_sequence
+        LIMIT 1
+      `).get();
+      return row ? readJob(row) : success(null);
+    } catch {
+      return failure("storage-unavailable");
+    }
+  }
+
+  markAttached(id: string): JobStoreResult<ConversionJob> {
+    return this.#finishAttachment(id, "attached", null);
+  }
+
+  markAttachmentFailed(id: string, errorCode: string): JobStoreResult<ConversionJob> {
+    if (errorCode.length === 0) return failure("invalid-stored-data");
+    return this.#finishAttachment(id, "failed", errorCode);
+  }
+
+  retryAttachment(id: string): JobStoreResult<ConversionJob> {
+    if (!this.#database) return failure("storage-unavailable");
+    try {
+      return this.#database.transaction(() => {
+        const row = this.#database!.query<StoredJob, [string]>(`
+          UPDATE jobs SET attachment_status = 'pending', attachment_finished_at = NULL,
+            attachment_error_code = NULL
+          WHERE id = ? AND status = 'completed' AND attachment_status = 'failed'
+          RETURNING id, status, library_item_id AS libraryItemId,
+            input_path AS inputPath, input_format AS inputFormat,
+            output_format AS outputFormat, output_path AS outputPath,
+            created_at AS createdAt, started_at AS startedAt, finished_at AS finishedAt,
+            owner_pid AS ownerPid, error_code AS errorCode,
+            artifact_bytes AS artifactBytes, artifact_sha256 AS artifactSha256,
+            attachment_status AS attachmentStatus,
+            attachment_finished_at AS attachmentFinishedAt,
+            attachment_error_code AS attachmentErrorCode
+        `).get(id);
+        if (row) return readJob(row);
+        return this.#database!.query<{ present: number }, [string]>("SELECT 1 AS present FROM jobs WHERE id = ?").get(id)
+          ? failure<ConversionJob>("invalid-transition")
+          : failure<ConversionJob>("unknown-job");
+      }).immediate();
+    } catch {
+      return failure("storage-unavailable");
+    }
+  }
+
   fail(id: string, errorCode: string): JobStoreResult<ConversionJob> {
     if (errorCode.length === 0) return failure("invalid-stored-data");
     return this.#finish(id, "failed", errorCode, null);
@@ -403,7 +519,10 @@ export class JobStore {
             output_format AS outputFormat, output_path AS outputPath,
             created_at AS createdAt, started_at AS startedAt, finished_at AS finishedAt,
             owner_pid AS ownerPid, error_code AS errorCode,
-            artifact_bytes AS artifactBytes, artifact_sha256 AS artifactSha256
+            artifact_bytes AS artifactBytes, artifact_sha256 AS artifactSha256,
+            attachment_status AS attachmentStatus,
+            attachment_finished_at AS attachmentFinishedAt,
+            attachment_error_code AS attachmentErrorCode
         `).get(finishedAt, id);
         if (row) return readJob(row);
         return this.#database!.query<{ present: number }, [string]>("SELECT 1 AS present FROM jobs WHERE id = ?").get(id)
@@ -424,17 +543,69 @@ export class JobStore {
     if (!this.#database) return failure("storage-unavailable");
     try {
       return this.#database.transaction(() => {
-        const row = this.#database!.query<StoredJob, [string, string, string | null, number | null, string | null, string]>(`
+        const row = this.#database!.query<StoredJob, [
+          string,
+          string,
+          string | null,
+          number | null,
+          string | null,
+          "pending" | null,
+          string,
+        ]>(`
           UPDATE jobs SET status = ?, finished_at = ?, owner_pid = NULL, error_code = ?,
-            artifact_bytes = ?, artifact_sha256 = ?
+            artifact_bytes = ?, artifact_sha256 = ?,
+            attachment_status = CASE WHEN library_item_id IS NULL THEN NULL ELSE ? END,
+            attachment_finished_at = NULL, attachment_error_code = NULL
           WHERE id = ? AND status = 'running'
           RETURNING id, status, library_item_id AS libraryItemId,
             input_path AS inputPath, input_format AS inputFormat,
             output_format AS outputFormat, output_path AS outputPath,
             created_at AS createdAt, started_at AS startedAt, finished_at AS finishedAt,
             owner_pid AS ownerPid, error_code AS errorCode,
-            artifact_bytes AS artifactBytes, artifact_sha256 AS artifactSha256
-        `).get(status, new Date().toISOString(), errorCode, artifact?.bytes ?? null, artifact?.sha256 ?? null, id);
+            artifact_bytes AS artifactBytes, artifact_sha256 AS artifactSha256,
+            attachment_status AS attachmentStatus,
+            attachment_finished_at AS attachmentFinishedAt,
+            attachment_error_code AS attachmentErrorCode
+        `).get(
+          status,
+          new Date().toISOString(),
+          errorCode,
+          artifact?.bytes ?? null,
+          artifact?.sha256 ?? null,
+          status === "completed" ? "pending" : null,
+          id,
+        );
+        if (row) return readJob(row);
+        return this.#database!.query<{ present: number }, [string]>("SELECT 1 AS present FROM jobs WHERE id = ?").get(id)
+          ? failure<ConversionJob>("invalid-transition")
+          : failure<ConversionJob>("unknown-job");
+      }).immediate();
+    } catch {
+      return failure("storage-unavailable");
+    }
+  }
+
+  #finishAttachment(
+    id: string,
+    status: "attached" | "failed",
+    errorCode: string | null,
+  ): JobStoreResult<ConversionJob> {
+    if (!this.#database) return failure("storage-unavailable");
+    try {
+      return this.#database.transaction(() => {
+        const row = this.#database!.query<StoredJob, [string, string, string | null, string]>(`
+          UPDATE jobs SET attachment_status = ?, attachment_finished_at = ?, attachment_error_code = ?
+          WHERE id = ? AND status = 'completed' AND attachment_status = 'pending'
+          RETURNING id, status, library_item_id AS libraryItemId,
+            input_path AS inputPath, input_format AS inputFormat,
+            output_format AS outputFormat, output_path AS outputPath,
+            created_at AS createdAt, started_at AS startedAt, finished_at AS finishedAt,
+            owner_pid AS ownerPid, error_code AS errorCode,
+            artifact_bytes AS artifactBytes, artifact_sha256 AS artifactSha256,
+            attachment_status AS attachmentStatus,
+            attachment_finished_at AS attachmentFinishedAt,
+            attachment_error_code AS attachmentErrorCode
+        `).get(status, new Date().toISOString(), errorCode, id);
         if (row) return readJob(row);
         return this.#database!.query<{ present: number }, [string]>("SELECT 1 AS present FROM jobs WHERE id = ?").get(id)
           ? failure<ConversionJob>("invalid-transition")

@@ -104,9 +104,71 @@ describe("JobStore", () => {
     store.close();
 
     using migrated = new Database(path, { strict: true });
-    expect(migrated.query<{ user_version: number }, []>("PRAGMA user_version").get()?.user_version).toBe(2);
+    expect(migrated.query<{ user_version: number }, []>("PRAGMA user_version").get()?.user_version).toBe(3);
     expect(migrated.query<{ name: string }, []>("PRAGMA table_info(jobs)").all().map(({ name }) => name)).toContain("library_item_id");
+    expect(migrated.query<{ name: string }, []>("PRAGMA table_info(jobs)").all().map(({ name }) => name)).toContain("attachment_status");
     expect(migrated.query("PRAGMA foreign_key_list(jobs)").all()).toEqual([]);
+  });
+
+  it("migrates v2 completed linked jobs to pending while completed unlinked jobs remain unchanged", async () => {
+    const path = await databasePath();
+    const root = dirname(path);
+    const database = new Database(path, { create: true, strict: true });
+    database.run(`
+      CREATE TABLE jobs (
+        enqueue_sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+        id TEXT NOT NULL UNIQUE,
+        status TEXT NOT NULL CHECK(status IN ('queued','running','completed','failed','canceled')),
+        library_item_id TEXT,
+        input_path TEXT NOT NULL,
+        input_format TEXT NOT NULL,
+        output_format TEXT NOT NULL,
+        output_path TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        started_at TEXT,
+        finished_at TEXT,
+        owner_pid INTEGER,
+        error_code TEXT,
+        artifact_bytes INTEGER,
+        artifact_sha256 TEXT
+      ) STRICT
+    `);
+    database.run("CREATE INDEX jobs_status_order ON jobs(status, enqueue_sequence)");
+    const insert = database.query(`
+      INSERT INTO jobs
+        (id, status, library_item_id, input_path, input_format, output_format, output_path,
+          created_at, started_at, finished_at, artifact_bytes, artifact_sha256)
+      VALUES (?, 'completed', ?, ?, 'epub', 'pdf', ?,
+        '2026-07-19T12:00:00.000Z', '2026-07-19T12:01:00.000Z',
+        '2026-07-19T12:02:00.000Z', 10, ?)
+    `);
+    insert.run("job_v2_linked", "book-1", join(root, "linked.epub"), join(root, "linked.pdf"), "a".repeat(64));
+    insert.run("job_v2_unlinked", null, join(root, "unlinked.epub"), join(root, "unlinked.pdf"), "b".repeat(64));
+    insert.run(
+      "job_v2_linked_later",
+      "book-2",
+      join(root, "linked-later.epub"),
+      join(root, "linked-later.pdf"),
+      "c".repeat(64),
+    );
+    database.run("PRAGMA user_version = 2");
+    database.close();
+
+    const store = new JobStore(path);
+    expect(store.open()).toEqual({ ok: true, value: null });
+    expect(store.get("job_v2_linked")).toMatchObject({
+      ok: true,
+      value: { status: "completed", libraryItemId: "book-1", attachment: { status: "pending" } },
+    });
+    const unlinked = store.get("job_v2_unlinked");
+    expect(unlinked).toMatchObject({ ok: true, value: { status: "completed" } });
+    if (!unlinked.ok || !unlinked.value) throw new Error("missing migrated job");
+    expect("attachment" in unlinked.value).toBe(false);
+    expect(store.nextPendingAttachment()).toMatchObject({ ok: true, value: { id: "job_v2_linked" } });
+    store.close();
+
+    using migrated = new Database(path, { strict: true });
+    expect(migrated.query<{ user_version: number }, []>("PRAGMA user_version").get()?.user_version).toBe(3);
   });
 
   it("round-trips optional library item linkage while legacy enqueues remain unlinked", async () => {
@@ -139,6 +201,115 @@ describe("JobStore", () => {
     });
     if (!reopenedUnlinked.ok || !reopenedUnlinked.value) throw new Error("missing job");
     expect("libraryItemId" in reopenedUnlinked.value).toBe(false);
+    reopened.close();
+  });
+
+  it("keeps conversion completion independent from linked attachment success", async () => {
+    const path = await databasePath();
+    const root = dirname(path);
+    const store = new JobStore(path);
+    expect(store.open()).toEqual({ ok: true, value: null });
+
+    const unlinked = store.enqueue(queuedInput(1, root));
+    const linked = store.enqueue({ ...queuedInput(2, root), libraryItemId: "book-2" });
+    if (!unlinked.ok || !linked.ok) throw new Error("enqueue failed");
+
+    expect(store.claimNext(101)).toMatchObject({ ok: true, value: { id: unlinked.value.id } });
+    await writeFile(unlinked.value.outputPath, "unlinked artifact");
+    const completedUnlinked = await store.complete(unlinked.value.id, {
+      path: unlinked.value.outputPath,
+      bytes: Buffer.byteLength("unlinked artifact"),
+      sha256: sha256("unlinked artifact"),
+    });
+    expect(completedUnlinked).toMatchObject({ ok: true, value: { status: "completed" } });
+    if (!completedUnlinked.ok) throw new Error("completion failed");
+    expect("attachment" in completedUnlinked.value).toBe(false);
+    expect(store.nextPendingAttachment()).toEqual({ ok: true, value: null });
+
+    expect(store.claimNext(102)).toMatchObject({ ok: true, value: { id: linked.value.id } });
+    await writeFile(linked.value.outputPath, "linked artifact");
+    expect(await store.complete(linked.value.id, {
+      path: linked.value.outputPath,
+      bytes: Buffer.byteLength("linked artifact"),
+      sha256: sha256("linked artifact"),
+    })).toMatchObject({
+      ok: true,
+      value: { status: "completed", attachment: { status: "pending" } },
+    });
+    expect(store.nextPendingAttachment()).toMatchObject({ ok: true, value: { id: linked.value.id } });
+
+    const attached = store.markAttached(linked.value.id);
+    expect(attached).toMatchObject({
+      ok: true,
+      value: { status: "completed", attachment: { status: "attached" } },
+    });
+    if (!attached.ok || attached.value.attachment?.status !== "attached") throw new Error("attachment failed");
+    expect(Date.parse(attached.value.attachment.finishedAt)).not.toBeNaN();
+    expect(store.nextPendingAttachment()).toEqual({ ok: true, value: null });
+    store.close();
+
+    const reopened = new JobStore(path);
+    expect(reopened.open()).toEqual({ ok: true, value: null });
+    expect(reopened.get(linked.value.id)).toEqual(attached);
+    const reopenedUnlinked = reopened.get(unlinked.value.id);
+    if (!reopenedUnlinked.ok || !reopenedUnlinked.value) throw new Error("missing unlinked job");
+    expect("attachment" in reopenedUnlinked.value).toBe(false);
+    reopened.close();
+  });
+
+  it("persists failed attachments, retries them, and rejects invalid transitions", async () => {
+    const path = await databasePath();
+    const root = dirname(path);
+    const store = new JobStore(path);
+    expect(store.open()).toEqual({ ok: true, value: null });
+
+    const linked = store.enqueue({ ...queuedInput(1, root), libraryItemId: "book-1" });
+    const queued = store.enqueue({ ...queuedInput(2, root), libraryItemId: "book-2" });
+    if (!linked.ok || !queued.ok) throw new Error("enqueue failed");
+    expect(store.claimNext(201)).toMatchObject({ ok: true, value: { id: linked.value.id } });
+    await writeFile(linked.value.outputPath, "artifact");
+    expect((await store.complete(linked.value.id, {
+      path: linked.value.outputPath,
+      bytes: Buffer.byteLength("artifact"),
+      sha256: sha256("artifact"),
+    })).ok).toBe(true);
+
+    const failed = store.markAttachmentFailed(linked.value.id, "library-unavailable");
+    expect(failed).toMatchObject({
+      ok: true,
+      value: {
+        status: "completed",
+        attachment: { status: "failed", errorCode: "library-unavailable" },
+      },
+    });
+    if (!failed.ok || failed.value.attachment?.status !== "failed") throw new Error("failure not stored");
+    expect(Date.parse(failed.value.attachment.finishedAt)).not.toBeNaN();
+    expect(store.markAttached(linked.value.id)).toEqual({ ok: false, error: { code: "invalid-transition" } });
+    expect(store.markAttached(queued.value.id)).toEqual({ ok: false, error: { code: "invalid-transition" } });
+    expect(store.markAttachmentFailed(queued.value.id, "nope")).toEqual({
+      ok: false,
+      error: { code: "invalid-transition" },
+    });
+    expect(store.retryAttachment(queued.value.id)).toEqual({ ok: false, error: { code: "invalid-transition" } });
+    expect(store.markAttached("job_missing")).toEqual({ ok: false, error: { code: "unknown-job" } });
+    store.close();
+
+    const reopened = new JobStore(path);
+    expect(reopened.open()).toEqual({ ok: true, value: null });
+    expect(reopened.get(linked.value.id)).toEqual(failed);
+    expect(reopened.retryAttachment(linked.value.id)).toMatchObject({
+      ok: true,
+      value: { status: "completed", attachment: { status: "pending" } },
+    });
+    expect(reopened.retryAttachment(linked.value.id)).toEqual({ ok: false, error: { code: "invalid-transition" } });
+    expect(reopened.markAttached(linked.value.id)).toMatchObject({
+      ok: true,
+      value: { status: "completed", attachment: { status: "attached" } },
+    });
+    expect(reopened.markAttachmentFailed(linked.value.id, "late-error")).toEqual({
+      ok: false,
+      error: { code: "invalid-transition" },
+    });
     reopened.close();
   });
 
