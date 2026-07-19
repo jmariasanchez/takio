@@ -33,12 +33,19 @@ fn validate_jobs_enqueue(input: &str, to: &str, output: &str) -> Result<(), ()> 
     }
 }
 
-fn library_open_arguments(id: String) -> Vec<String> {
+fn validate_library_open(id: &str, format: &str) -> Result<(), ()> {
+    validate_nonempty(id)?;
+    validate_nonempty(format)
+}
+
+fn library_open_arguments(id: String, format: String) -> Vec<String> {
     vec![
         "library".into(),
         "open".into(),
         "--id".into(),
         id,
+        "--format".into(),
+        format,
         "--json".into(),
     ]
 }
@@ -356,12 +363,12 @@ pub async fn library_remove(app: tauri::AppHandle, id: String) -> Value {
 }
 
 #[tauri::command]
-pub async fn library_open(app: tauri::AppHandle, id: String) -> Value {
-    if validate_nonempty(&id).is_err() {
+pub async fn library_open(app: tauri::AppHandle, id: String, format: String) -> Value {
+    if validate_library_open(&id, &format).is_err() {
         return failure("invalid-arguments");
     }
 
-    run_engine(&app, library_open_arguments(id)).await
+    run_engine(&app, library_open_arguments(id, format)).await
 }
 
 #[tauri::command]
@@ -448,8 +455,8 @@ mod tests {
     #[test]
     fn builds_fixed_open_and_destination_arguments() {
         assert_eq!(
-            library_open_arguments("book-1".into()),
-            vec!["library", "open", "--id", "book-1", "--json"]
+            library_open_arguments("book-1".into(), "pdf".into()),
+            vec!["library", "open", "--id", "book-1", "--format", "pdf", "--json"]
         );
         assert_eq!(destination_list_arguments(), vec!["destination", "list"]);
         assert_eq!(
@@ -460,6 +467,13 @@ mod tests {
             destination_eject_arguments("/Volumes/Reader".into()),
             vec!["destination", "eject", "--dest", "/Volumes/Reader"]
         );
+    }
+
+    #[test]
+    fn validates_open_id_and_format() {
+        assert!(validate_library_open("book-1", "pdf").is_ok());
+        assert!(validate_library_open(" ", "pdf").is_err());
+        assert!(validate_library_open("book-1", " ").is_err());
     }
 
     #[test]
