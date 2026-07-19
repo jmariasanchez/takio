@@ -8,6 +8,10 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             library_engine::library_list,
             library_engine::library_import,
+            library_engine::library_update,
+            library_engine::library_search,
+            library_engine::library_cover_set,
+            library_engine::library_cover_remove,
             library_engine::library_remove,
         ])
         .run(tauri::generate_context!())

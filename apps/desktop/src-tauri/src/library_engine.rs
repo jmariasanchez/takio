@@ -10,7 +10,7 @@ fn failure(code: &str) -> Value {
     json!({ "ok": false, "error": { "code": code } })
 }
 
-fn validate_import_source(path: &Path) -> Result<(), ()> {
+fn validate_file_source(path: &Path) -> Result<(), ()> {
     match path.metadata() {
         Ok(metadata) if metadata.is_file() => Ok(()),
         _ => Err(()),
@@ -23,6 +23,31 @@ fn validate_id(id: &str) -> Result<(), ()> {
     } else {
         Ok(())
     }
+}
+
+fn update_arguments(
+    id: String,
+    title: Option<String>,
+    author: Option<String>,
+    description: Option<String>,
+    tags: Vec<String>,
+) -> Vec<String> {
+    let mut args = vec!["library".into(), "update".into(), "--id".into(), id];
+    for (flag, value) in [
+        ("--title", title),
+        ("--author", author),
+        ("--description", description),
+    ] {
+        if let Some(value) = value {
+            args.push(flag.into());
+            args.push(value);
+        }
+    }
+    for tag in tags {
+        args.push("--tag".into());
+        args.push(tag);
+    }
+    args
 }
 
 fn parse_engine_record(exit_code: Option<i32>, stdout: &[u8], stderr: &[u8]) -> Value {
@@ -107,7 +132,7 @@ pub async fn library_list(app: tauri::AppHandle) -> Value {
 
 #[tauri::command]
 pub async fn library_import(app: tauri::AppHandle, source_path: String) -> Value {
-    if validate_import_source(Path::new(&source_path)).is_err() {
+    if validate_file_source(Path::new(&source_path)).is_err() {
         return failure("invalid-arguments");
     }
 
@@ -118,6 +143,84 @@ pub async fn library_import(app: tauri::AppHandle, source_path: String) -> Value
             "import".into(),
             "--source-path".into(),
             source_path,
+        ],
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn library_update(
+    app: tauri::AppHandle,
+    id: String,
+    title: Option<String>,
+    author: Option<String>,
+    description: Option<String>,
+    tags: Vec<String>,
+) -> Value {
+    if validate_id(&id).is_err() {
+        return failure("invalid-arguments");
+    }
+
+    run_engine(
+        &app,
+        update_arguments(id, title, author, description, tags),
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn library_search(app: tauri::AppHandle, query: String) -> Value {
+    run_engine(
+        &app,
+        vec![
+            "library".into(),
+            "search".into(),
+            "--query".into(),
+            query,
+        ],
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn library_cover_set(
+    app: tauri::AppHandle,
+    id: String,
+    source_path: String,
+) -> Value {
+    if validate_id(&id).is_err() || validate_file_source(Path::new(&source_path)).is_err() {
+        return failure("invalid-arguments");
+    }
+
+    run_engine(
+        &app,
+        vec![
+            "library".into(),
+            "cover".into(),
+            "set".into(),
+            "--id".into(),
+            id,
+            "--source-path".into(),
+            source_path,
+        ],
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn library_cover_remove(app: tauri::AppHandle, id: String) -> Value {
+    if validate_id(&id).is_err() {
+        return failure("invalid-arguments");
+    }
+
+    run_engine(
+        &app,
+        vec![
+            "library".into(),
+            "cover".into(),
+            "remove".into(),
+            "--id".into(),
+            id,
         ],
     )
     .await
@@ -144,7 +247,34 @@ mod tests {
     fn validates_boundary_arguments() {
         assert!(validate_id("book-1").is_ok());
         assert!(validate_id("  ").is_err());
-        assert!(validate_import_source(Path::new("definitely-missing.epub")).is_err());
+        assert!(validate_file_source(Path::new("definitely-missing.epub")).is_err());
+    }
+
+    #[test]
+    fn builds_complete_metadata_replacement_arguments() {
+        assert_eq!(
+            update_arguments(
+                "book-1".into(),
+                Some("New title".into()),
+                Some(String::new()),
+                None,
+                vec!["Classic".into(), "Science Fiction".into()],
+            ),
+            vec![
+                "library",
+                "update",
+                "--id",
+                "book-1",
+                "--title",
+                "New title",
+                "--author",
+                "",
+                "--tag",
+                "Classic",
+                "--tag",
+                "Science Fiction",
+            ]
+        );
     }
 
     #[test]
