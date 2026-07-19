@@ -13,6 +13,7 @@ import {
   type FormatId,
 } from "@takio/core";
 import { BunSqliteLibraryStore } from "@takio/library-store-bun";
+import { listDestinations } from "./destinations.js";
 
 type LibraryPaths = {
   readonly databasePath: string;
@@ -168,6 +169,23 @@ export function createProgram(
       write(
         `${localDevice.id.padEnd(6)} ${localDevice.status.padEnd(7)} ${localDevice.name.padEnd(9)} ${localDevice.supportedOutputs.join(", ")}`,
       );
+    });
+
+  const destination = storageCommand(new Command("destination"), writeError)
+    .helpOption(false)
+    .addHelpCommand(false)
+    .description("Manage mounted document destinations");
+  program.addCommand(destination);
+
+  storageCommand(destination.command("list").helpOption(false), writeError)
+    .option("--volumes-root <path>", "mounted-volume root", "/Volumes")
+    .action(async (options: { volumesRoot: string }, command: Command) => {
+      try {
+        const destinations = await listDestinations(options.volumesRoot);
+        write(JSON.stringify({ ok: true, value: { destinations } }));
+      } catch {
+        command.error("", { exitCode: 1, code: "destination-unavailable" });
+      }
     });
 
   const library = storageCommand(new Command("library"), writeError)
