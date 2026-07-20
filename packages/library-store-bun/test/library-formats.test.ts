@@ -54,7 +54,7 @@ describe("BunSqliteLibraryStore authoritative formats", () => {
     return store;
   }
 
-  async function initializeV4(): Promise<void> {
+  async function initializeV5(): Promise<void> {
     const store = createStore();
     expect(await store.open({ config: {} })).toEqual({ ok: true, value: null });
     store.close();
@@ -68,8 +68,8 @@ describe("BunSqliteLibraryStore authoritative formats", () => {
     expect(database.query("SELECT * FROM tags").all()).toEqual([]);
   }
 
-  it("reads a manual two-format v4 aggregate in position order across reopen", async () => {
-    await initializeV4();
+  it("reads a manual two-format v5 aggregate in position order across reopen", async () => {
+    await initializeV5();
     using database = new Database(databasePath, { strict: true });
     database.run(
       "INSERT INTO library_items (id, title, added_at) VALUES (?, ?, ?)",
