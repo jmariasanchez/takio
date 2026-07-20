@@ -9,12 +9,17 @@ import {
 import {
   libraryMetadataPatchSchema,
   libraryQueryPageSchema,
+  libraryTrashPageSchema,
+  listLibraryTrashRequestSchema,
   listSavedLibraryViewsRequestSchema,
+  purgeLibraryItemRequestSchema,
   queryLibraryItemsRequestSchema,
   replaceLibraryFormatRequestSchema,
   removeSavedLibraryViewRequestSchema,
+  restoreLibraryItemRequestSchema,
   savedLibraryViewSchema,
   saveSavedLibraryViewRequestSchema,
+  trashLibraryItemRequestSchema,
 } from "@takio/library-contract";
 import type {
   AddLibraryItemRequest,
@@ -29,13 +34,18 @@ import type {
   LibraryStoreErrorCode,
   LibraryStoreResult,
   LibraryFormatReplacementStore,
+  LibraryItemTrashStore,
   LibraryQueryStore,
+  ListLibraryTrashRequest,
+  ListLibraryTrashResult,
   ListSavedLibraryViewsRequest,
   ListSavedLibraryViewsResult,
   ListLibraryItemsRequest,
   ListLibraryItemsResult,
   OpenLibraryRequest,
   OpenLibraryResult,
+  PurgeLibraryItemRequest,
+  PurgeLibraryItemResult,
   RemoveLibraryCoverRequest,
   RemoveLibraryCoverResult,
   RemoveLibraryFormatRequest,
@@ -44,6 +54,8 @@ import type {
   RemoveLibraryItemResult,
   RemoveSavedLibraryViewRequest,
   RemoveSavedLibraryViewResult,
+  RestoreLibraryItemRequest,
+  RestoreLibraryItemResult,
   SearchLibraryItemsRequest,
   SearchLibraryItemsResult,
   QueryLibraryItemsRequest,
@@ -56,6 +68,8 @@ import type {
   SaveSavedLibraryViewResult,
   SetLibraryCoverRequest,
   SetLibraryCoverResult,
+  TrashLibraryItemRequest,
+  TrashLibraryItemResult,
   UpdateLibraryItemRequest,
   UpdateLibraryItemResult,
 } from "@takio/library-contract";
@@ -84,7 +98,7 @@ import { initializationTestSeam } from "./initialization-test-seam.js";
 import { lifecycleTestSeam } from "./lifecycle-test-seam.js";
 import { queryTestSeam } from "./query-test-seam.js";
 
-const SCHEMA_VERSION = 5;
+const SCHEMA_VERSION = 6;
 const incompatibleSchema = Symbol("incompatible-schema");
 const duplicateFormat = Symbol("duplicate-format");
 const sourceChanged = Symbol("source-changed");
@@ -104,6 +118,7 @@ type StoredLibraryItem = {
   coverPath: unknown;
   updatedAt: unknown;
 };
+type StoredTrashLibraryItem = StoredLibraryItem & { trashedAt: unknown };
 
 type StoredV2LibraryItem = StoredLibraryItem & {
   sourcePath: unknown;
@@ -1106,6 +1121,19 @@ function migrateV4ToV5(database: Database): void {
   initializationTestSeam.duringV4ToV5Migration?.();
 }
 
+function createLibraryTrashIndex(database: Database): void {
+  database.run(`
+    CREATE INDEX library_items_by_trashed_at
+    ON library_items(trashed_at DESC, id ASC)
+    WHERE trashed_at IS NOT NULL
+  `);
+}
+
+function migrateV5ToV6(database: Database): void {
+  database.run("ALTER TABLE library_items ADD COLUMN trashed_at TEXT");
+  createLibraryTrashIndex(database);
+}
+
 function verifyV4Database(
   database: Database,
   coversDirectory: string,
@@ -1211,6 +1239,58 @@ function verifyV5Database(
     itemWithoutFormat ||
     rows.some((row) => !readItem(database, coversDirectory, itemsDirectory, row).ok)
   ) {
+    throw new Error("The migrated database could not be verified.");
+  }
+}
+
+function verifyV5Backup(
+  path: string,
+  coversDirectory: string,
+  itemsDirectory: string,
+): void {
+  using backup = new Database(path, { strict: true });
+  backup.run("PRAGMA foreign_keys = ON");
+  const version = backup.query<{ user_version: number }, []>("PRAGMA user_version").get()
+    ?.user_version;
+
+  if (version !== 5) {
+    throw new Error("The pre-migration backup could not be verified.");
+  }
+  verifyV5Database(backup, coversDirectory, itemsDirectory);
+}
+
+function retainVerifiedV5Backup(
+  database: Database,
+  databasePath: string,
+  coversDirectory: string,
+  itemsDirectory: string,
+): void {
+  retainVerifiedBackup(database, `${databasePath}.v5.backup`, (path) =>
+    verifyV5Backup(path, coversDirectory, itemsDirectory),
+  );
+}
+
+function isStoredTrashTimestamp(value: unknown): value is string {
+  return bookFormatSchema.safeParse({
+    sourcePath: "trash-validation.epub",
+    format: "epub",
+    addedAt: value,
+    provenance: "referenced",
+  }).success;
+}
+
+function verifyV6Database(
+  database: Database,
+  coversDirectory: string,
+  itemsDirectory: string,
+): void {
+  verifyV5Database(database, coversDirectory, itemsDirectory);
+  const rows = database
+    .query<{ trashedAt: unknown }, []>(
+      "SELECT trashed_at AS trashedAt FROM library_items ORDER BY rowid",
+    )
+    .all();
+  if (rows.some(({ trashedAt }) => trashedAt !== null && !isStoredTrashTimestamp(trashedAt))) {
     throw new Error("The migrated database could not be verified.");
   }
 }
@@ -1412,6 +1492,7 @@ function buildLibraryMatch(
   omittedFacet?: LibraryFacet,
 ): SqlFragment {
   const fragments = [
+    { sql: "library_items.trashed_at IS NULL", parameters: [] },
     buildLibrarySearch(request),
     ...libraryFacets
       .filter((facet) => facet !== omittedFacet)
@@ -1457,7 +1538,8 @@ function buildFacetQuery(request: QueryLibraryItemsRequest): SqlFragment {
           ${filters.languages.sql} AS matches_languages,
           ${filters.formats.sql} AS matches_formats
         FROM library_items
-        WHERE ${search.sql}
+        WHERE library_items.trashed_at IS NULL
+          AND ${search.sql}
       )
       SELECT facet, value, count FROM (
         SELECT 'authors' AS facet, MIN(author_values.value) AS value,
@@ -1738,7 +1820,12 @@ function parseSavedLibraryView(row: StoredSavedLibraryView): LibraryStoreResult<
 }
 
 export class BunSqliteLibraryStore
-  implements LibraryStore, LibraryFormatReplacementStore, LibraryQueryStore, SavedLibraryViewStore
+  implements
+    LibraryStore,
+    LibraryFormatReplacementStore,
+    LibraryItemTrashStore,
+    LibraryQueryStore,
+    SavedLibraryViewStore
 {
   readonly #databasePath: string;
   readonly #coversDirectory: string;
@@ -1795,7 +1882,8 @@ export class BunSqliteLibraryStore
               rating REAL CHECK (rating >= 0 AND rating <= 10),
               description TEXT,
               cover_path TEXT,
-              updated_at TEXT
+              updated_at TEXT,
+              trashed_at TEXT
             ) STRICT
           `);
           createMetadataTables(database!);
@@ -1803,7 +1891,8 @@ export class BunSqliteLibraryStore
           createRichMetadataTables(database!);
           createSavedLibraryViewsTable(database!);
           createLibraryQueryIndexes(database!);
-          verifyV5Database(database!, this.#coversDirectory, this.#itemsDirectory);
+          createLibraryTrashIndex(database!);
+          verifyV6Database(database!, this.#coversDirectory, this.#itemsDirectory);
           database!.run(`PRAGMA user_version = ${SCHEMA_VERSION}`);
         } else if (version === 1) {
           retainVerifiedV1Backup(database!, this.#databasePath);
@@ -1816,20 +1905,23 @@ export class BunSqliteLibraryStore
           migrateV2ToV3(database!);
           migrateV3ToV4(database!);
           migrateV4ToV5(database!);
-          verifyV5Database(database!, this.#coversDirectory, this.#itemsDirectory);
+          migrateV5ToV6(database!);
+          verifyV6Database(database!, this.#coversDirectory, this.#itemsDirectory);
           database!.run(`PRAGMA user_version = ${SCHEMA_VERSION}`);
         } else if (version === 2) {
           retainVerifiedV2Backup(database!, this.#databasePath, this.#coversDirectory);
           migrateV2ToV3(database!);
           migrateV3ToV4(database!);
           migrateV4ToV5(database!);
-          verifyV5Database(database!, this.#coversDirectory, this.#itemsDirectory);
+          migrateV5ToV6(database!);
+          verifyV6Database(database!, this.#coversDirectory, this.#itemsDirectory);
           database!.run(`PRAGMA user_version = ${SCHEMA_VERSION}`);
         } else if (version === 3) {
           retainVerifiedV3Backup(database!, this.#databasePath, this.#coversDirectory);
           migrateV3ToV4(database!);
           migrateV4ToV5(database!);
-          verifyV5Database(database!, this.#coversDirectory, this.#itemsDirectory);
+          migrateV5ToV6(database!);
+          verifyV6Database(database!, this.#coversDirectory, this.#itemsDirectory);
           database!.run(`PRAGMA user_version = ${SCHEMA_VERSION}`);
         } else if (version === 4) {
           retainVerifiedV4Backup(
@@ -1839,7 +1931,18 @@ export class BunSqliteLibraryStore
             this.#itemsDirectory,
           );
           migrateV4ToV5(database!);
-          verifyV5Database(database!, this.#coversDirectory, this.#itemsDirectory);
+          migrateV5ToV6(database!);
+          verifyV6Database(database!, this.#coversDirectory, this.#itemsDirectory);
+          database!.run(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+        } else if (version === 5) {
+          retainVerifiedV5Backup(
+            database!,
+            this.#databasePath,
+            this.#coversDirectory,
+            this.#itemsDirectory,
+          );
+          migrateV5ToV6(database!);
+          verifyV6Database(database!, this.#coversDirectory, this.#itemsDirectory);
           database!.run(`PRAGMA user_version = ${SCHEMA_VERSION}`);
         } else if (version !== SCHEMA_VERSION) {
           throw incompatibleSchema;
@@ -1869,6 +1972,7 @@ export class BunSqliteLibraryStore
             published_date AS publishedDate, rating,
             description, cover_path AS coverPath, updated_at AS updatedAt
           FROM library_items
+          WHERE trashed_at IS NULL
           ORDER BY title COLLATE NOCASE, id
         `)
         .all();
@@ -1896,6 +2000,127 @@ export class BunSqliteLibraryStore
     } catch {
       return failure("storage-unavailable");
     }
+  }
+
+  async listTrash(request: ListLibraryTrashRequest): Promise<ListLibraryTrashResult> {
+    if (!this.#database) {
+      return failure("storage-unavailable");
+    }
+    const parsedRequest = listLibraryTrashRequestSchema.safeParse(request);
+    if (!parsedRequest.success) {
+      return failure("invalid-arguments");
+    }
+
+    try {
+      return this.#database.transaction((): ListLibraryTrashResult => {
+        const rows = this.#database!
+          .query<StoredTrashLibraryItem, [number, number]>(`
+            SELECT id, title, added_at AS addedAt,
+              author, series, series_index AS seriesIndex, publisher,
+              published_date AS publishedDate, rating,
+              description, cover_path AS coverPath, updated_at AS updatedAt,
+              trashed_at AS trashedAt
+            FROM library_items
+            WHERE trashed_at IS NOT NULL
+            ORDER BY trashed_at DESC, id ASC
+            LIMIT ? OFFSET ?
+          `)
+          .all(parsedRequest.data.page.limit, parsedRequest.data.page.offset);
+        if (rows.some(({ trashedAt }) => !isStoredTrashTimestamp(trashedAt))) {
+          return failure("invalid-stored-data");
+        }
+        const items = hydrateLibraryPage(
+          this.#database!,
+          this.#coversDirectory,
+          this.#itemsDirectory,
+          rows,
+        );
+        if (!items.ok) {
+          return items;
+        }
+        const total = this.#database!
+          .query<{ total: unknown }, []>(
+            "SELECT COUNT(*) AS total FROM library_items WHERE trashed_at IS NOT NULL",
+          )
+          .get()?.total;
+        const page = libraryTrashPageSchema.safeParse({
+          items: items.value,
+          total,
+          page: parsedRequest.data.page,
+        });
+        return page.success ? success(page.data) : failure("invalid-stored-data");
+      })();
+    } catch {
+      return failure("storage-unavailable");
+    }
+  }
+
+  #setTrashState(id: string, shouldTrash: boolean): LibraryStoreResult<LibraryItem | null> {
+    if (!this.#database) {
+      return failure("storage-unavailable");
+    }
+
+    try {
+      return this.#database.transaction((): LibraryStoreResult<LibraryItem | null> => {
+        const row = this.#database!
+          .query<StoredTrashLibraryItem, [string]>(`
+            SELECT id, title, added_at AS addedAt,
+              author, series, series_index AS seriesIndex, publisher,
+              published_date AS publishedDate, rating,
+              description, cover_path AS coverPath, updated_at AS updatedAt,
+              trashed_at AS trashedAt
+            FROM library_items
+            WHERE id = ?
+          `)
+          .get(id);
+        if (!row) {
+          return success(null);
+        }
+        if (row.trashedAt !== null && !isStoredTrashTimestamp(row.trashedAt)) {
+          return failure("invalid-stored-data");
+        }
+        const item = readItem(
+          this.#database!,
+          this.#coversDirectory,
+          this.#itemsDirectory,
+          row,
+        );
+        if (!item.ok) {
+          return item;
+        }
+        if (shouldTrash && row.trashedAt === null) {
+          this.#database!.run("UPDATE library_items SET trashed_at = ? WHERE id = ?", [
+            new Date().toISOString(),
+            id,
+          ]);
+        } else if (!shouldTrash && row.trashedAt !== null) {
+          this.#database!.run("UPDATE library_items SET trashed_at = NULL WHERE id = ?", [id]);
+        }
+        return success(item.value);
+      }).immediate();
+    } catch {
+      return failure("storage-unavailable");
+    }
+  }
+
+  async trash(request: TrashLibraryItemRequest): Promise<TrashLibraryItemResult> {
+    if (!this.#database) {
+      return failure("storage-unavailable");
+    }
+    const parsedRequest = trashLibraryItemRequestSchema.safeParse(request);
+    return parsedRequest.success
+      ? this.#setTrashState(parsedRequest.data.id, true)
+      : failure("invalid-arguments");
+  }
+
+  async restore(request: RestoreLibraryItemRequest): Promise<RestoreLibraryItemResult> {
+    if (!this.#database) {
+      return failure("storage-unavailable");
+    }
+    const parsedRequest = restoreLibraryItemRequestSchema.safeParse(request);
+    return parsedRequest.success
+      ? this.#setTrashState(parsedRequest.data.id, false)
+      : failure("invalid-arguments");
   }
 
   async add({ item }: AddLibraryItemRequest): Promise<AddLibraryItemResult> {
@@ -2805,15 +3030,18 @@ export class BunSqliteLibraryStore
             published_date AS publishedDate, rating,
             description, cover_path AS coverPath, updated_at AS updatedAt
           FROM library_items
-          WHERE title LIKE ? ESCAPE '\\' COLLATE NOCASE
-            OR author LIKE ? ESCAPE '\\' COLLATE NOCASE
-            OR description LIKE ? ESCAPE '\\' COLLATE NOCASE
-            OR EXISTS (
+          WHERE trashed_at IS NULL
+            AND (
+              title LIKE ? ESCAPE '\\' COLLATE NOCASE
+              OR author LIKE ? ESCAPE '\\' COLLATE NOCASE
+              OR description LIKE ? ESCAPE '\\' COLLATE NOCASE
+              OR EXISTS (
               SELECT 1
               FROM library_item_tags
               JOIN tags ON tags.normalized_name = library_item_tags.tag_normalized_name
               WHERE library_item_tags.library_item_id = library_items.id
                 AND tags.name LIKE ? ESCAPE '\\' COLLATE NOCASE
+              )
             )
           ORDER BY title COLLATE NOCASE, id
         `)
@@ -3024,7 +3252,7 @@ export class BunSqliteLibraryStore
     }
   }
 
-  async remove({ id }: RemoveLibraryItemRequest): Promise<RemoveLibraryItemResult> {
+  #deleteItem(id: string, requireTrashed: boolean): RemoveLibraryItemResult {
     if (!this.#database) {
       return failure("storage-unavailable");
     }
@@ -3037,17 +3265,24 @@ export class BunSqliteLibraryStore
     try {
       outcome = this.#database.transaction((): Outcome => {
         const row = this.#database!
-          .query<StoredLibraryItem, [string]>(`
+          .query<StoredTrashLibraryItem, [string]>(`
             SELECT id, title, added_at AS addedAt,
               author, series, series_index AS seriesIndex, publisher,
               published_date AS publishedDate, rating,
-              description, cover_path AS coverPath, updated_at AS updatedAt
+              description, cover_path AS coverPath, updated_at AS updatedAt,
+              trashed_at AS trashedAt
             FROM library_items
             WHERE id = ?
           `)
           .get(id);
         if (!row) {
           return { kind: "missing" };
+        }
+        if (row.trashedAt !== null && !isStoredTrashTimestamp(row.trashedAt)) {
+          return { kind: "failure", code: "invalid-stored-data" };
+        }
+        if (requireTrashed && row.trashedAt === null) {
+          return { kind: "failure", code: "not-trashed" };
         }
         const current = readItem(
           this.#database!,
@@ -3134,6 +3369,20 @@ export class BunSqliteLibraryStore
       }
     }
     return success({ item: outcome.item, cleanupPending });
+  }
+
+  async remove({ id }: RemoveLibraryItemRequest): Promise<RemoveLibraryItemResult> {
+    return this.#deleteItem(id, false);
+  }
+
+  async purge(request: PurgeLibraryItemRequest): Promise<PurgeLibraryItemResult> {
+    if (!this.#database) {
+      return failure("storage-unavailable");
+    }
+    const parsedRequest = purgeLibraryItemRequestSchema.safeParse(request);
+    return parsedRequest.success
+      ? this.#deleteItem(parsedRequest.data.id, true)
+      : failure("invalid-arguments");
   }
 
   close(): void {

@@ -97,6 +97,7 @@ afterEach(async () => {
   delete initializationTestSeam.duringV2ToV3Migration;
   delete initializationTestSeam.duringV4ToV5Migration;
   delete lifecycleTestSeam.beforeManagedFileCleanup;
+  delete lifecycleTestSeam.duringManagedItemRemoval;
 
   const closeErrors: unknown[] = [];
   for (const store of stores) {
@@ -170,13 +171,13 @@ async function createSqlFixture(filename: string): Promise<void> {
 }
 
 describe("BunSqliteLibraryStore", () => {
-  it("persists add, get, list, and remove across injected-path reopenings at schema v5", async () => {
+  it("persists add, get, list, and remove across injected-path reopenings at schema v6", async () => {
     const first = createStore();
     expect(await first.open({ config: {} })).toEqual({ ok: true, value: null });
     expect(await first.add({ item })).toEqual({ ok: true, value: item });
     first.close();
 
-    expect(schemaVersion()).toBe(5);
+    expect(schemaVersion()).toBe(6);
     using stored = new Database(databasePath, { strict: true });
     expect(
       stored
@@ -223,7 +224,7 @@ describe("BunSqliteLibraryStore", () => {
     expect(await third.list({})).toEqual({ ok: true, value: [] });
     third.close();
 
-    expect(schemaVersion()).toBe(5);
+    expect(schemaVersion()).toBe(6);
     expect(stored.query("SELECT * FROM library_item_formats").all()).toEqual([]);
   });
 
@@ -276,7 +277,7 @@ describe("BunSqliteLibraryStore", () => {
     });
     store.close();
 
-    expect(schemaVersion()).toBe(5);
+    expect(schemaVersion()).toBe(6);
     expect(await readFile(`${databasePath}.v2.backup`)).toEqual(databaseBefore);
     using migrated = new Database(databasePath, { strict: true });
     expect(migrated.query("PRAGMA foreign_key_check").all()).toEqual([]);
@@ -368,7 +369,7 @@ describe("BunSqliteLibraryStore", () => {
     });
     store.close();
 
-    expect(schemaVersion()).toBe(5);
+    expect(schemaVersion()).toBe(6);
     expect(await readFile(`${databasePath}.v4.backup`)).toEqual(databaseBefore);
     using backup = new Database(`${databasePath}.v4.backup`, { strict: true });
     expect(backup.query<{ user_version: number }, []>("PRAGMA user_version").get()).toEqual({
@@ -399,6 +400,7 @@ describe("BunSqliteLibraryStore", () => {
       { name: "library_items_by_rating" },
       { name: "library_items_by_series" },
       { name: "library_items_by_title" },
+      { name: "library_items_by_trashed_at" },
       { name: "library_items_by_updated_at" },
       { name: "saved_library_views_by_name" },
     ]);
@@ -407,6 +409,68 @@ describe("BunSqliteLibraryStore", () => {
       migrated.query<{ integrity_check: string }, []>("PRAGMA integrity_check").get()
         ?.integrity_check,
     ).toBe("ok");
+  });
+
+  it("backs up and migrates frozen v5 with active rows and the deterministic trash index", async () => {
+    await createSqlFixture("schema-v5.sql");
+    const databaseBefore = await readFile(databasePath);
+
+    const store = createStore();
+    expect(await store.open({ config: {} })).toEqual({ ok: true, value: null });
+    expect(await store.list({})).toMatchObject({
+      ok: true,
+      value: [{ id: "book-v5", title: "A Wizard of Earthsea" }],
+    });
+    store.close();
+
+    expect(schemaVersion()).toBe(6);
+    expect(await readFile(`${databasePath}.v5.backup`)).toEqual(databaseBefore);
+    using migrated = new Database(databasePath, { strict: true });
+    expect(
+      migrated
+        .query<{ trashedAt: string | null }, []>(
+          "SELECT trashed_at AS trashedAt FROM library_items",
+        )
+        .all(),
+    ).toEqual([{ trashedAt: null }]);
+    expect(
+      migrated
+        .query<{ sql: string }, []>(
+          "SELECT sql FROM sqlite_schema WHERE name = 'library_items_by_trashed_at'",
+        )
+        .get()?.sql.replace(/\s+/g, " ").trim(),
+    ).toBe(
+      "CREATE INDEX library_items_by_trashed_at ON library_items(trashed_at DESC, id ASC) WHERE trashed_at IS NOT NULL",
+    );
+  });
+
+  it("rolls frozen v5 back byte-for-byte when the trash index cannot be created", async () => {
+    await createSqlFixture("schema-v5.sql");
+    {
+      using database = new Database(databasePath, { strict: true });
+      database.run("CREATE TABLE migration_collision (id TEXT PRIMARY KEY) STRICT");
+      database.run(
+        "CREATE INDEX library_items_by_trashed_at ON migration_collision(id)",
+      );
+    }
+    const databaseBefore = await readFile(databasePath);
+
+    const store = createStore();
+    expect(await store.open({ config: {} })).toEqual({
+      ok: false,
+      error: { code: "storage-unavailable" },
+    });
+
+    expect(await readFile(databasePath)).toEqual(databaseBefore);
+    expect(await readFile(`${databasePath}.v5.backup`)).toEqual(databaseBefore);
+    expect(schemaVersion()).toBe(5);
+    using rolledBack = new Database(databasePath, { strict: true });
+    expect(
+      rolledBack
+        .query<{ name: string }, []>("PRAGMA table_info(library_items)")
+        .all()
+        .map(({ name }) => name),
+    ).not.toContain("trashed_at");
   });
 
   it("rolls frozen v4 back byte-for-byte when v5 migration is interrupted", async () => {
@@ -452,7 +516,7 @@ describe("BunSqliteLibraryStore", () => {
     });
     store.close();
 
-    expect(schemaVersion()).toBe(5);
+    expect(schemaVersion()).toBe(6);
     using migrated = new Database(databasePath, { strict: true });
     expect(
       migrated.query<{ integrity_check: string }, []>("PRAGMA integrity_check").get()
@@ -516,7 +580,7 @@ describe("BunSqliteLibraryStore", () => {
     ]);
   });
 
-  it("treats reopening v5 as a no-op", async () => {
+  it("treats reopening v6 as a no-op", async () => {
     createFrozenV1Fixture();
     const first = createStore();
     expect(await first.open({ config: {} })).toEqual({ ok: true, value: null });
@@ -1394,6 +1458,243 @@ describe("BunSqliteLibraryStore", () => {
     expect(await readFile(databasePath)).toEqual(before);
   });
 
+  it("keeps trash transitions idempotent, discoverable, and excluded from active reads", async () => {
+    const first = createStore();
+    expect(await first.listTrash({ page: { offset: 0, limit: 10 } })).toEqual({
+      ok: false,
+      error: { code: "storage-unavailable" },
+    });
+    await first.open({ config: {} });
+    await first.add({ item: richItem });
+    await first.add({ item: secondItem });
+
+    expect(await first.trash({ id: richItem.id })).toEqual({ ok: true, value: richItem });
+    using database = new Database(databasePath, { strict: true });
+    const firstTimestamp = database
+      .query<{ trashedAt: string }, [string]>(
+        "SELECT trashed_at AS trashedAt FROM library_items WHERE id = ?",
+      )
+      .get(richItem.id)?.trashedAt;
+    expect(firstTimestamp).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    expect(await first.trash({ id: richItem.id })).toEqual({ ok: true, value: richItem });
+    expect(
+      database
+        .query<{ trashedAt: string }, [string]>(
+          "SELECT trashed_at AS trashedAt FROM library_items WHERE id = ?",
+        )
+        .get(richItem.id)?.trashedAt,
+    ).toBe(firstTimestamp);
+    expect(await first.add({ item: richItem })).toEqual({
+      ok: false,
+      error: { code: "duplicate-id" },
+    });
+    expect(await first.get({ id: richItem.id })).toEqual({ ok: true, value: richItem });
+    expect(await first.list({})).toEqual({ ok: true, value: [secondItem] });
+    expect(await first.search({ query: "Le Guin" })).toEqual({ ok: true, value: [] });
+    expect(
+      await first.query({
+        query: "",
+        filters: { authors: [], tags: [], series: [], languages: [], formats: [] },
+        sort: { field: "title", direction: "ascending" },
+        page: { offset: 0, limit: 10 },
+      }),
+    ).toEqual({
+      ok: true,
+      value: {
+        items: [secondItem],
+        total: 1,
+        page: { offset: 0, limit: 10 },
+        facets: {
+          authors: [],
+          tags: [],
+          series: [],
+          languages: [],
+          formats: [{ value: "epub", count: 1 }],
+        },
+      },
+    });
+    expect(await first.listTrash({ page: { offset: 0, limit: 10 } })).toEqual({
+      ok: true,
+      value: { items: [richItem], total: 1, page: { offset: 0, limit: 10 } },
+    });
+    first.close();
+
+    const reopened = createStore();
+    expect(await reopened.open({ config: {} })).toEqual({ ok: true, value: null });
+    expect(await reopened.listTrash({ page: { offset: 0, limit: 10 } })).toMatchObject({
+      ok: true,
+      value: { items: [{ id: richItem.id }], total: 1 },
+    });
+    expect(await reopened.restore({ id: richItem.id })).toEqual({ ok: true, value: richItem });
+    expect(await reopened.restore({ id: richItem.id })).toEqual({ ok: true, value: richItem });
+    expect(await reopened.listTrash({ page: { offset: 0, limit: 10 } })).toEqual({
+      ok: true,
+      value: { items: [], total: 0, page: { offset: 0, limit: 10 } },
+    });
+    expect(await reopened.search({ query: "Le Guin" })).toEqual({ ok: true, value: [richItem] });
+  });
+
+  it("pages trash newest-first with a stable id tie-break", async () => {
+    const store = createStore();
+    await store.open({ config: {} });
+    const fixtures = [
+      { ...item, id: "trash-z", title: "Z" },
+      { ...item, id: "trash-a", title: "A" },
+      { ...item, id: "trash-new", title: "Newest" },
+    ];
+    for (const fixture of fixtures) {
+      await store.add({ item: fixture });
+      await store.trash({ id: fixture.id });
+    }
+    using database = new Database(databasePath, { strict: true });
+    database.run(
+      "UPDATE library_items SET trashed_at = '2026-07-19T10:00:00.000Z' WHERE id IN ('trash-a', 'trash-z')",
+    );
+    database.run(
+      "UPDATE library_items SET trashed_at = '2026-07-20T10:00:00.000Z' WHERE id = 'trash-new'",
+    );
+
+    expect(await store.listTrash({ page: { offset: 0, limit: 2 } })).toMatchObject({
+      ok: true,
+      value: {
+        items: [{ id: "trash-new" }, { id: "trash-a" }],
+        total: 3,
+        page: { offset: 0, limit: 2 },
+      },
+    });
+    expect(await store.listTrash({ page: { offset: 2, limit: 2 } })).toMatchObject({
+      ok: true,
+      value: {
+        items: [{ id: "trash-z" }],
+        total: 3,
+        page: { offset: 2, limit: 2 },
+      },
+    });
+  });
+
+  it("rejects invalid trash requests and malformed stored trash timestamps", async () => {
+    const store = createStore();
+    await store.open({ config: {} });
+    await store.add({ item });
+    expect(await store.listTrash({ page: { offset: 0, limit: 101 } })).toEqual({
+      ok: false,
+      error: { code: "invalid-arguments" },
+    });
+    expect(await store.trash({ id: "" })).toEqual({
+      ok: false,
+      error: { code: "invalid-arguments" },
+    });
+    expect(await store.restore({ id: item.id, extra: true } as never)).toEqual({
+      ok: false,
+      error: { code: "invalid-arguments" },
+    });
+    expect(await store.purge({ id: item.id, extra: true } as never)).toEqual({
+      ok: false,
+      error: { code: "invalid-arguments" },
+    });
+
+    using database = new Database(databasePath, { strict: true });
+    database.run("UPDATE library_items SET trashed_at = 'not-a-date' WHERE id = ?", [item.id]);
+    expect(await store.listTrash({ page: { offset: 0, limit: 10 } })).toEqual({
+      ok: false,
+      error: { code: "invalid-stored-data" },
+    });
+    expect(await store.trash({ id: item.id })).toEqual({
+      ok: false,
+      error: { code: "invalid-stored-data" },
+    });
+    expect(await store.restore({ id: item.id })).toEqual({
+      ok: false,
+      error: { code: "invalid-stored-data" },
+    });
+    expect(await store.purge({ id: item.id })).toEqual({
+      ok: false,
+      error: { code: "invalid-stored-data" },
+    });
+  });
+
+  it("purges only trashed items and makes successful purges idempotent", async () => {
+    const store = createStore();
+    await store.open({ config: {} });
+    await store.add({ item });
+    expect(await store.purge({ id: item.id })).toEqual({
+      ok: false,
+      error: { code: "not-trashed" },
+    });
+    expect(await store.purge({ id: "missing" })).toEqual({
+      ok: true,
+      value: { item: null, cleanupPending: false },
+    });
+
+    await store.trash({ id: item.id });
+    expect(await store.purge({ id: item.id })).toEqual({
+      ok: true,
+      value: { item, cleanupPending: false },
+    });
+    expect(await store.purge({ id: item.id })).toEqual({
+      ok: true,
+      value: { item: null, cleanupPending: false },
+    });
+    expect(await store.get({ id: item.id })).toEqual({ ok: true, value: null });
+  });
+
+  it("persists failed managed cleanup after purge and retries it on reopen", async () => {
+    const sourcePath = join(directory, "managed-trash.epub");
+    await writeFile(sourcePath, "managed trash");
+    const first = createStore();
+    await first.open({ config: {} });
+    const imported = await first.import({ sourcePath });
+    if (!imported.ok) {
+      throw new Error("Expected a managed import");
+    }
+    const managedPath = imported.value.sourcePath;
+    await first.trash({ id: imported.value.id });
+    lifecycleTestSeam.beforeManagedFileCleanup = (path) => {
+      if (path === managedPath) {
+        throw new Error("injected purge cleanup failure");
+      }
+    };
+
+    expect(await first.purge({ id: imported.value.id })).toEqual({
+      ok: true,
+      value: { item: imported.value, cleanupPending: true },
+    });
+    expect(await Bun.file(managedPath).exists()).toBe(true);
+    using database = new Database(databasePath, { strict: true });
+    expect(database.query("SELECT source_path, kind FROM managed_file_cleanup").all()).toEqual([
+      { source_path: basename(managedPath), kind: "format" },
+    ]);
+
+    delete lifecycleTestSeam.beforeManagedFileCleanup;
+    first.close();
+    const reopened = createStore();
+    expect(await reopened.open({ config: {} })).toEqual({ ok: true, value: null });
+    expect(await Bun.file(managedPath).exists()).toBe(false);
+    expect(database.query("SELECT * FROM managed_file_cleanup").all()).toEqual([]);
+  });
+
+  it("rolls purge metadata and cleanup handoff back together on interruption", async () => {
+    const store = createStore();
+    await store.open({ config: {} });
+    await store.add({ item });
+    await store.trash({ id: item.id });
+    lifecycleTestSeam.duringManagedItemRemoval = () => {
+      throw new Error("injected purge interruption");
+    };
+
+    expect(await store.purge({ id: item.id })).toEqual({
+      ok: false,
+      error: { code: "storage-unavailable" },
+    });
+    delete lifecycleTestSeam.duringManagedItemRemoval;
+    expect(await store.listTrash({ page: { offset: 0, limit: 10 } })).toEqual({
+      ok: true,
+      value: { items: [item], total: 1, page: { offset: 0, limit: 10 } },
+    });
+    using database = new Database(databasePath, { strict: true });
+    expect(database.query("SELECT * FROM managed_file_cleanup").all()).toEqual([]);
+  });
+
   it("reports an item without a position-zero format when the item is read", async () => {
     const store = createStore();
     await store.open({ config: {} });
@@ -1519,7 +1820,7 @@ describe("BunSqliteLibraryStore", () => {
     expect(
       initializedDatabase.query<{ user_version: number }, []>("PRAGMA user_version").get()
         ?.user_version,
-    ).toBe(5);
+    ).toBe(6);
     expect(
       initializedDatabase
         .query<{ name: string; type: string }, []>(
