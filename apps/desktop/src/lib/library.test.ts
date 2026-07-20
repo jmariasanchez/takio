@@ -1119,6 +1119,9 @@ test("gives boundary and storage failures specific user-facing messages", () => 
   expect(describeLibraryError("open-failed")).toBe(
     "The source file could not be opened.",
   );
+  expect(describeLibraryError("stale-review")).toBe(
+    "This duplicate pair changed. Close and reopen duplicate review before deciding.",
+  );
 });
 
 test("does not expose unexpected implementation details in user-facing errors", () => {

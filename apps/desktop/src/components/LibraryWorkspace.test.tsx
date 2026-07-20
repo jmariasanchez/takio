@@ -11,6 +11,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { draftFor } from "../lib/metadata-draft";
 import {
   LibraryWorkspace,
+  openDuplicateReviewDialog,
   openTrashDialog,
   openSaveViewWithPaneClosed,
   restoreSaveViewDialogFocus,
@@ -122,6 +123,7 @@ function props(overrides: Partial<LibraryWorkspaceProps> = {}): LibraryWorkspace
     onClearAll: () => undefined,
     onClearCover: async () => undefined,
     onEnqueueConversion: async () => undefined,
+    onOpenDuplicateReview: () => undefined,
     onOpenItem: async () => undefined,
     onOpenSaveView: () => undefined,
     onOpenTrash: () => undefined,
@@ -177,6 +179,46 @@ test("opens Trash through the parent callback from a stable accessible toolbar t
   const pendingMarkup = renderWorkspace({ actionsPending: true });
   const pendingTrigger = pendingMarkup.match(/<button id="library-trash-trigger"[^>]*>/)?.[0];
   expect(pendingTrigger).toContain('disabled=""');
+});
+
+test("opens each duplicate review disposition from stable accessible toolbar triggers", () => {
+  const dispositions: string[] = [];
+
+  openDuplicateReviewDialog("unreviewed", (disposition) => {
+    dispositions.push(disposition);
+  });
+  openDuplicateReviewDialog("kept-both", (disposition) => {
+    dispositions.push(disposition);
+  });
+
+  expect(dispositions).toEqual(["unreviewed", "kept-both"]);
+
+  const markup = renderWorkspace();
+  const unreviewedTrigger = markup.match(
+    /<button id="library-duplicates-trigger"[^>]*>/,
+  )?.[0];
+  const keptTrigger = markup.match(
+    /<button id="library-kept-duplicates-trigger"[^>]*>/,
+  )?.[0];
+
+  expect(unreviewedTrigger).toBeDefined();
+  expect(unreviewedTrigger).toContain('aria-haspopup="dialog"');
+  expect(unreviewedTrigger).not.toContain("disabled");
+  expect(markup).toContain(`${unreviewedTrigger ?? ""}Review duplicates…</button>`);
+  expect(keptTrigger).toBeDefined();
+  expect(keptTrigger).toContain('aria-haspopup="dialog"');
+  expect(keptTrigger).not.toContain("disabled");
+  expect(markup).toContain(`${keptTrigger ?? ""}Kept separate…</button>`);
+
+  const pendingMarkup = renderWorkspace({ actionsPending: true });
+  const pendingUnreviewedTrigger = pendingMarkup.match(
+    /<button id="library-duplicates-trigger"[^>]*>/,
+  )?.[0];
+  const pendingKeptTrigger = pendingMarkup.match(
+    /<button id="library-kept-duplicates-trigger"[^>]*>/,
+  )?.[0];
+  expect(pendingUnreviewedTrigger).toContain('disabled=""');
+  expect(pendingKeptTrigger).toContain('disabled=""');
 });
 
 test("restores saved-view focus to the mounted compact trigger and uses search on desktop", () => {

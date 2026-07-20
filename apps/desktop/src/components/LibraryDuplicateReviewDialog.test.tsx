@@ -245,9 +245,13 @@ test("shows kept, pending, stale, error, empty, and closed states", () => {
   expect(keptMarkup).not.toContain("Review merge");
   expect(pendingMarkup).toContain('aria-busy="true"');
   expect(pendingMarkup).toContain("Merging duplicate pair…");
+  expect(pendingMarkup).toContain('aria-label="Close duplicate review" disabled=""');
   expect(staleMarkup).toContain("Evidence changed");
   expect(staleMarkup).toContain("This pair changed after it was reviewed.");
   expect(staleMarkup).toContain('role="alert">Evidence no longer matches this pair.</p>');
+  expect(render({ candidates: [], total: 0, error: "Query failed." })).not.toContain(
+    "No duplicates need review",
+  );
   expect(emptyMarkup).toContain("No duplicates need review");
   expect(emptyMarkup).toContain("0 of 0");
   expect(render({ open: false })).toBe("");

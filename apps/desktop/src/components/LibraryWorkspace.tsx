@@ -24,6 +24,7 @@ import {
   type MetadataDraft as EditorMetadataDraft,
 } from "../lib/metadata-draft";
 import { LibraryFacetSidebar } from "./LibraryFacetSidebar";
+import type { DuplicateReviewDisposition } from "./LibraryDuplicateReviewDialog";
 import {
   LibraryBulkActionBar,
   type LibraryBulkPendingAction,
@@ -132,6 +133,7 @@ export type LibraryWorkspaceProps = {
     bookFormat: BookFormat,
     focusControlId: string,
   ) => Promise<void>;
+  readonly onOpenDuplicateReview: (disposition: DuplicateReviewDisposition) => void;
   readonly onOpenSaveView: () => void;
   readonly onOpenTrash: () => void;
   readonly onRemoveFormat: (
@@ -176,6 +178,13 @@ export function openSaveViewWithPaneClosed(
 
 export function openTrashDialog(onOpenTrash: () => void): void {
   onOpenTrash();
+}
+
+export function openDuplicateReviewDialog(
+  disposition: DuplicateReviewDisposition,
+  onOpenDuplicateReview: (disposition: DuplicateReviewDisposition) => void,
+): void {
+  onOpenDuplicateReview(disposition);
 }
 
 type FocusTarget = { focus: () => void };
@@ -530,6 +539,7 @@ export function LibraryWorkspace({
   onClearAll,
   onClearCover,
   onEnqueueConversion,
+  onOpenDuplicateReview,
   onOpenItem,
   onOpenSaveView,
   onOpenTrash,
@@ -636,16 +646,42 @@ export function LibraryWorkspace({
                 </span>
               </div>
               <div className="library-workspace__toolbar-actions">
-                <button
-                  id="library-trash-trigger"
-                  className="library-workspace__trash-button"
-                  type="button"
-                  aria-haspopup="dialog"
-                  disabled={actionsPending}
-                  onClick={() => openTrashDialog(onOpenTrash)}
-                >
-                  Trash
-                </button>
+                <div className="library-workspace__maintenance-actions">
+                  <button
+                    id="library-duplicates-trigger"
+                    className="library-workspace__maintenance-button"
+                    type="button"
+                    aria-haspopup="dialog"
+                    disabled={actionsPending}
+                    onClick={() =>
+                      openDuplicateReviewDialog("unreviewed", onOpenDuplicateReview)
+                    }
+                  >
+                    Review duplicates…
+                  </button>
+                  <button
+                    id="library-kept-duplicates-trigger"
+                    className="library-workspace__maintenance-button"
+                    type="button"
+                    aria-haspopup="dialog"
+                    disabled={actionsPending}
+                    onClick={() =>
+                      openDuplicateReviewDialog("kept-both", onOpenDuplicateReview)
+                    }
+                  >
+                    Kept separate…
+                  </button>
+                  <button
+                    id="library-trash-trigger"
+                    className="library-workspace__maintenance-button"
+                    type="button"
+                    aria-haspopup="dialog"
+                    disabled={actionsPending}
+                    onClick={() => openTrashDialog(onOpenTrash)}
+                  >
+                    Trash
+                  </button>
+                </div>
                 <label className="library-workspace__search" htmlFor="library-search">
                   <span>Search library</span>
                   <input

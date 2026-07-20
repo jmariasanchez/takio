@@ -56,6 +56,11 @@
   gap: 8px;
 }
 
+.library-workspace__maintenance-actions {
+  display: flex;
+  gap: 6px;
+}
+
 .library-workspace__search {
   display: grid;
   min-width: 0;
@@ -66,7 +71,7 @@
   font-weight: 600;
 }
 
-.library-workspace__trash-button {
+.library-workspace__maintenance-button {
   min-height: 34px;
   padding: 6px 10px;
   border: 1px solid #d0d5dd;
@@ -91,7 +96,7 @@
 }
 
 .library-workspace__search input:focus-visible,
-.library-workspace__trash-button:focus-visible,
+.library-workspace__maintenance-button:focus-visible,
 .library-workspace__management button:focus-visible,
 .library-workspace__conversion button:focus-visible,
 .library-workspace__state button:focus-visible {
@@ -99,12 +104,12 @@
   outline-offset: 2px;
 }
 
-.library-workspace__trash-button:hover:not(:disabled) {
+.library-workspace__maintenance-button:hover:not(:disabled) {
   background: #f2f4f7;
   color: #20242c;
 }
 
-.library-workspace__trash-button:disabled {
+.library-workspace__maintenance-button:disabled {
   cursor: not-allowed;
   opacity: 0.5;
 }
@@ -307,6 +312,10 @@
 
   .library-workspace__toolbar-actions {
     width: 100%;
+  }
+
+  .library-workspace__maintenance-actions {
+    flex-wrap: wrap;
   }
 
   .library-workspace__search {

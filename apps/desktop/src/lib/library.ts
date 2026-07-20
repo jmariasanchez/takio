@@ -615,6 +615,8 @@ export function describeLibraryError(code: string): string {
       return "That format is no longer available for this item.";
     case "open-failed":
       return "The source file could not be opened.";
+    case "stale-review":
+      return "This duplicate pair changed. Close and reopen duplicate review before deciding.";
     default:
       return "The local library is unavailable.";
   }

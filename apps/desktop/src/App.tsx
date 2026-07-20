@@ -19,11 +19,15 @@ import {
   type LibraryItem,
 } from "@takio/core";
 import type {
+  DuplicateCandidate,
+  KeepDuplicatePairRequest,
   LibraryFacetCounts,
   LibraryImportReport,
   LibraryMetadataPatch,
   LibraryQueryFilters,
   LibraryQuerySort,
+  MergeDuplicatePairRequest,
+  ReopenDuplicatePairRequest,
   SavedLibraryView,
 } from "@takio/library-contract";
 import { MAX_LIBRARY_IMPORT_ROOTS } from "@takio/library-contract";
@@ -35,6 +39,11 @@ import {
   type SessionDeviceFormatPreferences,
 } from "./components/DeviceControls";
 import { JobsPanel } from "./components/JobsPanel";
+import {
+  LibraryDuplicateReviewDialog,
+  type DuplicateReviewDisposition,
+  type DuplicateReviewPendingAction,
+} from "./components/LibraryDuplicateReviewDialog";
 import { LibraryImportDialog } from "./components/LibraryImportDialog";
 import {
   LibraryTrashDialog,
@@ -80,14 +89,18 @@ import {
   describeUnexpectedLibraryError,
   getLibraryItem,
   importLibraryItems,
+  keepDuplicatePair,
+  listDuplicateCandidates,
   listLibraryTrash,
   listSavedLibraryViews,
+  mergeDuplicatePair,
   openLibraryItem,
   purgeLibraryItem,
   queryLibraryItems,
   removeLibraryCover,
   removeLibraryFormat,
   removeSavedLibraryView,
+  reopenDuplicatePair,
   restoreLibraryItem,
   saveSavedLibraryView,
   setLibraryCover,
@@ -96,6 +109,7 @@ import {
 } from "./lib/library";
 import {
   applyLibraryQueryResponse,
+  boundedLibraryPageOffset,
   createLibraryQueryState,
   DEFAULT_LIBRARY_QUERY_REQUEST,
   issueLibraryQueryRequest,
@@ -121,6 +135,7 @@ const emptyLibraryFacets: LibraryFacetCounts = {
   formats: [],
 };
 const searchDebounceMilliseconds = 250;
+const duplicatePageLimit = 20;
 const trashPageLimit = 25;
 
 type JobsState = "loading" | "ready" | "error";
@@ -169,6 +184,21 @@ export default function App() {
   const [trashPendingAction, setTrashPendingAction] =
     useState<LibraryTrashPendingAction | null>(null);
   const [trashError, setTrashError] = useState<string | null>(null);
+  const [duplicateDialogOpen, setDuplicateDialogOpen] = useState(false);
+  const [duplicateDisposition, setDuplicateDisposition] =
+    useState<DuplicateReviewDisposition>("unreviewed");
+  const [duplicateCandidates, setDuplicateCandidates] =
+    useState<readonly DuplicateCandidate[]>([]);
+  const [duplicateTotal, setDuplicateTotal] = useState(0);
+  const [duplicatePageOffset, setDuplicatePageOffset] = useState(0);
+  const [duplicateLoading, setDuplicateLoading] = useState(false);
+  const [duplicatePendingReviewToken, setDuplicatePendingReviewToken] =
+    useState<string | null>(null);
+  const [duplicatePendingAction, setDuplicatePendingAction] =
+    useState<DuplicateReviewPendingAction | null>(null);
+  const [duplicateStaleReviewToken, setDuplicateStaleReviewToken] =
+    useState<string | null>(null);
+  const [duplicateError, setDuplicateError] = useState<string | null>(null);
   const [libraryState, setLibraryState] = useState<LibraryState>("loading");
   const [notice, setNotice] = useState<Notice>(null);
   const [pendingAction, setPendingAction] = useState<string | null>(null);
@@ -190,11 +220,14 @@ export default function App() {
   const savedViewsRequestSequence = useRef(0);
   const trashRequestSequence = useRef(0);
   const trashPageOffsetRef = useRef(0);
+  const duplicateRequestSequence = useRef(0);
+  const duplicatePageOffsetRef = useRef(0);
   const destinationRequestSequence = useRef(0);
   const jobRequestSequence = useRef(0);
   const deviceMutationPending = useRef(false);
   const formatMutationPending = useRef(false);
   const bulkMutationPending = useRef(false);
+  const duplicateMutationPending = useRef(false);
   const importPending = useRef(false);
   const openPending = useRef(false);
   const importButton = useRef<HTMLButtonElement>(null);
@@ -395,6 +428,64 @@ export default function App() {
     }
   }, []);
 
+  const loadDuplicateReviewPage = useCallback(
+    async (
+      initialOffset: number,
+      disposition: DuplicateReviewDisposition,
+    ): Promise<boolean> => {
+      const request = ++duplicateRequestSequence.current;
+      let offset = initialOffset;
+      setDuplicateLoading(true);
+      setDuplicateError(null);
+
+      try {
+        while (true) {
+          const result = await listDuplicateCandidates({
+            page: { offset, limit: duplicatePageLimit },
+            disposition,
+          });
+          if (request !== duplicateRequestSequence.current) {
+            return false;
+          }
+          if (!result.ok) {
+            setDuplicateError(describeLibraryError(result.error.code));
+            return false;
+          }
+
+          const boundedOffset = boundedLibraryPageOffset(
+            offset,
+            result.value.total,
+            duplicatePageLimit,
+          );
+          if (boundedOffset !== offset) {
+            offset = boundedOffset;
+            duplicatePageOffsetRef.current = boundedOffset;
+            setDuplicatePageOffset(boundedOffset);
+            setDuplicateCandidates([]);
+            continue;
+          }
+
+          duplicatePageOffsetRef.current = offset;
+          setDuplicatePageOffset(offset);
+          setDuplicateCandidates(result.value.candidates);
+          setDuplicateTotal(result.value.total);
+          return true;
+        }
+      } catch (error) {
+        if (request !== duplicateRequestSequence.current) {
+          return false;
+        }
+        setDuplicateError(describeUnexpectedLibraryError(error));
+        return false;
+      } finally {
+        if (request === duplicateRequestSequence.current) {
+          setDuplicateLoading(false);
+        }
+      }
+    },
+    [],
+  );
+
   const loadDestinations = useCallback(async (showLoading = true): Promise<boolean> => {
     const request = ++destinationRequestSequence.current;
     if (showLoading) {
@@ -483,6 +574,7 @@ export default function App() {
     return () => {
       window.clearInterval(destinationRefresh);
       trashRequestSequence.current += 1;
+      duplicateRequestSequence.current += 1;
       if (searchDebounce.current !== null) {
         window.clearTimeout(searchDebounce.current);
       }
@@ -697,6 +789,225 @@ export default function App() {
     }
   }
 
+  function openDuplicateReview(disposition: DuplicateReviewDisposition): void {
+    if (
+      pendingAction !== null ||
+      duplicateMutationPending.current ||
+      importDialogOpen
+    ) {
+      return;
+    }
+    duplicatePageOffsetRef.current = 0;
+    setDuplicateDisposition(disposition);
+    setDuplicatePageOffset(0);
+    setDuplicateCandidates([]);
+    setDuplicateTotal(0);
+    setDuplicateStaleReviewToken(null);
+    setDuplicateError(null);
+    setDuplicateDialogOpen(true);
+    void loadDuplicateReviewPage(0, disposition);
+  }
+
+  function closeDuplicateReview(): void {
+    if (duplicateMutationPending.current) {
+      return;
+    }
+    duplicateRequestSequence.current += 1;
+    setDuplicateLoading(false);
+    setDuplicateStaleReviewToken(null);
+    setDuplicateError(null);
+    setDuplicateDialogOpen(false);
+  }
+
+  function changeDuplicateReviewPage(offset: number): void {
+    if (duplicateLoading || duplicateMutationPending.current) {
+      return;
+    }
+    duplicatePageOffsetRef.current = offset;
+    setDuplicatePageOffset(offset);
+    setDuplicateCandidates([]);
+    setDuplicateStaleReviewToken(null);
+    setDuplicateError(null);
+    void loadDuplicateReviewPage(offset, duplicateDisposition);
+  }
+
+  function findDuplicateCandidate(reviewToken: string): DuplicateCandidate | null {
+    return (
+      duplicateCandidates.find((candidate) => candidate.reviewToken === reviewToken) ??
+      null
+    );
+  }
+
+  function reportDuplicateMutationError(code: string, reviewToken: string): void {
+    setDuplicateError(describeLibraryError(code));
+    if (code === "stale-review") {
+      setDuplicateStaleReviewToken(reviewToken);
+    }
+  }
+
+  async function keepDuplicateReviewPair(
+    request: KeepDuplicatePairRequest,
+  ): Promise<void> {
+    if (pendingAction !== null || duplicateMutationPending.current) {
+      return;
+    }
+    const candidate = findDuplicateCandidate(request.reviewToken);
+    if (!candidate) {
+      return;
+    }
+
+    duplicateMutationPending.current = true;
+    setPendingAction(`duplicate-keep:${request.reviewToken}`);
+    setDuplicatePendingReviewToken(request.reviewToken);
+    setDuplicatePendingAction("keep");
+    setDuplicateError(null);
+    setNotice(null);
+    try {
+      const result = await keepDuplicatePair(request);
+      if (!result.ok) {
+        reportDuplicateMutationError(result.error.code, request.reviewToken);
+        return;
+      }
+
+      setDuplicateCandidates([]);
+      if (await loadDuplicateReviewPage(duplicatePageOffsetRef.current, duplicateDisposition)) {
+        setNotice({
+          kind: "status",
+          text: `Kept “${candidate.left.title}” and “${candidate.right.title}” as separate books.`,
+        });
+      } else {
+        setNotice({
+          kind: "error",
+          text: "Kept the pair separate, but duplicate candidates could not be refreshed.",
+        });
+      }
+    } catch (error) {
+      setDuplicateError(describeUnexpectedLibraryError(error));
+    } finally {
+      duplicateMutationPending.current = false;
+      setDuplicatePendingReviewToken(null);
+      setDuplicatePendingAction(null);
+      setPendingAction(null);
+    }
+  }
+
+  async function reopenDuplicateReviewPair(
+    request: ReopenDuplicatePairRequest,
+  ): Promise<void> {
+    if (pendingAction !== null || duplicateMutationPending.current) {
+      return;
+    }
+    const candidate = findDuplicateCandidate(request.reviewToken);
+    if (!candidate) {
+      return;
+    }
+
+    duplicateMutationPending.current = true;
+    setPendingAction(`duplicate-reopen:${request.reviewToken}`);
+    setDuplicatePendingReviewToken(request.reviewToken);
+    setDuplicatePendingAction("reopen");
+    setDuplicateError(null);
+    setNotice(null);
+    try {
+      const result = await reopenDuplicatePair(request);
+      if (!result.ok) {
+        reportDuplicateMutationError(result.error.code, request.reviewToken);
+        return;
+      }
+
+      setDuplicateCandidates([]);
+      if (await loadDuplicateReviewPage(duplicatePageOffsetRef.current, duplicateDisposition)) {
+        setNotice({
+          kind: "status",
+          text: `Reopened “${candidate.left.title}” and “${candidate.right.title}” for duplicate review.`,
+        });
+      } else {
+        setNotice({
+          kind: "error",
+          text: "Reopened the pair, but duplicate candidates could not be refreshed.",
+        });
+      }
+    } catch (error) {
+      setDuplicateError(describeUnexpectedLibraryError(error));
+    } finally {
+      duplicateMutationPending.current = false;
+      setDuplicatePendingReviewToken(null);
+      setDuplicatePendingAction(null);
+      setPendingAction(null);
+    }
+  }
+
+  async function mergeDuplicateReviewPair(
+    request: MergeDuplicatePairRequest,
+  ): Promise<void> {
+    if (pendingAction !== null || duplicateMutationPending.current) {
+      return;
+    }
+    const candidate = findDuplicateCandidate(request.reviewToken);
+    if (!candidate) {
+      return;
+    }
+
+    duplicateMutationPending.current = true;
+    setPendingAction(`duplicate-merge:${request.reviewToken}`);
+    setDuplicatePendingReviewToken(request.reviewToken);
+    setDuplicatePendingAction("merge");
+    setDuplicateError(null);
+    setNotice(null);
+    try {
+      const result = await mergeDuplicatePair(request);
+      if (!result.ok) {
+        reportDuplicateMutationError(result.error.code, request.reviewToken);
+        return;
+      }
+
+      const pairIds = new Set([candidate.left.id, candidate.right.id]);
+      dispatchLibrarySelection({ type: "remove-items", ids: [request.sourceId] });
+      setDraft((currentDraft) =>
+        currentDraft && pairIds.has(currentDraft.id) ? null : currentDraft,
+      );
+      setConversionDraft((currentDraft) =>
+        currentDraft && pairIds.has(currentDraft.id) ? null : currentDraft,
+      );
+      setDuplicateCandidates([]);
+
+      const [libraryLoaded, duplicatesLoaded] = await Promise.all([
+        loadLibrary(false),
+        loadDuplicateReviewPage(duplicatePageOffsetRef.current, duplicateDisposition),
+      ]);
+      if (
+        libraryLoaded &&
+        libraryQueryRef.current.page?.items.some(
+          ({ id }) => id === result.value.target.id,
+        )
+      ) {
+        selectLibraryItem(result.value.target.id);
+      }
+      if (!libraryLoaded || !duplicatesLoaded) {
+        setNotice({
+          kind: "error",
+          text: "The books were merged, but the library or duplicate candidates could not be refreshed.",
+        });
+        return;
+      }
+      setNotice({
+        kind: "status",
+        text: `Merged “${result.value.trashedSource.title}” into “${result.value.target.title}” and moved the source to Trash.${
+          result.value.cleanupPending
+            ? " Some Takio-managed files could not be deleted; cleanup is pending."
+            : ""
+        }`,
+      });
+    } catch (error) {
+      setDuplicateError(describeUnexpectedLibraryError(error));
+    } finally {
+      duplicateMutationPending.current = false;
+      setDuplicatePendingReviewToken(null);
+      setDuplicatePendingAction(null);
+      setPendingAction(null);
+    }
+  }
+
   function openTrash(): void {
     if (pendingAction !== null) {
       return;
@@ -814,7 +1125,7 @@ export default function App() {
   }
 
   function openImportDialog(): void {
-    if (pendingAction !== null || importPending.current) {
+    if (pendingAction !== null || importPending.current || duplicateDialogOpen) {
       return;
     }
     setImportRootPaths([]);
@@ -882,7 +1193,7 @@ export default function App() {
   const importPaths = useCallback(
     async (paths: readonly string[]): Promise<void> => {
       const roots = uniqueImportPaths(paths);
-      if (pendingAction !== null || importPending.current) {
+      if (pendingAction !== null || importPending.current || duplicateDialogOpen) {
         return;
       }
       if (roots.length < 1 || roots.length > MAX_LIBRARY_IMPORT_ROOTS) {
@@ -936,11 +1247,11 @@ export default function App() {
         setPendingAction(null);
       }
     },
-    [loadLibrary, pendingAction],
+    [duplicateDialogOpen, loadLibrary, pendingAction],
   );
 
   async function importDroppedPaths(paths: readonly string[]): Promise<void> {
-    if (pendingAction !== null || importPending.current) {
+    if (pendingAction !== null || importPending.current || duplicateDialogOpen) {
       return;
     }
     const roots = uniqueImportPaths(paths);
@@ -2279,6 +2590,7 @@ export default function App() {
           onClearAll={clearLibraryQuery}
           onClearCover={clearCover}
           onEnqueueConversion={enqueueConversion}
+          onOpenDuplicateReview={openDuplicateReview}
           onOpenSaveView={openSaveViewDialog}
           onOpenTrash={openTrash}
           onOpenItem={openItem}
@@ -2295,6 +2607,25 @@ export default function App() {
           onSetDraft={setDraft}
           onTogglePageSelection={toggleLibraryPageSelection}
           onToggleSelectedItem={toggleSelectedLibraryItem}
+        />
+
+        <LibraryDuplicateReviewDialog
+          open={duplicateDialogOpen}
+          candidates={duplicateCandidates}
+          total={duplicateTotal}
+          pageOffset={duplicatePageOffset}
+          pageLimit={duplicatePageLimit}
+          disposition={duplicateDisposition}
+          loading={duplicateLoading}
+          pendingReviewToken={duplicatePendingReviewToken}
+          pendingAction={duplicatePendingAction}
+          staleReviewToken={duplicateStaleReviewToken}
+          error={duplicateError}
+          onClose={closeDuplicateReview}
+          onChangePage={changeDuplicateReviewPage}
+          onKeepSeparate={(request) => void keepDuplicateReviewPair(request)}
+          onReopen={(request) => void reopenDuplicateReviewPair(request)}
+          onMerge={(request) => void mergeDuplicateReviewPair(request)}
         />
 
         <LibraryTrashDialog

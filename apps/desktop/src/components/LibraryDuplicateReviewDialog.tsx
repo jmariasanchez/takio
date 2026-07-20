@@ -530,6 +530,19 @@ export function LibraryDuplicateReviewDialog({
     return;
   }, [open]);
 
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+    const frame = window.requestAnimationFrame(() => {
+      const dialog = dialogRef.current;
+      if (dialog && !dialog.contains(document.activeElement)) {
+        (operationPending ? dialog : closeButtonRef.current ?? dialog).focus();
+      }
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [candidates, open, operationPending]);
+
   if (!open) {
     return null;
   }
@@ -538,7 +551,9 @@ export function LibraryDuplicateReviewDialog({
     if (event.key === "Escape") {
       event.preventDefault();
       event.stopPropagation();
-      onClose();
+      if (!operationPending) {
+        onClose();
+      }
       return;
     }
     if (event.key !== "Tab") {
@@ -588,7 +603,7 @@ export function LibraryDuplicateReviewDialog({
             <span className="library-duplicate-dialog__eyebrow">Library maintenance</span>
             <h2 id={titleId}>Review duplicates</h2>
           </div>
-          <button ref={closeButtonRef} className="library-duplicate-dialog__close" type="button" aria-label="Close duplicate review" onClick={onClose}>
+          <button ref={closeButtonRef} className="library-duplicate-dialog__close" type="button" aria-label="Close duplicate review" disabled={operationPending} onClick={onClose}>
             <span aria-hidden="true">×</span>
           </button>
         </header>
@@ -602,7 +617,7 @@ export function LibraryDuplicateReviewDialog({
         {visibleError ? <p className="library-duplicate-dialog__error" id={errorId} role="alert">{visibleError}</p> : null}
 
         <div className="library-duplicate-dialog__body">
-          {!loading && candidates.length === 0 ? (
+          {!loading && visibleError === null && candidates.length === 0 ? (
             <div className="library-duplicate-dialog__empty">
               <strong>{disposition === "unreviewed" ? "No duplicates need review" : "No pairs are kept separate"}</strong>
               <span>{disposition === "unreviewed" ? "New candidates will appear when matching evidence is found." : "Pairs marked Keep separate will appear here."}</span>
