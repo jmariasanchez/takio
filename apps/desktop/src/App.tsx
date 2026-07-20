@@ -14,6 +14,7 @@ import { DeviceControls } from "./components/DeviceControls";
 import { JobsPanel } from "./components/JobsPanel";
 import {
   LibraryWorkspace,
+  conversionControlId,
   type ConversionDraft,
   type LibraryState,
   type MetadataDraft,
@@ -94,6 +95,7 @@ export default function App() {
   const itemsRef = useRef(items);
   const postRemoveFocusItemId = useRef<string | null | undefined>(undefined);
   const postFormatFocusControlId = useRef<string | undefined>(undefined);
+  const postConversionFocusControlId = useRef<string | undefined>(undefined);
   const queryRef = useRef(query);
   const searchInput = useRef<HTMLInputElement>(null);
   const menuActionHandlers = useRef<MenuActionHandlers | null>(null);
@@ -111,6 +113,20 @@ export default function App() {
       itemId === null ? importButton.current : document.getElementById(`library-item-${itemId}`);
     (target ?? importButton.current)?.focus();
   }, [items, pendingAction]);
+
+  useEffect(() => {
+    if (
+      pendingAction !== null ||
+      conversionDraft !== null ||
+      postConversionFocusControlId.current === undefined
+    ) {
+      return;
+    }
+
+    const controlId = postConversionFocusControlId.current;
+    postConversionFocusControlId.current = undefined;
+    (document.getElementById(controlId) ?? importButton.current)?.focus();
+  }, [conversionDraft, pendingAction]);
 
   useEffect(() => {
     if (pendingAction !== null || postFormatFocusControlId.current === undefined) {
@@ -747,7 +763,17 @@ export default function App() {
 
   async function enqueueConversion(event: FormEvent, item: LibraryItem): Promise<void> {
     event.preventDefault();
-    if (conversionDraft?.id !== item.id || item.format !== "epub") {
+    const requested = conversionDraft;
+    if (
+      requested?.id !== item.id ||
+      requested.source.format !== "epub" ||
+      requested.target !== "pdf" ||
+      item.formats.some(({ format }) => format === requested.target) ||
+      !item.formats.some(
+        ({ format, sourcePath }) =>
+          format === requested.source.format && sourcePath === requested.source.sourcePath,
+      )
+    ) {
       return;
     }
 
@@ -769,12 +795,22 @@ export default function App() {
     setPendingAction(`job-enqueue:${item.id}`);
     setNotice(null);
     try {
-      const result = await enqueueConversionJob(item.sourcePath, output);
+      const result = await enqueueConversionJob({
+        libraryItemId: item.id,
+        inputFormat: requested.source.format,
+        outputFormat: requested.target,
+        outputPath: output,
+      });
       if (!result.ok) {
         setNotice({ kind: "error", text: describeJobError(result.error.code) });
         return;
       }
 
+      postConversionFocusControlId.current = conversionControlId(
+        item.id,
+        requested.source,
+        requested.target,
+      );
       setConversionDraft(null);
       if (await loadJobs(false)) {
         setNotice({ kind: "status", text: `Queued “${item.title}” for PDF conversion.` });
@@ -803,16 +839,43 @@ export default function App() {
         return;
       }
 
-      if (!(await loadJobs(false))) {
+      const completedJob = result.value.job?.status === "completed" ? result.value.job : null;
+      const [jobsLoaded, libraryLoaded] = await Promise.all([
+        loadJobs(false),
+        completedJob ? loadLibrary(false, queryRef.current) : Promise.resolve(true),
+      ]);
+      if (!jobsLoaded || !libraryLoaded) {
         return;
       }
       if (result.value.job === null) {
         setNotice({ kind: "status", text: "No queued conversions." });
       } else if (result.value.job.status === "completed") {
-        setNotice({
-          kind: "status",
-          text: `Conversion completed: ${result.value.job.outputPath}`,
-        });
+        const completed = result.value.job;
+        const title = completed.libraryItemId
+          ? itemsRef.current.find(({ id }) => id === completed.libraryItemId)?.title
+          : undefined;
+        const subject = title ? ` for “${title}”` : "";
+        if (completed.attachment?.status === "pending") {
+          setNotice({
+            kind: "status",
+            text: `Conversion completed${subject}; PDF attachment is pending.`,
+          });
+        } else if (completed.attachment?.status === "attached") {
+          setNotice({
+            kind: "status",
+            text: `Conversion completed${subject}; PDF was attached to the library item.`,
+          });
+        } else if (completed.attachment?.status === "failed") {
+          setNotice({
+            kind: "error",
+            text: `Conversion completed${subject}, but PDF attachment failed (${completed.attachment.errorCode}).`,
+          });
+        } else {
+          setNotice({
+            kind: "status",
+            text: `Conversion completed: ${completed.outputPath}`,
+          });
+        }
       } else if (result.value.job.status === "failed") {
         setNotice({
           kind: "error",

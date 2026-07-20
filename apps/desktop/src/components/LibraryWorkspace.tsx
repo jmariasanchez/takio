@@ -4,8 +4,11 @@ import {
   FORMAT_CATALOG,
   type BookFormat,
   type Destination,
+  type FormatId,
   type LibraryItem,
 } from "@takio/core";
+
+import { conversionChoices } from "../lib/conversion-choices";
 
 export type LibraryState = "loading" | "ready" | "error";
 export type MetadataDraft = {
@@ -15,7 +18,11 @@ export type MetadataDraft = {
   readonly description: string;
   readonly tags: string;
 };
-export type ConversionDraft = { readonly id: string };
+export type ConversionDraft = {
+  readonly id: string;
+  readonly source: BookFormat;
+  readonly target: FormatId;
+};
 
 type LibraryWorkspaceProps = {
   readonly actionsPending: boolean;
@@ -71,6 +78,14 @@ function draftFor(item: LibraryItem): MetadataDraft {
   };
 }
 
+export function conversionControlId(
+  itemId: string,
+  source: BookFormat,
+  target: FormatId,
+): string {
+  return `library-convert-${itemId}-${source.format}-to-${target}`;
+}
+
 export function LibraryWorkspace({
   actionsPending,
   conversionDraft,
@@ -98,6 +113,11 @@ export function LibraryWorkspace({
   onSetConversionDraft,
   onSetDraft,
 }: LibraryWorkspaceProps) {
+  function cancelConversion(controlId: string): void {
+    onSetConversionDraft(null);
+    window.requestAnimationFrame(() => document.getElementById(controlId)?.focus());
+  }
+
   return (
     <section
       className="library-section"
@@ -158,7 +178,16 @@ export function LibraryWorkspace({
         <div className="book-list">
           {items.map((item) => {
             const editing = draft?.id === item.id;
-            const converting = conversionDraft?.id === item.id;
+            const conversionChoice = conversionChoices(item.formats)[0];
+            const converting =
+              conversionChoice !== undefined &&
+              conversionDraft?.id === item.id &&
+              conversionDraft.source.format === conversionChoice.source.format &&
+              conversionDraft.source.sourcePath === conversionChoice.source.sourcePath &&
+              conversionDraft.target === conversionChoice.target;
+            const convertControlId = conversionChoice
+              ? conversionControlId(item.id, conversionChoice.source, conversionChoice.target)
+              : undefined;
             const selected = selectedItemId === item.id;
             return (
               <article
@@ -236,20 +265,29 @@ export function LibraryWorkspace({
                         ? "Sending…"
                         : "Send"}
                     </button>
-                    {item.format === "epub" && (
+                    {conversionChoice && convertControlId && (
                       <button
                         className="row-button"
+                        id={convertControlId}
                         aria-label={
                           converting
-                            ? `Cancel conversion for ${item.title}`
-                            : `Convert ${item.title}`
+                            ? `Cancel EPUB to PDF setup for “${item.title}”`
+                            : `Convert EPUB for “${item.title}” to PDF`
                         }
                         aria-expanded={converting}
                         aria-controls={`conversion-${item.id}`}
                         disabled={actionsPending}
                         onClick={() => {
                           onSetDraft(null);
-                          onSetConversionDraft(converting ? null : { id: item.id });
+                          if (converting) {
+                            cancelConversion(convertControlId);
+                          } else {
+                            onSetConversionDraft({
+                              id: item.id,
+                              source: conversionChoice.source,
+                              target: conversionChoice.target,
+                            });
+                          }
                         }}
                       >
                         {converting ? "Cancel convert" : "Convert"}
@@ -430,7 +468,7 @@ export function LibraryWorkspace({
                   </section>
                 )}
 
-                {converting && (
+                {converting && conversionDraft && convertControlId && (
                   <form
                     className="conversion-panel"
                     id={`conversion-${item.id}`}
@@ -438,7 +476,7 @@ export function LibraryWorkspace({
                     onSubmit={(event) => void onEnqueueConversion(event, item)}
                   >
                     <div className="conversion-copy">
-                      <strong id={`conversion-heading-${item.id}`}>Convert EPUB</strong>
+                      <strong id={`conversion-heading-${item.id}`}>Convert EPUB to PDF</strong>
                       <span id={`conversion-help-${item.id}`}>
                         Choose where to save the PDF, then run it from the queue.
                       </span>
@@ -457,8 +495,9 @@ export function LibraryWorkspace({
                       <button
                         type="button"
                         className="quiet-button"
+                        aria-label={`Cancel EPUB to PDF setup for “${item.title}”`}
                         disabled={actionsPending}
-                        onClick={() => onSetConversionDraft(null)}
+                        onClick={() => cancelConversion(convertControlId)}
                       >
                         Cancel
                       </button>

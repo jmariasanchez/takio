@@ -42,6 +42,8 @@ export function JobsPanel({
           </span>
           <button
             className="quiet-button"
+            id="jobs-refresh"
+            aria-label="Refresh conversion queue"
             disabled={actionsPending || jobsState === "loading"}
             onClick={() => void onRefresh()}
           >
@@ -49,6 +51,7 @@ export function JobsPanel({
           </button>
           <button
             className="quiet-button run-next-button"
+            aria-label="Run next queued conversion"
             disabled={actionsPending || jobsState === "loading" || queuedJobs.length === 0}
             onClick={() => void onRunNext()}
           >
@@ -78,7 +81,13 @@ export function JobsPanel({
         <ol className="job-list">
           {jobs.map((job) => {
             const sourceTitle =
-              items.find((item) => item.sourcePath === job.inputPath)?.title ?? "Conversion";
+              (job.libraryItemId
+                ? items.find((item) => item.id === job.libraryItemId)?.title
+                : undefined) ??
+              items.find((item) =>
+                item.formats.some(({ sourcePath }) => sourcePath === job.inputPath),
+              )?.title ??
+              "Conversion";
             return (
               <li className="job-row" key={job.id}>
                 <div className="job-primary">
@@ -98,13 +107,32 @@ export function JobsPanel({
                       Reason: {describeJobError(job.errorCode ?? "conversion-failed")}
                     </span>
                   )}
+                  {job.attachment?.status === "pending" && (
+                    <span className="job-status status-queued">Library attachment: Pending</span>
+                  )}
+                  {job.attachment?.status === "attached" && (
+                    <span className="job-status status-completed">
+                      Library attachment: Attached
+                    </span>
+                  )}
+                  {job.attachment?.status === "failed" && (
+                    <span className="job-error">
+                      Library attachment: Failed ({job.attachment.errorCode})
+                    </span>
+                  )}
                 </div>
                 {job.status === "queued" && (
                   <button
                     className="row-button danger-button job-cancel"
-                    aria-label={`Cancel ${job.inputFormat.toUpperCase()} to ${job.outputFormat.toUpperCase()} conversion to ${job.outputPath}`}
+                    aria-label={`Cancel ${job.inputFormat.toUpperCase()} to ${job.outputFormat.toUpperCase()} conversion for “${sourceTitle}”`}
                     disabled={actionsPending}
-                    onClick={() => void onCancel(job)}
+                    onClick={() => {
+                      void onCancel(job).finally(() => {
+                        window.requestAnimationFrame(() =>
+                          document.getElementById("jobs-refresh")?.focus(),
+                        );
+                      });
+                    }}
                   >
                     {pendingAction === `job-cancel:${job.id}` ? "Canceling…" : "Cancel"}
                   </button>
