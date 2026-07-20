@@ -12,6 +12,7 @@
     "build": "bun run --filter '@takio/core' build && bun run --filter '@takio/library-contract' build && bun run --filter '@takio/library-store-bun' build && bun run --filter '@takio/cli' build && bun run --filter '@takio/desktop' build",
     "check": "bun run --filter '@takio/core' check && bun run --filter '@takio/library-contract' check && bun run --filter '@takio/library-store-bun' check && bun run --filter '@takio/cli' check && bun run --filter '@takio/desktop' check",
     "check:native:macos": "bash scripts/check-native-macos.sh",
+    "verify:bundle:macos": "bash scripts/verify-macos-bundle.sh",
     "test": "bun run --filter '@takio/core' test && bun run --filter '@takio/library-contract' test && bun run --filter '@takio/library-store-bun' test && bun run --filter '@takio/cli' test && bun run --filter '@takio/desktop' test",
     "takio": "bun run --filter '@takio/cli' start",
     "desktop": "bun run --filter '@takio/desktop' tauri dev"
