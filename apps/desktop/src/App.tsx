@@ -6,6 +6,7 @@ import {
   useState,
   type FormEvent,
 } from "react";
+import { isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { join } from "@tauri-apps/api/path";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -2697,6 +2698,10 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    if (!isTauri()) {
+      return;
+    }
+
     let disposed = false;
     let unlisten: (() => void) | undefined;
 
