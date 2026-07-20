@@ -1,17 +1,76 @@
-import { useRef, type KeyboardEvent } from "react";
+import { convertFileSrc } from "@tauri-apps/api/core";
 import type { LibraryItem } from "@takio/core";
+import type { LibraryQuerySort } from "@takio/library-contract";
+import { useRef, type KeyboardEvent } from "react";
 
 import "./LibraryTable.css";
 
 export type LibraryTableProps = {
   readonly busy?: boolean;
   readonly items: readonly LibraryItem[];
+  readonly sort: LibraryQuerySort;
+  readonly total: number;
+  readonly pageOffset: number;
+  readonly pageLimit: number;
   readonly selectedItemId: string | null;
+  readonly onChangePage: (offset: number) => void;
+  readonly onChangeSort: (sort: LibraryQuerySort) => void;
   readonly onOpenItem: (item: LibraryItem) => void;
   readonly onSelectItem: (id: string) => void;
 };
 
+type PageAction = "next" | "previous";
 type RowNavigationKey = "ArrowDown" | "ArrowUp" | "End" | "Home";
+type SortField = LibraryQuerySort["field"];
+
+const sortOptions = [
+  ["title", "Title"],
+  ["author", "Author"],
+  ["series", "Series"],
+  ["publishedDate", "Published"],
+  ["rating", "Rating"],
+  ["addedAt", "Added"],
+  ["updatedAt", "Updated"],
+] as const satisfies readonly (readonly [SortField, string])[];
+
+export function nextLibrarySort(
+  current: LibraryQuerySort,
+  field: SortField,
+): LibraryQuerySort {
+  return {
+    field,
+    direction:
+      current.field === field && current.direction === "ascending" ? "descending" : "ascending",
+  };
+}
+
+export function libraryPageRange(
+  pageOffset: number,
+  itemCount: number,
+  total: number,
+): { readonly start: number; readonly end: number } {
+  if (itemCount === 0 || total === 0) {
+    return { start: 0, end: 0 };
+  }
+
+  return {
+    start: pageOffset + 1,
+    end: Math.min(pageOffset + itemCount, total),
+  };
+}
+
+export function libraryPageTarget(
+  action: PageAction,
+  pageOffset: number,
+  pageLimit: number,
+  total: number,
+): number | null {
+  if (action === "previous") {
+    return pageOffset === 0 ? null : Math.max(0, pageOffset - pageLimit);
+  }
+
+  return pageOffset + pageLimit >= total ? null : pageOffset + pageLimit;
+}
 
 export function rowNavigationTarget(
   key: RowNavigationKey,
@@ -42,20 +101,41 @@ function addedDate(value: string): string {
   }).format(new Date(value));
 }
 
+function authorLabel(item: LibraryItem): string {
+  if (item.authors?.length) {
+    return item.authors.map(({ name }) => name).join(", ");
+  }
+
+  return item.author ?? "Unknown author";
+}
+
 function formatLabel(format: string): string {
   return format.toUpperCase();
+}
+
+function sortDirectionLabel(direction: LibraryQuerySort["direction"]): string {
+  return direction === "ascending" ? "Ascending" : "Descending";
 }
 
 export function LibraryTable({
   busy = false,
   items,
+  sort,
+  total,
+  pageOffset,
+  pageLimit,
   selectedItemId,
+  onChangePage,
+  onChangeSort,
   onOpenItem,
   onSelectItem,
 }: LibraryTableProps) {
   const rowRefs = useRef(new Map<string, HTMLTableRowElement>());
   const selectedIndex = items.findIndex(({ id }) => id === selectedItemId);
   const tabStopIndex = selectedIndex >= 0 ? selectedIndex : 0;
+  const range = libraryPageRange(pageOffset, items.length, total);
+  const previousPage = libraryPageTarget("previous", pageOffset, pageLimit, total);
+  const nextPage = libraryPageTarget("next", pageOffset, pageLimit, total);
 
   function moveRowFocus(currentIndex: number, key: RowNavigationKey): void {
     const targetIndex = rowNavigationTarget(key, currentIndex, items.length);
@@ -94,74 +174,199 @@ export function LibraryTable({
     }
   }
 
-  return (
-    <div className="library-table-frame" aria-busy={busy}>
-      <table className="library-table">
-        <caption>Library books</caption>
-        <colgroup>
-          <col className="library-table__cover-column" />
-          <col className="library-table__title-column" />
-          <col className="library-table__author-column" />
-          <col className="library-table__formats-column" />
-          <col className="library-table__added-column" />
-        </colgroup>
-        <thead>
-          <tr>
-            <th aria-label="Cover" scope="col" />
-            <th scope="col">Title</th>
-            <th scope="col">Author</th>
-            <th scope="col">Formats</th>
-            <th scope="col">Added</th>
-          </tr>
-        </thead>
-        <tbody>
-          {items.map((item, index) => {
-            const selected = item.id === selectedItemId;
+  function handleHeaderSort(field: SortField): void {
+    onChangeSort(nextLibrarySort(sort, field));
+  }
 
-            return (
-              <tr
-                ref={(node) => {
-                  if (node) {
-                    rowRefs.current.set(item.id, node);
-                  } else {
-                    rowRefs.current.delete(item.id);
-                  }
-                }}
-                key={item.id}
-                aria-selected={selected}
-                className={selected ? "library-table__row is-selected" : "library-table__row"}
-                tabIndex={index === tabStopIndex ? 0 : -1}
-                onClick={() => onSelectItem(item.id)}
-                onDoubleClick={() => onOpenItem(item)}
-                onFocus={() => onSelectItem(item.id)}
-                onKeyDown={(event) => handleRowKeyDown(event, item, index)}
+  return (
+    <div className="library-table-shell" aria-busy={busy}>
+      <div className="library-table__sort-controls">
+        <label>
+          <span>Sort by</span>
+          <select
+            aria-label="Sort field"
+            value={sort.field}
+            onChange={(event) =>
+              onChangeSort({
+                field: event.currentTarget.value as SortField,
+                direction: sort.direction,
+              })
+            }
+          >
+            {sortOptions.map(([value, label]) => (
+              <option key={value} value={value}>
+                {label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <button
+          type="button"
+          aria-label={`Change sort direction to ${
+            sort.direction === "ascending" ? "descending" : "ascending"
+          }`}
+          onClick={() =>
+            onChangeSort({
+              ...sort,
+              direction: sort.direction === "ascending" ? "descending" : "ascending",
+            })
+          }
+        >
+          {sortDirectionLabel(sort.direction)}
+        </button>
+      </div>
+
+      <div className="library-table-frame">
+        <table className="library-table">
+          <caption>Library books</caption>
+          <colgroup>
+            <col className="library-table__cover-column" />
+            <col className="library-table__title-column" />
+            <col className="library-table__author-column" />
+            <col className="library-table__formats-column" />
+            <col className="library-table__added-column" />
+          </colgroup>
+          <thead>
+            <tr>
+              <th className="library-table__cover-cell" aria-label="Cover" scope="col" />
+              <th aria-sort={sort.field === "title" ? sort.direction : undefined} scope="col">
+                <button
+                  type="button"
+                  aria-label={`Sort by Title ${
+                    nextLibrarySort(sort, "title").direction
+                  }`}
+                  onClick={() => handleHeaderSort("title")}
+                >
+                  Title
+                  {sort.field === "title" ? (
+                    <span aria-hidden="true">{sort.direction === "ascending" ? "↑" : "↓"}</span>
+                  ) : null}
+                </button>
+              </th>
+              <th aria-sort={sort.field === "author" ? sort.direction : undefined} scope="col">
+                <button
+                  type="button"
+                  aria-label={`Sort by Author ${
+                    nextLibrarySort(sort, "author").direction
+                  }`}
+                  onClick={() => handleHeaderSort("author")}
+                >
+                  Author
+                  {sort.field === "author" ? (
+                    <span aria-hidden="true">{sort.direction === "ascending" ? "↑" : "↓"}</span>
+                  ) : null}
+                </button>
+              </th>
+              <th className="library-table__formats-cell" scope="col">
+                Formats
+              </th>
+              <th
+                className="library-table__added-cell"
+                aria-sort={sort.field === "addedAt" ? sort.direction : undefined}
+                scope="col"
               >
-                <td>
-                  <span className="library-table__cover" aria-hidden="true">
-                    {item.title.slice(0, 1).toUpperCase()}
-                  </span>
-                </td>
-                <td>
-                  <strong className="library-table__title">{item.title}</strong>
-                </td>
-                <td className="library-table__secondary">{item.author ?? "Unknown author"}</td>
-                <td>
-                  <span className="library-table__formats">
-                    {item.formats.map(({ format }) => (
-                      <span className="library-table__format" key={format}>
-                        {formatLabel(format)}
+                <button
+                  type="button"
+                  aria-label={`Sort by Added ${
+                    nextLibrarySort(sort, "addedAt").direction
+                  }`}
+                  onClick={() => handleHeaderSort("addedAt")}
+                >
+                  Added
+                  {sort.field === "addedAt" ? (
+                    <span aria-hidden="true">{sort.direction === "ascending" ? "↑" : "↓"}</span>
+                  ) : null}
+                </button>
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            {items.map((item, index) => {
+              const selected = item.id === selectedItemId;
+
+              return (
+                <tr
+                  ref={(node) => {
+                    if (node) {
+                      rowRefs.current.set(item.id, node);
+                    } else {
+                      rowRefs.current.delete(item.id);
+                    }
+                  }}
+                  key={item.id}
+                  aria-selected={selected}
+                  className={selected ? "library-table__row is-selected" : "library-table__row"}
+                  tabIndex={index === tabStopIndex ? 0 : -1}
+                  onClick={() => onSelectItem(item.id)}
+                  onDoubleClick={() => onOpenItem(item)}
+                  onFocus={() => onSelectItem(item.id)}
+                  onKeyDown={(event) => handleRowKeyDown(event, item, index)}
+                >
+                  <td className="library-table__cover-cell">
+                    {item.coverPath ? (
+                      <img
+                        className="library-table__cover"
+                        src={convertFileSrc(item.coverPath)}
+                        alt={`Cover of ${item.title}`}
+                      />
+                    ) : (
+                      <span className="library-table__cover" aria-hidden="true">
+                        {item.title.slice(0, 1).toUpperCase()}
                       </span>
-                    ))}
-                  </span>
-                </td>
-                <td className="library-table__secondary">
-                  <time dateTime={item.addedAt}>{addedDate(item.addedAt)}</time>
-                </td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
+                    )}
+                  </td>
+                  <td>
+                    <strong className="library-table__title">{item.title}</strong>
+                  </td>
+                  <td className="library-table__secondary">{authorLabel(item)}</td>
+                  <td className="library-table__formats-cell">
+                    <span className="library-table__formats">
+                      {item.formats.map(({ format }) => (
+                        <span className="library-table__format" key={format}>
+                          {formatLabel(format)}
+                        </span>
+                      ))}
+                    </span>
+                  </td>
+                  <td className="library-table__added-cell library-table__secondary">
+                    <time dateTime={item.addedAt}>{addedDate(item.addedAt)}</time>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      <div className="library-table__pager" role="navigation" aria-label="Library pages">
+        <span aria-live="polite">
+          {range.start === 0 ? `0 of ${total}` : `${range.start}–${range.end} of ${total}`}
+        </span>
+        <div>
+          <button
+            type="button"
+            disabled={busy || previousPage === null}
+            onClick={() => {
+              if (previousPage !== null) {
+                onChangePage(previousPage);
+              }
+            }}
+          >
+            Previous
+          </button>
+          <button
+            type="button"
+            disabled={busy || nextPage === null}
+            onClick={() => {
+              if (nextPage !== null) {
+                onChangePage(nextPage);
+              }
+            }}
+          >
+            Next
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

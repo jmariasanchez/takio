@@ -1,13 +1,75 @@
+.library-table-shell {
+  container-type: inline-size;
+  display: grid;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  background: #fbfcfe;
+}
+
+.library-table__sort-controls {
+  display: flex;
+  min-width: 0;
+  min-height: 38px;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 12px;
+  border-top: 1px solid #e4e7ec;
+  color: #667085;
+  font-size: 0.6875rem;
+  font-weight: 650;
+  letter-spacing: 0.045em;
+  text-transform: uppercase;
+}
+
+.library-table__sort-controls label {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 7px;
+}
+
+.library-table__sort-controls select,
+.library-table__sort-controls button,
+.library-table__pager button {
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid #d0d5dd;
+  border-radius: 4px;
+  background: #fff;
+  color: #344054;
+  font: inherit;
+  letter-spacing: normal;
+  text-transform: none;
+}
+
+.library-table__sort-controls select {
+  min-width: 104px;
+}
+
+.library-table__sort-controls button:hover,
+.library-table__pager button:not(:disabled):hover {
+  background: #f4f6fb;
+}
+
+.library-table__sort-controls select:focus-visible,
+.library-table__sort-controls button:focus-visible,
+.library-table__pager button:focus-visible {
+  outline: 2px solid #4f46e5;
+  outline-offset: 1px;
+}
+
 .library-table-frame {
   min-width: 0;
+  min-height: 0;
   overflow: auto;
-  background: #fbfcfe;
   border-block: 1px solid #e4e7ec;
 }
 
 .library-table {
   width: 100%;
-  min-width: 640px;
   border-collapse: collapse;
   table-layout: fixed;
   color: #20242c;
@@ -26,7 +88,7 @@
 }
 
 .library-table__cover-column {
-  width: 52px;
+  width: 48px;
 }
 
 .library-table__title-column {
@@ -34,23 +96,23 @@
 }
 
 .library-table__author-column {
-  width: 24%;
+  width: 25%;
 }
 
 .library-table__formats-column {
-  width: 20%;
+  width: 18%;
 }
 
 .library-table__added-column {
-  width: 130px;
+  width: 122px;
 }
 
 .library-table th {
   position: sticky;
   z-index: 1;
   top: 0;
-  height: 36px;
-  padding: 0 12px;
+  height: 34px;
+  padding: 0 10px;
   background: #f5f7fa;
   border-bottom: 1px solid #dfe3e9;
   color: #667085;
@@ -61,9 +123,30 @@
   text-transform: uppercase;
 }
 
+.library-table th > button {
+  display: inline-flex;
+  min-width: 0;
+  height: 100%;
+  align-items: center;
+  gap: 5px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+}
+
+.library-table th > button:focus-visible {
+  outline: 2px solid #4f46e5;
+  outline-offset: 2px;
+}
+
 .library-table td {
-  height: 60px;
-  padding: 0 12px;
+  height: 56px;
+  padding: 0 10px;
   overflow: hidden;
   border-bottom: 1px solid #eceef2;
   text-overflow: ellipsis;
@@ -97,6 +180,7 @@
   width: 28px;
   height: 40px;
   place-items: center;
+  object-fit: cover;
   background: #e4e7ec;
   border: 1px solid #d0d5dd;
   color: #667085;
@@ -134,19 +218,60 @@
   letter-spacing: 0.045em;
 }
 
-.library-table-frame[aria-busy="true"] .library-table {
+.library-table__pager {
+  display: flex;
+  min-width: 0;
+  min-height: 40px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 5px 12px;
+  color: #667085;
+  font-size: 0.75rem;
+}
+
+.library-table__pager > div {
+  display: flex;
+  gap: 6px;
+}
+
+.library-table__pager button:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
+}
+
+.library-table-shell[aria-busy="true"] .library-table {
   opacity: 0.68;
 }
 
-@media (max-width: 900px) {
+@container (max-width: 920px) {
   .library-table__added-column,
-  .library-table th:last-child,
-  .library-table td:last-child {
+  .library-table__added-cell {
+    display: none;
+  }
+}
+
+@container (max-width: 620px) {
+  .library-table__cover-column,
+  .library-table__cover-cell,
+  .library-table__formats-column,
+  .library-table__formats-cell {
     display: none;
   }
 
-  .library-table {
-    min-width: 520px;
+  .library-table__title-column {
+    width: 56%;
+  }
+
+  .library-table__author-column {
+    width: 44%;
+  }
+}
+
+@container (max-width: 420px) {
+  .library-table__sort-controls,
+  .library-table__pager {
+    flex-wrap: wrap;
   }
 }
 
