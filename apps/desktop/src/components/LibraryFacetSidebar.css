@@ -1,0 +1,110 @@
+.library-facets {
+  display: flex;
+  min-width: 0;
+  height: 100%;
+  flex-direction: column;
+  overflow: hidden;
+  background: #f5f7fa;
+  border-right: 1px solid #dfe3e9;
+  color: #20242c;
+}
+
+.library-facets__heading {
+  display: flex;
+  min-height: 56px;
+  align-items: center;
+  gap: 9px;
+  padding: 0 14px;
+  border-bottom: 1px solid #dfe3e9;
+  font-size: 0.875rem;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.library-facets__mark {
+  display: grid;
+  width: 24px;
+  height: 24px;
+  place-items: center;
+  background: #4f46e5;
+  border-radius: 5px;
+  color: #ffffff;
+  font-size: 0.6875rem;
+  letter-spacing: 0;
+}
+
+.library-facets__groups {
+  padding: 14px 8px 20px;
+  overflow-y: auto;
+}
+
+.library-facets__group + .library-facets__group {
+  margin-top: 18px;
+}
+
+.library-facets__group h2 {
+  margin: 0 8px 6px;
+  color: #667085;
+  font-size: 0.625rem;
+  font-weight: 700;
+  letter-spacing: 0.075em;
+  text-transform: uppercase;
+}
+
+.library-facets__group ul {
+  display: grid;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.library-facets__view {
+  display: flex;
+  width: 100%;
+  min-height: 32px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 5px 8px;
+  background: transparent;
+  border: 0;
+  border-radius: 4px;
+  color: #475467;
+  font: inherit;
+  font-size: 0.78125rem;
+  text-align: left;
+}
+
+.library-facets__view:hover {
+  background: #ebeef3;
+  color: #20242c;
+}
+
+.library-facets__view.is-selected {
+  background: #e8edff;
+  color: #3730a3;
+  font-weight: 625;
+}
+
+.library-facets__view:focus-visible {
+  outline: 2px solid #4f46e5;
+  outline-offset: -2px;
+}
+
+.library-facets__count {
+  color: #98a2b3;
+  font-size: 0.6875rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.library-facets__view.is-selected .library-facets__count {
+  color: #6366f1;
+}
+
+@media (max-width: 900px) {
+  .library-facets {
+    width: min(280px, 82vw);
+    box-shadow: 12px 0 28px rgb(16 24 40 / 12%);
+  }
+}
