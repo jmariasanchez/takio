@@ -9,6 +9,10 @@ import {
 } from "@takio/core";
 
 import { conversionChoices } from "../lib/conversion-choices";
+import {
+  resolveDeviceFormatPreference,
+  type DeviceFormatPreference,
+} from "../lib/device-format-preference";
 
 export type LibraryState = "loading" | "ready" | "error";
 export type MetadataDraft = {
@@ -23,6 +27,18 @@ export type ConversionDraft = {
   readonly source: BookFormat;
   readonly target: FormatId;
 };
+export type GeneralSendResolution =
+  | DeviceFormatPreference
+  | { readonly kind: "no-preference" };
+
+export function resolveGeneralSend(
+  formats: readonly BookFormat[],
+  preferredFormat: FormatId | null,
+): GeneralSendResolution {
+  return preferredFormat === null
+    ? { kind: "no-preference" }
+    : resolveDeviceFormatPreference(formats, preferredFormat);
+}
 
 type LibraryWorkspaceProps = {
   readonly actionsPending: boolean;
@@ -31,6 +47,7 @@ type LibraryWorkspaceProps = {
   readonly items: readonly LibraryItem[];
   readonly libraryState: LibraryState;
   readonly pendingAction: string | null;
+  readonly preferredDeviceFormat: FormatId | null;
   readonly query: string;
   readonly searchInput: RefObject<HTMLInputElement | null>;
   readonly searchPending: boolean;
@@ -93,6 +110,7 @@ export function LibraryWorkspace({
   items,
   libraryState,
   pendingAction,
+  preferredDeviceFormat,
   query,
   searchInput,
   searchPending,
@@ -179,6 +197,16 @@ export function LibraryWorkspace({
           {items.map((item) => {
             const editing = draft?.id === item.id;
             const conversionChoice = conversionChoices(item.formats)[0];
+            const preferredFormatResolution = resolveGeneralSend(
+              item.formats,
+              preferredDeviceFormat,
+            );
+            const preferredFormatLabel =
+              preferredDeviceFormat === null
+                ? null
+                : FORMAT_CATALOG.find(
+                    (definition) => definition.id === preferredDeviceFormat,
+                  )!.label;
             const converting =
               conversionChoice !== undefined &&
               conversionDraft?.id === item.id &&
@@ -251,19 +279,49 @@ export function LibraryWorkspace({
                     </button>
                     <button
                       className="row-button send-button"
-                      aria-label={`Send ${
-                        FORMAT_CATALOG.find(
-                          (definition) => definition.id === item.formats[0].format,
-                        )!.label
-                      } for “${item.title}” to ${
-                        selectedDestination?.name ?? "the selected reader"
-                      }`}
-                      disabled={actionsPending || !selectedDestination}
-                      onClick={() => void onSendItem(item, item.formats[0])}
+                      aria-label={
+                        !selectedDestination
+                          ? `Choose a reader before sending “${item.title}”`
+                          : preferredFormatResolution.kind === "no-preference"
+                            ? `Choose a session send format for “${item.title}”`
+                            : preferredFormatResolution.kind === "attached"
+                              ? `Send ${preferredFormatLabel} for “${item.title}” to ${selectedDestination.name}`
+                              : preferredFormatResolution.kind === "convertible"
+                                ? `Convert ${preferredFormatResolution.source.format.toUpperCase()} to ${preferredFormatLabel} for “${item.title}” before sending to ${selectedDestination.name}`
+                                : `${preferredFormatLabel} is unavailable for “${item.title}”`
+                      }
+                      disabled={
+                        actionsPending ||
+                        !selectedDestination ||
+                        preferredFormatResolution.kind === "no-preference" ||
+                        preferredFormatResolution.kind === "unavailable"
+                      }
+                      onClick={() => {
+                        if (preferredFormatResolution.kind === "attached") {
+                          void onSendItem(item, preferredFormatResolution.bookFormat);
+                        } else if (preferredFormatResolution.kind === "convertible") {
+                          onSetDraft(null);
+                          onSetConversionDraft({
+                            id: item.id,
+                            source: preferredFormatResolution.source,
+                            target: preferredFormatResolution.target,
+                          });
+                        }
+                      }}
                     >
-                      {pendingAction === `send:${item.id}:${item.formats[0].format}`
+                      {preferredFormatResolution.kind === "attached" &&
+                      pendingAction ===
+                        `send:${item.id}:${preferredFormatResolution.bookFormat.format}`
                         ? "Sending…"
-                        : "Send"}
+                        : !selectedDestination
+                          ? "Send"
+                          : preferredFormatResolution.kind === "no-preference"
+                            ? "Choose format"
+                            : preferredFormatResolution.kind === "attached"
+                              ? `Send ${preferredFormatLabel}`
+                              : preferredFormatResolution.kind === "convertible"
+                                ? `Convert to ${preferredFormatLabel}`
+                                : `${preferredFormatLabel} unavailable`}
                     </button>
                     {conversionChoice && convertControlId && (
                       <button

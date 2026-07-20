@@ -7,14 +7,21 @@ import {
   sanitizeDestinationFileName,
   type BookFormat,
   type Destination,
+  type FormatId,
   type LibraryItem,
 } from "@takio/core";
 
-import { DeviceControls } from "./components/DeviceControls";
+import {
+  DeviceControls,
+  retainConnectedDeviceFormatPreferences,
+  setSessionDeviceFormatPreference,
+  type SessionDeviceFormatPreferences,
+} from "./components/DeviceControls";
 import { JobsPanel } from "./components/JobsPanel";
 import {
   LibraryWorkspace,
   conversionControlId,
+  resolveGeneralSend,
   type ConversionDraft,
   type LibraryState,
   type MetadataDraft,
@@ -83,6 +90,8 @@ export default function App() {
   const [jobs, setJobs] = useState<readonly ConversionJob[]>([]);
   const [jobsState, setJobsState] = useState<JobsState>("loading");
   const [selectedDestinationId, setSelectedDestinationId] = useState<string | null>(null);
+  const [preferredFormatsByDestinationPath, setPreferredFormatsByDestinationPath] =
+    useState<SessionDeviceFormatPreferences>({});
   const [dropActive, setDropActive] = useState(false);
   const requestSequence = useRef(0);
   const destinationRequestSequence = useRef(0);
@@ -199,6 +208,12 @@ export default function App() {
       }
 
       setDestinations(result.value.destinations);
+      setPreferredFormatsByDestinationPath((currentPreferences) =>
+        retainConnectedDeviceFormatPreferences(
+          currentPreferences,
+          result.value.destinations,
+        ),
+      );
       setSelectedDestinationId((currentId) =>
         currentId &&
         result.value.destinations.some((destination) => destination.id === currentId)
@@ -992,7 +1007,21 @@ export default function App() {
   const actionsPending = pendingAction !== null;
   const selectedDestination =
     destinations.find((destination) => destination.id === selectedDestinationId) ?? null;
+  const preferredDeviceFormat = selectedDestination
+    ? (preferredFormatsByDestinationPath[selectedDestination.path] ?? null)
+    : null;
   const selectedItem = items.find((item) => item.id === selectedItemId) ?? null;
+
+  function selectPreferredDeviceFormat(format: FormatId | null): void {
+    if (!selectedDestination) {
+      return;
+    }
+
+    const destinationPath = selectedDestination.path;
+    setPreferredFormatsByDestinationPath((currentPreferences) =>
+      setSessionDeviceFormatPreference(currentPreferences, destinationPath, format),
+    );
+  }
 
   async function openSelectedItem(): Promise<void> {
     if (!selectedItem) {
@@ -1011,7 +1040,49 @@ export default function App() {
       setNotice({ kind: "error", text: "Choose a library item before sending." });
       return;
     }
-    await sendItem(selectedItem, selectedItem.formats[0]);
+    if (!selectedDestination) {
+      setNotice({ kind: "error", text: "Choose a reader before sending." });
+      return;
+    }
+    const resolution = resolveGeneralSend(selectedItem.formats, preferredDeviceFormat);
+    if (resolution.kind === "no-preference") {
+      setNotice({
+        kind: "error",
+        text: "Choose a send format for this reader session before sending.",
+      });
+      return;
+    }
+    if (resolution.kind === "attached") {
+      await sendItem(selectedItem, resolution.bookFormat);
+      return;
+    }
+
+    const resolvedPreferredFormat =
+      resolution.kind === "convertible" ? resolution.target : resolution.preferred;
+    const preferredLabel = FORMAT_CATALOG.find(
+      (definition) => definition.id === resolvedPreferredFormat,
+    )!.label;
+    if (resolution.kind === "convertible") {
+      setDraft(null);
+      setConversionDraft({
+        id: selectedItem.id,
+        source: resolution.source,
+        target: resolution.target,
+      });
+      window.requestAnimationFrame(() =>
+        document.getElementById(`conversion-format-${selectedItem.id}`)?.focus(),
+      );
+      setNotice({
+        kind: "status",
+        text: `Choose an output location to convert “${selectedItem.title}” to ${preferredLabel}. Sending will remain a separate action.`,
+      });
+      return;
+    }
+
+    setNotice({
+      kind: "error",
+      text: `${preferredLabel} is not attached to “${selectedItem.title}”, and no supported conversion is available.`,
+    });
   }
 
   menuActionHandlers.current = {
@@ -1156,11 +1227,13 @@ export default function App() {
           destinations={destinations}
           destinationsLoading={destinationsLoading}
           pendingAction={pendingAction}
+          preferredFormat={preferredDeviceFormat}
           selectedDestination={selectedDestination}
           selectedDestinationId={selectedDestinationId}
           onEject={ejectSelectedDestination}
           onRefresh={refreshDestinations}
           onSelectDestination={setSelectedDestinationId}
+          onSelectPreferredFormat={selectPreferredDeviceFormat}
         />
 
         <JobsPanel
@@ -1187,6 +1260,7 @@ export default function App() {
           items={items}
           libraryState={libraryState}
           pendingAction={pendingAction}
+          preferredDeviceFormat={preferredDeviceFormat}
           query={query}
           searchInput={searchInput}
           searchPending={searchPending}

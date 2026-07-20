@@ -34,6 +34,9 @@ h2 { font-size: 20px; letter-spacing: -.6px; margin-bottom: 0; }
 .reader-controls { align-items: center; display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; min-width: 0; }
 .reader-controls select { background: #1b1c1d; border: 1px solid #3a3c3e; border-radius: 7px; color: #eeeef0; min-width: 170px; padding: 8px 30px 8px 10px; }
 .reader-detail { color: #92969a; font-size: 11px; min-width: 130px; }
+.reader-format-preference { display: grid; gap: 4px; }
+.reader-format-preference > span { color: #c8cbce; font-size: 10px; font-weight: 600; }
+.reader-format-preference-help { color: #92969a; font-size: 10px; max-width: 220px; }
 .jobs-section { margin-top: 27px; }
 .jobs-heading { align-items: center; display: flex; gap: 24px; justify-content: space-between; margin-bottom: 13px; }
 .jobs-controls { align-items: center; display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
