@@ -2,6 +2,7 @@ import "./LibraryBulkActionBar.css";
 
 export type LibraryBulkPendingAction =
   | "tags"
+  | "export"
   | "convert"
   | "send"
   | "trash";
@@ -12,6 +13,7 @@ export type LibraryBulkActionBarProps = {
   readonly pendingAction: LibraryBulkPendingAction | null;
   readonly canConvert: boolean;
   readonly canSend: boolean;
+  readonly onExport: () => void;
   readonly onEditTags: () => void;
   readonly onConvert: () => void;
   readonly onSend: () => void;
@@ -21,6 +23,7 @@ export type LibraryBulkActionBarProps = {
 
 const pendingLabels: Readonly<Record<LibraryBulkPendingAction, string>> = {
   tags: "Updating tags…",
+  export: "Saving to disk…",
   convert: "Converting…",
   send: "Sending…",
   trash: "Moving to Trash…",
@@ -32,6 +35,7 @@ export function LibraryBulkActionBar({
   pendingAction,
   canConvert,
   canSend,
+  onExport,
   onEditTags,
   onConvert,
   onSend,
@@ -63,6 +67,15 @@ export function LibraryBulkActionBar({
       </div>
 
       <div className="library-bulk-action-bar__actions">
+        <button
+          className="library-bulk-action-bar__primary"
+          type="button"
+          disabled={controlsDisabled}
+          title="Copy every attached format to a folder"
+          onClick={onExport}
+        >
+          Save to disk…
+        </button>
         <button type="button" disabled={controlsDisabled} onClick={onEditTags}>
           Edit tags
         </button>

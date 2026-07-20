@@ -74,6 +74,7 @@ export type LibraryWorkspaceBulkActions = {
   readonly canSend: boolean;
   readonly tagsDialogOpen: boolean;
   readonly tagsDialogError: string | null;
+  readonly onExport: () => void;
   readonly onEditTags: () => void;
   readonly onConvert: () => void;
   readonly onSend: () => void;
@@ -706,6 +707,7 @@ export function LibraryWorkspace({
                   pendingAction={bulkActions.pendingAction}
                   canConvert={bulkActions.canConvert}
                   canSend={bulkActions.canSend}
+                  onExport={bulkActions.onExport}
                   onEditTags={bulkActions.onEditTags}
                   onConvert={bulkActions.onConvert}
                   onSend={bulkActions.onSend}

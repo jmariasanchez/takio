@@ -273,6 +273,7 @@ test("renders controlled bulk actions and tag-dialog state for the exact selecti
     canSend: false,
     tagsDialogOpen: true,
     tagsDialogError: "One update failed.",
+    onExport: () => undefined,
     onEditTags: () => undefined,
     onConvert: () => undefined,
     onSend: () => undefined,
@@ -290,6 +291,8 @@ test("renders controlled bulk actions and tag-dialog state for the exact selecti
   expect(markup).toContain('aria-label="Bulk actions" aria-busy="true"');
   expect(markup).toContain("2 books selected");
   expect(markup).toContain("Updating tags…");
+  expect(markup).toContain(">Save to disk…</button>");
+  expect(markup).toContain('title="Copy every attached format to a folder"');
   expect(markup).toContain('title="Sending is not available for this selection"');
   expect(markup).toContain('role="dialog"');
   expect(markup).toContain("Update tags for <strong>2 books</strong>");
@@ -309,6 +312,7 @@ test("omits bulk controls without the controlled integration and disables librar
       canSend: true,
       tagsDialogOpen: false,
       tagsDialogError: null,
+      onExport: () => undefined,
       onEditTags: () => undefined,
       onConvert: () => undefined,
       onSend: () => undefined,

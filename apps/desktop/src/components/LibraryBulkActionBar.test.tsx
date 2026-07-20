@@ -31,6 +31,7 @@ function props(
     pendingAction: null,
     canConvert: true,
     canSend: true,
+    onExport: () => undefined,
     onEditTags: () => undefined,
     onConvert: () => undefined,
     onSend: () => undefined,
@@ -66,6 +67,7 @@ test("offers only the requested bulk library actions without introducing a readi
   const markup = renderToStaticMarkup(<LibraryBulkActionBar {...props()} />);
 
   for (const label of [
+    "Save to disk…",
     "Edit tags",
     "Convert",
     "Send",
@@ -74,7 +76,8 @@ test("offers only the requested bulk library actions without introducing a readi
   ]) {
     expect(markup).toContain(`>${label}</button>`);
   }
-  expect(markup.match(/<button/g)).toHaveLength(5);
+  expect(markup).toContain('title="Copy every attached format to a folder"');
+  expect(markup.match(/<button/g)).toHaveLength(6);
   expect(markup).not.toMatch(/reader|viewer|open book/i);
 });
 
@@ -106,13 +109,13 @@ test("disables conversion and sending independently when the selection is inelig
 });
 
 test("announces pending work and disables every control so the target cannot change mid-action", () => {
-  const tree = LibraryBulkActionBar(props({ pendingAction: "trash" }));
+  const tree = LibraryBulkActionBar(props({ pendingAction: "export" }));
   const buttons = elements(tree).filter((element) => element.type === "button");
   const markup = renderToStaticMarkup(tree);
 
   expect(markup).toContain('aria-busy="true"');
-  expect(markup).toContain("Moving to Trash…");
-  expect(buttons).toHaveLength(5);
+  expect(markup).toContain("Saving to disk…");
+  expect(buttons).toHaveLength(6);
   expect(buttons.every(({ props }) => props.disabled)).toBe(true);
 });
 
@@ -123,7 +126,7 @@ test("globally disables every control while unrelated library work is pending", 
 
   expect(markup).toContain('aria-busy="false"');
   expect(markup).not.toContain("Updating tags…");
-  expect(buttons).toHaveLength(5);
+  expect(buttons).toHaveLength(6);
   expect(buttons.every(({ props }) => props.disabled)).toBe(true);
 });
 
@@ -131,6 +134,7 @@ test("emits each controlled action exactly once while enabled", () => {
   const calls: string[] = [];
   const tree = LibraryBulkActionBar(
     props({
+      onExport: () => calls.push("export"),
       onEditTags: () => calls.push("tags"),
       onConvert: () => calls.push("convert"),
       onSend: () => calls.push("send"),
@@ -144,5 +148,5 @@ test("emits each controlled action exactly once while enabled", () => {
     button.props.onClick?.();
   }
 
-  expect(calls).toEqual(["tags", "convert", "send", "trash", "clear"]);
+  expect(calls).toEqual(["export", "tags", "convert", "send", "trash", "clear"]);
 });
