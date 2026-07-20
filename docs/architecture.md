@@ -32,6 +32,27 @@ The caller owns the requested output path, and enqueue refuses a path that alrea
 
 The desktop exposes the same contract: **Convert** on an EPUB item opens a native save dialog and adds a ledger entry, while **Refresh**, **Run next**, and queued-job **Cancel** list and operate the durable jobs.
 
+## Durable conversion-to-library handoff
+
+A conversion linked to a library item crosses three separate durability boundaries:
+
+1. **Output publication:** the converter publishes the verified artifact at the caller-chosen path without overwriting an existing file. The caller owns this output.
+2. **Conversion completion:** `jobs.sqlite` records `completed` with the artifact byte count and SHA-256 digest. This status is conversion truth only; it does not claim that the format is present in the library.
+3. **Attachment receipt:** the library transaction copies the artifact into managed storage and records the format in `library.sqlite`; the job then records a separate `attached` receipt. A completed linked job remains `pending` until that receipt is durable, or becomes `failed` with a specific attachment error.
+
+`jobs run-next` first recovers dead `running` conversions, without adopting an output whose completion was never recorded. It then reconciles the oldest `completed` job with a `pending` attachment before claiming another queued conversion. Reconciliation revalidates the caller-owned output against the completed job, checks the target item and format, and compares the exact attached-format hash when a format already exists. A matching hash is an idempotent success; a different hash is a conflict and is never overwritten. If the library commit succeeds but writing the job receipt fails, the job stays `pending` so the next run can recover it by hash.
+
+| Crash or restart boundary | Durable truth | Recovery behavior |
+| --- | --- | --- |
+| After output publication, before conversion completion | Conversion is not completed | Mark the abandoned `running` job interrupted; do not adopt or overwrite the possibly published output. |
+| After conversion completion, before library attachment | Conversion is `completed`; attachment is `pending` | Revalidate the output and retry attachment before claiming new queued work. |
+| After the library commit, before the attachment receipt | Library format exists; attachment is still `pending` | Recompute the attached-format hash; a match records `attached`, while a mismatch reports a conflict. |
+| After the attachment receipt | Conversion is `completed`; attachment is `attached` | No recovery action. The receipt is terminal, so later user removal does not resurrect the format. |
+
+Attachment failure never rewrites a completed conversion as failed and never deletes the caller-owned output. Missing library items, conflicting formats, missing or changed output, and library-storage failures are reported as attachment failures that tell the user where the converted file remains. Retrying a failed attachment is explicit; there is no automatic retry loop.
+
+This handoff adds no built-in ebook reader or viewer. Opening books continues to use the operating system's default application; reader functionality is outside this conversion-durability boundary.
+
 ## Agent-first CLI principles
 
 - Every command has a narrow, documented contract.
