@@ -13,6 +13,7 @@ import { z } from "zod";
 
 export const MAX_LIBRARY_QUERY_PAGE_SIZE = 100;
 export const MAX_LIBRARY_IMPORT_ROOTS = 256;
+export const MAX_LIBRARY_EXPORT_ITEMS = 256;
 export const MAX_SAVED_LIBRARY_VIEW_NAME_LENGTH = 120;
 export const DUPLICATE_REVIEW_DISPOSITIONS = ["unreviewed", "kept-both"] as const;
 export const LIBRARY_IMPORT_SKIPPED_REASONS = [
@@ -30,6 +31,13 @@ export const LIBRARY_IMPORT_FAILURE_CODES = [
   "source-changed",
   "storage-unavailable",
   "invalid-title",
+] as const;
+export const LIBRARY_EXPORT_SKIPPED_REASONS = ["destination-exists"] as const;
+export const LIBRARY_EXPORT_FAILURE_CODES = [
+  "item-not-found",
+  "source-unavailable",
+  "source-changed",
+  "destination-unavailable",
 ] as const;
 
 export const LIBRARY_QUERY_SORT_FIELDS = [
@@ -494,6 +502,116 @@ export const libraryImportReportSchema = z
   })
   .readonly();
 
+const libraryExportPathSchema = z
+  .string()
+  .min(1)
+  .refine((path) => path.trim().length > 0, { message: "Export paths must not be blank." });
+
+const libraryExportItemIdSchema = z
+  .string()
+  .min(1)
+  .refine((id) => id.trim().length > 0, { message: "Export item ids must not be blank." });
+
+export const exportLibraryItemsRequestSchema = z
+  .object({
+    ids: z
+      .array(libraryExportItemIdSchema)
+      .min(1)
+      .max(MAX_LIBRARY_EXPORT_ITEMS)
+      .refine((ids) => new Set(ids).size === ids.length, {
+        message: "Export item ids must be unique.",
+      })
+      .readonly(),
+    destinationPath: libraryExportPathSchema,
+  })
+  .strict()
+  .readonly();
+
+const libraryExportTargetShape = {
+  itemId: libraryExportItemIdSchema,
+  format: z.enum(FORMAT_IDS),
+  provenance: z.enum(BOOK_FORMAT_PROVENANCES),
+  destinationPath: libraryExportPathSchema,
+} as const;
+
+const exportedLibraryEntrySchema = z
+  .object({
+    status: z.literal("exported"),
+    ...libraryExportTargetShape,
+    bytes: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+    sha256: z.string().regex(/^[0-9a-f]{64}$/),
+  })
+  .strict();
+
+const skippedLibraryExportEntrySchema = z
+  .object({
+    status: z.literal("skipped"),
+    ...libraryExportTargetShape,
+    reason: z.enum(LIBRARY_EXPORT_SKIPPED_REASONS),
+  })
+  .strict();
+
+const missingLibraryExportItemSchema = z
+  .object({
+    status: z.literal("failed"),
+    itemId: libraryExportItemIdSchema,
+    code: z.literal("item-not-found"),
+  })
+  .strict();
+
+const failedLibraryExportEntrySchema = z
+  .object({
+    status: z.literal("failed"),
+    ...libraryExportTargetShape,
+    code: z.enum(["source-unavailable", "source-changed", "destination-unavailable"]),
+  })
+  .strict();
+
+export const libraryExportEntryOutcomeSchema = z
+  .union([
+    exportedLibraryEntrySchema,
+    skippedLibraryExportEntrySchema,
+    missingLibraryExportItemSchema,
+    failedLibraryExportEntrySchema,
+  ])
+  .readonly();
+
+const libraryExportCountsSchema = z
+  .object({
+    total: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
+    exported: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
+    skipped: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
+    failed: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
+  })
+  .strict()
+  .readonly();
+
+export const libraryExportReportSchema = z
+  .object({
+    outcomes: z.array(libraryExportEntryOutcomeSchema).readonly(),
+    counts: libraryExportCountsSchema,
+  })
+  .strict()
+  .superRefine((report, context) => {
+    const expected = {
+      total: report.outcomes.length,
+      exported: report.outcomes.filter(({ status }) => status === "exported").length,
+      skipped: report.outcomes.filter(({ status }) => status === "skipped").length,
+      failed: report.outcomes.filter(({ status }) => status === "failed").length,
+    } as const;
+
+    for (const count of Object.keys(expected) as (keyof typeof expected)[]) {
+      if (report.counts[count] !== expected[count]) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["counts", count],
+          message: `Export ${count} must match the reported outcomes.`,
+        });
+      }
+    }
+  })
+  .readonly();
+
 export type LibraryQueryFilters = z.infer<typeof libraryQueryFiltersSchema>;
 export type LibraryQuerySort = z.infer<typeof libraryQuerySortSchema>;
 export type LibraryQueryDefinition = z.infer<typeof libraryQueryDefinitionSchema>;
@@ -523,6 +641,9 @@ export type PurgeLibraryItemRequest = z.infer<typeof purgeLibraryItemRequestSche
 export type ImportLibraryItemsRequest = z.infer<typeof importLibraryItemsRequestSchema>;
 export type LibraryImportEntryOutcome = z.infer<typeof libraryImportEntryOutcomeSchema>;
 export type LibraryImportReport = z.infer<typeof libraryImportReportSchema>;
+export type ExportLibraryItemsRequest = z.infer<typeof exportLibraryItemsRequestSchema>;
+export type LibraryExportEntryOutcome = z.infer<typeof libraryExportEntryOutcomeSchema>;
+export type LibraryExportReport = z.infer<typeof libraryExportReportSchema>;
 
 export const LIBRARY_STORE_ERROR_CODES = [
   "duplicate-id",
@@ -670,6 +791,7 @@ export type GetLibraryItemResult = LibraryStoreResult<LibraryItem | null>;
 export type AddLibraryItemResult = LibraryStoreResult<LibraryItem>;
 export type ImportLibraryItemResult = LibraryStoreResult<LibraryItem>;
 export type ImportLibraryItemsResult = LibraryStoreResult<LibraryImportReport>;
+export type ExportLibraryItemsResult = LibraryStoreResult<LibraryExportReport>;
 export type AttachLibraryFormatResult = LibraryStoreResult<LibraryItem | null>;
 export type ReplaceLibraryFormatResult = LibraryStoreResult<{
   readonly item: LibraryItem | null;
@@ -712,6 +834,7 @@ export type LibraryListWireResult = LibraryStoreResult<{
 }>;
 export type LibraryImportWireResult = LibraryStoreResult<{ readonly item: LibraryItem }>;
 export type LibraryBatchImportWireResult = ImportLibraryItemsResult;
+export type LibraryExportWireResult = ExportLibraryItemsResult;
 export type LibraryRemoveWireResult = LibraryStoreResult<{
   readonly item: LibraryItem | null;
   readonly cleanupPending: boolean;
@@ -769,6 +892,10 @@ export interface LibraryFormatReplacementStore {
 
 export interface LibraryBatchImportStore {
   importMany(request: ImportLibraryItemsRequest): Promise<ImportLibraryItemsResult>;
+}
+
+export interface LibraryExportStore {
+  exportMany(request: ExportLibraryItemsRequest): Promise<ExportLibraryItemsResult>;
 }
 
 export interface LibraryDuplicateReviewStore {

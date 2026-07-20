@@ -8,18 +8,24 @@ import {
   LIBRARY_IMPORT_DUPLICATE_REASONS,
   LIBRARY_IMPORT_FAILURE_CODES,
   LIBRARY_IMPORT_SKIPPED_REASONS,
+  LIBRARY_EXPORT_FAILURE_CODES,
+  LIBRARY_EXPORT_SKIPPED_REASONS,
   MAX_LIBRARY_QUERY_PAGE_SIZE,
   MAX_LIBRARY_IMPORT_ROOTS,
+  MAX_LIBRARY_EXPORT_ITEMS,
   MAX_SAVED_LIBRARY_VIEW_NAME_LENGTH,
   type AddLibraryItemRequest,
   type AttachLibraryFormatRequest,
   type ImportLibraryItemRequest,
   type ImportLibraryItemsRequest,
+  type ExportLibraryItemsRequest,
   type KeepDuplicatePairResult,
   type LibraryDuplicateReviewStore,
   type LibraryImportWireResult,
   type LibraryBatchImportStore,
   type LibraryBatchImportWireResult,
+  type LibraryExportStore,
+  type LibraryExportWireResult,
   type LibraryListWireResult,
   type LibraryFormatReplacementStore,
   type LibraryItemTrashStore,
@@ -51,6 +57,9 @@ import {
   type TrashLibraryItemResult,
   libraryMetadataPatchSchema,
   importLibraryItemsRequestSchema,
+  exportLibraryItemsRequestSchema,
+  libraryExportEntryOutcomeSchema,
+  libraryExportReportSchema,
   libraryImportEntryOutcomeSchema,
   libraryImportReportSchema,
   duplicateCandidatePageSchema,
@@ -218,6 +227,125 @@ describe("LibraryStore", () => {
       { ...outcomes[6], status: "error" },
     ]) {
       expect(libraryImportEntryOutcomeSchema.safeParse(invalid).success).toBe(false);
+    }
+  });
+
+  it("defines strict bulk export requests and exactly accounted per-format outcomes", async () => {
+    const request: ExportLibraryItemsRequest = {
+      ids: [canonicalItem.id, duplicateItem.id, "missing-book"],
+      destinationPath: "/external/export",
+    };
+    const outcomes = [
+      {
+        status: "exported",
+        itemId: canonicalItem.id,
+        format: "epub",
+        provenance: "managed",
+        destinationPath: "/external/export/The Left Hand of Darkness.epub",
+        bytes: 1024,
+        sha256: "a".repeat(64),
+      },
+      {
+        status: "skipped",
+        itemId: canonicalItem.id,
+        format: "pdf",
+        provenance: "referenced",
+        destinationPath: "/external/export/The Left Hand of Darkness.pdf",
+        reason: "destination-exists",
+      },
+      {
+        status: "failed",
+        itemId: "missing-book",
+        code: "item-not-found",
+      },
+      {
+        status: "failed",
+        itemId: duplicateItem.id,
+        format: "epub",
+        provenance: "managed",
+        destinationPath: "/external/export/Copy.epub",
+        code: "source-unavailable",
+      },
+      {
+        status: "failed",
+        itemId: duplicateItem.id,
+        format: "pdf",
+        provenance: "referenced",
+        destinationPath: "/external/export/Copy.pdf",
+        code: "source-changed",
+      },
+      {
+        status: "failed",
+        itemId: duplicateItem.id,
+        format: "mobi",
+        provenance: "managed",
+        destinationPath: "/external/export/Copy.mobi",
+        code: "destination-unavailable",
+      },
+    ] as const;
+    const result: LibraryExportWireResult = {
+      ok: true,
+      value: {
+        outcomes,
+        counts: { total: 6, exported: 1, skipped: 1, failed: 4 },
+      },
+    };
+    const store: LibraryExportStore = {
+      exportMany: async () => result,
+    };
+
+    expect(MAX_LIBRARY_EXPORT_ITEMS).toBe(256);
+    expect(LIBRARY_EXPORT_SKIPPED_REASONS).toEqual(["destination-exists"]);
+    expect(LIBRARY_EXPORT_FAILURE_CODES).toEqual([
+      "item-not-found",
+      "source-unavailable",
+      "source-changed",
+      "destination-unavailable",
+    ]);
+    expect(exportLibraryItemsRequestSchema.parse(request)).toEqual(request);
+    expect(outcomes.map((outcome) => libraryExportEntryOutcomeSchema.parse(outcome))).toEqual(
+      outcomes,
+    );
+    expect(libraryExportReportSchema.parse(result.value)).toEqual(result.value);
+    await expect(store.exportMany(request)).resolves.toEqual(result);
+    expect(JSON.parse(JSON.stringify({ request, result }))).toEqual({ request, result });
+
+    for (const invalid of [
+      {},
+      { ids: [], destinationPath: request.destinationPath },
+      { ids: ["   "], destinationPath: request.destinationPath },
+      { ids: [canonicalItem.id, canonicalItem.id], destinationPath: request.destinationPath },
+      {
+        ids: Array.from({ length: MAX_LIBRARY_EXPORT_ITEMS + 1 }, (_, index) => `book-${index}`),
+        destinationPath: request.destinationPath,
+      },
+      { ids: [canonicalItem.id], destinationPath: "   " },
+      { ...request, overwrite: true },
+    ]) {
+      expect(exportLibraryItemsRequestSchema.safeParse(invalid).success).toBe(false);
+    }
+
+    for (const count of ["total", "exported", "skipped", "failed"] as const) {
+      expect(
+        libraryExportReportSchema.safeParse({
+          ...result.value,
+          counts: { ...result.value.counts, [count]: result.value.counts[count] + 1 },
+        }).success,
+      ).toBe(false);
+    }
+
+    for (const invalid of [
+      { ...outcomes[0], bytes: 0 },
+      { ...outcomes[0], sha256: "A".repeat(64) },
+      { ...outcomes[0], unexpected: true },
+      { ...outcomes[1], reason: "overwritten" },
+      { ...outcomes[2], destinationPath: request.destinationPath },
+      { ...outcomes[3], code: "item-not-found" },
+      { ...outcomes[3], provenance: "external" },
+      { ...outcomes[3], format: "exe" },
+      { ...outcomes[3], code: "permission-denied" },
+    ]) {
+      expect(libraryExportEntryOutcomeSchema.safeParse(invalid).success).toBe(false);
     }
   });
 

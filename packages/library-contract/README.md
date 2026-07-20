@@ -34,6 +34,15 @@ rather than silently collapsed. Each imported entry is atomic, but the batch is
 not: entry failures remain in a successful report, while the outer
 `LibraryStoreResult` represents request- or store-level failure.
 
+`LibraryExportStore` adds no-clobber bulk export without widening `LibraryStore`.
+Requests contain 1–256 unique, nonblank active-item ids and one nonblank
+destination path. Every attached format of each found item produces an ordered
+per-format `exported`, `skipped`, or `failed` outcome; a missing item instead
+produces one item-level `item-not-found` failure. Exported outcomes report bytes
+and SHA-256, while every per-format outcome preserves the format's managed or
+referenced provenance. Existing destinations are skipped rather than overwritten,
+and exact exported, skipped, failed, and total counts are part of the report.
+
 `LibraryItemTrashStore` adds an explicit reversible lifecycle. `listTrash`
 provides bounded pages of at most 100 trashed items, ordered by newest trash
 transition first and then by id for deterministic ties. `trash` moves an active
