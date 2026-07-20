@@ -36,12 +36,17 @@ import type {
   UpdateLibraryItemResult,
 } from "@takio/library-contract";
 import { Database } from "bun:sqlite";
+import { createHash } from "node:crypto";
 import {
+  closeSync,
   constants,
   copyFileSync,
   existsSync,
+  fstatSync,
   lstatSync,
   mkdirSync,
+  openSync,
+  readSync,
   realpathSync,
   renameSync,
   rmSync,
@@ -58,6 +63,7 @@ const SCHEMA_VERSION = 4;
 const incompatibleSchema = Symbol("incompatible-schema");
 const duplicateFormat = Symbol("duplicate-format");
 const sourceChanged = Symbol("source-changed");
+const installedArtifactMismatch = Symbol("installed-artifact-mismatch");
 
 type StoredLibraryItem = {
   id: unknown;
@@ -82,6 +88,7 @@ type StoredTag = { name: unknown };
 type CleanupKind = "cover" | "format";
 type StoredCleanupPath = { sourcePath: unknown; kind: unknown };
 type CleanupJob = { sourcePath: string; kind: CleanupKind };
+type ExpectedArtifact = { bytes: number; sha256: string };
 
 const managedLeafPattern =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.[a-z0-9]+$/i;
@@ -173,6 +180,70 @@ function readSource(sourcePath: string): { format: FormatId; path: string } | nu
     return format ? { format, path } : null;
   } catch {
     return null;
+  }
+}
+
+function isValidExpectedArtifact(value: unknown): value is ExpectedArtifact {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "bytes" in value &&
+    typeof value.bytes === "number" &&
+    Number.isSafeInteger(value.bytes) &&
+    value.bytes > 0 &&
+    "sha256" in value &&
+    typeof value.sha256 === "string" &&
+    /^[0-9a-f]{64}$/.test(value.sha256)
+  );
+}
+
+function managedFileMatchesArtifact(path: string, expected: ExpectedArtifact): boolean {
+  let descriptor: number | undefined;
+  try {
+    descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    const before = fstatSync(descriptor);
+    if (!before.isFile() || before.size !== expected.bytes) {
+      return false;
+    }
+
+    const hash = createHash("sha256");
+    const buffer = Buffer.allocUnsafe(64 * 1024);
+    let bytes = 0;
+    while (true) {
+      const read = readSync(descriptor, buffer, 0, buffer.length, null);
+      if (read === 0) {
+        break;
+      }
+      bytes += read;
+      if (bytes > expected.bytes) {
+        return false;
+      }
+      hash.update(buffer.subarray(0, read));
+    }
+
+    const after = fstatSync(descriptor);
+    const current = lstatSync(path);
+    return (
+      bytes === expected.bytes &&
+      hash.digest("hex") === expected.sha256 &&
+      after.isFile() &&
+      current.isFile() &&
+      !current.isSymbolicLink() &&
+      before.dev === after.dev &&
+      before.ino === after.ino &&
+      before.size === after.size &&
+      before.mtimeMs === after.mtimeMs &&
+      before.ctimeMs === after.ctimeMs &&
+      after.dev === current.dev &&
+      after.ino === current.ino &&
+      after.size === current.size
+    );
+  } catch {
+    return false;
+  } finally {
+    if (descriptor !== undefined) {
+      closeSync(descriptor);
+    }
   }
 }
 
@@ -1206,6 +1277,20 @@ export class BunSqliteLibraryStore implements LibraryStore {
       return failure("storage-unavailable");
     }
 
+    if (!source || (source.kind !== "copy" && source.kind !== "reference")) {
+      return failure("invalid-arguments");
+    }
+    if (source.kind === "reference" && "expectedArtifact" in source) {
+      return failure("invalid-arguments");
+    }
+    const expectedArtifact =
+      source.kind === "copy"
+        ? (source as typeof source & { expectedArtifact?: unknown }).expectedArtifact
+        : undefined;
+    if (expectedArtifact !== undefined && !isValidExpectedArtifact(expectedArtifact)) {
+      return failure("invalid-arguments");
+    }
+
     const current = readStoredItem(
       this.#database,
       this.#coversDirectory,
@@ -1214,9 +1299,6 @@ export class BunSqliteLibraryStore implements LibraryStore {
     );
     if (!current.ok || !current.value) {
       return current;
-    }
-    if (!source || (source.kind !== "copy" && source.kind !== "reference")) {
-      return failure("invalid-arguments");
     }
     const inspected = readSource(source.path);
     if (!inspected) {
@@ -1237,6 +1319,9 @@ export class BunSqliteLibraryStore implements LibraryStore {
           inspected.path,
           inspected.format,
         );
+        if (expectedArtifact && !managedFileMatchesArtifact(installed.path, expectedArtifact)) {
+          throw installedArtifactMismatch;
+        }
       }
 
       const outcome = this.#database.transaction(() => {
@@ -1281,6 +1366,14 @@ export class BunSqliteLibraryStore implements LibraryStore {
           }
         }
 
+        if (
+          installed &&
+          expectedArtifact &&
+          !managedFileMatchesArtifact(installed.path, expectedArtifact)
+        ) {
+          throw installedArtifactMismatch;
+        }
+
         this.#database!.run(
           `INSERT INTO library_item_formats
             (library_item_id, format, source_path, added_at, provenance, position)
@@ -1323,6 +1416,9 @@ export class BunSqliteLibraryStore implements LibraryStore {
       }
       if (error === duplicateFormat) {
         return failure("duplicate-format");
+      }
+      if (error === installedArtifactMismatch) {
+        return failure("invalid-arguments");
       }
       if (isSqliteConstraintError(error)) {
         const duplicate = this.#database

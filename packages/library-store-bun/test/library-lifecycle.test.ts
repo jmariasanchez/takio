@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { Database } from "bun:sqlite";
+import { createHash } from "node:crypto";
+import { writeFileSync } from "node:fs";
 import {
   mkdir,
   mkdtemp,
@@ -74,6 +76,13 @@ describe("BunSqliteLibraryStore managed format lifecycle", () => {
       throw new Error(`Expected a library item, received ${result.error.code}`);
     }
     return result.value;
+  }
+
+  function expectedArtifact(bytes: Uint8Array): { bytes: number; sha256: string } {
+    return {
+      bytes: bytes.byteLength,
+      sha256: createHash("sha256").update(bytes).digest("hex"),
+    };
   }
 
   it("imports a managed copy without moving the caller's file and persists it", async () => {
@@ -195,6 +204,150 @@ describe("BunSqliteLibraryStore managed format lifecycle", () => {
       ok: true,
       value: { id: imported.id, format: "epub", formats: [{ format: "epub" }] },
     });
+  });
+
+  it("publishes a managed attachment only when its installed artifact matches", async () => {
+    const epubSource = join(directory, "book.epub");
+    const pdfSource = join(directory, "book.pdf");
+    const pdfBytes = Buffer.from("expected-pdf");
+    await writeFile(epubSource, "epub");
+    await writeFile(pdfSource, pdfBytes);
+    const store = await openStore();
+    const imported = requireItem(await store.import({ sourcePath: epubSource }));
+
+    const attached = await store.attachFormat({
+      id: imported.id,
+      source: {
+        kind: "copy",
+        path: pdfSource,
+        expectedArtifact: expectedArtifact(pdfBytes),
+      },
+    });
+    if (!attached.ok || !attached.value) {
+      throw new Error("Expected integrity-gated managed attachment");
+    }
+    const managedPdf = attached.value.formats[1]!;
+    expect(managedPdf).toMatchObject({ format: "pdf", provenance: "managed" });
+    expect(await readFile(managedPdf.sourcePath)).toEqual(pdfBytes);
+    expect(await readFile(pdfSource)).toEqual(pdfBytes);
+  });
+
+  it("rejects malformed managed artifact expectations and integrity on references", async () => {
+    const epubSource = join(directory, "book.epub");
+    const pdfSource = join(directory, "book.pdf");
+    await writeFile(epubSource, "epub");
+    await writeFile(pdfSource, "pdf");
+    const store = await openStore();
+    const imported = requireItem(await store.import({ sourcePath: epubSource }));
+    const before = await readdir(itemsDirectory);
+
+    for (const artifact of [
+      { bytes: 0, sha256: "a".repeat(64) },
+      { bytes: -1, sha256: "a".repeat(64) },
+      { bytes: 1.5, sha256: "a".repeat(64) },
+      { bytes: Number.MAX_SAFE_INTEGER + 1, sha256: "a".repeat(64) },
+      { bytes: 3, sha256: "A".repeat(64) },
+      { bytes: 3, sha256: "a".repeat(63) },
+    ]) {
+      expect(
+        await store.attachFormat({
+          id: imported.id,
+          source: { kind: "copy", path: pdfSource, expectedArtifact: artifact },
+        }),
+      ).toEqual({ ok: false, error: { code: "invalid-arguments" } });
+    }
+    expect(
+      await store.attachFormat({
+        id: imported.id,
+        source: {
+          kind: "reference",
+          path: pdfSource,
+          expectedArtifact: expectedArtifact(Buffer.from("pdf")),
+        },
+      } as unknown as Parameters<BunSqliteLibraryStore["attachFormat"]>[0]),
+    ).toEqual({ ok: false, error: { code: "invalid-arguments" } });
+    expect(await readdir(itemsDirectory)).toEqual(before);
+    expect(await store.get({ id: imported.id })).toEqual({ ok: true, value: imported });
+  });
+
+  it("rejects a same-size digest mismatch without publishing or orphaning the copy", async () => {
+    const epubSource = join(directory, "book.epub");
+    const pdfSource = join(directory, "book.pdf");
+    const pdfBytes = Buffer.from("expected-pdf");
+    await writeFile(epubSource, "epub");
+    await writeFile(pdfSource, pdfBytes);
+    const store = await openStore();
+    const imported = requireItem(await store.import({ sourcePath: epubSource }));
+    const before = await readdir(itemsDirectory);
+
+    expect(
+      await store.attachFormat({
+        id: imported.id,
+        source: {
+          kind: "copy",
+          path: pdfSource,
+          expectedArtifact: expectedArtifact(Buffer.from("tampered-pdf")),
+        },
+      }),
+    ).toEqual({ ok: false, error: { code: "invalid-arguments" } });
+    expect(await readdir(itemsDirectory)).toEqual(before);
+    expect(await store.get({ id: imported.id })).toEqual({ ok: true, value: imported });
+    expect(await readFile(pdfSource)).toEqual(pdfBytes);
+  });
+
+  it("cleans an installed attachment corrupted by the lifecycle hook before publication", async () => {
+    const epubSource = join(directory, "book.epub");
+    const pdfSource = join(directory, "book.pdf");
+    const pdfBytes = Buffer.from("expected-pdf");
+    await writeFile(epubSource, "epub");
+    await writeFile(pdfSource, pdfBytes);
+    const store = await openStore();
+    const imported = requireItem(await store.import({ sourcePath: epubSource }));
+    const before = await readdir(itemsDirectory);
+    lifecycleTestSeam.afterManagedFileInstalled = (path) => {
+      writeFileSync(path, "tampered-pdf");
+    };
+
+    expect(
+      await store.attachFormat({
+        id: imported.id,
+        source: {
+          kind: "copy",
+          path: pdfSource,
+          expectedArtifact: expectedArtifact(pdfBytes),
+        },
+      }),
+    ).toEqual({ ok: false, error: { code: "invalid-arguments" } });
+    expect(await readdir(itemsDirectory)).toEqual(before);
+    expect(await store.get({ id: imported.id })).toEqual({ ok: true, value: imported });
+    expect(await readFile(pdfSource)).toEqual(pdfBytes);
+  });
+
+  it("publishes the verified installed copy when the caller mutates its source afterward", async () => {
+    const epubSource = join(directory, "book.epub");
+    const pdfSource = join(directory, "book.pdf");
+    const pdfBytes = Buffer.from("expected-pdf");
+    await writeFile(epubSource, "epub");
+    await writeFile(pdfSource, pdfBytes);
+    const store = await openStore();
+    const imported = requireItem(await store.import({ sourcePath: epubSource }));
+    lifecycleTestSeam.afterManagedFileInstalled = () => {
+      writeFileSync(pdfSource, "caller-changed");
+    };
+
+    const attached = await store.attachFormat({
+      id: imported.id,
+      source: {
+        kind: "copy",
+        path: pdfSource,
+        expectedArtifact: expectedArtifact(pdfBytes),
+      },
+    });
+    if (!attached.ok || !attached.value) {
+      throw new Error("Expected the verified installed copy to be published");
+    }
+    expect(await readFile(attached.value.formats[1]!.sourcePath)).toEqual(pdfBytes);
+    expect(await readFile(pdfSource)).toEqual(Buffer.from("caller-changed"));
   });
 
   it("rejects duplicates and last-format removal without changing files", async () => {
