@@ -20,6 +20,7 @@ import {
   type RemoveLibraryFormatRequest,
   type RemoveLibraryFormatResult,
   type RemoveLibraryItemResult,
+  libraryMetadataPatchSchema,
   libraryQueryPageSchema,
   queryLibraryItemsRequestSchema,
   removeSavedLibraryViewRequestSchema,
@@ -283,12 +284,36 @@ describe("LibraryStore", () => {
     });
   });
 
-  it("limits metadata edits to display fields and complete tag replacement", () => {
+  it("validates rich metadata edits and complete tag replacement", () => {
     const patch: LibraryMetadataPatch = {
       title: "Kindred",
-      author: null,
+      author: "Octavia E. Butler",
+      authors: [
+        { name: "Octavia E. Butler", sortName: "Butler, Octavia E." },
+        { name: "Contributor" },
+      ],
+      series: "Patternist",
+      seriesIndex: 4.5,
+      publisher: "Doubleday",
+      languages: ["en-US", "fr"],
+      identifiers: { isbn: "978-0-385-15059-0" },
+      publishedDate: "1979-06",
+      rating: 8.5,
       description: "A novel",
       tags: ["Classic"],
+    };
+    const clears: LibraryMetadataPatch = {
+      author: null,
+      authors: null,
+      series: null,
+      seriesIndex: null,
+      publisher: null,
+      languages: null,
+      identifiers: null,
+      publishedDate: null,
+      rating: null,
+      description: null,
+      tags: [],
     };
 
     if (false) {
@@ -296,7 +321,26 @@ describe("LibraryStore", () => {
       const invalid: LibraryMetadataPatch = { tags: [], sourcePath: "elsewhere.epub" };
       expect(invalid).toBeUndefined();
     }
+    expect(libraryMetadataPatchSchema.parse(patch)).toEqual(patch);
+    expect(libraryMetadataPatchSchema.parse(clears)).toEqual(clears);
     expect(JSON.parse(JSON.stringify(patch))).toEqual(patch);
+
+    for (const invalid of [
+      { tags: [], sourcePath: "elsewhere.epub" },
+      { tags: [], title: " " },
+      { tags: [], authors: [] },
+      { tags: [], authors: [{ name: " " }] },
+      { tags: [], seriesIndex: Number.POSITIVE_INFINITY },
+      { tags: [], languages: [] },
+      { tags: [], languages: ["English (US)"] },
+      { tags: [], identifiers: { isbn: " " } },
+      { tags: [], publishedDate: "1979-13" },
+      { tags: [], rating: 10.1 },
+      { tags: ["Classic", " classic "] },
+      { title: "Kindred" },
+    ]) {
+      expect(libraryMetadataPatchSchema.safeParse(invalid).success).toBe(false);
+    }
   });
 
   it("publishes driver-independent error codes", () => {

@@ -1,7 +1,10 @@
 import {
   FORMAT_IDS,
+  bookAuthorSchema,
+  bookIdentifiersSchema,
   languageTagSchema,
   libraryItemSchema,
+  publishedDateSchema,
   type FormatId,
   type LibraryItem,
 } from "@takio/core";
@@ -266,12 +269,27 @@ export type AttachLibraryFormatRequest = Readonly<{
 }>;
 export type RemoveLibraryFormatRequest = Readonly<{ id: string; format: FormatId }>;
 export type RemoveLibraryItemRequest = Readonly<{ id: string }>;
-export type LibraryMetadataPatch = Readonly<{
-  title?: string;
-  author?: string | null;
-  description?: string | null;
-  tags: readonly string[];
-}>;
+const nullableLibraryMetadataTextSchema = z.string().trim().min(1).nullable().optional();
+
+export const libraryMetadataPatchSchema = z
+  .object({
+    title: z.string().trim().min(1).optional(),
+    author: nullableLibraryMetadataTextSchema,
+    authors: z.array(bookAuthorSchema).min(1).readonly().nullable().optional(),
+    series: nullableLibraryMetadataTextSchema,
+    seriesIndex: z.number().finite().nullable().optional(),
+    publisher: nullableLibraryMetadataTextSchema,
+    languages: z.array(languageTagSchema).min(1).readonly().nullable().optional(),
+    identifiers: bookIdentifiersSchema.nullable().optional(),
+    publishedDate: publishedDateSchema.nullable().optional(),
+    rating: z.number().finite().min(0).max(10).nullable().optional(),
+    description: nullableLibraryMetadataTextSchema,
+    tags: uniqueTextValuesSchema("Tags must be unique ignoring case."),
+  })
+  .strict()
+  .readonly();
+
+export type LibraryMetadataPatch = z.infer<typeof libraryMetadataPatchSchema>;
 export type UpdateLibraryItemRequest = Readonly<{
   id: string;
   patch: LibraryMetadataPatch;
