@@ -93,7 +93,7 @@ export const libraryQueryDefinitionSchema = z
 
 export const libraryQueryPageRequestSchema = z
   .object({
-    offset: z.number().int().min(0),
+    offset: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
     limit: z.number().int().min(1).max(MAX_LIBRARY_QUERY_PAGE_SIZE),
   })
   .strict()

@@ -106,6 +106,12 @@ describe("LibraryStore", () => {
     expect(
       queryLibraryItemsRequestSchema.safeParse({
         ...request,
+        page: { offset: 1e20, limit: 1 },
+      }).success,
+    ).toBe(false);
+    expect(
+      queryLibraryItemsRequestSchema.safeParse({
+        ...request,
         filters: { ...request.filters, tags: ["Classic", "classic"] },
       }).success,
     ).toBe(false);
