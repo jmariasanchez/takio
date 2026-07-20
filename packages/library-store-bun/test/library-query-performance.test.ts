@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { mkdtemp, rm } from "node:fs/promises";
+import { copyFile, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -22,6 +22,7 @@ const ROADMAP_DATA_LAYER_COLD_READY_MILLISECONDS = 2_000;
 const BENCHMARK_SAMPLES = 20;
 const BENCHMARK_WARMUPS = 3;
 const BENCHMARK_MODE = process.env.TAKIO_LIBRARY_QUERY_BENCHMARK;
+const FIXTURE_OUTPUT = process.env.TAKIO_LIBRARY_QUERY_FIXTURE_OUTPUT;
 const HYDRATION_RELATIONS = [
   "formats",
   "tags",
@@ -38,6 +39,9 @@ if (
   throw new Error(
     "TAKIO_LIBRARY_QUERY_BENCHMARK must be unset, 'report', or 'enforce'.",
   );
+}
+if (FIXTURE_OUTPUT === "") {
+  throw new Error("TAKIO_LIBRARY_QUERY_FIXTURE_OUTPUT must not be empty.");
 }
 
 const authors = Array.from({ length: 97 }, (_, index) =>
@@ -324,6 +328,9 @@ test(
       expect(await store.open({ config: {} })).toEqual({ ok: true, value: null });
       store.close();
       seedCatalogue(databasePath);
+      if (FIXTURE_OUTPUT) {
+        await copyFile(databasePath, FIXTURE_OUTPUT);
+      }
 
       const coldReadyStartedAt = performance.now();
       const coldReadyStore = new BunSqliteLibraryStore(databasePath);
