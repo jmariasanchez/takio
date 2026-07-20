@@ -1,8 +1,11 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { BunSqliteLibraryStore } from "@takio/library-store-bun";
-import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { chmod, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+
+import { JobStore, type ConversionJob } from "../src/job-store.js";
 
 const CLI = join(import.meta.dir, "../src/main.ts");
 const FAKE_BACKEND = join(import.meta.dir, "fixtures/fake-ebook-convert.ts");
@@ -85,6 +88,39 @@ async function createMultiFormatItem(
   return { mobi: await realpath(mobi), epub: await realpath(epub) };
 }
 
+async function seedCompletedLinkedJob(options: {
+  database: string;
+  input: string;
+  output: string;
+  libraryItemId: string;
+  contents: string;
+}): Promise<ConversionJob> {
+  await writeFile(options.input, "source epub");
+  const store = new JobStore(options.database);
+  expect(store.open()).toEqual({ ok: true, value: null });
+  try {
+    const queued = store.enqueue({
+      libraryItemId: options.libraryItemId,
+      inputPath: options.input,
+      inputFormat: "epub",
+      outputFormat: "pdf",
+      outputPath: options.output,
+    });
+    if (!queued.ok) throw new Error(`enqueue failed: ${queued.error.code}`);
+    expect(store.claimNext()).toMatchObject({ ok: true, value: { id: queued.value.id } });
+    await writeFile(options.output, options.contents);
+    const completed = await store.complete(queued.value.id, {
+      path: options.output,
+      bytes: Buffer.byteLength(options.contents),
+      sha256: createHash("sha256").update(options.contents).digest("hex"),
+    });
+    if (!completed.ok) throw new Error(`completion failed: ${completed.error.code}`);
+    return completed.value;
+  } finally {
+    store.close();
+  }
+}
+
 afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
@@ -121,15 +157,16 @@ describe("takio jobs", () => {
   it("runs one queued conversion and records its verified caller-owned artifact", async () => {
     const root = await temporaryRoot();
     const database = join(root, "jobs.sqlite");
+    const blockedDataDirectory = join(root, "not-a-directory");
     const input = join(root, "book.epub");
     const output = join(root, "book.pdf");
     const bytes = JSON.stringify({ fakeEbookConvert: {} });
-    await writeFile(input, bytes);
+    await Promise.all([writeFile(input, bytes), writeFile(blockedDataDirectory, "blocked")]);
     expect((await runJobs([
       "enqueue", "--db", database, "--input", input, "--to", "pdf", "--output", output,
-    ])).exitCode).toBe(0);
+    ], FAKE_BACKEND, blockedDataDirectory)).exitCode).toBe(0);
 
-    const ran = await runJobs(["run-next", "--db", database]);
+    const ran = await runJobs(["run-next", "--db", database], FAKE_BACKEND, blockedDataDirectory);
     expect(ran.exitCode).toBe(0);
     expect(record(ran)).toMatchObject({
       ok: true,
@@ -137,7 +174,7 @@ describe("takio jobs", () => {
     });
     expect(await readFile(output, "utf8")).toBe(bytes);
 
-    const empty = await runJobs(["run-next", "--db", database]);
+    const empty = await runJobs(["run-next", "--db", database], FAKE_BACKEND, blockedDataDirectory);
     expect(empty.exitCode).toBe(0);
     expect(record(empty)).toEqual({ ok: true, value: { job: null } });
   });
@@ -170,6 +207,266 @@ describe("takio jobs", () => {
       },
     });
     expect(record(enqueued).value.job.inputPath).not.toBe(mobi);
+  });
+
+  it("completes and attaches a linked conversion in the same run", async () => {
+    const root = await temporaryRoot();
+    const { mobi } = await createMultiFormatItem(root);
+    const output = join(root, "converted.pdf");
+    const enqueued = record(await runJobs([
+      "enqueue",
+      "--library-item-id", "book-1",
+      "--from", "epub",
+      "--to", "pdf",
+      "--output", output,
+    ], FAKE_BACKEND, root)).value.job;
+
+    const ran = await runJobs(["run-next"], FAKE_BACKEND, root);
+
+    expect(ran.exitCode).toBe(0);
+    const job = record(ran).value.job;
+    expect(job).toMatchObject({
+      id: enqueued.id,
+      status: "completed",
+      libraryItemId: "book-1",
+      attachment: { status: "attached" },
+      artifact: { path: output },
+    });
+    expect(await readFile(output, "utf8")).toBe("secondary epub");
+
+    const library = new BunSqliteLibraryStore(join(root, "library.sqlite"));
+    expect(await library.open({ config: {} })).toEqual({ ok: true, value: null });
+    try {
+      const stored = await library.get({ id: "book-1" });
+      if (!stored.ok || !stored.value) throw new Error("linked item missing");
+      expect(stored.value.sourcePath).toBe(mobi);
+      expect(stored.value.format).toBe("mobi");
+      expect(stored.value.formats.map(({ format }) => format)).toEqual(["mobi", "epub", "pdf"]);
+      expect(stored.value.formats[2]).toMatchObject({ format: "pdf", provenance: "managed" });
+      expect(stored.value.formats[2]!.sourcePath).not.toBe(output);
+      expect(await readFile(stored.value.formats[2]!.sourcePath, "utf8")).toBe("secondary epub");
+    } finally {
+      library.close();
+    }
+
+    expect(record(await runJobs(["get", "--id", job.id], FAKE_BACKEND, root)).value.job).toEqual(job);
+  });
+
+  it("leaves a completed linked job pending when older attachment work appears during conversion", async () => {
+    const root = await temporaryRoot();
+    await createMultiFormatItem(root);
+    const started = join(root, "conversion-started");
+    const gate = join(root, "finish-conversion");
+    const backend = join(root, "gated-ebook-convert.ts");
+    await writeFile(backend, `#!/usr/bin/env bun
+import { copyFile, writeFile } from "node:fs/promises";
+await writeFile(${JSON.stringify(started)}, "started");
+while (!(await Bun.file(${JSON.stringify(gate)}).exists())) await Bun.sleep(10);
+await copyFile(process.argv[2], process.argv[3]);
+`);
+    await chmod(backend, 0o755);
+
+    const database = join(root, "jobs.sqlite");
+    const olderInput = join(root, "older.epub");
+    const olderOutput = join(root, "older.pdf");
+    const olderContents = "older converted output";
+    await writeFile(olderInput, "older source");
+    const setupStore = new JobStore(database);
+    expect(setupStore.open()).toEqual({ ok: true, value: null });
+    let olderJobId: string;
+    try {
+      const olderQueued = setupStore.enqueue({
+        libraryItemId: "missing-book",
+        inputPath: olderInput,
+        inputFormat: "epub",
+        outputFormat: "pdf",
+        outputPath: olderOutput,
+      });
+      if (!olderQueued.ok) throw new Error(`enqueue failed: ${olderQueued.error.code}`);
+      olderJobId = olderQueued.value.id;
+      expect(setupStore.claimNext()).toMatchObject({ ok: true, value: { id: olderJobId } });
+    } finally {
+      setupStore.close();
+    }
+
+    const output = join(root, "current.pdf");
+    const current = record(await runJobs([
+      "enqueue",
+      "--library-item-id", "book-1",
+      "--from", "epub",
+      "--to", "pdf",
+      "--output", output,
+    ], FAKE_BACKEND, root)).value.job;
+    const child = Bun.spawn(["bun", "run", CLI, "jobs", "run-next"], {
+      env: { ...process.env, TAKIO_EBOOK_CONVERT: backend, TAKIO_DATA_DIR: root },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+
+    let olderPending: ConversionJob | undefined;
+    try {
+      const deadline = Date.now() + 5_000;
+      while (!(await Bun.file(started).exists()) && Date.now() < deadline) {
+        await Bun.sleep(10);
+      }
+      if (!(await Bun.file(started).exists())) throw new Error("conversion did not start");
+
+      await writeFile(olderOutput, olderContents);
+      const completionStore = new JobStore(database);
+      expect(completionStore.open()).toEqual({ ok: true, value: null });
+      try {
+        const completed = await completionStore.complete(olderJobId, {
+          path: olderOutput,
+          bytes: Buffer.byteLength(olderContents),
+          sha256: createHash("sha256").update(olderContents).digest("hex"),
+        });
+        if (!completed.ok) throw new Error(`completion failed: ${completed.error.code}`);
+        olderPending = completed.value;
+      } finally {
+        completionStore.close();
+      }
+      await writeFile(gate, "finish");
+
+      const [exitCode, stdout, stderr] = await Promise.all([
+        child.exited,
+        new Response(child.stdout).text(),
+        new Response(child.stderr).text(),
+      ]);
+      expect(exitCode).toBe(0);
+      expect(record({ stdout, stderr })).toMatchObject({
+        ok: true,
+        value: {
+          job: { id: current.id, status: "completed", attachment: { status: "pending" } },
+        },
+      });
+    } finally {
+      await writeFile(gate, "finish");
+      await child.exited;
+    }
+
+    const missingBackend = join(root, "missing-ebook-convert");
+    expect(record(await runJobs(["run-next"], missingBackend, root))).toMatchObject({
+      value: {
+        job: {
+          id: olderPending!.id,
+          attachment: { status: "failed", errorCode: "library-item-not-found" },
+        },
+      },
+    });
+    expect(record(await runJobs(["run-next"], missingBackend, root))).toMatchObject({
+      value: { job: { id: current.id, attachment: { status: "attached" } } },
+    });
+  });
+
+  it("reconciles pending attachment before backend discovery or queued work", async () => {
+    const root = await temporaryRoot();
+    const { epub } = await createMultiFormatItem(root);
+    const pending = await seedCompletedLinkedJob({
+      database: join(root, "jobs.sqlite"),
+      input: epub,
+      output: join(root, "recovered.pdf"),
+      libraryItemId: "book-1",
+      contents: "recovered pdf",
+    });
+    const queuedInput = join(root, "queued.epub");
+    const queuedOutput = join(root, "queued.pdf");
+    await writeFile(queuedInput, "queued source");
+    expect((await runJobs([
+      "enqueue", "--input", queuedInput, "--to", "pdf", "--output", queuedOutput,
+    ], FAKE_BACKEND, root)).exitCode).toBe(0);
+
+    const missingBackend = join(root, "missing-ebook-convert");
+    const recovered = await runJobs(["run-next"], missingBackend, root);
+
+    expect(recovered.exitCode).toBe(0);
+    expect(record(recovered)).toMatchObject({
+      ok: true,
+      value: { job: { id: pending.id, status: "completed", attachment: { status: "attached" } } },
+    });
+    expect(record(await runJobs(["list"], FAKE_BACKEND, root)).value.jobs).toMatchObject([
+      { id: pending.id, status: "completed", attachment: { status: "attached" } },
+      { status: "queued", outputPath: queuedOutput },
+    ]);
+    await expect(readFile(queuedOutput)).rejects.toThrow();
+
+    const unavailable = await runJobs(["run-next"], missingBackend, root);
+    expect(unavailable.exitCode).not.toBe(0);
+    expect(record(unavailable)).toEqual({ ok: false, error: { code: "backend-unavailable" } });
+    expect(record(await runJobs(["list", "--status", "queued"], FAKE_BACKEND, root)).value.jobs)
+      .toMatchObject([{ outputPath: queuedOutput }]);
+  });
+
+  it("records a missing linked item as terminal attachment failure before queued work", async () => {
+    const root = await temporaryRoot();
+    const output = join(root, "missing-item.pdf");
+    const pending = await seedCompletedLinkedJob({
+      database: join(root, "jobs.sqlite"),
+      input: join(root, "missing-item.epub"),
+      output,
+      libraryItemId: "missing-book",
+      contents: "preserved converted output",
+    });
+    const queuedInput = join(root, "later.epub");
+    const queuedOutput = join(root, "later.pdf");
+    await writeFile(queuedInput, "later source");
+    expect((await runJobs([
+      "enqueue", "--input", queuedInput, "--to", "pdf", "--output", queuedOutput,
+    ], FAKE_BACKEND, root)).exitCode).toBe(0);
+
+    const ran = await runJobs(["run-next"], join(root, "missing-ebook-convert"), root);
+
+    expect(ran.exitCode).toBe(0);
+    expect(record(ran)).toMatchObject({
+      ok: true,
+      value: {
+        job: {
+          id: pending.id,
+          status: "completed",
+          attachment: { status: "failed", errorCode: "library-item-not-found" },
+        },
+      },
+    });
+    expect(await readFile(output, "utf8")).toBe("preserved converted output");
+    expect(record(await runJobs(["list", "--status", "queued"], FAKE_BACKEND, root)).value.jobs)
+      .toMatchObject([{ outputPath: queuedOutput }]);
+    await expect(readFile(queuedOutput)).rejects.toThrow();
+  });
+
+  it("rejects custom linked attachment recovery without touching the default library", async () => {
+    const root = await temporaryRoot();
+    const { epub } = await createMultiFormatItem(root);
+    const database = join(root, "custom-jobs.sqlite");
+    const output = join(root, "custom-linked.pdf");
+    const pending = await seedCompletedLinkedJob({
+      database,
+      input: epub,
+      output,
+      libraryItemId: "book-1",
+      contents: "custom converted output",
+    });
+
+    const ran = await runJobs(
+      ["run-next", "--db", database],
+      join(root, "missing-ebook-convert"),
+      root,
+    );
+
+    expect(ran.exitCode).not.toBe(0);
+    expect(record(ran)).toEqual({ ok: false, error: { code: "invalid-arguments" } });
+    expect(record(await runJobs(["get", "--db", database, "--id", pending.id], FAKE_BACKEND, root)))
+      .toMatchObject({ value: { job: { attachment: { status: "pending" } } } });
+    expect(await readFile(output, "utf8")).toBe("custom converted output");
+
+    const library = new BunSqliteLibraryStore(join(root, "library.sqlite"));
+    expect(await library.open({ config: {} })).toEqual({ ok: true, value: null });
+    try {
+      expect(await library.get({ id: "book-1" })).toMatchObject({
+        ok: true,
+        value: { formats: [{ format: "mobi" }, { format: "epub" }] },
+      });
+    } finally {
+      library.close();
+    }
   });
 
   it("rejects invalid or unavailable linked enqueue requests before persisting a job", async () => {

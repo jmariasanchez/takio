@@ -26,6 +26,7 @@ import {
   listDestinations,
   sendToDestination,
 } from "./destinations.js";
+import { reconcileJobAttachment } from "./job-attachment.js";
 import { JOB_STATUSES, JobStore, type ConversionJob, type JobStatus } from "./job-store.js";
 
 type LibraryPaths = {
@@ -473,6 +474,37 @@ export function createProgram(
     .action(async (options: { db?: string }, command: Command) => {
       const store = await openJobStore(options.db, command);
       try {
+        const reconcileClaimedAttachment = async (job: ConversionJob): Promise<ConversionJob> => {
+          if (options.db !== undefined) {
+            const released = store.releaseAttachmentClaim(job.id);
+            if (!released.ok) {
+              command.error("", { exitCode: 1, code: released.error.code });
+            }
+            command.error("", { exitCode: 1, code: "invalid-arguments" });
+          }
+
+          const { store: libraryStore } = await openLibraryStore(undefined, command);
+          try {
+            const reconciled = await reconcileJobAttachment(store, libraryStore, job);
+            if (!reconciled.ok) {
+              command.error("", { exitCode: 1, code: reconciled.error.code });
+            }
+            return reconciled.value;
+          } finally {
+            libraryStore.close();
+          }
+        };
+
+        const pendingAttachment = store.claimNextPendingAttachment();
+        if (!pendingAttachment.ok) {
+          command.error("", { exitCode: 1, code: pendingAttachment.error.code });
+        }
+        if (pendingAttachment.value) {
+          const job = await reconcileClaimedAttachment(pendingAttachment.value);
+          write(JSON.stringify({ ok: true, value: { job } }));
+          return;
+        }
+
         if (!conversionBackend.ok) {
           command.error("", { exitCode: 1, code: conversionBackend.code });
         }
@@ -505,9 +537,30 @@ export function createProgram(
             bytes: converted.artifact.bytes,
             sha256: converted.artifact.sha256,
           });
-          result = !completed.ok && completed.error.code === "artifact-invalid"
-            ? store.fail(claimed.value.id, "artifact-invalid")
-            : completed;
+          if (!completed.ok && completed.error.code === "artifact-invalid") {
+            result = store.fail(claimed.value.id, "artifact-invalid");
+          } else if (completed.ok && completed.value.attachment?.status === "pending") {
+            const pending = store.claimNextPendingAttachment();
+            if (!pending.ok) {
+              command.error("", { exitCode: 1, code: pending.error.code });
+            }
+            if (!pending.value || pending.value.id !== completed.value.id) {
+              if (pending.value) {
+                const released = store.releaseAttachmentClaim(pending.value.id);
+                if (!released.ok) {
+                  command.error("", { exitCode: 1, code: released.error.code });
+                }
+              }
+              result = completed;
+            } else {
+              result = {
+                ok: true,
+                value: await reconcileClaimedAttachment(pending.value),
+              };
+            }
+          } else {
+            result = completed;
+          }
         }
         if (!result) throw new Error("Conversion finished without a durable job result.");
         if (!result.ok) command.error("", { exitCode: 1, code: result.error.code });
