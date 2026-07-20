@@ -62,6 +62,11 @@ import {
   type MetadataDraft,
 } from "./components/LibraryWorkspace";
 import {
+  clearActiveSavedViewId,
+  readActiveSavedViewId,
+  writeActiveSavedViewId,
+} from "./lib/active-saved-view";
+import {
   allocateBulkPdfOutputNames,
   applyBulkTagOperation,
   hydrateSelectedLibraryItems,
@@ -238,6 +243,7 @@ export default function App() {
   const importButton = useRef<HTMLButtonElement>(null);
   const itemsRef = useRef(items);
   const libraryQueryRef = useRef(libraryQuery);
+  const currentSavedViewIdRef = useRef<string | null>(null);
   const postRemoveFocusItemId = useRef<string | null | undefined>(undefined);
   const postFormatFocusControlId = useRef<string | undefined>(undefined);
   const postConversionFocusControlId = useRef<string | undefined>(undefined);
@@ -305,6 +311,16 @@ export default function App() {
     setLibraryQuery(next);
   }, []);
 
+  const commitCurrentSavedViewId = useCallback((id: string | null): void => {
+    currentSavedViewIdRef.current = id;
+    setCurrentSavedViewId(id);
+    if (id === null) {
+      clearActiveSavedViewId();
+    } else {
+      writeActiveSavedViewId(id);
+    }
+  }, []);
+
   const reduceLibraryQuery = useCallback(
     (action: LibraryQueryStateAction): LibraryQueryState => {
       const next = libraryQueryStateReducer(libraryQueryRef.current, action);
@@ -369,33 +385,32 @@ export default function App() {
     [commitLibraryQuery],
   );
 
-  const loadSavedViews = useCallback(async (): Promise<boolean> => {
+  const loadSavedViews = useCallback(async (): Promise<readonly SavedLibraryView[] | null> => {
     const request = ++savedViewsRequestSequence.current;
     try {
       const result = await listSavedLibraryViews();
       if (request !== savedViewsRequestSequence.current) {
-        return false;
+        return null;
       }
       if (!result.ok) {
         setNotice({ kind: "error", text: describeLibraryError(result.error.code) });
-        return false;
+        return null;
       }
 
       setSavedViews(result.value.views);
-      setCurrentSavedViewId((currentId) =>
-        currentId && result.value.views.some(({ id }) => id === currentId)
-          ? currentId
-          : null,
-      );
-      return true;
+      const currentId = currentSavedViewIdRef.current;
+      if (currentId && !result.value.views.some(({ id }) => id === currentId)) {
+        commitCurrentSavedViewId(null);
+      }
+      return result.value.views;
     } catch (error) {
       if (request !== savedViewsRequestSequence.current) {
-        return false;
+        return null;
       }
       setNotice({ kind: "error", text: describeUnexpectedLibraryError(error) });
-      return false;
+      return null;
     }
-  }, []);
+  }, [commitCurrentSavedViewId]);
 
   const loadTrash = useCallback(async (initialOffset: number): Promise<boolean> => {
     const request = ++trashRequestSequence.current;
@@ -580,8 +595,26 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    void loadLibrary();
-    void loadSavedViews();
+    let disposed = false;
+    void (async () => {
+      const views = await loadSavedViews();
+      if (disposed) {
+        return;
+      }
+
+      const persistedId = readActiveSavedViewId();
+      const persistedView = views?.find(({ id }) => id === persistedId);
+      if (persistedView) {
+        commitCurrentSavedViewId(persistedView.id);
+        reduceLibraryQuery({
+          type: "apply-saved-view",
+          definition: persistedView.definition,
+        });
+      } else if (views !== null && persistedId !== null) {
+        commitCurrentSavedViewId(null);
+      }
+      await loadLibrary();
+    })();
     void loadDestinations();
     void loadJobs();
 
@@ -594,6 +627,7 @@ export default function App() {
     }, 10_000);
 
     return () => {
+      disposed = true;
       window.clearInterval(destinationRefresh);
       trashRequestSequence.current += 1;
       duplicateRequestSequence.current += 1;
@@ -601,7 +635,14 @@ export default function App() {
         window.clearTimeout(searchDebounce.current);
       }
     };
-  }, [loadDestinations, loadJobs, loadLibrary, loadSavedViews]);
+  }, [
+    commitCurrentSavedViewId,
+    loadDestinations,
+    loadJobs,
+    loadLibrary,
+    loadSavedViews,
+    reduceLibraryQuery,
+  ]);
 
   function replaceItem(updated: LibraryItem): void {
     setItems((currentItems) =>
@@ -644,7 +685,7 @@ export default function App() {
   function changeSearch(searchQuery: string): void {
     dispatchLibrarySelection({ type: "query-changed" });
     reduceLibraryQuery({ type: "set-query", query: searchQuery });
-    setCurrentSavedViewId(null);
+    commitCurrentSavedViewId(null);
     setSearchPending(true);
     if (searchDebounce.current !== null) {
       window.clearTimeout(searchDebounce.current);
@@ -667,13 +708,13 @@ export default function App() {
 
   function changeFilters(filters: LibraryQueryFilters): void {
     dispatchLibrarySelection({ type: "query-changed" });
-    setCurrentSavedViewId(null);
+    commitCurrentSavedViewId(null);
     runImmediateLibraryQuery({ type: "set-filters", filters });
   }
 
   function changeSort(sort: LibraryQuerySort): void {
     dispatchLibrarySelection({ type: "sort-changed" });
-    setCurrentSavedViewId(null);
+    commitCurrentSavedViewId(null);
     runImmediateLibraryQuery({ type: "set-sort", sort });
   }
 
@@ -687,7 +728,7 @@ export default function App() {
 
   function clearLibraryQuery(): void {
     dispatchLibrarySelection({ type: "query-changed" });
-    setCurrentSavedViewId(null);
+    commitCurrentSavedViewId(null);
     runImmediateLibraryQuery({
       type: "apply-saved-view",
       definition: {
@@ -702,13 +743,14 @@ export default function App() {
   function applySavedView(id: string): void {
     const view = savedViews.find((candidate) => candidate.id === id);
     if (!view) {
+      commitCurrentSavedViewId(null);
       setNotice({ kind: "error", text: "That saved view is no longer available." });
       void loadSavedViews();
       return;
     }
 
     dispatchLibrarySelection({ type: "query-changed" });
-    setCurrentSavedViewId(view.id);
+    commitCurrentSavedViewId(view.id);
     runImmediateLibraryQuery({ type: "apply-saved-view", definition: view.definition });
   }
 
@@ -772,7 +814,7 @@ export default function App() {
 
       const savedView = result.value.view;
       setSavedViews((current) => [...current.filter(({ id }) => id !== savedView.id), savedView]);
-      setCurrentSavedViewId(savedView.id);
+      commitCurrentSavedViewId(savedView.id);
       setSaveViewDialogOpen(false);
       setNotice({ kind: "status", text: `Saved view “${savedView.name}”.` });
     } catch (error) {
@@ -798,7 +840,7 @@ export default function App() {
       }
       setSavedViews((current) => current.filter((candidate) => candidate.id !== id));
       if (currentSavedViewId === id) {
-        setCurrentSavedViewId(null);
+        commitCurrentSavedViewId(null);
       }
       setNotice({
         kind: "status",
