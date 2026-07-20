@@ -13,7 +13,13 @@ import {
 } from "@takio/core";
 import {
   libraryMetadataPatchSchema,
+  queryLibraryItemsRequestSchema,
+  removeSavedLibraryViewRequestSchema,
+  saveSavedLibraryViewRequestSchema,
   type LibraryMetadataPatch,
+  type QueryLibraryItemsRequest,
+  type RemoveSavedLibraryViewRequest,
+  type SaveSavedLibraryViewRequest,
 } from "@takio/library-contract";
 import { BunSqliteLibraryStore } from "@takio/library-store-bun";
 import {
@@ -41,7 +47,34 @@ type LibraryPaths = {
 type Launcher = (argv: readonly string[]) => void | Promise<void>;
 type Ejector = (destinationPath: string) => Promise<number>;
 
-const MAX_LIBRARY_UPDATE_PATCH_BYTES = 16 * 1024;
+const MAX_LIBRARY_JSON_REQUEST_BYTES = 16 * 1024;
+
+type JsonRequestSchema<T> = {
+  safeParse(value: unknown): { success: true; data: T } | { success: false };
+};
+
+function parseLibraryJsonRequest<T>(
+  value: string,
+  schema: JsonRequestSchema<T>,
+  command: Command,
+): T {
+  if (Buffer.byteLength(value, "utf8") > MAX_LIBRARY_JSON_REQUEST_BYTES) {
+    command.error("", { exitCode: 1, code: "invalid-arguments" });
+  }
+
+  let candidate: unknown;
+  try {
+    candidate = JSON.parse(value);
+  } catch {
+    command.error("", { exitCode: 1, code: "invalid-arguments" });
+  }
+
+  const parsed = schema.safeParse(candidate);
+  if (!parsed.success) {
+    command.error("", { exitCode: 1, code: "invalid-arguments" });
+  }
+  return parsed.data;
+}
 
 function openWithDefaultApp(argv: readonly string[]): void {
   Bun.spawn({ cmd: [...argv], stdin: "ignore", stdout: "ignore", stderr: "ignore" });
@@ -1032,25 +1065,14 @@ export function createProgram(
           const mixesLegacyMetadata = ["title", "author", "description", "tag"].some(
             (name) => command.getOptionValueSource(name) === "cli",
           );
-          if (
-            mixesLegacyMetadata ||
-            Buffer.byteLength(options.patchJson, "utf8") > MAX_LIBRARY_UPDATE_PATCH_BYTES
-          ) {
+          if (mixesLegacyMetadata) {
             command.error("", { exitCode: 1, code: "invalid-arguments" });
           }
-
-          let candidate: unknown;
-          try {
-            candidate = JSON.parse(options.patchJson);
-          } catch {
-            command.error("", { exitCode: 1, code: "invalid-arguments" });
-          }
-
-          const parsed = libraryMetadataPatchSchema.safeParse(candidate);
-          if (!parsed.success) {
-            command.error("", { exitCode: 1, code: "invalid-arguments" });
-          }
-          patch = parsed.data;
+          patch = parseLibraryJsonRequest<LibraryMetadataPatch>(
+            options.patchJson,
+            libraryMetadataPatchSchema,
+            command,
+          );
         } else {
           patch = {
             title: options.title,
@@ -1101,6 +1123,104 @@ export function createProgram(
         store.close();
       }
     });
+
+  storageCommand(library.command("query").helpOption(false), writeError)
+    .option("--db <path>", "database path")
+    .requiredOption("--request-json <json>", "structured catalogue query as JSON")
+    .action(
+      async (
+        options: { db?: string; requestJson: string },
+        command: Command,
+      ) => {
+        const request = parseLibraryJsonRequest<QueryLibraryItemsRequest>(
+          options.requestJson,
+          queryLibraryItemsRequestSchema,
+          command,
+        );
+        const { store } = await openLibraryStore(options.db, command);
+        try {
+          const result = await store.query(request);
+          if (!result.ok) {
+            command.error("", { exitCode: 1, code: result.error.code });
+          }
+          write(JSON.stringify({ ok: true, value: result.value }));
+        } finally {
+          store.close();
+        }
+      },
+    );
+
+  const savedViews = storageCommand(library.command("saved-views"), writeError)
+    .helpOption(false)
+    .addHelpCommand(false)
+    .description("Manage saved catalogue views");
+
+  storageCommand(savedViews.command("list").helpOption(false), writeError)
+    .option("--db <path>", "database path")
+    .action(async (options: { db?: string }, command: Command) => {
+      const { store } = await openLibraryStore(options.db, command);
+      try {
+        const result = await store.listSavedViews({});
+        if (!result.ok) {
+          command.error("", { exitCode: 1, code: result.error.code });
+        }
+        write(JSON.stringify({ ok: true, value: { views: result.value } }));
+      } finally {
+        store.close();
+      }
+    });
+
+  storageCommand(savedViews.command("save").helpOption(false), writeError)
+    .option("--db <path>", "database path")
+    .requiredOption("--request-json <json>", "saved-view definition as JSON")
+    .action(
+      async (
+        options: { db?: string; requestJson: string },
+        command: Command,
+      ) => {
+        const request = parseLibraryJsonRequest<SaveSavedLibraryViewRequest>(
+          options.requestJson,
+          saveSavedLibraryViewRequestSchema,
+          command,
+        );
+        const { store } = await openLibraryStore(options.db, command);
+        try {
+          const result = await store.saveSavedView(request);
+          if (!result.ok) {
+            command.error("", { exitCode: 1, code: result.error.code });
+          }
+          write(JSON.stringify({ ok: true, value: { view: result.value } }));
+        } finally {
+          store.close();
+        }
+      },
+    );
+
+  storageCommand(savedViews.command("remove").helpOption(false), writeError)
+    .option("--db <path>", "database path")
+    .requiredOption("--request-json <json>", "saved-view removal request as JSON")
+    .action(
+      async (
+        options: { db?: string; requestJson: string },
+        command: Command,
+      ) => {
+        const request = parseLibraryJsonRequest<RemoveSavedLibraryViewRequest>(
+          options.requestJson,
+          removeSavedLibraryViewRequestSchema,
+          command,
+        );
+        const { store } = await openLibraryStore(options.db, command);
+        try {
+          const result = await store.removeSavedView(request);
+          if (!result.ok) {
+            command.error("", { exitCode: 1, code: result.error.code });
+          }
+          write(JSON.stringify({ ok: true, value: { view: result.value } }));
+        } finally {
+          store.close();
+        }
+      },
+    );
 
   const cover = storageCommand(library.command("cover"), writeError)
     .helpOption(false)

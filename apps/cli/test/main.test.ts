@@ -999,6 +999,197 @@ describe("takio CLI", () => {
       }
     });
 
+    it("queries a deterministic catalogue page with facets across a process boundary", async () => {
+      await Promise.all([
+        Bun.write(join(directory!, "alpha.epub"), "alpha"),
+        Bun.write(join(directory!, "beta.epub"), "beta"),
+      ]);
+      await addItem("alpha", join(directory!, "alpha.epub"));
+      await addItem("beta", join(directory!, "beta.epub"));
+      const request = {
+        query: "",
+        filters: { authors: [], tags: [], series: [], languages: [], formats: [] },
+        sort: { field: "title", direction: "ascending" },
+        page: { offset: 0, limit: 1 },
+      };
+
+      const result = parseProcessOutput(
+        await invokeProcess([
+          "library",
+          "query",
+          "--db",
+          databasePath!,
+          "--request-json",
+          JSON.stringify(request),
+        ]),
+      ) as {
+        value: {
+          items: { id: string }[];
+          total: number;
+          page: { offset: number; limit: number };
+          facets: Record<string, unknown>;
+        };
+      };
+
+      expect(result.value.items.map(({ id }) => id)).toEqual(["alpha"]);
+      expect(result.value).toMatchObject({
+        total: 2,
+        page: { offset: 0, limit: 1 },
+        facets: {
+          authors: [],
+          tags: [],
+          series: [],
+          languages: [],
+          formats: [{ value: "epub", count: 2 }],
+        },
+      });
+    });
+
+    it("saves, lists, and removes a catalogue view durably across processes", async () => {
+      const request = {
+        id: "recent-fantasy",
+        name: "Recent Fantasy",
+        definition: {
+          version: 1,
+          query: "earthsea",
+          filters: {
+            authors: ["Ursula K. Le Guin"],
+            tags: ["Fantasy"],
+            series: ["Earthsea Cycle"],
+            languages: ["en-US"],
+            formats: ["epub"],
+          },
+          sort: { field: "publishedDate", direction: "descending" },
+        },
+      };
+      const saved = parseProcessOutput(
+        await invokeProcess([
+          "library",
+          "saved-views",
+          "save",
+          "--db",
+          databasePath!,
+          "--request-json",
+          JSON.stringify(request),
+        ]),
+      ) as {
+        value: {
+          view: typeof request & { createdAt: string; updatedAt: string };
+        };
+      };
+      expect(saved.value.view).toMatchObject(request);
+      expect(new Date(saved.value.view.createdAt).toISOString()).toBe(
+        saved.value.view.createdAt,
+      );
+      expect(new Date(saved.value.view.updatedAt).toISOString()).toBe(
+        saved.value.view.updatedAt,
+      );
+
+      const listed = parseProcessOutput(
+        await invokeProcess([
+          "library",
+          "saved-views",
+          "list",
+          "--db",
+          databasePath!,
+        ]),
+      ) as { value: { views: unknown[] } };
+      expect(listed.value.views).toEqual([saved.value.view]);
+
+      const removed = parseProcessOutput(
+        await invokeProcess([
+          "library",
+          "saved-views",
+          "remove",
+          "--db",
+          databasePath!,
+          "--request-json",
+          JSON.stringify({ id: request.id }),
+        ]),
+      ) as { value: { view: unknown } };
+      expect(removed.value.view).toEqual(saved.value.view);
+
+      const afterRemoval = parseProcessOutput(
+        await invokeProcess([
+          "library",
+          "saved-views",
+          "list",
+          "--db",
+          databasePath!,
+        ]),
+      ) as { value: { views: unknown[] } };
+      expect(afterRemoval.value.views).toEqual([]);
+    });
+
+    it("rejects invalid catalogue JSON before opening library storage", async () => {
+      const blockedDataDirectory = join(directory!, "not-a-directory");
+      await Bun.write(blockedDataDirectory, "opening storage through this path must fail");
+      const env = { TAKIO_DATA_DIR: blockedDataDirectory };
+      const definition = {
+        version: 1,
+        query: "",
+        filters: { authors: [], tags: [], series: [], languages: [], formats: [] },
+        sort: { field: "title", direction: "ascending" },
+      };
+      const query = {
+        ...definition,
+        page: { offset: 0, limit: 10 },
+      };
+      const oversizedText = "é".repeat(8_192);
+      const oversizedQuery = JSON.stringify({ ...query, query: oversizedText });
+      expect(oversizedQuery.length).toBeLessThanOrEqual(16 * 1024);
+      expect(Buffer.byteLength(oversizedQuery, "utf8")).toBeGreaterThan(16 * 1024);
+      const invalidRequests = [
+        ["library", "query", "--request-json", "{"],
+        ["library", "query", "--request-json", "[]"],
+        [
+          "library",
+          "query",
+          "--request-json",
+          JSON.stringify({ ...query, unexpected: true }),
+        ],
+        [
+          "library",
+          "query",
+          "--request-json",
+          JSON.stringify({ ...query, page: { offset: 0 } }),
+        ],
+        ["library", "query", "--request-json", oversizedQuery],
+        [
+          "library",
+          "saved-views",
+          "save",
+          "--request-json",
+          JSON.stringify({ id: "view", name: "View", definition, unexpected: true }),
+        ],
+        [
+          "library",
+          "saved-views",
+          "save",
+          "--request-json",
+          JSON.stringify({ id: "view", name: oversizedText, definition }),
+        ],
+        [
+          "library",
+          "saved-views",
+          "remove",
+          "--request-json",
+          JSON.stringify({ id: "view", unexpected: true }),
+        ],
+        [
+          "library",
+          "saved-views",
+          "remove",
+          "--request-json",
+          JSON.stringify({ id: oversizedText }),
+        ],
+      ];
+
+      for (const args of invalidRequests) {
+        expectInvalidArgumentsProcess(await invokeProcess(args, env));
+      }
+    });
+
     it("reports a duplicate add as JSON with a nonzero exit", async () => {
       const args = [
         "library",
