@@ -11,6 +11,10 @@ import {
   planConversion,
   type FormatId,
 } from "@takio/core";
+import {
+  libraryMetadataPatchSchema,
+  type LibraryMetadataPatch,
+} from "@takio/library-contract";
 import { BunSqliteLibraryStore } from "@takio/library-store-bun";
 import {
   ConversionError,
@@ -36,6 +40,8 @@ type LibraryPaths = {
 
 type Launcher = (argv: readonly string[]) => void | Promise<void>;
 type Ejector = (destinationPath: string) => Promise<number>;
+
+const MAX_LIBRARY_UPDATE_PATCH_BYTES = 16 * 1024;
 
 function openWithDefaultApp(argv: readonly string[]): void {
   Bun.spawn({ cmd: [...argv], stdin: "ignore", stdout: "ignore", stderr: "ignore" });
@@ -994,6 +1000,7 @@ export function createProgram(
   storageCommand(library.command("update").helpOption(false), writeError)
     .option("--db <path>", "database path")
     .requiredOption("--id <id>", "library item ID")
+    .option("--patch-json <json>", "structured metadata patch as JSON")
     .option("--title <title>", "replacement title")
     .option("--author <author>", "replacement author; empty clears it")
     .option("--description <description>", "replacement description; empty clears it")
@@ -1008,6 +1015,7 @@ export function createProgram(
         options: {
           db?: string;
           id: string;
+          patchJson?: string;
           title?: string;
           author?: string;
           description?: string;
@@ -1019,26 +1027,54 @@ export function createProgram(
           command.error("", { exitCode: 1, code: "invalid-arguments" });
         }
 
+        let patch: LibraryMetadataPatch;
+        if (options.patchJson !== undefined) {
+          const mixesLegacyMetadata = ["title", "author", "description", "tag"].some(
+            (name) => command.getOptionValueSource(name) === "cli",
+          );
+          if (
+            mixesLegacyMetadata ||
+            Buffer.byteLength(options.patchJson, "utf8") > MAX_LIBRARY_UPDATE_PATCH_BYTES
+          ) {
+            command.error("", { exitCode: 1, code: "invalid-arguments" });
+          }
+
+          let candidate: unknown;
+          try {
+            candidate = JSON.parse(options.patchJson);
+          } catch {
+            command.error("", { exitCode: 1, code: "invalid-arguments" });
+          }
+
+          const parsed = libraryMetadataPatchSchema.safeParse(candidate);
+          if (!parsed.success) {
+            command.error("", { exitCode: 1, code: "invalid-arguments" });
+          }
+          patch = parsed.data;
+        } else {
+          patch = {
+            title: options.title,
+            author:
+              options.author === undefined
+                ? undefined
+                : options.author.trim() === ""
+                  ? null
+                  : options.author,
+            description:
+              options.description === undefined
+                ? undefined
+                : options.description.trim() === ""
+                  ? null
+                  : options.description,
+            tags: options.tag,
+          };
+        }
+
         const { store } = await openLibraryStore(options.db, command);
         try {
           const result = await store.update({
             id: options.id,
-            patch: {
-              title: options.title,
-              author:
-                options.author === undefined
-                  ? undefined
-                  : options.author.trim() === ""
-                    ? null
-                    : options.author,
-              description:
-                options.description === undefined
-                  ? undefined
-                  : options.description.trim() === ""
-                    ? null
-                    : options.description,
-              tags: options.tag,
-            },
+            patch,
           });
           if (!result.ok) {
             command.error("", { exitCode: 1, code: result.error.code });

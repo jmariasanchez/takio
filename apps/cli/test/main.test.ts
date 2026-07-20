@@ -770,6 +770,110 @@ describe("takio CLI", () => {
       expect(reopened.value.item).toEqual(cleared.value.item);
     });
 
+    it("passes a validated structured metadata patch through without dropping rich fields", async () => {
+      const sourcePath = join(directory!, "structured.epub");
+      await Bun.write(sourcePath, "owned contents");
+      const env = { TAKIO_DATA_DIR: directory };
+      const imported = parseProcessOutput(
+        await invokeProcess(["library", "import", "--source-path", sourcePath], env),
+      ) as { value: { item: { id: string } } };
+      const patch = {
+        title: "A Wizard of Earthsea",
+        authors: [{ name: "Ursula K. Le Guin", sortName: "Le Guin, Ursula K." }],
+        series: "Earthsea Cycle",
+        seriesIndex: 1,
+        publisher: "Parnassus Press",
+        languages: ["en-US", "fr"],
+        identifiers: { isbn: "9780547773742", goodreads: "13642" },
+        publishedDate: "1968-11-01",
+        rating: 9.5,
+        description: "A young mage learns the cost of power.",
+        tags: ["Fantasy", "Classic"],
+      };
+
+      const updated = parseProcessOutput(
+        await invokeProcess(
+          [
+            "library",
+            "update",
+            "--id",
+            imported.value.item.id,
+            "--patch-json",
+            JSON.stringify(patch),
+          ],
+          env,
+        ),
+      ) as { value: { item: Record<string, unknown> } };
+
+      expect(updated.value.item).toMatchObject({
+        ...patch,
+        author: "Ursula K. Le Guin",
+      });
+
+      const reopened = parseProcessOutput(
+        await invokeProcess(["library", "get", "--id", imported.value.item.id], env),
+      ) as { value: { item: Record<string, unknown> } };
+      expect(reopened.value.item).toEqual(updated.value.item);
+    });
+
+    it("rejects invalid structured patches before opening library storage", async () => {
+      const blockedDataDirectory = join(directory!, "not-a-directory");
+      await Bun.write(blockedDataDirectory, "opening storage through this path must fail");
+      const env = { TAKIO_DATA_DIR: blockedDataDirectory };
+      const oversizedPayload = JSON.stringify({
+        description: "é".repeat(8_192),
+        tags: [],
+      });
+      expect(oversizedPayload.length).toBeLessThanOrEqual(16 * 1024);
+      expect(Buffer.byteLength(oversizedPayload, "utf8")).toBeGreaterThan(16 * 1024);
+
+      const invalidPayloads = [
+        "{",
+        "[]",
+        JSON.stringify({ tags: [], sourcePath: "/tmp/forbidden.epub" }),
+        JSON.stringify({ title: "Missing required tags" }),
+        oversizedPayload,
+      ];
+
+      for (const payload of invalidPayloads) {
+        expectInvalidArgumentsProcess(
+          await invokeProcess(
+            ["library", "update", "--id", "never-open", "--patch-json", payload],
+            env,
+          ),
+        );
+      }
+    });
+
+    it("rejects mixed structured and legacy metadata before opening library storage", async () => {
+      const blockedDataDirectory = join(directory!, "not-a-directory");
+      await Bun.write(blockedDataDirectory, "opening storage through this path must fail");
+      const env = { TAKIO_DATA_DIR: blockedDataDirectory };
+      const legacyOptions = [
+        ["--title", "Mixed title"],
+        ["--author", "Mixed author"],
+        ["--description", "Mixed description"],
+        ["--tag", "Mixed tag"],
+      ];
+
+      for (const legacyOption of legacyOptions) {
+        expectInvalidArgumentsProcess(
+          await invokeProcess(
+            [
+              "library",
+              "update",
+              "--id",
+              "never-open",
+              "--patch-json",
+              JSON.stringify({ tags: [] }),
+              ...legacyOption,
+            ],
+            env,
+          ),
+        );
+      }
+    });
+
     it("sets and removes an owned cover while preserving the prior cover on failure", async () => {
       const sourcePath = join(directory!, "covered.epub");
       const firstCoverPath = join(directory!, "first-cover.jpg");
