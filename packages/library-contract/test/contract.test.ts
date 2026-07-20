@@ -4,16 +4,21 @@ import {
   LIBRARY_QUERY_SORT_DIRECTIONS,
   LIBRARY_QUERY_SORT_FIELDS,
   LIBRARY_STORE_ERROR_CODES,
+  DUPLICATE_REVIEW_DISPOSITIONS,
   MAX_LIBRARY_QUERY_PAGE_SIZE,
   MAX_SAVED_LIBRARY_VIEW_NAME_LENGTH,
   type AddLibraryItemRequest,
   type AttachLibraryFormatRequest,
   type ImportLibraryItemRequest,
+  type KeepDuplicatePairResult,
+  type LibraryDuplicateReviewStore,
   type LibraryImportWireResult,
   type LibraryListWireResult,
   type LibraryFormatReplacementStore,
   type LibraryItemTrashStore,
   type LibraryMetadataPatch,
+  type ListDuplicateCandidatesRequest,
+  type ListDuplicateCandidatesResult,
   type LibraryPurgeWireResult,
   type LibraryQueryStore,
   type LibraryReplaceFormatWireResult,
@@ -33,16 +38,26 @@ import {
   type RemoveLibraryItemResult,
   type ReplaceLibraryFormatRequest,
   type ReplaceLibraryFormatResult,
+  type MergeDuplicatePairRequest,
+  type MergeDuplicatePairResult,
+  type ReopenDuplicatePairResult,
   type TrashLibraryItemResult,
   libraryMetadataPatchSchema,
+  duplicateCandidatePageSchema,
+  duplicateCandidateSchema,
+  duplicateSignalSchema,
+  keepDuplicatePairRequestSchema,
   libraryQueryPageSchema,
   libraryTrashPageSchema,
   listLibraryTrashRequestSchema,
+  listDuplicateCandidatesRequestSchema,
+  mergeDuplicatePairRequestSchema,
   purgeLibraryItemRequestSchema,
   queryLibraryItemsRequestSchema,
   replaceLibraryFormatRequestSchema,
   removeSavedLibraryViewRequestSchema,
   restoreLibraryItemRequestSchema,
+  reopenDuplicatePairRequestSchema,
   saveSavedLibraryViewRequestSchema,
   savedLibraryViewSchema,
   trashLibraryItemRequestSchema,
@@ -70,6 +85,21 @@ const canonicalItem = {
   ],
   tags: [],
 } as const;
+
+const duplicateItem = {
+  ...canonicalItem,
+  id: "book-2",
+  sourcePath: "library/left-hand-copy.epub",
+  formats: [
+    {
+      ...canonicalItem.formats[0],
+      sourcePath: "library/left-hand-copy.epub",
+    },
+    canonicalItem.formats[1],
+  ],
+} as const;
+
+const duplicateReviewToken = "a".repeat(64);
 
 describe("LibraryStore", () => {
   it("defines bounded pages, literal queries, rich filters, and deterministic sorts", async () => {
@@ -223,6 +253,223 @@ describe("LibraryStore", () => {
         facets: { ...page.facets, languages: [{ value: "not_a_tag", count: 1 }] },
       }).success,
     ).toBe(false);
+  });
+
+  it("defines deterministic, bounded duplicate candidate pages", async () => {
+    const signals = [
+      {
+        kind: "same-content",
+        leftFormat: "epub",
+        rightFormat: "epub",
+        bytes: 42,
+        sha256: "b".repeat(64),
+      },
+      { kind: "same-identifier", scheme: "isbn", value: "9780385150590" },
+      {
+        kind: "same-title-author",
+        title: "the left hand of darkness",
+        author: "ursula k. le guin",
+      },
+    ] as const;
+    const candidate = {
+      left: canonicalItem,
+      right: duplicateItem,
+      signals,
+      reviewToken: duplicateReviewToken,
+    } as const;
+    const request: ListDuplicateCandidatesRequest = {
+      page: { offset: 0, limit: 25 },
+      disposition: "unreviewed",
+    };
+    const result: ListDuplicateCandidatesResult = {
+      ok: true,
+      value: {
+        candidates: [candidate],
+        total: 1,
+        page: request.page,
+        scan: { filesHashed: 2, fingerprintsReused: 0, unreadableFormats: 1 },
+      },
+    };
+    const store: LibraryDuplicateReviewStore = {
+      listDuplicateCandidates: async () => result,
+      keepDuplicatePair: async () => ({ ok: true, value: null }),
+      reopenDuplicatePair: async () => ({ ok: true, value: null }),
+      mergeDuplicatePair: async () => ({
+        ok: true,
+        value: {
+          target: canonicalItem,
+          trashedSource: duplicateItem,
+          cleanupPending: false,
+        },
+      }),
+    };
+
+    expect(DUPLICATE_REVIEW_DISPOSITIONS).toEqual(["unreviewed", "kept-both"]);
+    expect(signals.map((signal) => duplicateSignalSchema.parse(signal))).toEqual(signals);
+    expect(duplicateCandidateSchema.parse(candidate)).toEqual(candidate);
+    expect(listDuplicateCandidatesRequestSchema.parse(request)).toEqual(request);
+    expect(duplicateCandidatePageSchema.parse(result.value)).toEqual(result.value);
+    await expect(store.listDuplicateCandidates(request)).resolves.toEqual(result);
+    expect(JSON.parse(JSON.stringify({ request, result }))).toEqual({
+      request,
+      result,
+    });
+
+    for (const invalid of [
+      { ...signals[0], bytes: 0 },
+      { ...signals[0], sha256: "B".repeat(64) },
+      { ...signals[0], digest: signals[0].sha256 },
+      { kind: "same-identifier", scheme: "isbn", value: " " },
+      { kind: "same-title-author", title: " ", author: "writer" },
+      { kind: "similar-title", title: "the left hand of darkness" },
+    ]) {
+      expect(duplicateSignalSchema.safeParse(invalid).success).toBe(false);
+    }
+    expect(duplicateCandidateSchema.safeParse({ ...candidate, signals: [] }).success).toBe(false);
+    expect(
+      duplicateCandidateSchema.safeParse({
+        ...candidate,
+        left: duplicateItem,
+        right: canonicalItem,
+      }).success,
+    ).toBe(false);
+    expect(
+      listDuplicateCandidatesRequestSchema.safeParse({
+        ...request,
+        page: { offset: 0, limit: MAX_LIBRARY_QUERY_PAGE_SIZE + 1 },
+      }).success,
+    ).toBe(false);
+    expect(
+      listDuplicateCandidatesRequestSchema.safeParse({
+        ...request,
+        disposition: "merged",
+      }).success,
+    ).toBe(false);
+    expect(
+      listDuplicateCandidatesRequestSchema.safeParse({
+        ...request,
+        includeTrashed: true,
+      }).success,
+    ).toBe(false);
+    expect(
+      duplicateCandidatePageSchema.safeParse({
+        ...result.value,
+        candidates: [candidate, candidate],
+        total: 2,
+        page: { offset: 0, limit: 1 },
+      }).success,
+    ).toBe(false);
+    expect(duplicateCandidatePageSchema.safeParse({ ...result.value, total: 0 }).success).toBe(
+      false,
+    );
+    expect(
+      duplicateCandidatePageSchema.safeParse({
+        ...result.value,
+        scan: { ...result.value.scan, unreadableFormats: -1 },
+      }).success,
+    ).toBe(false);
+  });
+
+  it("requires current canonical evidence for duplicate dispositions", async () => {
+    const request = {
+      leftId: canonicalItem.id,
+      rightId: duplicateItem.id,
+      reviewToken: duplicateReviewToken,
+    } as const;
+    const kept: KeepDuplicatePairResult = { ok: true, value: null };
+    const reopened: ReopenDuplicatePairResult = { ok: true, value: null };
+    const store: LibraryDuplicateReviewStore = {
+      listDuplicateCandidates: async ({ page }) => ({
+        ok: true,
+        value: {
+          candidates: [],
+          total: 0,
+          page,
+          scan: { filesHashed: 0, fingerprintsReused: 0, unreadableFormats: 0 },
+        },
+      }),
+      keepDuplicatePair: async () => kept,
+      reopenDuplicatePair: async () => reopened,
+      mergeDuplicatePair: async () => ({
+        ok: true,
+        value: {
+          target: canonicalItem,
+          trashedSource: duplicateItem,
+          cleanupPending: false,
+        },
+      }),
+    };
+
+    expect(keepDuplicatePairRequestSchema.parse(request)).toEqual(request);
+    expect(reopenDuplicatePairRequestSchema.parse(request)).toEqual(request);
+    await expect(store.keepDuplicatePair(request)).resolves.toEqual(kept);
+    await expect(store.reopenDuplicatePair(request)).resolves.toEqual(reopened);
+
+    for (const invalid of [
+      { ...request, leftId: "" },
+      { ...request, rightId: request.leftId },
+      { ...request, leftId: request.rightId, rightId: request.leftId },
+      { ...request, reviewToken: "not-a-token" },
+      { ...request, reviewToken: "A".repeat(64) },
+      { ...request, force: true },
+    ]) {
+      expect(keepDuplicatePairRequestSchema.safeParse(invalid).success).toBe(false);
+      expect(reopenDuplicatePairRequestSchema.safeParse(invalid).success).toBe(false);
+    }
+  });
+
+  it("defines an explicit merge-to-trash request and result", async () => {
+    const request: MergeDuplicatePairRequest = {
+      targetId: canonicalItem.id,
+      sourceId: duplicateItem.id,
+      reviewToken: duplicateReviewToken,
+      metadata: { title: canonicalItem.title, tags: ["Classic"] },
+      addSourceFormats: ["pdf"],
+      cover: "target",
+    };
+    const result: MergeDuplicatePairResult = {
+      ok: true,
+      value: {
+        target: canonicalItem,
+        trashedSource: duplicateItem,
+        cleanupPending: false,
+      },
+    };
+    const store: LibraryDuplicateReviewStore = {
+      listDuplicateCandidates: async ({ page }) => ({
+        ok: true,
+        value: {
+          candidates: [],
+          total: 0,
+          page,
+          scan: { filesHashed: 0, fingerprintsReused: 0, unreadableFormats: 0 },
+        },
+      }),
+      keepDuplicatePair: async () => ({ ok: true, value: null }),
+      reopenDuplicatePair: async () => ({ ok: true, value: null }),
+      mergeDuplicatePair: async () => result,
+    };
+
+    expect(mergeDuplicatePairRequestSchema.parse(request)).toEqual(request);
+    await expect(store.mergeDuplicatePair(request)).resolves.toEqual(result);
+    expect(JSON.parse(JSON.stringify({ request, result }))).toEqual({
+      request,
+      result,
+    });
+
+    for (const invalid of [
+      { ...request, targetId: "" },
+      { ...request, sourceId: request.targetId },
+      { ...request, reviewToken: "stale" },
+      { ...request, metadata: { title: canonicalItem.title } },
+      { ...request, metadata: { tags: [], sourcePath: "/external/book.epub" } },
+      { ...request, addSourceFormats: ["pdf", "pdf"] },
+      { ...request, addSourceFormats: ["lit"] },
+      { ...request, cover: "newest" },
+      { ...request, purgeSource: true },
+    ]) {
+      expect(mergeDuplicatePairRequestSchema.safeParse(invalid).success).toBe(false);
+    }
   });
 
   it("keeps saved views versioned, page-independent, and JSON-safe", async () => {
@@ -414,6 +661,7 @@ describe("LibraryStore", () => {
       "last-format",
       "format-changed",
       "not-trashed",
+      "stale-review",
     ]);
 
     const result: LibraryStoreResult<never> = {

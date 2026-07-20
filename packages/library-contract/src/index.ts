@@ -13,6 +13,7 @@ import { z } from "zod";
 
 export const MAX_LIBRARY_QUERY_PAGE_SIZE = 100;
 export const MAX_SAVED_LIBRARY_VIEW_NAME_LENGTH = 120;
+export const DUPLICATE_REVIEW_DISPOSITIONS = ["unreviewed", "kept-both"] as const;
 
 export const LIBRARY_QUERY_SORT_FIELDS = [
   "title",
@@ -206,6 +207,122 @@ export const libraryTrashPageSchema = z
   })
   .readonly();
 
+const duplicateReviewTokenSchema = z.string().regex(/^[0-9a-f]{64}$/);
+
+export const duplicateSignalSchema = z
+  .discriminatedUnion("kind", [
+    z
+      .object({
+        kind: z.literal("same-content"),
+        leftFormat: z.enum(FORMAT_IDS),
+        rightFormat: z.enum(FORMAT_IDS),
+        bytes: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+        sha256: z.string().regex(/^[0-9a-f]{64}$/),
+      })
+      .strict(),
+    z
+      .object({
+        kind: z.literal("same-identifier"),
+        scheme: z.string().trim().min(1),
+        value: z.string().trim().min(1),
+      })
+      .strict(),
+    z
+      .object({
+        kind: z.literal("same-title-author"),
+        title: z.string().trim().min(1),
+        author: z.string().trim().min(1),
+      })
+      .strict(),
+  ])
+  .readonly();
+
+export const duplicateCandidateSchema = z
+  .object({
+    left: libraryItemSchema,
+    right: libraryItemSchema,
+    signals: z.array(duplicateSignalSchema).min(1).readonly(),
+    reviewToken: duplicateReviewTokenSchema,
+  })
+  .strict()
+  .superRefine((candidate, context) => {
+    if (candidate.left.id >= candidate.right.id) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["right", "id"],
+        message: "Duplicate candidate item IDs must be distinct and canonically ordered.",
+      });
+    }
+  })
+  .readonly();
+
+export const listDuplicateCandidatesRequestSchema = z
+  .object({
+    page: libraryQueryPageRequestSchema,
+    disposition: z.enum(DUPLICATE_REVIEW_DISPOSITIONS),
+  })
+  .strict()
+  .readonly();
+
+const duplicateScanSummarySchema = z
+  .object({
+    filesHashed: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
+    fingerprintsReused: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
+    unreadableFormats: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
+  })
+  .strict()
+  .readonly();
+
+export const duplicateCandidatePageSchema = z
+  .object({
+    candidates: z.array(duplicateCandidateSchema).max(MAX_LIBRARY_QUERY_PAGE_SIZE).readonly(),
+    total: z.number().int().min(0),
+    page: libraryQueryPageRequestSchema,
+    scan: duplicateScanSummarySchema,
+  })
+  .strict()
+  .superRefine((result, context) => {
+    if (result.candidates.length > result.page.limit) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["candidates"],
+        message: "A duplicate candidate page cannot contain more pairs than its requested limit.",
+      });
+    }
+    if (
+      result.candidates.length > 0 &&
+      result.page.offset + result.candidates.length > result.total
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["total"],
+        message: "The total must account for every pair in the returned page.",
+      });
+    }
+  })
+  .readonly();
+
+const duplicatePairReviewRequestSchema = z
+  .object({
+    leftId: z.string().min(1),
+    rightId: z.string().min(1),
+    reviewToken: duplicateReviewTokenSchema,
+  })
+  .strict()
+  .superRefine((request, context) => {
+    if (request.leftId >= request.rightId) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["rightId"],
+        message: "Duplicate pair item IDs must be distinct and canonically ordered.",
+      });
+    }
+  })
+  .readonly();
+
+export const keepDuplicatePairRequestSchema = duplicatePairReviewRequestSchema;
+export const reopenDuplicatePairRequestSchema = duplicatePairReviewRequestSchema;
+
 export const savedLibraryViewDefinitionSchema = z
   .object({
     version: z.literal(1),
@@ -270,6 +387,12 @@ export type LibraryFacetCounts = z.infer<typeof libraryFacetCountsSchema>;
 export type LibraryQueryPage = z.infer<typeof libraryQueryPageSchema>;
 export type ListLibraryTrashRequest = z.infer<typeof listLibraryTrashRequestSchema>;
 export type LibraryTrashPage = z.infer<typeof libraryTrashPageSchema>;
+export type DuplicateSignal = z.infer<typeof duplicateSignalSchema>;
+export type DuplicateCandidate = z.infer<typeof duplicateCandidateSchema>;
+export type ListDuplicateCandidatesRequest = z.infer<typeof listDuplicateCandidatesRequestSchema>;
+export type DuplicateCandidatePage = z.infer<typeof duplicateCandidatePageSchema>;
+export type KeepDuplicatePairRequest = z.infer<typeof keepDuplicatePairRequestSchema>;
+export type ReopenDuplicatePairRequest = z.infer<typeof reopenDuplicatePairRequestSchema>;
 export type SavedLibraryViewDefinition = z.infer<typeof savedLibraryViewDefinitionSchema>;
 export type SavedLibraryView = z.infer<typeof savedLibraryViewSchema>;
 export type ListSavedLibraryViewsRequest = z.infer<typeof listSavedLibraryViewsRequestSchema>;
@@ -289,6 +412,7 @@ export const LIBRARY_STORE_ERROR_CODES = [
   "last-format",
   "format-changed",
   "not-trashed",
+  "stale-review",
 ] as const;
 
 export type LibraryStoreErrorCode = (typeof LIBRARY_STORE_ERROR_CODES)[number];
@@ -382,7 +506,34 @@ export const libraryMetadataPatchSchema = z
   .strict()
   .readonly();
 
+export const mergeDuplicatePairRequestSchema = z
+  .object({
+    targetId: z.string().min(1),
+    sourceId: z.string().min(1),
+    reviewToken: duplicateReviewTokenSchema,
+    metadata: libraryMetadataPatchSchema,
+    addSourceFormats: z
+      .array(z.enum(FORMAT_IDS))
+      .refine((formats) => new Set(formats).size === formats.length, {
+        message: "Source formats must be unique.",
+      })
+      .readonly(),
+    cover: z.enum(["target", "source", "none"]),
+  })
+  .strict()
+  .superRefine((request, context) => {
+    if (request.targetId === request.sourceId) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["sourceId"],
+        message: "A duplicate merge source must differ from its target.",
+      });
+    }
+  })
+  .readonly();
+
 export type LibraryMetadataPatch = z.infer<typeof libraryMetadataPatchSchema>;
+export type MergeDuplicatePairRequest = z.infer<typeof mergeDuplicatePairRequestSchema>;
 export type UpdateLibraryItemRequest = Readonly<{
   id: string;
   patch: LibraryMetadataPatch;
@@ -422,6 +573,14 @@ export type TrashLibraryItemResult = LibraryStoreResult<LibraryItem | null>;
 export type RestoreLibraryItemResult = LibraryStoreResult<LibraryItem | null>;
 export type PurgeLibraryItemResult = LibraryStoreResult<{
   readonly item: LibraryItem | null;
+  readonly cleanupPending: boolean;
+}>;
+export type ListDuplicateCandidatesResult = LibraryStoreResult<DuplicateCandidatePage>;
+export type KeepDuplicatePairResult = LibraryStoreResult<null>;
+export type ReopenDuplicatePairResult = LibraryStoreResult<null>;
+export type MergeDuplicatePairResult = LibraryStoreResult<{
+  readonly target: LibraryItem;
+  readonly trashedSource: LibraryItem;
   readonly cleanupPending: boolean;
 }>;
 
@@ -464,6 +623,10 @@ export type LibraryPurgeWireResult = LibraryStoreResult<{
   readonly item: LibraryItem | null;
   readonly cleanupPending: boolean;
 }>;
+export type LibraryDuplicateCandidatesWireResult = ListDuplicateCandidatesResult;
+export type LibraryDuplicateDispositionWireResult =
+  KeepDuplicatePairResult | ReopenDuplicatePairResult;
+export type LibraryDuplicateMergeWireResult = MergeDuplicatePairResult;
 
 export interface LibraryQueryStore {
   /** Returns active items only; trashed items do not contribute to items, totals, or facets. */
@@ -478,6 +641,22 @@ export interface SavedLibraryViewStore {
 
 export interface LibraryFormatReplacementStore {
   replaceFormat(request: ReplaceLibraryFormatRequest): Promise<ReplaceLibraryFormatResult>;
+}
+
+export interface LibraryDuplicateReviewStore {
+  /** Lists active-item candidate pairs in deterministic signal, title, and id order. */
+  listDuplicateCandidates(
+    request: ListDuplicateCandidatesRequest,
+  ): Promise<ListDuplicateCandidatesResult>;
+  /** Suppresses this pair only while the reviewed evidence token remains current. */
+  keepDuplicatePair(request: KeepDuplicatePairRequest): Promise<KeepDuplicatePairResult>;
+  /** Makes a previously kept pair reviewable again without changing either library item. */
+  reopenDuplicatePair(request: ReopenDuplicatePairRequest): Promise<ReopenDuplicatePairResult>;
+  /**
+   * Applies the explicit target patch, copies selected missing formats, and moves the intact source
+   * item to trash. Implementations reject changed evidence with `stale-review` and never purge.
+   */
+  mergeDuplicatePair(request: MergeDuplicatePairRequest): Promise<MergeDuplicatePairResult>;
 }
 
 export interface LibraryItemTrashStore {
