@@ -10,8 +10,10 @@ import {
   type ImportLibraryItemRequest,
   type LibraryImportWireResult,
   type LibraryListWireResult,
+  type LibraryFormatReplacementStore,
   type LibraryMetadataPatch,
   type LibraryQueryStore,
+  type LibraryReplaceFormatWireResult,
   type LibraryRemoveWireResult,
   type QueryLibraryItemsRequest,
   type SavedLibraryViewStore,
@@ -20,9 +22,12 @@ import {
   type RemoveLibraryFormatRequest,
   type RemoveLibraryFormatResult,
   type RemoveLibraryItemResult,
+  type ReplaceLibraryFormatRequest,
+  type ReplaceLibraryFormatResult,
   libraryMetadataPatchSchema,
   libraryQueryPageSchema,
   queryLibraryItemsRequestSchema,
+  replaceLibraryFormatRequestSchema,
   removeSavedLibraryViewRequestSchema,
   saveSavedLibraryViewRequestSchema,
   savedLibraryViewSchema,
@@ -358,6 +363,7 @@ describe("LibraryStore", () => {
       "invalid-arguments",
       "duplicate-format",
       "last-format",
+      "format-changed",
     ]);
 
     const result: LibraryStoreResult<never> = {
@@ -380,11 +386,16 @@ describe("LibraryStore", () => {
       ok: true,
       value: { item: null, cleanupPending: false },
     };
+    const replaced: LibraryReplaceFormatWireResult = {
+      ok: true,
+      value: { item: canonicalItem, cleanupPending: true },
+    };
 
-    expect(JSON.parse(JSON.stringify({ listed, imported, removed }))).toEqual({
+    expect(JSON.parse(JSON.stringify({ listed, imported, removed, replaced }))).toEqual({
       listed,
       imported,
       removed,
+      replaced,
     });
   });
 
@@ -465,6 +476,110 @@ describe("LibraryStore", () => {
       attached,
       removed,
     });
+  });
+
+  it("requires a strict compare-and-swap snapshot for format replacement", () => {
+    const expectedCurrent = {
+      sourcePath: "library/left-hand.epub",
+      addedAt: "2026-07-17T12:00:00.000Z",
+      provenance: "managed",
+    } as const;
+    const managed: ReplaceLibraryFormatRequest = {
+      id: canonicalItem.id,
+      format: "epub",
+      expectedCurrent,
+      source: {
+        kind: "copy",
+        path: "/external/replacement.epub",
+        expectedArtifact: { bytes: 42, sha256: "a".repeat(64) },
+      },
+    };
+    const referenced: ReplaceLibraryFormatRequest = {
+      id: canonicalItem.id,
+      format: "pdf",
+      expectedCurrent: {
+        sourcePath: "library/left-hand.pdf",
+        addedAt: "2026-07-19T12:00:00.000Z",
+        provenance: "referenced",
+      },
+      source: { kind: "reference", path: "/external/replacement.pdf" },
+    };
+    const result: ReplaceLibraryFormatResult = {
+      ok: true,
+      value: { item: canonicalItem, cleanupPending: false },
+    };
+    const replacementStore: LibraryFormatReplacementStore = {
+      replaceFormat: async () => result,
+    };
+
+    expect(replaceLibraryFormatRequestSchema.parse(managed)).toEqual(managed);
+    expect(replaceLibraryFormatRequestSchema.parse(referenced)).toEqual(referenced);
+    expect(replacementStore.replaceFormat(managed)).resolves.toEqual(result);
+    expect(JSON.parse(JSON.stringify({ managed, referenced, result }))).toEqual({
+      managed,
+      referenced,
+      result,
+    });
+
+    const invalidRequests = [
+      { format: "epub", expectedCurrent, source: managed.source },
+      { ...managed, id: "" },
+      { ...managed, format: "lit" },
+      { ...managed, expectedCurrent: undefined },
+      { ...managed, expectedCurrent: { ...expectedCurrent, sourcePath: "" } },
+      { ...managed, expectedCurrent: { ...expectedCurrent, addedAt: "yesterday" } },
+      { ...managed, expectedCurrent: { ...expectedCurrent, provenance: "owned" } },
+      { ...managed, expectedCurrent: { ...expectedCurrent, format: "epub" } },
+      { ...managed, source: { kind: "copy", path: "" } },
+      { ...managed, source: { kind: "reference", path: "" } },
+      {
+        ...managed,
+        source: {
+          kind: "reference",
+          path: "/external/replacement.epub",
+          expectedArtifact: { bytes: 42, sha256: "a".repeat(64) },
+        },
+      },
+      {
+        ...managed,
+        source: {
+          kind: "copy",
+          path: "/external/replacement.epub",
+          expectedArtifact: { bytes: 0, sha256: "a".repeat(64) },
+        },
+      },
+      {
+        ...managed,
+        source: {
+          kind: "copy",
+          path: "/external/replacement.epub",
+          expectedArtifact: { bytes: 42, sha256: "A".repeat(64) },
+        },
+      },
+      { ...managed, unexpected: true },
+    ];
+    for (const request of invalidRequests) {
+      expect(replaceLibraryFormatRequestSchema.safeParse(request).success).toBe(false);
+    }
+
+    if (false) {
+      // @ts-expect-error The current format snapshot is required for compare-and-swap replacement.
+      const missingSnapshot: ReplaceLibraryFormatRequest = {
+        id: canonicalItem.id,
+        format: "epub",
+        source: { kind: "reference", path: "/external/replacement.epub" },
+      };
+      const invalidReferenceIntegrity: ReplaceLibraryFormatRequest = {
+        ...referenced,
+        // @ts-expect-error Integrity-gated publication applies only to managed copies.
+        source: {
+          kind: "reference",
+          path: "/external/replacement.pdf",
+          expectedArtifact: { bytes: 42, sha256: "a".repeat(64) },
+        },
+      };
+      expect([missingSnapshot, invalidReferenceIntegrity]).toBeUndefined();
+    }
   });
 
   it("requires cleanup status on whole-item and format removal results", () => {

@@ -1,4 +1,5 @@
 import {
+  BOOK_FORMAT_PROVENANCES,
   FORMAT_IDS,
   bookAuthorSchema,
   bookIdentifiersSchema,
@@ -235,6 +236,7 @@ export const LIBRARY_STORE_ERROR_CODES = [
   "invalid-arguments",
   "duplicate-format",
   "last-format",
+  "format-changed",
 ] as const;
 
 export type LibraryStoreErrorCode = (typeof LIBRARY_STORE_ERROR_CODES)[number];
@@ -257,6 +259,28 @@ export type LibraryFormatArtifact = Readonly<{
   bytes: number;
   sha256: string;
 }>;
+export const libraryFormatArtifactSchema = z
+  .object({
+    bytes: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+    sha256: z.string().regex(/^[0-9a-f]{64}$/),
+  })
+  .strict()
+  .readonly();
+const libraryFormatSourceSchema = z.discriminatedUnion("kind", [
+  z
+    .object({
+      kind: z.literal("copy"),
+      path: z.string().min(1),
+      expectedArtifact: libraryFormatArtifactSchema.optional(),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("reference"),
+      path: z.string().min(1),
+    })
+    .strict(),
+]).readonly();
 export type AttachLibraryFormatRequest = Readonly<{
   id: string;
   source:
@@ -267,6 +291,23 @@ export type AttachLibraryFormatRequest = Readonly<{
       }>
     | Readonly<{ kind: "reference"; path: string }>;
 }>;
+export const replaceLibraryFormatRequestSchema = z
+  .object({
+    id: z.string().min(1),
+    format: z.enum(FORMAT_IDS),
+    expectedCurrent: z
+      .object({
+        sourcePath: z.string().min(1),
+        addedAt: z.string().datetime(),
+        provenance: z.enum(BOOK_FORMAT_PROVENANCES),
+      })
+      .strict()
+      .readonly(),
+    source: libraryFormatSourceSchema,
+  })
+  .strict()
+  .readonly();
+export type ReplaceLibraryFormatRequest = z.infer<typeof replaceLibraryFormatRequestSchema>;
 export type RemoveLibraryFormatRequest = Readonly<{ id: string; format: FormatId }>;
 export type RemoveLibraryItemRequest = Readonly<{ id: string }>;
 const nullableLibraryMetadataTextSchema = z.string().trim().min(1).nullable().optional();
@@ -304,6 +345,10 @@ export type GetLibraryItemResult = LibraryStoreResult<LibraryItem | null>;
 export type AddLibraryItemResult = LibraryStoreResult<LibraryItem>;
 export type ImportLibraryItemResult = LibraryStoreResult<LibraryItem>;
 export type AttachLibraryFormatResult = LibraryStoreResult<LibraryItem | null>;
+export type ReplaceLibraryFormatResult = LibraryStoreResult<{
+  readonly item: LibraryItem | null;
+  readonly cleanupPending: boolean;
+}>;
 export type RemoveLibraryFormatResult = LibraryStoreResult<{
   readonly item: LibraryItem | null;
   readonly cleanupPending: boolean;
@@ -326,6 +371,10 @@ export type LibraryListWireResult = LibraryStoreResult<{
 }>;
 export type LibraryImportWireResult = LibraryStoreResult<{ readonly item: LibraryItem }>;
 export type LibraryRemoveWireResult = LibraryStoreResult<{
+  readonly item: LibraryItem | null;
+  readonly cleanupPending: boolean;
+}>;
+export type LibraryReplaceFormatWireResult = LibraryStoreResult<{
   readonly item: LibraryItem | null;
   readonly cleanupPending: boolean;
 }>;
@@ -354,6 +403,10 @@ export interface SavedLibraryViewStore {
   listSavedViews(request: ListSavedLibraryViewsRequest): Promise<ListSavedLibraryViewsResult>;
   saveSavedView(request: SaveSavedLibraryViewRequest): Promise<SaveSavedLibraryViewResult>;
   removeSavedView(request: RemoveSavedLibraryViewRequest): Promise<RemoveSavedLibraryViewResult>;
+}
+
+export interface LibraryFormatReplacementStore {
+  replaceFormat(request: ReplaceLibraryFormatRequest): Promise<ReplaceLibraryFormatResult>;
 }
 
 export interface LibraryStore {
