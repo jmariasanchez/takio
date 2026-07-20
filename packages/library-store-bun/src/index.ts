@@ -6,6 +6,14 @@ import {
   type FormatId,
   type LibraryItem,
 } from "@takio/core";
+import {
+  libraryQueryPageSchema,
+  listSavedLibraryViewsRequestSchema,
+  queryLibraryItemsRequestSchema,
+  removeSavedLibraryViewRequestSchema,
+  savedLibraryViewSchema,
+  saveSavedLibraryViewRequestSchema,
+} from "@takio/library-contract";
 import type {
   AddLibraryItemRequest,
   AddLibraryItemResult,
@@ -18,6 +26,9 @@ import type {
   LibraryStore,
   LibraryStoreErrorCode,
   LibraryStoreResult,
+  LibraryQueryStore,
+  ListSavedLibraryViewsRequest,
+  ListSavedLibraryViewsResult,
   ListLibraryItemsRequest,
   ListLibraryItemsResult,
   OpenLibraryRequest,
@@ -28,8 +39,16 @@ import type {
   RemoveLibraryFormatResult,
   RemoveLibraryItemRequest,
   RemoveLibraryItemResult,
+  RemoveSavedLibraryViewRequest,
+  RemoveSavedLibraryViewResult,
   SearchLibraryItemsRequest,
   SearchLibraryItemsResult,
+  QueryLibraryItemsRequest,
+  QueryLibraryItemsResult,
+  SavedLibraryView,
+  SavedLibraryViewStore,
+  SaveSavedLibraryViewRequest,
+  SaveSavedLibraryViewResult,
   SetLibraryCoverRequest,
   SetLibraryCoverResult,
   UpdateLibraryItemRequest,
@@ -58,6 +77,7 @@ import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } 
 
 import { initializationTestSeam } from "./initialization-test-seam.js";
 import { lifecycleTestSeam } from "./lifecycle-test-seam.js";
+import { queryTestSeam } from "./query-test-seam.js";
 
 const SCHEMA_VERSION = 5;
 const incompatibleSchema = Symbol("incompatible-schema");
@@ -93,6 +113,18 @@ type StoredTag = { name: unknown };
 type StoredAuthor = { name: unknown; sortName: unknown; position: unknown };
 type StoredLanguage = { language: unknown; position: unknown };
 type StoredIdentifier = { scheme: unknown; value: unknown };
+type StoredItemFormat = StoredPositionedBookFormat & { libraryItemId: string };
+type StoredItemTag = StoredTag & { libraryItemId: string; position: unknown };
+type StoredItemAuthor = StoredAuthor & { libraryItemId: string };
+type StoredItemLanguage = StoredLanguage & { libraryItemId: string };
+type StoredItemIdentifier = StoredIdentifier & { libraryItemId: string };
+type StoredSavedLibraryView = {
+  id: unknown;
+  name: unknown;
+  definitionJson: unknown;
+  createdAt: unknown;
+  updatedAt: unknown;
+};
 type CleanupKind = "cover" | "format";
 type StoredCleanupPath = { sourcePath: unknown; kind: unknown };
 type CleanupJob = { sourcePath: string; kind: CleanupKind };
@@ -1240,7 +1272,384 @@ function escapeLike(query: string): string {
   return query.replace(/[\\%_]/g, "\\$&");
 }
 
-export class BunSqliteLibraryStore implements LibraryStore {
+type LibraryFacet = "authors" | "tags" | "series" | "languages" | "formats";
+type SqlParameter = string | number;
+type SqlFragment = { sql: string; parameters: SqlParameter[] };
+type StoredFacetRow = { facet: unknown; value: unknown; count: unknown };
+
+function buildLibraryMatch(
+  request: QueryLibraryItemsRequest,
+  omittedFacet?: LibraryFacet,
+): SqlFragment {
+  const clauses: string[] = [];
+  const parameters: SqlParameter[] = [];
+
+  if (request.query.length > 0) {
+    const pattern = `%${escapeLike(request.query)}%`;
+    clauses.push(`(
+      library_items.title LIKE ? ESCAPE '\\' COLLATE NOCASE
+      OR library_items.author LIKE ? ESCAPE '\\' COLLATE NOCASE
+      OR library_items.series LIKE ? ESCAPE '\\' COLLATE NOCASE
+      OR library_items.publisher LIKE ? ESCAPE '\\' COLLATE NOCASE
+      OR library_items.description LIKE ? ESCAPE '\\' COLLATE NOCASE
+      OR EXISTS (
+        SELECT 1 FROM library_item_authors
+        WHERE library_item_authors.library_item_id = library_items.id
+          AND (library_item_authors.name LIKE ? ESCAPE '\\' COLLATE NOCASE
+            OR library_item_authors.sort_name LIKE ? ESCAPE '\\' COLLATE NOCASE)
+      )
+      OR EXISTS (
+        SELECT 1 FROM library_item_tags
+        JOIN tags ON tags.normalized_name = library_item_tags.tag_normalized_name
+        WHERE library_item_tags.library_item_id = library_items.id
+          AND tags.name LIKE ? ESCAPE '\\' COLLATE NOCASE
+      )
+      OR EXISTS (
+        SELECT 1 FROM library_item_identifiers
+        WHERE library_item_identifiers.library_item_id = library_items.id
+          AND library_item_identifiers.value LIKE ? ESCAPE '\\' COLLATE NOCASE
+      )
+    )`);
+    parameters.push(pattern, pattern, pattern, pattern, pattern, pattern, pattern, pattern, pattern);
+  }
+
+  if (omittedFacet !== "authors" && request.filters.authors.length > 0) {
+    const values = JSON.stringify(request.filters.authors);
+    clauses.push(`(
+      library_items.author COLLATE NOCASE IN (SELECT value FROM json_each(?))
+      OR EXISTS (
+        SELECT 1 FROM library_item_authors
+        WHERE library_item_authors.library_item_id = library_items.id
+          AND library_item_authors.name COLLATE NOCASE IN (SELECT value FROM json_each(?))
+      )
+    )`);
+    parameters.push(values, values);
+  }
+
+  if (omittedFacet !== "tags" && request.filters.tags.length > 0) {
+    clauses.push(`EXISTS (
+      SELECT 1 FROM library_item_tags
+      WHERE library_item_tags.library_item_id = library_items.id
+        AND library_item_tags.tag_normalized_name IN (SELECT value FROM json_each(?))
+    )`);
+    parameters.push(JSON.stringify(request.filters.tags.map((tag) => tag.toLowerCase())));
+  }
+
+  if (omittedFacet !== "series" && request.filters.series.length > 0) {
+    clauses.push(
+      "library_items.series COLLATE NOCASE IN (SELECT value FROM json_each(?))",
+    );
+    parameters.push(JSON.stringify(request.filters.series));
+  }
+
+  if (omittedFacet !== "languages" && request.filters.languages.length > 0) {
+    clauses.push(`EXISTS (
+      SELECT 1 FROM library_item_languages
+      WHERE library_item_languages.library_item_id = library_items.id
+        AND library_item_languages.language COLLATE NOCASE IN (SELECT value FROM json_each(?))
+    )`);
+    parameters.push(JSON.stringify(request.filters.languages));
+  }
+
+  if (omittedFacet !== "formats" && request.filters.formats.length > 0) {
+    clauses.push(`EXISTS (
+      SELECT 1 FROM library_item_formats
+      WHERE library_item_formats.library_item_id = library_items.id
+        AND library_item_formats.format IN (SELECT value FROM json_each(?))
+    )`);
+    parameters.push(JSON.stringify(request.filters.formats));
+  }
+
+  return { sql: clauses.length === 0 ? "1" : clauses.join(" AND "), parameters };
+}
+
+function buildLibraryOrder(request: QueryLibraryItemsRequest): string {
+  const direction = request.sort.direction === "ascending" ? "ASC" : "DESC";
+  const scalar = {
+    title: "library_items.title COLLATE NOCASE",
+    author:
+      "COALESCE(primary_author.sort_name, primary_author.name, library_items.author) COLLATE NOCASE",
+    series: "library_items.series COLLATE NOCASE",
+    publishedDate: "library_items.published_date",
+    rating: "library_items.rating",
+    addedAt: "library_items.added_at",
+    updatedAt: "library_items.updated_at",
+  }[request.sort.field];
+  const seriesIndex =
+    request.sort.field === "series"
+      ? `, library_items.series_index ${direction} NULLS LAST`
+      : "";
+  return `${scalar} ${direction} NULLS LAST${seriesIndex}, library_items.id ASC`;
+}
+
+function buildFacetQuery(request: QueryLibraryItemsRequest): SqlFragment {
+  const authors = buildLibraryMatch(request, "authors");
+  const tags = buildLibraryMatch(request, "tags");
+  const series = buildLibraryMatch(request, "series");
+  const languages = buildLibraryMatch(request, "languages");
+  const formats = buildLibraryMatch(request, "formats");
+  return {
+    sql: `
+      SELECT facet, value, count FROM (
+        SELECT 'authors' AS facet, MIN(author_values.value) AS value,
+          COUNT(DISTINCT author_values.library_item_id) AS count
+        FROM (
+          SELECT id AS library_item_id, author AS value
+          FROM library_items WHERE author IS NOT NULL
+          UNION ALL
+          SELECT library_item_id, name AS value FROM library_item_authors
+        ) AS author_values
+        JOIN library_items ON library_items.id = author_values.library_item_id
+        WHERE ${authors.sql}
+        GROUP BY author_values.value COLLATE NOCASE
+
+        UNION ALL
+
+        SELECT 'tags' AS facet, MIN(tags.name) AS value,
+          COUNT(DISTINCT library_items.id) AS count
+        FROM library_item_tags
+        JOIN tags ON tags.normalized_name = library_item_tags.tag_normalized_name
+        JOIN library_items ON library_items.id = library_item_tags.library_item_id
+        WHERE ${tags.sql}
+        GROUP BY tags.normalized_name
+
+        UNION ALL
+
+        SELECT 'series' AS facet, MIN(library_items.series) AS value,
+          COUNT(DISTINCT library_items.id) AS count
+        FROM library_items
+        WHERE library_items.series IS NOT NULL AND ${series.sql}
+        GROUP BY library_items.series COLLATE NOCASE
+
+        UNION ALL
+
+        SELECT 'languages' AS facet, MIN(library_item_languages.language) AS value,
+          COUNT(DISTINCT library_items.id) AS count
+        FROM library_item_languages
+        JOIN library_items ON library_items.id = library_item_languages.library_item_id
+        WHERE ${languages.sql}
+        GROUP BY library_item_languages.language COLLATE NOCASE
+
+        UNION ALL
+
+        SELECT 'formats' AS facet, MIN(library_item_formats.format) AS value,
+          COUNT(DISTINCT library_items.id) AS count
+        FROM library_item_formats
+        JOIN library_items ON library_items.id = library_item_formats.library_item_id
+        WHERE ${formats.sql}
+        GROUP BY library_item_formats.format
+      )
+      ORDER BY facet, value COLLATE NOCASE, value
+    `,
+    parameters: [
+      ...authors.parameters,
+      ...tags.parameters,
+      ...series.parameters,
+      ...languages.parameters,
+      ...formats.parameters,
+    ],
+  };
+}
+
+function groupStoredRows<T extends { libraryItemId: string }>(
+  ids: readonly string[],
+  rows: readonly T[],
+): Map<string, T[]> | null {
+  const grouped = new Map(ids.map((id) => [id, [] as T[]]));
+  for (const row of rows) {
+    const group = grouped.get(row.libraryItemId);
+    if (!group) {
+      return null;
+    }
+    group.push(row);
+  }
+  return grouped;
+}
+
+function hydrateLibraryPage(
+  database: Database,
+  coversDirectory: string,
+  itemsDirectory: string,
+  rows: readonly StoredLibraryItem[],
+): LibraryStoreResult<readonly LibraryItem[]> {
+  const ids: string[] = [];
+  for (const row of rows) {
+    if (typeof row.id !== "string" || ids.includes(row.id)) {
+      return failure("invalid-stored-data");
+    }
+    ids.push(row.id);
+  }
+  if (ids.length === 0) {
+    return success([]);
+  }
+
+  const encodedIds = JSON.stringify(ids);
+  queryTestSeam.beforeHydrationQuery?.("formats");
+  const formats = database
+    .query<StoredItemFormat, [string]>(`
+      SELECT library_item_id AS libraryItemId, source_path AS sourcePath,
+        format, added_at AS addedAt, provenance, position
+      FROM library_item_formats
+      WHERE library_item_id IN (SELECT value FROM json_each(?))
+      ORDER BY library_item_id, position
+    `)
+    .all(encodedIds);
+  queryTestSeam.beforeHydrationQuery?.("tags");
+  const tags = database
+    .query<StoredItemTag, [string]>(`
+      SELECT library_item_tags.library_item_id AS libraryItemId,
+        tags.name, library_item_tags.position
+      FROM library_item_tags
+      JOIN tags ON tags.normalized_name = library_item_tags.tag_normalized_name
+      WHERE library_item_tags.library_item_id IN (SELECT value FROM json_each(?))
+      ORDER BY library_item_tags.library_item_id, library_item_tags.position
+    `)
+    .all(encodedIds);
+  queryTestSeam.beforeHydrationQuery?.("authors");
+  const authors = database
+    .query<StoredItemAuthor, [string]>(`
+      SELECT library_item_id AS libraryItemId, name, sort_name AS sortName, position
+      FROM library_item_authors
+      WHERE library_item_id IN (SELECT value FROM json_each(?))
+      ORDER BY library_item_id, position
+    `)
+    .all(encodedIds);
+  queryTestSeam.beforeHydrationQuery?.("languages");
+  const languages = database
+    .query<StoredItemLanguage, [string]>(`
+      SELECT library_item_id AS libraryItemId, language, position
+      FROM library_item_languages
+      WHERE library_item_id IN (SELECT value FROM json_each(?))
+      ORDER BY library_item_id, position
+    `)
+    .all(encodedIds);
+  queryTestSeam.beforeHydrationQuery?.("identifiers");
+  const identifiers = database
+    .query<StoredItemIdentifier, [string]>(`
+      SELECT library_item_id AS libraryItemId, scheme, value
+      FROM library_item_identifiers
+      WHERE library_item_id IN (SELECT value FROM json_each(?))
+      ORDER BY library_item_id, scheme
+    `)
+    .all(encodedIds);
+
+  const groupedFormats = groupStoredRows(ids, formats);
+  const groupedTags = groupStoredRows(ids, tags);
+  const groupedAuthors = groupStoredRows(ids, authors);
+  const groupedLanguages = groupStoredRows(ids, languages);
+  const groupedIdentifiers = groupStoredRows(ids, identifiers);
+  if (
+    !groupedFormats ||
+    !groupedTags ||
+    !groupedAuthors ||
+    !groupedLanguages ||
+    !groupedIdentifiers
+  ) {
+    return failure("invalid-stored-data");
+  }
+
+  const items: LibraryItem[] = [];
+  for (const row of rows) {
+    const id = row.id as string;
+    const storedFormats = groupedFormats.get(id)!;
+    const storedAuthors = groupedAuthors.get(id)!;
+    const storedLanguages = groupedLanguages.get(id)!;
+    if (
+      storedFormats.some(({ position }, index) => position !== index) ||
+      storedAuthors.some(({ position }, index) => position !== index) ||
+      storedLanguages.some(({ position }, index) => position !== index)
+    ) {
+      return failure("invalid-stored-data");
+    }
+
+    let publicFormats: unknown[];
+    try {
+      publicFormats = storedFormats.map(({ libraryItemId: _itemId, position: _position, ...format }) => ({
+        ...format,
+        sourcePath:
+          format.provenance === "managed"
+            ? resolveManagedFormatPath(
+                itemsDirectory,
+                format.sourcePath,
+                format.format as FormatId,
+                true,
+              )
+            : format.sourcePath,
+      }));
+    } catch {
+      return failure("invalid-stored-data");
+    }
+    const parsedFormats = bookFormatsSchema.safeParse(publicFormats);
+    if (!parsedFormats.success) {
+      return failure("invalid-stored-data");
+    }
+
+    const identifierEntries: [string, unknown][] = [];
+    const schemes = new Set<string>();
+    for (const { scheme, value } of groupedIdentifiers.get(id)!) {
+      if (typeof scheme !== "string") {
+        return failure("invalid-stored-data");
+      }
+      const canonicalScheme = scheme.trim();
+      if (canonicalScheme.length === 0 || canonicalScheme !== scheme || schemes.has(scheme)) {
+        return failure("invalid-stored-data");
+      }
+      schemes.add(scheme);
+      identifierEntries.push([scheme, value]);
+    }
+
+    const item = parseItem(
+      coversDirectory,
+      row,
+      parsedFormats.data[0]!.sourcePath,
+      parsedFormats.data[0]!.format,
+      parsedFormats.data,
+      groupedTags.get(id)!.map(({ name }) => name),
+      {
+        authors:
+          storedAuthors.length === 0
+            ? undefined
+            : storedAuthors.map(({ name, sortName }) => ({
+                name,
+                sortName: sortName ?? undefined,
+              })),
+        languages:
+          storedLanguages.length === 0
+            ? undefined
+            : storedLanguages.map(({ language }) => language),
+        identifiers:
+          identifierEntries.length === 0 ? undefined : Object.fromEntries(identifierEntries),
+      },
+    );
+    if (!item.ok) {
+      return item;
+    }
+    items.push(item.value);
+  }
+  return success(items);
+}
+
+function parseSavedLibraryView(row: StoredSavedLibraryView): LibraryStoreResult<SavedLibraryView> {
+  if (typeof row.definitionJson !== "string") {
+    return failure("invalid-stored-data");
+  }
+  try {
+    const parsed = savedLibraryViewSchema.safeParse({
+      id: row.id,
+      name: row.name,
+      definition: JSON.parse(row.definitionJson),
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+    });
+    return parsed.success ? success(parsed.data) : failure("invalid-stored-data");
+  } catch {
+    return failure("invalid-stored-data");
+  }
+}
+
+export class BunSqliteLibraryStore
+  implements LibraryStore, LibraryQueryStore, SavedLibraryViewStore
+{
   readonly #databasePath: string;
   readonly #coversDirectory: string;
   readonly #itemsDirectory: string;
@@ -2101,6 +2510,195 @@ export class BunSqliteLibraryStore implements LibraryStore {
         items.push(item.value);
       }
       return success(items);
+    } catch {
+      return failure("storage-unavailable");
+    }
+  }
+
+  async query(request: QueryLibraryItemsRequest): Promise<QueryLibraryItemsResult> {
+    if (!this.#database) {
+      return failure("storage-unavailable");
+    }
+
+    const parsedRequest = queryLibraryItemsRequestSchema.safeParse(request);
+    if (!parsedRequest.success) {
+      return failure("invalid-arguments");
+    }
+
+    try {
+      return this.#database.transaction((): QueryLibraryItemsResult => {
+        const match = buildLibraryMatch(parsedRequest.data);
+        const total = this.#database!
+          .query<{ total: unknown }, SqlParameter[]>(`
+            SELECT COUNT(*) AS total
+            FROM library_items
+            WHERE ${match.sql}
+          `)
+          .get(...match.parameters)?.total;
+        const rows = this.#database!
+          .query<StoredLibraryItem, SqlParameter[]>(`
+            SELECT library_items.id, library_items.title,
+              library_items.added_at AS addedAt, library_items.author,
+              library_items.series, library_items.series_index AS seriesIndex,
+              library_items.publisher, library_items.published_date AS publishedDate,
+              library_items.rating, library_items.description,
+              library_items.cover_path AS coverPath, library_items.updated_at AS updatedAt
+            FROM library_items
+            LEFT JOIN library_item_authors AS primary_author
+              ON primary_author.library_item_id = library_items.id
+              AND primary_author.position = 0
+            WHERE ${match.sql}
+            ORDER BY ${buildLibraryOrder(parsedRequest.data)}
+            LIMIT ? OFFSET ?
+          `)
+          .all(...match.parameters, parsedRequest.data.page.limit, parsedRequest.data.page.offset);
+        const facetQuery = buildFacetQuery(parsedRequest.data);
+        const facetRows = this.#database!
+          .query<StoredFacetRow, SqlParameter[]>(facetQuery.sql)
+          .all(...facetQuery.parameters);
+        const items = hydrateLibraryPage(
+          this.#database!,
+          this.#coversDirectory,
+          this.#itemsDirectory,
+          rows,
+        );
+        if (!items.ok) {
+          return items;
+        }
+
+        const facets: Record<LibraryFacet, { value: unknown; count: unknown }[]> = {
+          authors: [],
+          tags: [],
+          series: [],
+          languages: [],
+          formats: [],
+        };
+        for (const row of facetRows) {
+          if (typeof row.facet !== "string" || !(row.facet in facets)) {
+            return failure("invalid-stored-data");
+          }
+          facets[row.facet as LibraryFacet].push({ value: row.value, count: row.count });
+        }
+
+        const page = libraryQueryPageSchema.safeParse({
+          items: items.value,
+          total,
+          page: parsedRequest.data.page,
+          facets,
+        });
+        return page.success ? success(page.data) : failure("invalid-stored-data");
+      })();
+    } catch {
+      return failure("storage-unavailable");
+    }
+  }
+
+  async listSavedViews(
+    request: ListSavedLibraryViewsRequest,
+  ): Promise<ListSavedLibraryViewsResult> {
+    if (!this.#database) {
+      return failure("storage-unavailable");
+    }
+    if (!listSavedLibraryViewsRequestSchema.safeParse(request).success) {
+      return failure("invalid-arguments");
+    }
+
+    try {
+      const rows = this.#database
+        .query<StoredSavedLibraryView, []>(`
+          SELECT id, name, definition_json AS definitionJson,
+            created_at AS createdAt, updated_at AS updatedAt
+          FROM saved_library_views
+          ORDER BY name COLLATE NOCASE, id
+        `)
+        .all();
+      const views: SavedLibraryView[] = [];
+      for (const row of rows) {
+        const view = parseSavedLibraryView(row);
+        if (!view.ok) {
+          return view;
+        }
+        views.push(view.value);
+      }
+      return success(views);
+    } catch {
+      return failure("storage-unavailable");
+    }
+  }
+
+  async saveSavedView(
+    request: SaveSavedLibraryViewRequest,
+  ): Promise<SaveSavedLibraryViewResult> {
+    if (!this.#database) {
+      return failure("storage-unavailable");
+    }
+    const parsedRequest = saveSavedLibraryViewRequestSchema.safeParse(request);
+    if (!parsedRequest.success) {
+      return failure("invalid-arguments");
+    }
+
+    try {
+      return this.#database.transaction((): SaveSavedLibraryViewResult => {
+        const now = new Date().toISOString();
+        const row = this.#database!
+          .query<StoredSavedLibraryView, [string, string, string, string, string]>(`
+            INSERT INTO saved_library_views
+              (id, name, definition_json, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+              name = excluded.name,
+              definition_json = excluded.definition_json,
+              updated_at = excluded.updated_at
+            RETURNING id, name, definition_json AS definitionJson,
+              created_at AS createdAt, updated_at AS updatedAt
+          `)
+          .get(
+            parsedRequest.data.id,
+            parsedRequest.data.name,
+            JSON.stringify(parsedRequest.data.definition),
+            now,
+            now,
+          );
+        return row ? parseSavedLibraryView(row) : failure("storage-unavailable");
+      }).immediate();
+    } catch {
+      return failure("storage-unavailable");
+    }
+  }
+
+  async removeSavedView(
+    request: RemoveSavedLibraryViewRequest,
+  ): Promise<RemoveSavedLibraryViewResult> {
+    if (!this.#database) {
+      return failure("storage-unavailable");
+    }
+    const parsedRequest = removeSavedLibraryViewRequestSchema.safeParse(request);
+    if (!parsedRequest.success) {
+      return failure("invalid-arguments");
+    }
+
+    try {
+      return this.#database.transaction((): RemoveSavedLibraryViewResult => {
+        const row = this.#database!
+          .query<StoredSavedLibraryView, [string]>(`
+            SELECT id, name, definition_json AS definitionJson,
+              created_at AS createdAt, updated_at AS updatedAt
+            FROM saved_library_views
+            WHERE id = ?
+          `)
+          .get(parsedRequest.data.id);
+        if (!row) {
+          return success(null);
+        }
+        const parsed = parseSavedLibraryView(row);
+        if (!parsed.ok) {
+          return parsed;
+        }
+        this.#database!.run("DELETE FROM saved_library_views WHERE id = ?", [
+          parsedRequest.data.id,
+        ]);
+        return success(parsed.value);
+      }).immediate();
     } catch {
       return failure("storage-unavailable");
     }
