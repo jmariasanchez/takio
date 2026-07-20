@@ -7,6 +7,7 @@ import {
   type FormEvent,
 } from "react";
 import { listen } from "@tauri-apps/api/event";
+import { join } from "@tauri-apps/api/path";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { confirm, open, save } from "@tauri-apps/plugin-dialog";
 import {
@@ -44,9 +45,19 @@ import {
   conversionControlId,
   resolveGeneralSend,
   type ConversionDraft,
+  type LibraryWorkspaceBulkActions,
   type LibraryState,
   type MetadataDraft,
 } from "./components/LibraryWorkspace";
+import {
+  allocateBulkPdfOutputNames,
+  applyBulkTagOperation,
+  hydrateSelectedLibraryItems,
+  planBulkDeviceSend,
+  planBulkPdfConversion,
+  summarizeBulkDeviceSendPlan,
+  summarizeBulkPdfConversionPlan,
+} from "./lib/library-bulk-actions";
 import {
   describeDestinationError,
   describeUnexpectedDestinationError,
@@ -67,6 +78,7 @@ import {
   attachLibraryFormat,
   describeLibraryError,
   describeUnexpectedLibraryError,
+  getLibraryItem,
   importLibraryItems,
   listLibraryTrash,
   listSavedLibraryViews,
@@ -160,6 +172,10 @@ export default function App() {
   const [libraryState, setLibraryState] = useState<LibraryState>("loading");
   const [notice, setNotice] = useState<Notice>(null);
   const [pendingAction, setPendingAction] = useState<string | null>(null);
+  const [bulkPendingAction, setBulkPendingAction] =
+    useState<LibraryWorkspaceBulkActions["pendingAction"]>(null);
+  const [bulkTagsDialogOpen, setBulkTagsDialogOpen] = useState(false);
+  const [bulkTagsDialogError, setBulkTagsDialogError] = useState<string | null>(null);
   const [searchPending, setSearchPending] = useState(false);
   const [draft, setDraft] = useState<MetadataDraft | null>(null);
   const [conversionDraft, setConversionDraft] = useState<ConversionDraft | null>(null);
@@ -178,6 +194,7 @@ export default function App() {
   const jobRequestSequence = useRef(0);
   const deviceMutationPending = useRef(false);
   const formatMutationPending = useRef(false);
+  const bulkMutationPending = useRef(false);
   const importPending = useRef(false);
   const openPending = useRef(false);
   const importButton = useRef<HTMLButtonElement>(null);
@@ -1586,6 +1603,381 @@ export default function App() {
     : null;
   const selectedItem = catalogueItems.find((item) => item.id === selectedItemId) ?? null;
 
+  async function hydrateBulkTargets(
+    selectedIds: readonly string[],
+    reportDialogError = false,
+  ): Promise<
+    | {
+        readonly items: readonly LibraryItem[];
+        readonly missingIds: readonly string[];
+      }
+    | null
+  > {
+    const hydration = await hydrateSelectedLibraryItems(selectedIds, getLibraryItem);
+    const missingIds = hydration.outcomes
+      .filter(({ status }) => status === "missing")
+      .map(({ id }) => id);
+    if (missingIds.length > 0) {
+      dispatchLibrarySelection({ type: "remove-items", ids: missingIds });
+    }
+
+    if (hydration.counts.failed > 0) {
+      const libraryLoaded = await loadLibrary(false);
+      const summary = `No changes made: ${hydration.counts.failed} lookups failed (${hydration.counts.found} found, ${hydration.counts.missing} missing of ${hydration.counts.total} selected).${libraryLoaded ? "" : " Library refresh failed."}`;
+      setNotice({ kind: "error", text: summary });
+      if (reportDialogError) {
+        setBulkTagsDialogError(summary);
+      }
+      return null;
+    }
+
+    return {
+      items: hydration.outcomes.flatMap((outcome) =>
+        outcome.status === "found" ? [outcome.item] : [],
+      ),
+      missingIds,
+    };
+  }
+
+  function openBulkTagsDialog(): void {
+    if (
+      pendingAction !== null ||
+      bulkMutationPending.current ||
+      librarySelection.selectedItemIds.length === 0
+    ) {
+      return;
+    }
+    setBulkTagsDialogError(null);
+    setBulkTagsDialogOpen(true);
+  }
+
+  function closeBulkTagsDialog(): void {
+    if (!bulkMutationPending.current) {
+      setBulkTagsDialogError(null);
+      setBulkTagsDialogOpen(false);
+    }
+  }
+
+  async function applyBulkTags(
+    operation: Parameters<LibraryWorkspaceBulkActions["onApplyTags"]>[0],
+    tags: readonly string[],
+  ): Promise<void> {
+    const selectedIds = [...librarySelection.selectedItemIds];
+    if (
+      selectedIds.length === 0 ||
+      pendingAction !== null ||
+      bulkMutationPending.current
+    ) {
+      return;
+    }
+
+    bulkMutationPending.current = true;
+    setBulkPendingAction("tags");
+    setPendingAction("bulk-tags");
+    setBulkTagsDialogError(null);
+    setNotice(null);
+    try {
+      const hydrated = await hydrateBulkTargets(selectedIds, true);
+      if (!hydrated) {
+        return;
+      }
+
+      let updated = 0;
+      let missing = hydrated.missingIds.length;
+      let failed = 0;
+      const completedIds = [...hydrated.missingIds];
+      for (const item of hydrated.items) {
+        try {
+          const result = await updateLibraryItem(item.id, {
+            tags: applyBulkTagOperation(item.tags ?? [], operation, tags),
+          });
+          if (!result.ok) {
+            failed += 1;
+          } else if (!result.value.item) {
+            missing += 1;
+            completedIds.push(item.id);
+          } else {
+            updated += 1;
+            completedIds.push(item.id);
+          }
+        } catch {
+          failed += 1;
+        }
+      }
+
+      dispatchLibrarySelection({ type: "remove-items", ids: completedIds });
+      const libraryLoaded = await loadLibrary(false);
+      const summary = `${updated} updated; ${missing} missing; ${failed} failed.${libraryLoaded ? "" : " Library refresh failed."}`;
+      setNotice({ kind: failed > 0 || !libraryLoaded ? "error" : "status", text: summary });
+      if (failed > 0) {
+        setBulkTagsDialogError(summary);
+      } else {
+        setBulkTagsDialogOpen(false);
+      }
+    } finally {
+      bulkMutationPending.current = false;
+      setBulkPendingAction(null);
+      setPendingAction(null);
+    }
+  }
+
+  async function moveBulkSelectionToTrash(): Promise<void> {
+    const selectedIds = [...librarySelection.selectedItemIds];
+    if (
+      selectedIds.length === 0 ||
+      pendingAction !== null ||
+      bulkMutationPending.current
+    ) {
+      return;
+    }
+
+    bulkMutationPending.current = true;
+    setBulkPendingAction("trash");
+    setPendingAction("bulk-trash");
+    setNotice(null);
+    try {
+      const hydrated = await hydrateBulkTargets(selectedIds);
+      if (!hydrated) {
+        return;
+      }
+
+      if (hydrated.items.length > 0) {
+        let approved: boolean;
+        try {
+          approved = await confirm(
+            `Move ${hydrated.items.length} selected ${hydrated.items.length === 1 ? "book" : "books"} to Trash? You can restore them later.`,
+            {
+              title: "Move selected books to Trash",
+              kind: "warning",
+              okLabel: "Move to Trash",
+              cancelLabel: "Cancel",
+            },
+          );
+        } catch (error) {
+          setNotice({ kind: "error", text: describeUnexpectedLibraryError(error) });
+          return;
+        }
+        if (!approved) {
+          return;
+        }
+      }
+
+      let moved = 0;
+      let missing = hydrated.missingIds.length;
+      let failed = 0;
+      const completedIds = [...hydrated.missingIds];
+      for (const item of hydrated.items) {
+        try {
+          const result = await trashLibraryItem({ id: item.id });
+          if (!result.ok) {
+            failed += 1;
+          } else if (!result.value.item) {
+            missing += 1;
+            completedIds.push(item.id);
+          } else {
+            moved += 1;
+            completedIds.push(item.id);
+          }
+        } catch {
+          failed += 1;
+        }
+      }
+
+      dispatchLibrarySelection({ type: "remove-items", ids: completedIds });
+      setDraft((current) =>
+        current && completedIds.includes(current.id) ? null : current,
+      );
+      setConversionDraft((current) =>
+        current && completedIds.includes(current.id) ? null : current,
+      );
+      const [libraryLoaded, trashLoaded] = await Promise.all([
+        loadLibrary(false),
+        trashDialogOpen
+          ? loadTrash(trashPageOffsetRef.current)
+          : Promise.resolve(true),
+      ]);
+      const summary = `${moved} moved to Trash; ${missing} missing; ${failed} failed.${libraryLoaded ? "" : " Library refresh failed."}${trashLoaded ? "" : " Trash refresh failed."}`;
+      setNotice({
+        kind: failed > 0 || !libraryLoaded || !trashLoaded ? "error" : "status",
+        text: summary,
+      });
+    } finally {
+      bulkMutationPending.current = false;
+      setBulkPendingAction(null);
+      setPendingAction(null);
+    }
+  }
+
+  async function convertBulkSelectionToPdf(): Promise<void> {
+    const selectedIds = [...librarySelection.selectedItemIds];
+    if (
+      selectedIds.length === 0 ||
+      pendingAction !== null ||
+      bulkMutationPending.current
+    ) {
+      return;
+    }
+
+    bulkMutationPending.current = true;
+    setBulkPendingAction("convert");
+    setPendingAction("bulk-convert");
+    setNotice(null);
+    try {
+      const hydrated = await hydrateBulkTargets(selectedIds);
+      if (!hydrated) {
+        return;
+      }
+
+      const plan = planBulkPdfConversion(hydrated.items);
+      const planned = summarizeBulkPdfConversionPlan(plan);
+      const eligible = plan.flatMap((entry) =>
+        entry.status === "eligible" ? [entry] : [],
+      );
+      let outputDirectory: string | null = null;
+      if (eligible.length > 0) {
+        let selection: string | string[] | null;
+        try {
+          selection = await open({
+            directory: true,
+            multiple: false,
+            title: "Choose a folder for converted PDFs",
+          });
+        } catch (error) {
+          setNotice({ kind: "error", text: describeUnexpectedJobError(error) });
+          return;
+        }
+        if (typeof selection !== "string") {
+          return;
+        }
+        outputDirectory = selection;
+      }
+
+      const outputNames = allocateBulkPdfOutputNames(eligible.map(({ item }) => item));
+      const outputPaths: string[] = [];
+      try {
+        for (const { fileName } of outputNames) {
+          outputPaths.push(await join(outputDirectory!, fileName));
+        }
+      } catch (error) {
+        setNotice({ kind: "error", text: describeUnexpectedJobError(error) });
+        return;
+      }
+
+      let queued = 0;
+      let failed = 0;
+      const completedIds = [
+        ...hydrated.missingIds,
+        ...plan.flatMap((entry) => (entry.status === "skipped" ? [entry.item.id] : [])),
+      ];
+      for (const [index, entry] of eligible.entries()) {
+        try {
+          const result = await enqueueConversionJob({
+            libraryItemId: entry.item.id,
+            inputFormat: entry.source.format,
+            outputFormat: entry.target,
+            outputPath: outputPaths[index]!,
+          });
+          if (!result.ok) {
+            failed += 1;
+          } else {
+            queued += 1;
+            completedIds.push(entry.item.id);
+          }
+        } catch {
+          failed += 1;
+        }
+      }
+
+      dispatchLibrarySelection({ type: "remove-items", ids: completedIds });
+      const [jobsLoaded, libraryLoaded] = await Promise.all([
+        loadJobs(false),
+        loadLibrary(false),
+      ]);
+      const summary = `${queued} queued; ${planned.pdfAlreadyAttached} already had PDF; ${planned.epubSourceUnavailable} lacked EPUB; ${hydrated.missingIds.length} missing; ${failed} failed.${jobsLoaded ? "" : " Conversion list refresh failed."}${libraryLoaded ? "" : " Library refresh failed."}`;
+      setNotice({
+        kind: failed > 0 || !jobsLoaded || !libraryLoaded ? "error" : "status",
+        text: summary,
+      });
+    } finally {
+      bulkMutationPending.current = false;
+      setBulkPendingAction(null);
+      setPendingAction(null);
+    }
+  }
+
+  async function sendBulkSelection(): Promise<void> {
+    const selectedIds = [...librarySelection.selectedItemIds];
+    if (
+      selectedIds.length === 0 ||
+      pendingAction !== null ||
+      bulkMutationPending.current
+    ) {
+      return;
+    }
+    if (!selectedDestination || !preferredDeviceFormat) {
+      setNotice({
+        kind: "error",
+        text: "Choose a reader and send format before sending selected books.",
+      });
+      return;
+    }
+
+    const destination = selectedDestination;
+    const preferred = preferredDeviceFormat;
+    bulkMutationPending.current = true;
+    deviceMutationPending.current = true;
+    setBulkPendingAction("send");
+    setPendingAction("bulk-send");
+    setNotice(null);
+    try {
+      const hydrated = await hydrateBulkTargets(selectedIds);
+      if (!hydrated) {
+        return;
+      }
+
+      const plan = planBulkDeviceSend(hydrated.items, preferred);
+      const planned = summarizeBulkDeviceSendPlan(plan);
+      const eligible = plan.flatMap((entry) =>
+        entry.status === "eligible" ? [entry] : [],
+      );
+      let sent = 0;
+      let failed = 0;
+      const completedIds = [
+        ...hydrated.missingIds,
+        ...plan.flatMap((entry) =>
+          entry.status === "eligible" ? [] : [entry.item.id],
+        ),
+      ];
+      for (const entry of eligible) {
+        try {
+          const result = await sendLibraryItem(
+            entry.item.id,
+            entry.bookFormat.format,
+            destination.path,
+          );
+          if (!result.ok) {
+            failed += 1;
+          } else {
+            sent += 1;
+            completedIds.push(entry.item.id);
+          }
+        } catch {
+          failed += 1;
+        }
+      }
+
+      dispatchLibrarySelection({ type: "remove-items", ids: completedIds });
+      const libraryLoaded = await loadLibrary(false);
+      const summary = `${sent} sent; ${planned.convertible} need conversion; ${planned.unavailable} unavailable; ${hydrated.missingIds.length} missing; ${failed} failed.${libraryLoaded ? "" : " Library refresh failed."}`;
+      setNotice({ kind: failed > 0 || !libraryLoaded ? "error" : "status", text: summary });
+    } finally {
+      deviceMutationPending.current = false;
+      bulkMutationPending.current = false;
+      setBulkPendingAction(null);
+      setPendingAction(null);
+    }
+  }
+
   function selectPreferredDeviceFormat(format: FormatId | null): void {
     if (!selectedDestination) {
       return;
@@ -1831,6 +2223,24 @@ export default function App() {
 
         <LibraryWorkspace
           actionsPending={actionsPending}
+          bulkActions={{
+            pendingAction: bulkPendingAction,
+            canConvert: librarySelection.selectedItemIds.length > 0,
+            canSend:
+              librarySelection.selectedItemIds.length > 0 &&
+              selectedDestination !== null &&
+              preferredDeviceFormat !== null,
+            tagsDialogOpen: bulkTagsDialogOpen,
+            tagsDialogError: bulkTagsDialogError,
+            onEditTags: openBulkTagsDialog,
+            onConvert: () => void convertBulkSelectionToPdf(),
+            onSend: () => void sendBulkSelection(),
+            onMoveToTrash: () => void moveBulkSelectionToTrash(),
+            onClearSelection: () =>
+              dispatchLibrarySelection({ type: "clear-selection" }),
+            onCloseTagsDialog: closeBulkTagsDialog,
+            onApplyTags: (operation, tags) => void applyBulkTags(operation, tags),
+          }}
           conversionDraft={conversionDraft}
           currentSavedViewId={currentSavedViewId}
           draft={draft}
