@@ -1,0 +1,141 @@
+.compact-pane-drawer__triggers,
+.compact-pane-drawer__overlay {
+  display: none;
+}
+
+.compact-pane-drawer__overlay[hidden],
+.compact-pane-drawer__panel[hidden] {
+  display: none;
+}
+
+@media (max-width: 900px) {
+  .compact-pane-drawer__triggers {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .compact-pane-drawer__triggers button,
+  .compact-pane-drawer__header button {
+    min-height: 32px;
+    padding: 5px 9px;
+    background: #ffffff;
+    border: 1px solid #d0d5dd;
+    border-radius: 5px;
+    color: #344054;
+    font: inherit;
+    font-size: 0.75rem;
+    font-weight: 625;
+  }
+
+  .compact-pane-drawer__triggers button[aria-expanded="true"] {
+    background: #eef2ff;
+    border-color: #a5b4fc;
+    color: #3730a3;
+  }
+
+  .compact-pane-drawer__triggers button:focus-visible,
+  .compact-pane-drawer__header button:focus-visible {
+    outline: 2px solid #4f46e5;
+    outline-offset: 2px;
+  }
+
+  .compact-pane-drawer__overlay {
+    position: fixed;
+    z-index: 50;
+    inset: 0;
+    display: block;
+  }
+
+  .compact-pane-drawer__backdrop {
+    position: absolute;
+    inset: 0;
+    background: rgb(16 24 40 / 42%);
+  }
+
+  .compact-pane-drawer__panel {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    display: flex;
+    max-width: 100%;
+    flex-direction: column;
+    overflow: hidden;
+    background: #fbfcfe;
+    color: #20242c;
+    box-shadow: 0 0 32px rgb(16 24 40 / 18%);
+    outline: none;
+  }
+
+  .compact-pane-drawer__panel--facets {
+    left: 0;
+    width: min(280px, 82vw);
+  }
+
+  .compact-pane-drawer__panel--inspector {
+    right: 0;
+    width: min(360px, 92vw);
+  }
+
+  .compact-pane-drawer__panel:focus-visible {
+    box-shadow: inset 0 0 0 2px #4f46e5, 0 0 32px rgb(16 24 40 / 18%);
+  }
+
+  .compact-pane-drawer__header {
+    display: flex;
+    min-height: 52px;
+    flex: 0 0 auto;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 8px 12px 8px 16px;
+    border-bottom: 1px solid #dfe3e9;
+  }
+
+  .compact-pane-drawer__header h2 {
+    margin: 0;
+    color: #20242c;
+    font-size: 0.875rem;
+    font-weight: 675;
+    letter-spacing: -0.01em;
+  }
+
+  .compact-pane-drawer__header button {
+    width: 32px;
+    padding: 0;
+    font-size: 1.25rem;
+    line-height: 1;
+  }
+
+  .compact-pane-drawer__content {
+    min-height: 0;
+    flex: 1;
+    overflow: auto;
+  }
+}
+
+@media (max-width: 900px) and (prefers-reduced-motion: no-preference) {
+  .compact-pane-drawer__backdrop {
+    animation: compact-pane-drawer-backdrop-in 120ms ease-out;
+  }
+
+  .compact-pane-drawer__panel--facets {
+    animation: compact-pane-drawer-left-in 140ms ease-out;
+  }
+
+  .compact-pane-drawer__panel--inspector {
+    animation: compact-pane-drawer-right-in 140ms ease-out;
+  }
+}
+
+@keyframes compact-pane-drawer-backdrop-in {
+  from { opacity: 0; }
+}
+
+@keyframes compact-pane-drawer-left-in {
+  from { transform: translateX(-16px); opacity: 0; }
+}
+
+@keyframes compact-pane-drawer-right-in {
+  from { transform: translateX(16px); opacity: 0; }
+}
