@@ -10,6 +10,7 @@ import {
   attachLibraryFormat,
   describeLibraryError,
   describeUnexpectedLibraryError,
+  getLibraryItem,
   importLibraryItem,
   listLibraryItems,
   listLibraryTrash,
@@ -190,6 +191,7 @@ test("uses only the fixed desktop library commands and argument names", async ()
   };
 
   await listLibraryItems(invokeCommand);
+  await getLibraryItem("item-1", invokeCommand);
   await importLibraryItem("/Books/A title.epub", invokeCommand);
   await attachLibraryFormat(
     "item-1",
@@ -221,6 +223,7 @@ test("uses only the fixed desktop library commands and argument names", async ()
 
   expect(calls).toEqual([
     { command: "library_list", args: undefined },
+    { command: "library_get", args: { id: "item-1" } },
     { command: "library_import", args: { sourcePath: "/Books/A title.epub" } },
     {
       command: "library_attach_format",
@@ -278,6 +281,47 @@ test("uses only the fixed desktop library commands and argument names", async ()
   expect((updateArgs?.patch as LibraryMetadataPatch | undefined)?.identifiers).toBe(
     metadataPatch.identifiers,
   );
+});
+
+test("gets one item with strict success, missing, and domain responses", async () => {
+  const foundResult = { ok: true, value: { item: validItem } } as const;
+  const missingResult = { ok: true, value: { item: null } } as const;
+  const domainFailure = {
+    ok: false,
+    error: { code: "storage-unavailable" },
+  } as const;
+
+  expect(await getLibraryItem(validItem.id, async () => foundResult as never)).toBe(
+    foundResult,
+  );
+  expect(await getLibraryItem(validItem.id, async () => missingResult as never)).toBe(
+    missingResult,
+  );
+  expect(await getLibraryItem(validItem.id, async () => domainFailure as never)).toBe(
+    domainFailure,
+  );
+
+  for (const result of [
+    { ok: true, value: {} },
+    { ok: true, value: { item: validItem, extra: true } },
+    { ok: true, value: { item: { ...validItem, formats: [] } } },
+  ]) {
+    expect(await getLibraryItem(validItem.id, async () => result as never)).toEqual({
+      ok: false,
+      error: { code: "protocol-error" },
+    });
+  }
+});
+
+test("rejects a blank library item id before desktop invocation", async () => {
+  let invocationCount = 0;
+  const result = await getLibraryItem(" \n", async () => {
+    invocationCount += 1;
+    return { ok: true, value: { item: validItem } } as never;
+  });
+
+  expect(result).toEqual({ ok: false, error: { code: "invalid-arguments" } });
+  expect(invocationCount).toBe(0);
 });
 
 test("passes valid library responses through with authoritative format order", async () => {

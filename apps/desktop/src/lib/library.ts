@@ -52,6 +52,9 @@ type LibraryBridgeFailure = {
 };
 
 export type DesktopLibraryListResult = LibraryListWireResult | LibraryBridgeFailure;
+export type DesktopLibraryGetResult =
+  | LibraryStoreResult<{ readonly item: LibraryItem | null }>
+  | LibraryBridgeFailure;
 export type DesktopLibraryImportResult = LibraryImportWireResult | LibraryBridgeFailure;
 export type DesktopLibraryAttachFormatResult =
   | LibraryStoreResult<{ readonly item: LibraryItem | null }>
@@ -219,6 +222,18 @@ export async function listLibraryItems(
 ): Promise<DesktopLibraryListResult> {
   const result = await invokeCommand<unknown>("library_list");
   return decodeLibraryResult<LibraryListWireResult>(result, isItemsValue);
+}
+
+export async function getLibraryItem(
+  id: string,
+  invokeCommand: LibraryInvoker = invokeTauri,
+): Promise<DesktopLibraryGetResult> {
+  if (id.trim() === "") {
+    return invalidArguments();
+  }
+
+  const result = await invokeCommand<unknown>("library_get", { id });
+  return decodeLibraryResult<DesktopLibraryGetResult>(result, isStrictItemValue);
 }
 
 export async function importLibraryItem(

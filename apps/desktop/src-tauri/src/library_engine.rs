@@ -31,6 +31,11 @@ fn validate_library_open(id: &str, format: &str) -> Result<(), ()> {
     validate_nonempty(format)
 }
 
+fn library_get_arguments(id: String) -> Result<Vec<String>, ()> {
+    validate_nonempty(&id)?;
+    Ok(vec!["library".into(), "get".into(), "--id".into(), id])
+}
+
 fn library_open_arguments(id: String, format: String) -> Vec<String> {
     vec![
         "library".into(),
@@ -332,6 +337,15 @@ async fn run_engine(app: &tauri::AppHandle, args: Vec<String>) -> Value {
 #[tauri::command]
 pub async fn library_list(app: tauri::AppHandle) -> Value {
     run_engine(&app, vec!["library".into(), "list".into()]).await
+}
+
+#[tauri::command]
+pub async fn library_get(app: tauri::AppHandle, id: String) -> Value {
+    let Ok(args) = library_get_arguments(id) else {
+        return failure("invalid-arguments");
+    };
+
+    run_engine(&app, args).await
 }
 
 #[tauri::command]
@@ -637,6 +651,15 @@ mod tests {
             destination_eject_arguments("/Volumes/Reader".into()),
             vec!["destination", "eject", "--dest", "/Volumes/Reader"]
         );
+    }
+
+    #[test]
+    fn builds_fixed_library_get_arguments_and_rejects_blank_ids() {
+        assert_eq!(
+            library_get_arguments("book --id 'two'\n📚".into()).unwrap(),
+            vec!["library", "get", "--id", "book --id 'two'\n📚"]
+        );
+        assert!(library_get_arguments(" \n".into()).is_err());
     }
 
     #[test]

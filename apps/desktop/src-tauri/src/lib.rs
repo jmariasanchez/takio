@@ -10,6 +10,7 @@ pub fn run() {
         .on_menu_event(|app, event| menu::handle_event(app, event.id().as_ref()))
         .invoke_handler(tauri::generate_handler![
             library_engine::library_list,
+            library_engine::library_get,
             library_engine::library_import,
             library_engine::library_attach_format,
             library_engine::library_remove_format,
