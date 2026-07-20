@@ -13,6 +13,7 @@ pub fn run() {
             library_engine::library_import,
             library_engine::library_attach_format,
             library_engine::library_remove_format,
+            library_engine::library_replace_format,
             library_engine::library_update,
             library_engine::library_query,
             library_engine::library_saved_views_list,

@@ -77,6 +77,16 @@ fn library_remove_format_arguments(id: String, format: String) -> Vec<String> {
     ]
 }
 
+fn library_replace_format_arguments(request: Value) -> Result<Vec<String>, ()> {
+    Ok(vec![
+        "library".into(),
+        "format".into(),
+        "replace".into(),
+        "--request-json".into(),
+        serialize_nonempty_object(request)?,
+    ])
+}
+
 fn destination_list_arguments() -> Vec<String> {
     vec!["destination".into(), "list".into()]
 }
@@ -340,6 +350,15 @@ pub async fn library_remove_format(app: tauri::AppHandle, id: String, format: St
     }
 
     run_engine(&app, library_remove_format_arguments(id, format)).await
+}
+
+#[tauri::command]
+pub async fn library_replace_format(app: tauri::AppHandle, request: Value) -> Value {
+    let Ok(args) = library_replace_format_arguments(request) else {
+        return failure("invalid-arguments");
+    };
+
+    run_engine(&app, args).await
 }
 
 #[tauri::command]
@@ -622,6 +641,44 @@ mod tests {
     }
 
     #[test]
+    fn builds_atomic_format_replacement_as_one_literal_json_argument() {
+        let request = json!({
+            "id": "book --id 'two'",
+            "format": "epub",
+            "expectedCurrent": {
+                "sourcePath": "/Books/current --request-json.epub",
+                "addedAt": "2026-07-20T10:00:00.000Z",
+                "provenance": "managed",
+            },
+            "source": {
+                "kind": "copy",
+                "path": "/Incoming/$(touch nope)\n📚.epub",
+                "expectedArtifact": {
+                    "bytes": 42,
+                    "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                },
+            },
+        });
+        let request_json = serde_json::to_string(&request).unwrap();
+        let arguments = library_replace_format_arguments(request.clone()).unwrap();
+
+        assert_eq!(
+            arguments,
+            vec![
+                "library",
+                "format",
+                "replace",
+                "--request-json",
+                request_json.as_str(),
+            ]
+        );
+        assert_eq!(
+            serde_json::from_str::<Value>(&arguments[4]).unwrap(),
+            request
+        );
+    }
+
+    #[test]
     fn preserves_nested_rich_metadata_as_one_patch_json_argument() {
         let patch = json!({
             "title": "New title",
@@ -762,11 +819,12 @@ mod tests {
     }
 
     #[test]
-    fn rejects_empty_nonobject_and_oversized_catalogue_requests() {
-        let builders: [fn(Value) -> Result<Vec<String>, ()>; 3] = [
+    fn rejects_empty_nonobject_and_oversized_json_requests() {
+        let builders: [fn(Value) -> Result<Vec<String>, ()>; 4] = [
             library_query_arguments,
             library_saved_view_save_arguments,
             library_saved_view_remove_arguments,
+            library_replace_format_arguments,
         ];
         let envelope_bytes = br#"{"value":""}"#.len();
         let at_limit = json!({
