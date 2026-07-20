@@ -244,14 +244,14 @@
   opacity: 0.68;
 }
 
-@container (max-width: 920px) {
+@container (max-width: 620px) {
   .library-table__added-column,
   .library-table__added-cell {
     display: none;
   }
 }
 
-@container (max-width: 620px) {
+@container (max-width: 480px) {
   .library-table__cover-column,
   .library-table__cover-cell,
   .library-table__formats-column,

@@ -1245,12 +1245,13 @@ export default function App() {
   const query = libraryQuery.request.query;
   const selectedItemId = libraryQuery.selectedItemId;
   const cataloguePage = libraryQuery.page;
+  const catalogueItems = cataloguePage === null ? [] : items;
   const selectedDestination =
     destinations.find((destination) => destination.id === selectedDestinationId) ?? null;
   const preferredDeviceFormat = selectedDestination
     ? (preferredFormatsByDestinationPath[selectedDestination.path] ?? null)
     : null;
-  const selectedItem = items.find((item) => item.id === selectedItemId) ?? null;
+  const selectedItem = catalogueItems.find((item) => item.id === selectedItemId) ?? null;
 
   function selectPreferredDeviceFormat(format: FormatId | null): void {
     if (!selectedDestination) {
@@ -1500,7 +1501,7 @@ export default function App() {
           draft={draft}
           facets={cataloguePage?.facets ?? emptyLibraryFacets}
           filters={libraryQuery.request.filters}
-          items={items}
+          items={catalogueItems}
           libraryState={libraryState}
           pageLimit={libraryQuery.request.page.limit}
           pageOffset={libraryQuery.request.page.offset}

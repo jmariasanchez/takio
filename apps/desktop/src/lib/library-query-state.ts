@@ -71,6 +71,7 @@ function withRequest(
   return {
     ...state,
     request: queryLibraryItemsRequestSchema.parse(request),
+    page: null,
     pendingRequestToken: null,
   };
 }

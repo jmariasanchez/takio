@@ -15,6 +15,23 @@ import "./LibraryInspector.css";
 type FormatAction = (item: LibraryItem, bookFormat: BookFormat) => void;
 type ConversionAction = (item: LibraryItem, choice: ConversionChoice) => void;
 
+export function libraryOpenControlId(
+  item: LibraryItem,
+  bookFormat: BookFormat,
+): string {
+  return item.formats[0]?.format === bookFormat.format
+    ? `library-primary-open-${item.id}`
+    : `library-open-${item.id}-${bookFormat.format}`;
+}
+
+export function conversionControlId(
+  itemId: string,
+  source: BookFormat,
+  target: FormatId,
+): string {
+  return `library-convert-${itemId}-${source.format}-to-${target}`;
+}
+
 export type LibraryInspectorProps = {
   readonly actionsDisabled?: boolean;
   readonly item: LibraryItem | null;
@@ -176,6 +193,7 @@ export function LibraryInspector({
                   <div className="library-inspector__format-actions">
                     <button
                       type="button"
+                      id={libraryOpenControlId(item, bookFormat)}
                       aria-label={`Open ${label} for ${item.title}`}
                       disabled={actionsDisabled}
                       onClick={() => onOpenFormat(item, bookFormat)}
@@ -196,6 +214,7 @@ export function LibraryInspector({
                       return (
                         <button
                           type="button"
+                          id={conversionControlId(item.id, choice.source, choice.target)}
                           aria-label={`Convert ${label} to ${targetLabel} for ${item.title}`}
                           disabled={actionsDisabled}
                           key={choice.target}

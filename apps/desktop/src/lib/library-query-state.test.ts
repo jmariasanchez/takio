@@ -156,6 +156,23 @@ describe("library query state", () => {
     expect(second.request.request.query).toBe("new query");
   });
 
+  test("invalidates the committed page when request intent changes so old rows cannot describe a new query", () => {
+    const issued = issueLibraryQueryRequest(createLibraryQueryState());
+    const loaded = applyLibraryQueryResponse(
+      issued.state,
+      issued.request.token,
+      page([item("old-result")], 1),
+    );
+    const changed = libraryQueryStateReducer(loaded, {
+      type: "set-query",
+      query: "a different catalogue",
+    });
+
+    expect(loaded.page?.items.map(({ id }) => id)).toEqual(["old-result"]);
+    expect(changed.request.query).toBe("a different catalogue");
+    expect(changed.page).toBeNull();
+  });
+
   test("accepts only the latest issued token because slower requests must not replace fresher catalogue data", () => {
     const first = issueLibraryQueryRequest(createLibraryQueryState());
     const second = issueLibraryQueryRequest(first.state);

@@ -12,7 +12,7 @@ import type {
   LibraryQuerySort,
   SavedLibraryView,
 } from "@takio/library-contract";
-import { useState, type FormEvent, type RefObject } from "react";
+import { useEffect, useState, type FormEvent, type RefObject } from "react";
 
 import type { ConversionChoice } from "../lib/conversion-choices";
 import {
@@ -24,7 +24,11 @@ import {
   type MetadataDraft as EditorMetadataDraft,
 } from "../lib/metadata-draft";
 import { LibraryFacetSidebar } from "./LibraryFacetSidebar";
-import { LibraryInspector } from "./LibraryInspector";
+import {
+  LibraryInspector,
+  conversionControlId,
+  libraryOpenControlId,
+} from "./LibraryInspector";
 import { LibraryTable } from "./LibraryTable";
 import { LibraryWorkspaceLayout } from "./LibraryWorkspaceLayout";
 import { MetadataEditor } from "./MetadataEditor";
@@ -125,12 +129,14 @@ function metadataDraft(item: LibraryItem): MetadataDraft {
   return { id: item.id, ...metadataDraftFor(item) };
 }
 
-export function conversionControlId(
-  itemId: string,
-  source: BookFormat,
-  target: FormatId,
-): string {
-  return `library-convert-${itemId}-${source.format}-to-${target}`;
+export { conversionControlId } from "./LibraryInspector";
+
+export function openSaveViewWithPaneClosed(
+  closePane: (pane: CompactPane | null) => void,
+  openSaveView: () => void,
+): void {
+  closePane(null);
+  openSaveView();
 }
 
 function InspectorManagement({
@@ -200,7 +206,11 @@ function InspectorManagement({
   }
 
   function openFormat(selectedItem: LibraryItem, bookFormat: BookFormat): void {
-    void onOpenItem(selectedItem, bookFormat, "library-search");
+    void onOpenItem(
+      selectedItem,
+      bookFormat,
+      libraryOpenControlId(selectedItem, bookFormat),
+    );
   }
 
   function sendFormat(selectedItem: LibraryItem, bookFormat: BookFormat): void {
@@ -411,7 +421,11 @@ function InspectorManagement({
                 >
                   Cancel
                 </button>
-                <button type="submit" disabled={actionsPending}>
+                <button
+                  type="submit"
+                  id={`conversion-format-${item.id}`}
+                  disabled={actionsPending}
+                >
                   {pendingAction === `job-enqueue:${item.id}` ? "Queueing…" : "Choose output…"}
                 </button>
               </div>
@@ -476,6 +490,12 @@ export function LibraryWorkspace({
   const selectedItem = items.find(({ id }) => id === selectedItemId) ?? null;
   const busy = libraryState === "loading" || searchPending;
 
+  useEffect(() => {
+    if (conversionDraft !== null) {
+      setOpenPane("inspector");
+    }
+  }, [conversionDraft]);
+
   const facetSidebar = (
     <LibraryFacetSidebar
       currentSavedViewId={currentSavedViewId}
@@ -486,7 +506,9 @@ export function LibraryWorkspace({
       onChangeFilters={onChangeFilters}
       onClearAll={onClearAll}
       onRemoveSavedView={onRemoveSavedView}
-      onSaveSavedView={onOpenSaveView}
+      onSaveSavedView={() =>
+        openSaveViewWithPaneClosed(setOpenPane, onOpenSaveView)
+      }
     />
   );
   const inspector = (
@@ -527,7 +549,9 @@ export function LibraryWorkspace({
                   <h2>Your books</h2>
                 </div>
                 <span className="library-workspace__count">
-                  {total.toLocaleString()} {total === 1 ? "book" : "books"}
+                  {busy
+                    ? "Updating…"
+                    : `${total.toLocaleString()} ${total === 1 ? "book" : "books"}`}
                 </span>
               </div>
               <label className="library-workspace__search" htmlFor="library-search">
@@ -545,12 +569,12 @@ export function LibraryWorkspace({
           }
           table={
             <div className="library-workspace__results">
-              {libraryState === "loading" && items.length === 0 ? (
+              {busy && libraryState !== "error" && items.length === 0 ? (
                 <div className="library-workspace__state" role="status">
                   Loading your library…
                 </div>
               ) : null}
-              {libraryState === "error" && items.length === 0 ? (
+              {libraryState === "error" ? (
                 <div className="library-workspace__state library-workspace__state--error">
                   <strong>Library unavailable</strong>
                   <span>Takio could not load the files stored on this device.</span>
@@ -563,7 +587,7 @@ export function LibraryWorkspace({
                   </button>
                 </div>
               ) : null}
-              {libraryState === "ready" && items.length === 0 ? (
+              {libraryState === "ready" && !busy && items.length === 0 ? (
                 <div className="library-workspace__state">
                   <strong>{query === "" ? "No books yet" : "No matches"}</strong>
                   <span>
@@ -573,24 +597,30 @@ export function LibraryWorkspace({
                   </span>
                 </div>
               ) : null}
-              <LibraryTable
-                busy={busy}
-                items={items}
-                pageLimit={pageLimit}
-                pageOffset={pageOffset}
-                selectedItemId={selectedItemId}
-                sort={sort}
-                total={total}
-                onChangePage={onChangePage}
-                onChangeSort={onChangeSort}
-                onOpenItem={(item) => {
-                  const primaryFormat = item.formats[0];
-                  if (primaryFormat) {
-                    void onOpenItem(item, primaryFormat, "library-search");
-                  }
-                }}
-                onSelectItem={onSelectItem}
-              />
+              {libraryState !== "error" ? (
+                <LibraryTable
+                  busy={busy}
+                  items={items}
+                  pageLimit={pageLimit}
+                  pageOffset={pageOffset}
+                  selectedItemId={selectedItemId}
+                  sort={sort}
+                  total={total}
+                  onChangePage={onChangePage}
+                  onChangeSort={onChangeSort}
+                  onOpenItem={(item) => {
+                    const primaryFormat = item.formats[0];
+                    if (primaryFormat) {
+                      void onOpenItem(
+                        item,
+                        primaryFormat,
+                        `library-item-${item.id}`,
+                      );
+                    }
+                  }}
+                  onSelectItem={onSelectItem}
+                />
+              ) : null}
             </div>
           }
           onOpenPaneChange={setOpenPane}

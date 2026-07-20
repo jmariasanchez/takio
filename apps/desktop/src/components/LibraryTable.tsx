@@ -294,6 +294,7 @@ export function LibraryTable({
                     }
                   }}
                   key={item.id}
+                  id={`library-item-${item.id}`}
                   aria-selected={selected}
                   className={selected ? "library-table__row is-selected" : "library-table__row"}
                   tabIndex={index === tabStopIndex ? 0 : -1}

@@ -11,6 +11,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { draftFor } from "../lib/metadata-draft";
 import {
   LibraryWorkspace,
+  openSaveViewWithPaneClosed,
   resolveGeneralSend,
   type LibraryWorkspaceProps,
 } from "./LibraryWorkspace";
@@ -138,6 +139,17 @@ function renderWorkspace(overrides: Partial<LibraryWorkspaceProps> = {}): string
   return renderToStaticMarkup(<LibraryWorkspace {...props(overrides)} />);
 }
 
+test("closes a compact pane before opening the saved-view modal so overlays cannot stack", () => {
+  const calls: string[] = [];
+
+  openSaveViewWithPaneClosed(
+    (pane) => calls.push(`pane:${pane ?? "closed"}`),
+    () => calls.push("dialog:open"),
+  );
+
+  expect(calls).toEqual(["pane:closed", "dialog:open"]);
+});
+
 test("composes authoritative facets, table query state, selection, and inspector", () => {
   const markup = renderWorkspace();
 
@@ -158,9 +170,14 @@ test("composes authoritative facets, table query state, selection, and inspector
 test("preserves selected-book open, send, convert, format, cover, and removal actions", () => {
   const markup = renderWorkspace({
     items: [{ ...item, formats: [epub], sourcePath: epub.sourcePath, format: epub.format }],
+    conversionDraft: { id: item.id, source: epub, target: "pdf" },
     preferredDeviceFormat: "pdf",
   });
 
+  expect(markup).toContain('id="library-item-item-1"');
+  expect(markup).toContain('id="library-primary-open-item-1"');
+  expect(markup).toContain('id="library-convert-item-1-epub-to-pdf"');
+  expect(markup).toContain('id="conversion-format-item-1"');
   expect(markup).toContain('aria-label="Open EPUB for Title"');
   expect(markup).toContain('aria-label="Send EPUB for Title"');
   expect(markup).toContain('aria-label="Convert EPUB to PDF for Title"');
@@ -172,6 +189,15 @@ test("preserves selected-book open, send, convert, format, cover, and removal ac
   expect(markup).toContain(
     'aria-label="Convert EPUB to PDF for “Title” before sending to Reader"',
   );
+});
+
+test("renders an explicit error instead of retaining rows that may belong to failed query intent", () => {
+  const markup = renderWorkspace({ libraryState: "error" });
+
+  expect(markup).toContain("Library unavailable");
+  expect(markup).toContain("Try again");
+  expect(markup).not.toContain("<table");
+  expect(markup).not.toContain("26–26 of 42");
 });
 
 test("renders App-controlled metadata draft and save-view dialog state", () => {
