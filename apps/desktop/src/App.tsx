@@ -10,6 +10,13 @@ import {
   type FormatId,
   type LibraryItem,
 } from "@takio/core";
+import type {
+  LibraryFacetCounts,
+  LibraryMetadataPatch,
+  LibraryQueryFilters,
+  LibraryQuerySort,
+  SavedLibraryView,
+} from "@takio/library-contract";
 
 import {
   DeviceControls,
@@ -47,22 +54,40 @@ import {
   describeLibraryError,
   describeUnexpectedLibraryError,
   importLibraryItem,
-  listLibraryItems,
+  listSavedLibraryViews,
   openLibraryItem,
-  parseLibraryTags,
+  queryLibraryItems,
   removeLibraryCover,
   removeLibraryFormat,
   removeLibraryItem,
-  searchLibraryItems,
+  removeSavedLibraryView,
+  saveSavedLibraryView,
   setLibraryCover,
   updateLibraryItem,
 } from "./lib/library";
+import {
+  applyLibraryQueryResponse,
+  createLibraryQueryState,
+  DEFAULT_LIBRARY_QUERY_REQUEST,
+  issueLibraryQueryRequest,
+  libraryQueryStateReducer,
+  type LibraryQueryState,
+  type LibraryQueryStateAction,
+} from "./lib/library-query-state";
 import "./styles.css";
 
 const supportedExtensions = FORMAT_CATALOG.flatMap((format) =>
   format.extensions.map((extension) => extension.slice(1)),
 );
 const coverExtensions = ["png", "jpg", "jpeg", "webp", "gif"];
+const emptyLibraryFacets: LibraryFacetCounts = {
+  authors: [],
+  tags: [],
+  series: [],
+  languages: [],
+  formats: [],
+};
+const searchDebounceMilliseconds = 250;
 
 type JobsState = "loading" | "ready" | "error";
 type Notice = { readonly kind: "status" | "error"; readonly text: string } | null;
@@ -77,14 +102,19 @@ type MenuActionHandlers = {
 
 export default function App() {
   const [items, setItems] = useState<readonly LibraryItem[]>([]);
+  const [libraryQuery, setLibraryQuery] = useState<LibraryQueryState>(() =>
+    createLibraryQueryState(),
+  );
+  const [savedViews, setSavedViews] = useState<readonly SavedLibraryView[]>([]);
+  const [currentSavedViewId, setCurrentSavedViewId] = useState<string | null>(null);
+  const [saveViewDialogOpen, setSaveViewDialogOpen] = useState(false);
+  const [saveViewDialogError, setSaveViewDialogError] = useState<string | null>(null);
   const [libraryState, setLibraryState] = useState<LibraryState>("loading");
   const [notice, setNotice] = useState<Notice>(null);
   const [pendingAction, setPendingAction] = useState<string | null>(null);
-  const [query, setQuery] = useState("");
   const [searchPending, setSearchPending] = useState(false);
   const [draft, setDraft] = useState<MetadataDraft | null>(null);
   const [conversionDraft, setConversionDraft] = useState<ConversionDraft | null>(null);
-  const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
   const [destinations, setDestinations] = useState<readonly Destination[]>([]);
   const [destinationsLoading, setDestinationsLoading] = useState(true);
   const [jobs, setJobs] = useState<readonly ConversionJob[]>([]);
@@ -93,7 +123,7 @@ export default function App() {
   const [preferredFormatsByDestinationPath, setPreferredFormatsByDestinationPath] =
     useState<SessionDeviceFormatPreferences>({});
   const [dropActive, setDropActive] = useState(false);
-  const requestSequence = useRef(0);
+  const savedViewsRequestSequence = useRef(0);
   const destinationRequestSequence = useRef(0);
   const jobRequestSequence = useRef(0);
   const deviceMutationPending = useRef(false);
@@ -102,14 +132,15 @@ export default function App() {
   const openPending = useRef(false);
   const importButton = useRef<HTMLButtonElement>(null);
   const itemsRef = useRef(items);
+  const libraryQueryRef = useRef(libraryQuery);
   const postRemoveFocusItemId = useRef<string | null | undefined>(undefined);
   const postFormatFocusControlId = useRef<string | undefined>(undefined);
   const postConversionFocusControlId = useRef<string | undefined>(undefined);
-  const queryRef = useRef(query);
+  const searchDebounce = useRef<number | null>(null);
   const searchInput = useRef<HTMLInputElement>(null);
   const menuActionHandlers = useRef<MenuActionHandlers | null>(null);
   itemsRef.current = items;
-  queryRef.current = query;
+  libraryQueryRef.current = libraryQuery;
 
   useEffect(() => {
     if (pendingAction !== null || postRemoveFocusItemId.current === undefined) {
@@ -147,50 +178,102 @@ export default function App() {
     (document.getElementById(controlId) ?? importButton.current)?.focus();
   }, [items, pendingAction]);
 
+  const commitLibraryQuery = useCallback((next: LibraryQueryState): void => {
+    libraryQueryRef.current = next;
+    setLibraryQuery(next);
+  }, []);
+
+  const reduceLibraryQuery = useCallback(
+    (action: LibraryQueryStateAction): LibraryQueryState => {
+      const next = libraryQueryStateReducer(libraryQueryRef.current, action);
+      commitLibraryQuery(next);
+      return next;
+    },
+    [commitLibraryQuery],
+  );
+
   const loadLibrary = useCallback(
-    async (showLoading = true, searchQuery = ""): Promise<boolean> => {
-      const request = ++requestSequence.current;
+    async (showLoading = true): Promise<boolean> => {
       if (showLoading) {
         setLibraryState("loading");
       } else {
         setSearchPending(true);
       }
 
-      try {
-        const result =
-          searchQuery === "" ? await listLibraryItems() : await searchLibraryItems(searchQuery);
-        if (request !== requestSequence.current) {
-          return false;
-        }
-        if (!result.ok) {
-          setLibraryState("error");
-          setNotice({ kind: "error", text: describeLibraryError(result.error.code) });
-          return false;
-        }
+      while (true) {
+        const issued = issueLibraryQueryRequest(libraryQueryRef.current);
+        commitLibraryQuery(issued.state);
 
-        setItems(result.value.items);
-        setSelectedItemId((currentId) =>
-          currentId && result.value.items.some((item) => item.id === currentId)
-            ? currentId
-            : null,
-        );
-        setLibraryState("ready");
-        return true;
-      } catch (error) {
-        if (request !== requestSequence.current) {
-          return false;
-        }
-        setLibraryState("error");
-        setNotice({ kind: "error", text: describeUnexpectedLibraryError(error) });
-        return false;
-      } finally {
-        if (request === requestSequence.current) {
+        try {
+          const result = await queryLibraryItems(issued.request.request);
+          if (libraryQueryRef.current.pendingRequestToken !== issued.request.token) {
+            return false;
+          }
+          if (!result.ok) {
+            setLibraryState("error");
+            setSearchPending(false);
+            setNotice({ kind: "error", text: describeLibraryError(result.error.code) });
+            return false;
+          }
+
+          const next = applyLibraryQueryResponse(
+            libraryQueryRef.current,
+            issued.request.token,
+            result.value,
+          );
+          commitLibraryQuery(next);
+          if (
+            next.page === null &&
+            next.request.page.offset !== issued.request.request.page.offset
+          ) {
+            continue;
+          }
+
+          setItems(next.page?.items ?? []);
+          setLibraryState("ready");
           setSearchPending(false);
+          return true;
+        } catch (error) {
+          if (libraryQueryRef.current.pendingRequestToken !== issued.request.token) {
+            return false;
+          }
+          setLibraryState("error");
+          setSearchPending(false);
+          setNotice({ kind: "error", text: describeUnexpectedLibraryError(error) });
+          return false;
         }
       }
     },
-    [],
+    [commitLibraryQuery],
   );
+
+  const loadSavedViews = useCallback(async (): Promise<boolean> => {
+    const request = ++savedViewsRequestSequence.current;
+    try {
+      const result = await listSavedLibraryViews();
+      if (request !== savedViewsRequestSequence.current) {
+        return false;
+      }
+      if (!result.ok) {
+        setNotice({ kind: "error", text: describeLibraryError(result.error.code) });
+        return false;
+      }
+
+      setSavedViews(result.value.views);
+      setCurrentSavedViewId((currentId) =>
+        currentId && result.value.views.some(({ id }) => id === currentId)
+          ? currentId
+          : null,
+      );
+      return true;
+    } catch (error) {
+      if (request !== savedViewsRequestSequence.current) {
+        return false;
+      }
+      setNotice({ kind: "error", text: describeUnexpectedLibraryError(error) });
+      return false;
+    }
+  }, []);
 
   const loadDestinations = useCallback(async (showLoading = true): Promise<boolean> => {
     const request = ++destinationRequestSequence.current;
@@ -265,6 +348,7 @@ export default function App() {
 
   useEffect(() => {
     void loadLibrary();
+    void loadSavedViews();
     void loadDestinations();
     void loadJobs();
 
@@ -276,8 +360,13 @@ export default function App() {
       }
     }, 10_000);
 
-    return () => window.clearInterval(destinationRefresh);
-  }, [loadDestinations, loadJobs, loadLibrary]);
+    return () => {
+      window.clearInterval(destinationRefresh);
+      if (searchDebounce.current !== null) {
+        window.clearTimeout(searchDebounce.current);
+      }
+    };
+  }, [loadDestinations, loadJobs, loadLibrary, loadSavedViews]);
 
   function replaceItem(updated: LibraryItem): void {
     setItems((currentItems) =>
@@ -286,9 +375,16 @@ export default function App() {
   }
 
   function supersedePendingLibraryRequest(): void {
-    requestSequence.current += 1;
+    reduceLibraryQuery({
+      type: "set-page",
+      page: libraryQueryRef.current.request.page,
+    });
     setSearchPending(false);
     setLibraryState("ready");
+  }
+
+  function selectLibraryItem(id: string | null): void {
+    reduceLibraryQuery({ type: "select-item", id });
   }
 
   function discardMissingItem(item: LibraryItem): void {
@@ -305,12 +401,164 @@ export default function App() {
     setConversionDraft((currentDraft) =>
       currentDraft?.id === item.id ? null : currentDraft,
     );
-    setSelectedItemId((currentId) => (currentId === item.id ? null : currentId));
+    if (libraryQueryRef.current.selectedItemId === item.id) {
+      selectLibraryItem(null);
+    }
   }
 
   function changeSearch(searchQuery: string): void {
-    setQuery(searchQuery);
-    void loadLibrary(false, searchQuery);
+    reduceLibraryQuery({ type: "set-query", query: searchQuery });
+    setCurrentSavedViewId(null);
+    setSearchPending(true);
+    if (searchDebounce.current !== null) {
+      window.clearTimeout(searchDebounce.current);
+    }
+    searchDebounce.current = window.setTimeout(() => {
+      searchDebounce.current = null;
+      void loadLibrary(false);
+    }, searchDebounceMilliseconds);
+  }
+
+  function runImmediateLibraryQuery(action: LibraryQueryStateAction): void {
+    if (searchDebounce.current !== null) {
+      window.clearTimeout(searchDebounce.current);
+      searchDebounce.current = null;
+    }
+    reduceLibraryQuery(action);
+    setSearchPending(true);
+    void loadLibrary(false);
+  }
+
+  function changeFilters(filters: LibraryQueryFilters): void {
+    setCurrentSavedViewId(null);
+    runImmediateLibraryQuery({ type: "set-filters", filters });
+  }
+
+  function changeSort(sort: LibraryQuerySort): void {
+    setCurrentSavedViewId(null);
+    runImmediateLibraryQuery({ type: "set-sort", sort });
+  }
+
+  function changePage(offset: number): void {
+    runImmediateLibraryQuery({
+      type: "set-page",
+      page: { ...libraryQueryRef.current.request.page, offset },
+    });
+  }
+
+  function clearLibraryQuery(): void {
+    setCurrentSavedViewId(null);
+    runImmediateLibraryQuery({
+      type: "apply-saved-view",
+      definition: {
+        version: 1,
+        query: DEFAULT_LIBRARY_QUERY_REQUEST.query,
+        filters: DEFAULT_LIBRARY_QUERY_REQUEST.filters,
+        sort: DEFAULT_LIBRARY_QUERY_REQUEST.sort,
+      },
+    });
+  }
+
+  function applySavedView(id: string): void {
+    const view = savedViews.find((candidate) => candidate.id === id);
+    if (!view) {
+      setNotice({ kind: "error", text: "That saved view is no longer available." });
+      void loadSavedViews();
+      return;
+    }
+
+    setCurrentSavedViewId(view.id);
+    runImmediateLibraryQuery({ type: "apply-saved-view", definition: view.definition });
+  }
+
+  function openSaveViewDialog(): void {
+    setSaveViewDialogError(null);
+    setSaveViewDialogOpen(true);
+  }
+
+  function cancelSaveViewDialog(): void {
+    if (pendingAction === "saved-view-save") {
+      return;
+    }
+    setSaveViewDialogError(null);
+    setSaveViewDialogOpen(false);
+  }
+
+  async function saveCurrentView(name: string): Promise<void> {
+    if (pendingAction !== null) {
+      return;
+    }
+
+    const request = libraryQueryRef.current.request;
+    setPendingAction("saved-view-save");
+    setSaveViewDialogError(null);
+    try {
+      const result = await saveSavedLibraryView({
+        id: crypto.randomUUID(),
+        name,
+        definition: {
+          version: 1,
+          query: request.query,
+          filters: request.filters,
+          sort: request.sort,
+        },
+      });
+      if (!result.ok) {
+        setSaveViewDialogError(describeLibraryError(result.error.code));
+        return;
+      }
+      if (!result.value.view) {
+        setSaveViewDialogError("The saved view could not be returned by the library.");
+        return;
+      }
+
+      const savedView = result.value.view;
+      setSavedViews((current) => [...current.filter(({ id }) => id !== savedView.id), savedView]);
+      setCurrentSavedViewId(savedView.id);
+      setSaveViewDialogOpen(false);
+      setNotice({ kind: "status", text: `Saved view “${savedView.name}”.` });
+    } catch (error) {
+      setSaveViewDialogError(describeUnexpectedLibraryError(error));
+    } finally {
+      setPendingAction(null);
+    }
+  }
+
+  async function removeSavedView(id: string): Promise<void> {
+    if (pendingAction !== null) {
+      return;
+    }
+
+    const view = savedViews.find((candidate) => candidate.id === id);
+    setPendingAction(`saved-view-remove:${id}`);
+    setNotice(null);
+    try {
+      const result = await removeSavedLibraryView({ id });
+      if (!result.ok) {
+        setNotice({ kind: "error", text: describeLibraryError(result.error.code) });
+        return;
+      }
+      setSavedViews((current) => current.filter((candidate) => candidate.id !== id));
+      if (currentSavedViewId === id) {
+        setCurrentSavedViewId(null);
+      }
+      setNotice({
+        kind: "status",
+        text: view ? `Removed saved view “${view.name}”.` : "Removed the saved view.",
+      });
+    } catch (error) {
+      setNotice({ kind: "error", text: describeUnexpectedLibraryError(error) });
+    } finally {
+      setPendingAction(null);
+    }
+  }
+
+  async function retryLibrary(): Promise<boolean> {
+    const [libraryLoaded] = await Promise.all([
+      loadLibrary(true),
+      loadSavedViews(),
+    ]);
+    return libraryLoaded;
   }
 
   const importPaths = useCallback(
@@ -338,7 +586,7 @@ export default function App() {
         }
       }
 
-      const refreshed = await loadLibrary(false, queryRef.current);
+      const refreshed = await loadLibrary(false);
       const summary = `${imported} ${imported === 1 ? "item" : "items"} imported; ${rejected.length} rejected.`;
       const details = rejected.map((error) => `• ${error}`);
       if (!refreshed) {
@@ -373,52 +621,25 @@ export default function App() {
     await importPaths(typeof selection === "string" ? [selection] : selection);
   }
 
-  async function saveMetadata(event: FormEvent, item: LibraryItem) {
-    event.preventDefault();
-    if (!draft || draft.id !== item.id) {
-      return;
-    }
-
-    const title = draft.title.trim();
-    if (title === "") {
-      setNotice({ kind: "error", text: "Title is required." });
-      return;
-    }
-
-    let tags: readonly string[];
-    try {
-      tags = parseLibraryTags(draft.tags);
-    } catch {
-      setNotice({
-        kind: "error",
-        text: "Use unique, nonempty tags separated by commas.",
-      });
-      return;
-    }
-
+  async function saveMetadata(item: LibraryItem, patch: LibraryMetadataPatch) {
     setPendingAction(`edit:${item.id}`);
     setNotice(null);
     try {
-      const result = await updateLibraryItem(item.id, {
-        title,
-        author: draft.author.trim() || null,
-        description: draft.description.trim() || null,
-        tags,
-      });
+      const result = await updateLibraryItem(item.id, patch);
       if (!result.ok) {
         setNotice({ kind: "error", text: describeLibraryError(result.error.code) });
         return;
       }
       if (!result.value.item) {
+        await loadLibrary(false);
         setNotice({ kind: "error", text: "That library item no longer exists." });
         return;
       }
 
       replaceItem(result.value.item);
       setDraft(null);
-      setNotice({ kind: "status", text: `Saved “${result.value.item.title}”.` });
-      if (query !== "") {
-        await loadLibrary(false, query);
+      if (await loadLibrary(false)) {
+        setNotice({ kind: "status", text: `Saved “${result.value.item.title}”.` });
       }
     } catch (error) {
       setNotice({ kind: "error", text: describeUnexpectedLibraryError(error) });
@@ -451,12 +672,15 @@ export default function App() {
         return;
       }
       if (!result.value.item) {
+        await loadLibrary(false);
         setNotice({ kind: "error", text: "That library item no longer exists." });
         return;
       }
 
       replaceItem(result.value.item);
-      setNotice({ kind: "status", text: `Updated the cover for “${item.title}”.` });
+      if (await loadLibrary(false)) {
+        setNotice({ kind: "status", text: `Updated the cover for “${item.title}”.` });
+      }
     } catch (error) {
       setNotice({ kind: "error", text: describeUnexpectedLibraryError(error) });
     } finally {
@@ -474,12 +698,15 @@ export default function App() {
         return;
       }
       if (!result.value.item) {
+        await loadLibrary(false);
         setNotice({ kind: "error", text: "That library item no longer exists." });
         return;
       }
 
       replaceItem(result.value.item);
-      setNotice({ kind: "status", text: `Removed the cover for “${item.title}”.` });
+      if (await loadLibrary(false)) {
+        setNotice({ kind: "status", text: `Removed the cover for “${item.title}”.` });
+      }
     } catch (error) {
       setNotice({ kind: "error", text: describeUnexpectedLibraryError(error) });
     } finally {
@@ -537,6 +764,7 @@ export default function App() {
         const updated = result.value.item;
         if (!updated) {
           discardMissingItem(item);
+          await loadLibrary(false);
           setNotice({ kind: "error", text: "That library item no longer exists." });
           return;
         }
@@ -547,14 +775,16 @@ export default function App() {
           ? FORMAT_CATALOG.find((definition) => definition.id === addedFormat.format)!.label
           : "format";
         replaceItem(updated);
-        setSelectedItemId(updated.id);
-        setNotice({
-          kind: "status",
-          text:
-            mode === "copy"
-              ? `Imported a managed ${label} copy for “${updated.title}”. The selected source file remains in place.`
-              : `Attached a referenced ${label} file to “${updated.title}”. The original file remains in place.`,
-        });
+        selectLibraryItem(updated.id);
+        if (await loadLibrary(false)) {
+          setNotice({
+            kind: "status",
+            text:
+              mode === "copy"
+                ? `Imported a managed ${label} copy for “${updated.title}”. The selected source file remains in place.`
+                : `Attached a referenced ${label} file to “${updated.title}”. The original file remains in place.`,
+          });
+        }
       } catch (error) {
         setNotice({ kind: "error", text: describeUnexpectedLibraryError(error) });
       } finally {
@@ -641,6 +871,7 @@ export default function App() {
 
         if (!result.value.item) {
           discardMissingItem(item);
+          await loadLibrary(false);
           setNotice({ kind: "error", text: "That library item no longer exists." });
           return;
         }
@@ -652,15 +883,17 @@ export default function App() {
             ? `format-remove-${updated.id}-${focusFormat.format}`
             : `format-import-copy-${updated.id}`;
         replaceItem(updated);
-        setSelectedItemId(updated.id);
-        setNotice({
-          kind: "status",
-          text: managed
-            ? result.value.cleanupPending
-              ? `Removed managed ${label} from “${updated.title}”. Cleanup could not be completed and will be retried.`
-              : `Deleted Takio’s managed ${label} copy and removed the format from “${updated.title}”.`
-            : `Detached referenced ${label} from “${updated.title}”. The original file was not changed.`,
-        });
+        selectLibraryItem(updated.id);
+        if (await loadLibrary(false)) {
+          setNotice({
+            kind: "status",
+            text: managed
+              ? result.value.cleanupPending
+                ? `Removed managed ${label} from “${updated.title}”. Cleanup could not be completed and will be retried.`
+                : `Deleted Takio’s managed ${label} copy and removed the format from “${updated.title}”.`
+              : `Detached referenced ${label} from “${updated.title}”. The original file was not changed.`,
+          });
+        }
       } catch (error) {
         postFormatFocusControlId.current = focusControlId;
         setNotice({ kind: "error", text: describeUnexpectedLibraryError(error) });
@@ -714,14 +947,18 @@ export default function App() {
       setConversionDraft((currentDraft) =>
         currentDraft?.id === item.id ? null : currentDraft,
       );
-      setSelectedItemId((currentId) => (currentId === item.id ? null : currentId));
+      if (libraryQueryRef.current.selectedItemId === item.id) {
+        selectLibraryItem(null);
+      }
       setLibraryState("ready");
-      setNotice({
-        kind: "status",
-        text: result.value.cleanupPending
-          ? `Removed “${item.title}”. Some Takio-managed files could not be deleted; cleanup is pending.`
-          : `Removed “${item.title}”.`,
-      });
+      if (await loadLibrary(false)) {
+        setNotice({
+          kind: "status",
+          text: result.value.cleanupPending
+            ? `Removed “${item.title}”. Some Takio-managed files could not be deleted; cleanup is pending.`
+            : `Removed “${item.title}”.`,
+        });
+      }
     } catch (error) {
       setNotice({ kind: "error", text: describeUnexpectedLibraryError(error) });
     } finally {
@@ -740,7 +977,7 @@ export default function App() {
 
     openPending.current = true;
     postFormatFocusControlId.current = focusControlId;
-    setSelectedItemId(item.id);
+    selectLibraryItem(item.id);
     setPendingAction(`open:${item.id}:${bookFormat.format}`);
     setNotice(null);
     try {
@@ -748,7 +985,7 @@ export default function App() {
       if (!result.ok) {
         const errorText = describeLibraryError(result.error.code);
         if (result.error.code === "format-not-found" || result.error.code === "not-found") {
-          const refreshed = await loadLibrary(false, queryRef.current);
+          const refreshed = await loadLibrary(false);
           if (result.error.code === "format-not-found" && refreshed) {
             postFormatFocusControlId.current = `library-primary-open-${item.id}`;
           }
@@ -857,7 +1094,7 @@ export default function App() {
       const completedJob = result.value.job?.status === "completed" ? result.value.job : null;
       const [jobsLoaded, libraryLoaded] = await Promise.all([
         loadJobs(false),
-        completedJob ? loadLibrary(false, queryRef.current) : Promise.resolve(true),
+        completedJob ? loadLibrary(false) : Promise.resolve(true),
       ]);
       if (!jobsLoaded || !libraryLoaded) {
         return;
@@ -933,7 +1170,7 @@ export default function App() {
     if (deviceMutationPending.current) {
       return;
     }
-    setSelectedItemId(item.id);
+    selectLibraryItem(item.id);
     if (!selectedDestination) {
       setNotice({ kind: "error", text: "Choose a reader before sending." });
       return;
@@ -951,7 +1188,7 @@ export default function App() {
       if (!result.ok) {
         const errorText = describeDestinationError(result.error.code);
         if (result.error.code === "format-not-found" || result.error.code === "unknown-item") {
-          await loadLibrary(false, queryRef.current);
+          await loadLibrary(false);
         }
         setNotice({ kind: "error", text: errorText });
         return;
@@ -1005,6 +1242,9 @@ export default function App() {
   }
 
   const actionsPending = pendingAction !== null;
+  const query = libraryQuery.request.query;
+  const selectedItemId = libraryQuery.selectedItemId;
+  const cataloguePage = libraryQuery.page;
   const selectedDestination =
     destinations.find((destination) => destination.id === selectedDestinationId) ?? null;
   const preferredDeviceFormat = selectedDestination
@@ -1256,27 +1496,51 @@ export default function App() {
         <LibraryWorkspace
           actionsPending={actionsPending}
           conversionDraft={conversionDraft}
+          currentSavedViewId={currentSavedViewId}
           draft={draft}
+          facets={cataloguePage?.facets ?? emptyLibraryFacets}
+          filters={libraryQuery.request.filters}
           items={items}
           libraryState={libraryState}
+          pageLimit={libraryQuery.request.page.limit}
+          pageOffset={libraryQuery.request.page.offset}
           pendingAction={pendingAction}
           preferredDeviceFormat={preferredDeviceFormat}
           query={query}
+          savedViews={savedViews}
+          saveViewDialogBusy={pendingAction === "saved-view-save"}
+          saveViewDialogError={saveViewDialogError}
+          saveViewDialogOpen={saveViewDialogOpen}
+          saveViewSuggestedName={
+            savedViews.find(({ id }) => id === currentSavedViewId)?.name ??
+            "Current library view"
+          }
           searchInput={searchInput}
           searchPending={searchPending}
           selectedDestination={selectedDestination}
           selectedItemId={selectedItemId}
+          sort={libraryQuery.request.sort}
+          total={cataloguePage?.total ?? 0}
+          onApplySavedView={applySavedView}
           onAttachFormat={attachFormat}
+          onCancelSaveView={cancelSaveViewDialog}
+          onChangeFilters={changeFilters}
+          onChangePage={changePage}
           onChangeSearch={changeSearch}
+          onChangeSort={changeSort}
           onChooseCover={chooseCover}
+          onClearAll={clearLibraryQuery}
           onClearCover={clearCover}
           onEnqueueConversion={enqueueConversion}
+          onOpenSaveView={openSaveViewDialog}
           onOpenItem={openItem}
           onRemoveItem={removeItem}
           onRemoveFormat={removeFormat}
-          onRetry={() => loadLibrary(true, query)}
+          onRemoveSavedView={removeSavedView}
+          onRetry={retryLibrary}
           onSaveMetadata={saveMetadata}
-          onSelectItem={setSelectedItemId}
+          onSaveView={saveCurrentView}
+          onSelectItem={selectLibraryItem}
           onSendItem={sendItem}
           onSetConversionDraft={setConversionDraft}
           onSetDraft={setDraft}
