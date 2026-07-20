@@ -12,6 +12,7 @@ pub fn run() {
             library_engine::library_list,
             library_engine::library_get,
             library_engine::library_import,
+            library_engine::library_import_many,
             library_engine::library_attach_format,
             library_engine::library_remove_format,
             library_engine::library_replace_format,

@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { FORMAT_IDS, libraryItemSchema, normalizeTags } from "@takio/core";
 import type { FormatId, LibraryItem } from "@takio/core";
 import {
+  libraryImportReportSchema,
   libraryQueryPageSchema,
   libraryTrashPageSchema,
   listLibraryTrashRequestSchema,
@@ -15,6 +16,7 @@ import {
   trashLibraryItemRequestSchema,
 } from "@takio/library-contract";
 import type {
+  LibraryBatchImportWireResult,
   LibraryCoverWireResult,
   LibraryImportWireResult,
   LibraryListWireResult,
@@ -56,6 +58,9 @@ export type DesktopLibraryGetResult =
   | LibraryStoreResult<{ readonly item: LibraryItem | null }>
   | LibraryBridgeFailure;
 export type DesktopLibraryImportResult = LibraryImportWireResult | LibraryBridgeFailure;
+export type DesktopLibraryBatchImportResult =
+  | LibraryBatchImportWireResult
+  | LibraryBridgeFailure;
 export type DesktopLibraryAttachFormatResult =
   | LibraryStoreResult<{ readonly item: LibraryItem | null }>
   | LibraryBridgeFailure;
@@ -243,6 +248,19 @@ export async function importLibraryItem(
   const result = await invokeCommand<unknown>("library_import", { sourcePath });
   return decodeLibraryResult<LibraryImportWireResult>(result, (value) =>
     isItemValue(value, false),
+  );
+}
+
+export async function importLibraryItems(
+  sourcePaths: readonly string[],
+  invokeCommand: LibraryInvoker = invokeTauri,
+): Promise<DesktopLibraryBatchImportResult> {
+  const result = await invokeCommand<unknown>("library_import_many", {
+    sourcePaths: [...sourcePaths],
+  });
+  return decodeLibraryResult<LibraryBatchImportWireResult>(
+    result,
+    (value) => libraryImportReportSchema.safeParse(value).success,
   );
 }
 

@@ -12,6 +12,7 @@ import {
   describeUnexpectedLibraryError,
   getLibraryItem,
   importLibraryItem,
+  importLibraryItems,
   listLibraryItems,
   listLibraryTrash,
   listSavedLibraryViews,
@@ -138,6 +139,33 @@ const metadataPatch = {
   tags: ["Classic", "Science Fiction"],
 } as const satisfies LibraryMetadataPatch;
 
+const batchImportReport = {
+  outcomes: [
+    {
+      status: "imported",
+      sourcePath: validItem.sourcePath,
+      item: validItem,
+    },
+    {
+      status: "skipped",
+      sourcePath: "/Books/notes.txt",
+      reason: "unsupported-format",
+    },
+    {
+      status: "duplicate",
+      sourcePath: "/Books/A title.pdf",
+      existing: { itemId: validItem.id, format: "pdf" },
+      reason: "existing-library",
+    },
+    {
+      status: "failed",
+      sourcePath: "/Books/missing.epub",
+      code: "not-found",
+    },
+  ],
+  counts: { total: 4, imported: 1, skipped: 1, duplicates: 1, failed: 1 },
+} as const;
+
 test("uses only the fixed desktop library commands and argument names", async () => {
   const calls: Array<{ command: string; args?: Record<string, unknown> }> = [];
   const invokeCommand: LibraryInvoker = async (command, args) => {
@@ -187,12 +215,16 @@ test("uses only the fixed desktop library commands and argument names", async ()
     if (command === "library_saved_view_remove") {
       return { ok: true, value: { view: null } } as never;
     }
+    if (command === "library_import_many") {
+      return { ok: true, value: batchImportReport } as never;
+    }
     return { ok: true, value: { item: null } } as never;
   };
 
   await listLibraryItems(invokeCommand);
   await getLibraryItem("item-1", invokeCommand);
   await importLibraryItem("/Books/A title.epub", invokeCommand);
+  await importLibraryItems(["/Books", "/Incoming/A title.epub"], invokeCommand);
   await attachLibraryFormat(
     "item-1",
     "/Books/A title.pdf",
@@ -225,6 +257,10 @@ test("uses only the fixed desktop library commands and argument names", async ()
     { command: "library_list", args: undefined },
     { command: "library_get", args: { id: "item-1" } },
     { command: "library_import", args: { sourcePath: "/Books/A title.epub" } },
+    {
+      command: "library_import_many",
+      args: { sourcePaths: ["/Books", "/Incoming/A title.epub"] },
+    },
     {
       command: "library_attach_format",
       args: {
@@ -385,6 +421,63 @@ test("passes valid library responses through with authoritative format order", a
   expect(await openLibraryItem(validItem.id, "pdf", async () => openResult as never)).toBe(
     openResult,
   );
+});
+
+test("passes an exact recursive import report through", async () => {
+  const result = { ok: true, value: batchImportReport } as const;
+
+  expect(
+    await importLibraryItems(["/Books"], async () => result as never),
+  ).toBe(result);
+});
+
+test("rejects malformed or inconsistently counted recursive import reports", async () => {
+  const malformedReports = [
+    { ...batchImportReport, unexpected: true },
+    {
+      ...batchImportReport,
+      counts: { ...batchImportReport.counts, total: 3 },
+    },
+    {
+      ...batchImportReport,
+      counts: { ...batchImportReport.counts, imported: 1.5 },
+    },
+    {
+      ...batchImportReport,
+      outcomes: [
+        { ...batchImportReport.outcomes[0], unexpected: true },
+        ...batchImportReport.outcomes.slice(1),
+      ],
+    },
+    {
+      ...batchImportReport,
+      outcomes: [
+        batchImportReport.outcomes[0],
+        { ...batchImportReport.outcomes[1], reason: "hidden-file" },
+        ...batchImportReport.outcomes.slice(2),
+      ],
+    },
+    {
+      ...batchImportReport,
+      outcomes: [
+        ...batchImportReport.outcomes.slice(0, 2),
+        {
+          ...batchImportReport.outcomes[2],
+          existing: { ...batchImportReport.outcomes[2].existing, format: "mp3" },
+        },
+        batchImportReport.outcomes[3],
+      ],
+    },
+  ];
+
+  for (const report of malformedReports) {
+    expect(
+      await importLibraryItems(["/Books"], async () => ({
+        ok: true,
+        value: report,
+      }) as never),
+    ).toEqual({ ok: false, error: { code: "protocol-error" } });
+  }
 });
 
 test("passes valid query pages, facets, and saved views through", async () => {

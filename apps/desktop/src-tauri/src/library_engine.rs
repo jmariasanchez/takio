@@ -6,6 +6,7 @@ use tauri_plugin_shell::{process::CommandEvent, ShellExt};
 const ENGINE_NAME: &str = "takio-library-engine";
 const MAX_OUTPUT_BYTES: usize = 8 * 1024 * 1024;
 const MAX_JSON_ARGUMENT_BYTES: usize = 16 * 1024;
+const MAX_LIBRARY_IMPORT_ROOTS: usize = 256;
 
 fn failure(code: &str) -> Value {
     json!({ "ok": false, "error": { "code": code } })
@@ -34,6 +35,24 @@ fn validate_library_open(id: &str, format: &str) -> Result<(), ()> {
 fn library_get_arguments(id: String) -> Result<Vec<String>, ()> {
     validate_nonempty(&id)?;
     Ok(vec!["library".into(), "get".into(), "--id".into(), id])
+}
+
+fn library_import_many_arguments(source_paths: Vec<String>) -> Result<Vec<String>, ()> {
+    if source_paths.is_empty()
+        || source_paths.len() > MAX_LIBRARY_IMPORT_ROOTS
+        || source_paths
+            .iter()
+            .any(|source_path| validate_nonempty(source_path).is_err())
+    {
+        return Err(());
+    }
+
+    let mut args = Vec::with_capacity(2 + source_paths.len() * 2);
+    args.extend(["library".into(), "import-many".into()]);
+    for source_path in source_paths {
+        args.extend(["--source-path".into(), source_path]);
+    }
+    Ok(args)
 }
 
 fn library_open_arguments(id: String, format: String) -> Vec<String> {
@@ -367,6 +386,15 @@ pub async fn library_import(app: tauri::AppHandle, source_path: String) -> Value
 }
 
 #[tauri::command]
+pub async fn library_import_many(app: tauri::AppHandle, source_paths: Vec<String>) -> Value {
+    let Ok(args) = library_import_many_arguments(source_paths) else {
+        return failure("invalid-arguments");
+    };
+
+    run_engine(&app, args).await
+}
+
+#[tauri::command]
 pub async fn library_attach_format(
     app: tauri::AppHandle,
     id: String,
@@ -660,6 +688,30 @@ mod tests {
             vec!["library", "get", "--id", "book --id 'two'\n📚"]
         );
         assert!(library_get_arguments(" \n".into()).is_err());
+    }
+
+    #[test]
+    fn builds_fixed_import_many_arguments_and_enforces_root_boundaries() {
+        assert_eq!(
+            library_import_many_arguments(vec![
+                "/Books/A title.epub".into(),
+                "/Books/$(touch /tmp/nope)\n📚".into(),
+            ])
+            .unwrap(),
+            vec![
+                "library",
+                "import-many",
+                "--source-path",
+                "/Books/A title.epub",
+                "--source-path",
+                "/Books/$(touch /tmp/nope)\n📚",
+            ]
+        );
+
+        assert!(library_import_many_arguments(Vec::new()).is_err());
+        assert!(library_import_many_arguments(vec![" \n".into()]).is_err());
+        assert!(library_import_many_arguments(vec!["/Books".into(); 256]).is_ok());
+        assert!(library_import_many_arguments(vec!["/Books".into(); 257]).is_err());
     }
 
     #[test]
