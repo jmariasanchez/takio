@@ -2,12 +2,14 @@ import {
   bookFormatSchema,
   bookFormatsSchema,
   detectFormat,
+  FORMAT_IDS,
   libraryItemSchema,
   type FormatId,
   type LibraryItem,
 } from "@takio/core";
 import {
   libraryMetadataPatchSchema,
+  importLibraryItemsRequestSchema,
   libraryQueryPageSchema,
   libraryTrashPageSchema,
   listLibraryTrashRequestSchema,
@@ -30,6 +32,10 @@ import type {
   GetLibraryItemResult,
   ImportLibraryItemRequest,
   ImportLibraryItemResult,
+  ImportLibraryItemsRequest,
+  ImportLibraryItemsResult,
+  LibraryBatchImportStore,
+  LibraryImportEntryOutcome,
   LibraryStore,
   LibraryStoreErrorCode,
   LibraryStoreResult,
@@ -86,6 +92,7 @@ import {
   openSync,
   readSync,
   realpathSync,
+  readdirSync,
   renameSync,
   rmSync,
   statSync,
@@ -98,7 +105,7 @@ import { initializationTestSeam } from "./initialization-test-seam.js";
 import { lifecycleTestSeam } from "./lifecycle-test-seam.js";
 import { queryTestSeam } from "./query-test-seam.js";
 
-const SCHEMA_VERSION = 6;
+const SCHEMA_VERSION = 7;
 const incompatibleSchema = Symbol("incompatible-schema");
 const duplicateFormat = Symbol("duplicate-format");
 const sourceChanged = Symbol("source-changed");
@@ -127,6 +134,8 @@ type StoredV2LibraryItem = StoredLibraryItem & {
 type StoredV1LibraryItem = Pick<StoredV2LibraryItem, "id" | "title" | "sourcePath" | "format" | "addedAt">;
 type StoredV3BookFormat = { sourcePath: unknown; format: unknown; addedAt: unknown };
 type StoredBookFormat = StoredV3BookFormat & { provenance: unknown };
+type StoredFingerprint = { contentBytes: unknown; contentSha256: unknown };
+type StoredV7BookFormat = StoredBookFormat & StoredFingerprint;
 type StoredPositionedBookFormat = StoredBookFormat & { position: unknown };
 type StoredPositionedV3BookFormat = StoredV3BookFormat & { position: unknown };
 type StoredTag = { name: unknown };
@@ -138,6 +147,14 @@ type StoredItemTag = StoredTag & { libraryItemId: string; position: unknown };
 type StoredItemAuthor = StoredAuthor & { libraryItemId: string };
 type StoredItemLanguage = StoredLanguage & { libraryItemId: string };
 type StoredItemIdentifier = StoredIdentifier & { libraryItemId: string };
+type StoredMigrationFormat = {
+  libraryItemId: string;
+  sourcePath: string;
+  format: string;
+  addedAt: string;
+  provenance: string;
+  position: number;
+};
 type StoredSavedLibraryView = {
   id: unknown;
   name: unknown;
@@ -149,6 +166,12 @@ type CleanupKind = "cover" | "format";
 type StoredCleanupPath = { sourcePath: unknown; kind: unknown };
 type CleanupJob = { sourcePath: string; kind: CleanupKind };
 type ExpectedArtifact = { bytes: number; sha256: string };
+type FingerprintFailure = "unreadable" | "source-changed";
+type BatchImportFailure =
+  | FingerprintFailure
+  | "not-found"
+  | "storage-unavailable"
+  | "invalid-title";
 
 const managedLeafPattern =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.[a-z0-9]+$/i;
@@ -255,6 +278,80 @@ function isValidExpectedArtifact(value: unknown): value is ExpectedArtifact {
     typeof value.sha256 === "string" &&
     /^[0-9a-f]{64}$/.test(value.sha256)
   );
+}
+
+function fingerprintFile(
+  path: string,
+  expected?: ReturnType<typeof lstatSync>,
+): { ok: true; value: ExpectedArtifact } | { ok: false; code: FingerprintFailure } {
+  let descriptor: number | undefined;
+  try {
+    descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    const before = fstatSync(descriptor);
+    if (
+      !before.isFile() ||
+      (expected !== undefined &&
+        (expected.isSymbolicLink() ||
+          !expected.isFile() ||
+          expected.dev !== before.dev ||
+          expected.ino !== before.ino ||
+          expected.size !== before.size ||
+          expected.mtimeMs !== before.mtimeMs ||
+          expected.ctimeMs !== before.ctimeMs))
+    ) {
+      return { ok: false, code: "source-changed" };
+    }
+
+    const hash = createHash("sha256");
+    const buffer = Buffer.allocUnsafe(64 * 1024);
+    let bytes = 0;
+    while (true) {
+      const read = readSync(descriptor, buffer, 0, buffer.length, null);
+      if (read === 0) {
+        break;
+      }
+      bytes += read;
+      hash.update(buffer.subarray(0, read));
+    }
+
+    const after = fstatSync(descriptor);
+    const current = lstatSync(path);
+    if (
+      !after.isFile() ||
+      !current.isFile() ||
+      current.isSymbolicLink() ||
+      before.dev !== after.dev ||
+      before.ino !== after.ino ||
+      before.size !== after.size ||
+      before.mtimeMs !== after.mtimeMs ||
+      before.ctimeMs !== after.ctimeMs ||
+      after.dev !== current.dev ||
+      after.ino !== current.ino ||
+      after.size !== current.size ||
+      after.mtimeMs !== current.mtimeMs ||
+      after.ctimeMs !== current.ctimeMs ||
+      bytes !== after.size
+    ) {
+      return { ok: false, code: "source-changed" };
+    }
+    return { ok: true, value: { bytes, sha256: hash.digest("hex") } };
+  } catch (error) {
+    return {
+      ok: false,
+      code:
+        expected !== undefined &&
+        typeof error === "object" &&
+        error !== null &&
+        "code" in error &&
+        error.code === "ENOENT"
+          ? "source-changed"
+          : "unreadable",
+    };
+  } finally {
+    if (descriptor !== undefined) {
+      closeSync(descriptor);
+    }
+  }
 }
 
 function managedFileMatchesArtifact(path: string, expected: ExpectedArtifact): boolean {
@@ -882,7 +979,7 @@ function createV3FormatTable(database: Database): void {
   `);
 }
 
-function createFormatTable(database: Database): void {
+function createV4FormatTable(database: Database): void {
   database.run(`
     CREATE TABLE library_item_formats (
       library_item_id TEXT NOT NULL REFERENCES library_items(id) ON DELETE CASCADE,
@@ -894,6 +991,41 @@ function createFormatTable(database: Database): void {
       PRIMARY KEY (library_item_id, format),
       UNIQUE (library_item_id, position)
     ) STRICT
+  `);
+}
+
+function createFormatTable(database: Database): void {
+  database.run(`
+    CREATE TABLE library_item_formats (
+      library_item_id TEXT NOT NULL REFERENCES library_items(id) ON DELETE CASCADE,
+      format TEXT NOT NULL,
+      source_path TEXT NOT NULL,
+      added_at TEXT NOT NULL,
+      provenance TEXT NOT NULL CHECK (provenance IN ('managed', 'referenced')),
+      position INTEGER NOT NULL CHECK (position >= 0),
+      content_bytes INTEGER,
+      content_sha256 TEXT,
+      CHECK (
+        (provenance = 'managed'
+          AND content_bytes IS NOT NULL
+          AND content_bytes >= 0
+          AND content_sha256 IS NOT NULL
+          AND length(content_sha256) = 64
+          AND content_sha256 NOT GLOB '*[^0-9a-f]*')
+        OR
+        (provenance = 'referenced' AND content_bytes IS NULL AND content_sha256 IS NULL)
+      ),
+      PRIMARY KEY (library_item_id, format),
+      UNIQUE (library_item_id, position)
+    ) STRICT
+  `);
+}
+
+function createManagedFingerprintIndex(database: Database): void {
+  database.run(`
+    CREATE INDEX library_item_formats_by_fingerprint
+    ON library_item_formats(content_bytes, content_sha256, library_item_id, position)
+    WHERE provenance = 'managed'
   `);
 }
 
@@ -1098,7 +1230,7 @@ function retainVerifiedV3Backup(
 
 function migrateV3ToV4(database: Database): void {
   database.run("ALTER TABLE library_item_formats RENAME TO library_item_formats_v3");
-  createFormatTable(database);
+  createV4FormatTable(database);
   database.run(`
     INSERT INTO library_item_formats
       (library_item_id, format, source_path, added_at, provenance, position)
@@ -1132,6 +1264,71 @@ function createLibraryTrashIndex(database: Database): void {
 function migrateV5ToV6(database: Database): void {
   database.run("ALTER TABLE library_items ADD COLUMN trashed_at TEXT");
   createLibraryTrashIndex(database);
+}
+
+function migrateV6ToV7(database: Database, itemsDirectory: string): void {
+  const rows = database
+    .query<StoredMigrationFormat, []>(`
+      SELECT library_item_id AS libraryItemId, source_path AS sourcePath,
+        format, added_at AS addedAt, provenance, position
+      FROM library_item_formats
+      ORDER BY library_item_id, position
+    `)
+    .all();
+  const fingerprints = new Map<string, ExpectedArtifact>();
+  for (const row of rows) {
+    if (row.provenance !== "managed") {
+      continue;
+    }
+    const format = bookFormatSchema.safeParse({
+      sourcePath: row.sourcePath,
+      format: row.format,
+      addedAt: row.addedAt,
+      provenance: row.provenance,
+    });
+    if (!format.success || format.data.provenance !== "managed") {
+      throw new TypeError("Invalid managed format during migration");
+    }
+    const path = resolveManagedFormatPath(
+      itemsDirectory,
+      format.data.sourcePath,
+      format.data.format,
+      true,
+    );
+    const fingerprint = fingerprintFile(path);
+    if (!fingerprint.ok) {
+      throw new TypeError("Managed format could not be fingerprinted during migration");
+    }
+    fingerprints.set(`${row.libraryItemId}\0${row.format}`, fingerprint.value);
+  }
+
+  database.run("ALTER TABLE library_item_formats RENAME TO library_item_formats_v6");
+  createFormatTable(database);
+  for (const row of rows) {
+    const fingerprint = fingerprints.get(`${row.libraryItemId}\0${row.format}`);
+    database.run(
+      `INSERT INTO library_item_formats
+        (library_item_id, format, source_path, added_at, provenance, position,
+          content_bytes, content_sha256)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        row.libraryItemId,
+        row.format,
+        row.sourcePath,
+        row.addedAt,
+        row.provenance,
+        row.position,
+        fingerprint?.bytes ?? null,
+        fingerprint?.sha256 ?? null,
+      ],
+    );
+  }
+  database.run("DROP TABLE library_item_formats_v6");
+  database.run(
+    `CREATE INDEX library_item_formats_by_format
+      ON library_item_formats(format, library_item_id)`,
+  );
+  createManagedFingerprintIndex(database);
 }
 
 function verifyV4Database(
@@ -1292,6 +1489,90 @@ function verifyV6Database(
     .all();
   if (rows.some(({ trashedAt }) => trashedAt !== null && !isStoredTrashTimestamp(trashedAt))) {
     throw new Error("The migrated database could not be verified.");
+  }
+}
+
+function verifyV6Backup(
+  path: string,
+  coversDirectory: string,
+  itemsDirectory: string,
+): void {
+  using backup = new Database(path, { strict: true });
+  backup.run("PRAGMA foreign_keys = ON");
+  const version = backup.query<{ user_version: number }, []>("PRAGMA user_version").get()
+    ?.user_version;
+  if (version !== 6) {
+    throw new Error("The pre-migration backup could not be verified.");
+  }
+  verifyV6Database(backup, coversDirectory, itemsDirectory);
+}
+
+function retainVerifiedV6Backup(
+  database: Database,
+  databasePath: string,
+  coversDirectory: string,
+  itemsDirectory: string,
+): void {
+  retainVerifiedBackup(database, `${databasePath}.v6.backup`, (path) =>
+    verifyV6Backup(path, coversDirectory, itemsDirectory),
+  );
+}
+
+function verifyV7Database(
+  database: Database,
+  coversDirectory: string,
+  itemsDirectory: string,
+): void {
+  verifyV6Database(database, coversDirectory, itemsDirectory);
+  const formats = database
+    .query<StoredV7BookFormat & { libraryItemId: string }, []>(`
+      SELECT library_item_id AS libraryItemId, source_path AS sourcePath,
+        format, added_at AS addedAt, provenance,
+        content_bytes AS contentBytes, content_sha256 AS contentSha256
+      FROM library_item_formats
+      ORDER BY library_item_id, position
+    `)
+    .all();
+  for (const row of formats) {
+    if (row.provenance === "referenced") {
+      if (row.contentBytes !== null || row.contentSha256 !== null) {
+        throw new Error("The migrated database could not be verified.");
+      }
+      continue;
+    }
+    if (
+      row.provenance !== "managed" ||
+      typeof row.contentBytes !== "number" ||
+      !Number.isSafeInteger(row.contentBytes) ||
+      row.contentBytes < 0 ||
+      typeof row.contentSha256 !== "string" ||
+      !/^[0-9a-f]{64}$/.test(row.contentSha256)
+    ) {
+      throw new Error("The migrated database could not be verified.");
+    }
+    const format = bookFormatSchema.safeParse({
+      sourcePath: row.sourcePath,
+      format: row.format,
+      addedAt: row.addedAt,
+      provenance: row.provenance,
+    });
+    if (!format.success || format.data.provenance !== "managed") {
+      throw new Error("The migrated database could not be verified.");
+    }
+    const path = resolveManagedFormatPath(
+      itemsDirectory,
+      format.data.sourcePath,
+      format.data.format,
+      true,
+    );
+    if (
+      !managedFileMatchesArtifact(path, {
+        bytes: row.contentBytes,
+        sha256: row.contentSha256,
+      })
+    ) {
+      throw new Error("The migrated database could not be verified.");
+    }
   }
 }
 
@@ -1822,6 +2103,7 @@ function parseSavedLibraryView(row: StoredSavedLibraryView): LibraryStoreResult<
 export class BunSqliteLibraryStore
   implements
     LibraryStore,
+    LibraryBatchImportStore,
     LibraryFormatReplacementStore,
     LibraryItemTrashStore,
     LibraryQueryStore,
@@ -1892,7 +2174,8 @@ export class BunSqliteLibraryStore
           createSavedLibraryViewsTable(database!);
           createLibraryQueryIndexes(database!);
           createLibraryTrashIndex(database!);
-          verifyV6Database(database!, this.#coversDirectory, this.#itemsDirectory);
+          createManagedFingerprintIndex(database!);
+          verifyV7Database(database!, this.#coversDirectory, this.#itemsDirectory);
           database!.run(`PRAGMA user_version = ${SCHEMA_VERSION}`);
         } else if (version === 1) {
           retainVerifiedV1Backup(database!, this.#databasePath);
@@ -1906,7 +2189,8 @@ export class BunSqliteLibraryStore
           migrateV3ToV4(database!);
           migrateV4ToV5(database!);
           migrateV5ToV6(database!);
-          verifyV6Database(database!, this.#coversDirectory, this.#itemsDirectory);
+          migrateV6ToV7(database!, this.#itemsDirectory);
+          verifyV7Database(database!, this.#coversDirectory, this.#itemsDirectory);
           database!.run(`PRAGMA user_version = ${SCHEMA_VERSION}`);
         } else if (version === 2) {
           retainVerifiedV2Backup(database!, this.#databasePath, this.#coversDirectory);
@@ -1914,14 +2198,16 @@ export class BunSqliteLibraryStore
           migrateV3ToV4(database!);
           migrateV4ToV5(database!);
           migrateV5ToV6(database!);
-          verifyV6Database(database!, this.#coversDirectory, this.#itemsDirectory);
+          migrateV6ToV7(database!, this.#itemsDirectory);
+          verifyV7Database(database!, this.#coversDirectory, this.#itemsDirectory);
           database!.run(`PRAGMA user_version = ${SCHEMA_VERSION}`);
         } else if (version === 3) {
           retainVerifiedV3Backup(database!, this.#databasePath, this.#coversDirectory);
           migrateV3ToV4(database!);
           migrateV4ToV5(database!);
           migrateV5ToV6(database!);
-          verifyV6Database(database!, this.#coversDirectory, this.#itemsDirectory);
+          migrateV6ToV7(database!, this.#itemsDirectory);
+          verifyV7Database(database!, this.#coversDirectory, this.#itemsDirectory);
           database!.run(`PRAGMA user_version = ${SCHEMA_VERSION}`);
         } else if (version === 4) {
           retainVerifiedV4Backup(
@@ -1932,7 +2218,8 @@ export class BunSqliteLibraryStore
           );
           migrateV4ToV5(database!);
           migrateV5ToV6(database!);
-          verifyV6Database(database!, this.#coversDirectory, this.#itemsDirectory);
+          migrateV6ToV7(database!, this.#itemsDirectory);
+          verifyV7Database(database!, this.#coversDirectory, this.#itemsDirectory);
           database!.run(`PRAGMA user_version = ${SCHEMA_VERSION}`);
         } else if (version === 5) {
           retainVerifiedV5Backup(
@@ -1942,7 +2229,18 @@ export class BunSqliteLibraryStore
             this.#itemsDirectory,
           );
           migrateV5ToV6(database!);
-          verifyV6Database(database!, this.#coversDirectory, this.#itemsDirectory);
+          migrateV6ToV7(database!, this.#itemsDirectory);
+          verifyV7Database(database!, this.#coversDirectory, this.#itemsDirectory);
+          database!.run(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+        } else if (version === 6) {
+          retainVerifiedV6Backup(
+            database!,
+            this.#databasePath,
+            this.#coversDirectory,
+            this.#itemsDirectory,
+          );
+          migrateV6ToV7(database!, this.#itemsDirectory);
+          verifyV7Database(database!, this.#coversDirectory, this.#itemsDirectory);
           database!.run(`PRAGMA user_version = ${SCHEMA_VERSION}`);
         } else if (version !== SCHEMA_VERSION) {
           throw incompatibleSchema;
@@ -2218,6 +2516,99 @@ export class BunSqliteLibraryStore
     }
   }
 
+  #importFingerprinted(
+    sourcePath: string,
+    format: FormatId,
+    normalizedTitle: string,
+    artifact: ExpectedArtifact,
+  ): { result: ImportLibraryItemResult; failureCode?: BatchImportFailure } {
+    if (!this.#database) {
+      return { result: failure("storage-unavailable"), failureCode: "storage-unavailable" };
+    }
+    const id = crypto.randomUUID();
+    const addedAt = new Date().toISOString();
+    let installed: { path: string; storedPath: string };
+    try {
+      installed = installManagedFile(
+        this.#database,
+        this.#coversDirectory,
+        this.#itemsDirectory,
+        sourcePath,
+        format,
+      );
+    } catch {
+      return { result: failure("storage-unavailable"), failureCode: "storage-unavailable" };
+    }
+    if (!managedFileMatchesArtifact(installed.path, artifact)) {
+      attemptOwnedFileCleanup(this.#database, this.#coversDirectory, this.#itemsDirectory, {
+        sourcePath: installed.storedPath,
+        kind: "format",
+      });
+      const sourceStillMatches = managedFileMatchesArtifact(sourcePath, artifact);
+      return {
+        result: failure(sourceStillMatches ? "storage-unavailable" : "invalid-arguments"),
+        failureCode: sourceStillMatches ? "storage-unavailable" : "source-changed",
+      };
+    }
+
+    const item = libraryItemSchema.safeParse({
+      id,
+      title: normalizedTitle,
+      sourcePath: installed.path,
+      format,
+      addedAt,
+      formats: [
+        {
+          sourcePath: installed.path,
+          format,
+          addedAt,
+          provenance: "managed",
+        },
+      ],
+      tags: [],
+    });
+    if (!item.success) {
+      attemptOwnedFileCleanup(this.#database, this.#coversDirectory, this.#itemsDirectory, {
+        sourcePath: installed.storedPath,
+        kind: "format",
+      });
+      return { result: failure("invalid-stored-data"), failureCode: "storage-unavailable" };
+    }
+
+    try {
+      this.#database.transaction(() => {
+        this.#database!.run(
+          `INSERT INTO library_items
+            (id, title, added_at, author, description, cover_path, updated_at)
+            VALUES (?, ?, ?, NULL, NULL, NULL, NULL)`,
+          [id, normalizedTitle, addedAt],
+        );
+        this.#database!.run(
+          `INSERT INTO library_item_formats
+            (library_item_id, format, source_path, added_at, provenance, position,
+              content_bytes, content_sha256)
+            VALUES (?, ?, ?, ?, 'managed', 0, ?, ?)`,
+          [id, format, installed.storedPath, addedAt, artifact.bytes, artifact.sha256],
+        );
+        this.#database!.run(
+          "DELETE FROM managed_file_cleanup WHERE source_path = ? AND kind = 'format'",
+          [installed.storedPath],
+        );
+      }).immediate();
+    } catch (error) {
+      attemptOwnedFileCleanup(this.#database, this.#coversDirectory, this.#itemsDirectory, {
+        sourcePath: installed.storedPath,
+        kind: "format",
+      });
+      const code = isDuplicateIdError(error) ? "duplicate-id" : "storage-unavailable";
+      return { result: failure(code), failureCode: "storage-unavailable" };
+    }
+
+    return {
+      result: success(item.data),
+    };
+  }
+
   async import({ sourcePath, title }: ImportLibraryItemRequest): Promise<ImportLibraryItemResult> {
     if (!this.#database) {
       return failure("storage-unavailable");
@@ -2233,80 +2624,160 @@ export class BunSqliteLibraryStore
     if (!source || normalizedTitle.length === 0) {
       return failure("invalid-arguments");
     }
+    const artifact = fingerprintFile(source.path);
+    if (!artifact.ok) {
+      return failure(artifact.code === "source-changed" ? "invalid-arguments" : "storage-unavailable");
+    }
+    return this.#importFingerprinted(
+      source.path,
+      source.format,
+      normalizedTitle,
+      artifact.value,
+    ).result;
+  }
 
-    const id = crypto.randomUUID();
-    const addedAt = new Date().toISOString();
-    let installed: { path: string; storedPath: string };
-    try {
-      installed = installManagedFile(
-        this.#database,
-        this.#coversDirectory,
-        this.#itemsDirectory,
-        source.path,
-        source.format,
-      );
-    } catch {
+  async importMany(request: ImportLibraryItemsRequest): Promise<ImportLibraryItemsResult> {
+    if (!this.#database) {
       return failure("storage-unavailable");
     }
+    const parsedRequest = importLibraryItemsRequestSchema.safeParse(request);
+    if (!parsedRequest.success) {
+      return failure("invalid-arguments");
+    }
 
-    const item = libraryItemSchema.safeParse({
-      id,
-      title: normalizedTitle,
-      sourcePath: installed.path,
-      format: source.format,
-      addedAt,
-      formats: [
-        {
-          sourcePath: installed.path,
-          format: source.format,
-          addedAt,
-          provenance: "managed",
-        },
-      ],
-      tags: [],
+    const outcomes: LibraryImportEntryOutcome[] = [];
+    const encountered = new Map<string, { itemId: string; format: FormatId }>();
+    const fail = (sourcePath: string, code: BatchImportFailure) => {
+      outcomes.push({ status: "failed", sourcePath, code });
+    };
+    const visit = (sourcePath: string): void => {
+      let entry: ReturnType<typeof lstatSync>;
+      try {
+        entry = lstatSync(sourcePath);
+      } catch (error) {
+        fail(
+          sourcePath,
+          typeof error === "object" &&
+            error !== null &&
+            "code" in error &&
+            error.code === "ENOENT"
+            ? "not-found"
+            : "unreadable",
+        );
+        return;
+      }
+
+      if (entry.isSymbolicLink()) {
+        outcomes.push({ status: "skipped", sourcePath, reason: "symbolic-link" });
+        return;
+      }
+      if (entry.isDirectory()) {
+        let names: string[];
+        try {
+          names = readdirSync(sourcePath).sort();
+        } catch {
+          fail(sourcePath, "unreadable");
+          return;
+        }
+        for (const name of names) {
+          visit(join(sourcePath, name));
+        }
+        return;
+      }
+      if (!entry.isFile()) {
+        outcomes.push({ status: "skipped", sourcePath, reason: "unsupported-file-type" });
+        return;
+      }
+
+      const format = detectFormat(sourcePath);
+      if (!format) {
+        outcomes.push({ status: "skipped", sourcePath, reason: "unsupported-format" });
+        return;
+      }
+      const normalizedTitle = basename(sourcePath, extname(sourcePath)).trim();
+      if (normalizedTitle.length === 0) {
+        fail(sourcePath, "invalid-title");
+        return;
+      }
+      const fingerprint = fingerprintFile(sourcePath, entry);
+      if (!fingerprint.ok) {
+        fail(sourcePath, fingerprint.code);
+        return;
+      }
+      const key = `${fingerprint.value.bytes}:${fingerprint.value.sha256}`;
+      const earlier = encountered.get(key);
+      if (earlier) {
+        outcomes.push({
+          status: "duplicate",
+          sourcePath,
+          existing: earlier,
+          reason: "earlier-in-request",
+        });
+        return;
+      }
+
+      let existing: { itemId: string; format: FormatId } | null = null;
+      try {
+        const row = this.#database!
+          .query<{ itemId: string; format: unknown }, [number, string]>(`
+            SELECT library_item_id AS itemId, format
+            FROM library_item_formats
+            WHERE provenance = 'managed'
+              AND content_bytes = ? AND content_sha256 = ?
+            ORDER BY library_item_id, position
+            LIMIT 1
+          `)
+          .get(fingerprint.value.bytes, fingerprint.value.sha256);
+        if (row) {
+          if (!FORMAT_IDS.includes(row.format as FormatId)) {
+            fail(sourcePath, "storage-unavailable");
+            return;
+          }
+          existing = { itemId: row.itemId, format: row.format as FormatId };
+        }
+      } catch {
+        fail(sourcePath, "storage-unavailable");
+        return;
+      }
+      if (existing) {
+        encountered.set(key, existing);
+        outcomes.push({
+          status: "duplicate",
+          sourcePath,
+          existing,
+          reason: "existing-library",
+        });
+        return;
+      }
+
+      const imported = this.#importFingerprinted(
+        sourcePath,
+        format,
+        normalizedTitle,
+        fingerprint.value,
+      );
+      if (!imported.result.ok) {
+        fail(sourcePath, imported.failureCode ?? "storage-unavailable");
+        return;
+      }
+      const importedReference = { itemId: imported.result.value.id, format };
+      encountered.set(key, importedReference);
+      outcomes.push({ status: "imported", sourcePath, item: imported.result.value });
+    };
+
+    for (const root of parsedRequest.data.roots) {
+      visit(root);
+    }
+    return success({
+      outcomes,
+      counts: {
+        total: outcomes.length,
+        imported: outcomes.filter(({ status }) => status === "imported").length,
+        skipped: outcomes.filter(({ status }) => status === "skipped").length,
+        duplicates: outcomes.filter(({ status }) => status === "duplicate").length,
+        failed: outcomes.filter(({ status }) => status === "failed").length,
+      },
     });
-    if (!item.success) {
-      attemptOwnedFileCleanup(this.#database, this.#coversDirectory, this.#itemsDirectory, {
-        sourcePath: installed.storedPath,
-        kind: "format",
-      });
-      return failure("invalid-stored-data");
-    }
-
-    try {
-      this.#database.transaction(() => {
-        this.#database!.run(
-          `INSERT INTO library_items
-            (id, title, added_at, author, description, cover_path, updated_at)
-            VALUES (?, ?, ?, NULL, NULL, NULL, NULL)`,
-          [id, normalizedTitle, addedAt],
-        );
-        this.#database!.run(
-          `INSERT INTO library_item_formats
-            (library_item_id, format, source_path, added_at, provenance, position)
-            VALUES (?, ?, ?, ?, 'managed', 0)`,
-          [id, source.format, installed.storedPath, addedAt],
-        );
-        this.#database!.run(
-          "DELETE FROM managed_file_cleanup WHERE source_path = ? AND kind = 'format'",
-          [installed.storedPath],
-        );
-      }).immediate();
-    } catch (error) {
-      attemptOwnedFileCleanup(this.#database, this.#coversDirectory, this.#itemsDirectory, {
-        sourcePath: installed.storedPath,
-        kind: "format",
-      });
-      return failure(isDuplicateIdError(error) ? "duplicate-id" : "storage-unavailable");
-    }
-
-    const stored = readStoredItem(
-      this.#database,
-      this.#coversDirectory,
-      this.#itemsDirectory,
-      id,
-    );
-    return stored.ok && stored.value ? success(stored.value) : failure("invalid-stored-data");
   }
 
   async attachFormat({ id, source }: AttachLibraryFormatRequest): Promise<AttachLibraryFormatResult> {
@@ -2347,6 +2818,7 @@ export class BunSqliteLibraryStore
 
     const addedAt = new Date().toISOString();
     let installed: { path: string; storedPath: string } | undefined;
+    let installedFingerprint: ExpectedArtifact | undefined;
     try {
       if (source.kind === "copy") {
         installed = installManagedFile(
@@ -2359,6 +2831,11 @@ export class BunSqliteLibraryStore
         if (expectedArtifact && !managedFileMatchesArtifact(installed.path, expectedArtifact)) {
           throw installedArtifactMismatch;
         }
+        const fingerprint = fingerprintFile(installed.path);
+        if (!fingerprint.ok) {
+          throw new TypeError("Installed format could not be fingerprinted");
+        }
+        installedFingerprint = fingerprint.value;
       }
 
       const outcome = this.#database.transaction(() => {
@@ -2413,10 +2890,11 @@ export class BunSqliteLibraryStore
 
         this.#database!.run(
           `INSERT INTO library_item_formats
-            (library_item_id, format, source_path, added_at, provenance, position)
+            (library_item_id, format, source_path, added_at, provenance, position,
+              content_bytes, content_sha256)
             VALUES (?, ?, ?, ?, ?,
               (SELECT COALESCE(MAX(position), -1) + 1
-                FROM library_item_formats WHERE library_item_id = ?))`,
+                FROM library_item_formats WHERE library_item_id = ?), ?, ?)`,
           [
             id,
             inspected.format,
@@ -2424,6 +2902,8 @@ export class BunSqliteLibraryStore
             addedAt,
             installed ? "managed" : "referenced",
             id,
+            installedFingerprint?.bytes ?? null,
+            installedFingerprint?.sha256 ?? null,
           ],
         );
         this.#database!.run("UPDATE library_items SET updated_at = ? WHERE id = ?", [addedAt, id]);
@@ -2496,6 +2976,7 @@ export class BunSqliteLibraryStore
 
     const expectedArtifact = source.kind === "copy" ? source.expectedArtifact : undefined;
     let installed: { path: string; storedPath: string } | undefined;
+    let installedFingerprint: ExpectedArtifact | undefined;
     type Outcome =
       | { kind: "replaced"; item: LibraryItem; cleanupPath?: string }
       | { kind: "format-changed" }
@@ -2513,6 +2994,11 @@ export class BunSqliteLibraryStore
         if (expectedArtifact && !managedFileMatchesArtifact(installed.path, expectedArtifact)) {
           throw installedArtifactMismatch;
         }
+        const fingerprint = fingerprintFile(installed.path);
+        if (!fingerprint.ok) {
+          throw new TypeError("Installed format could not be fingerprinted");
+        }
+        installedFingerprint = fingerprint.value;
       }
 
       const currentTimestamp = new Date().toISOString();
@@ -2594,9 +3080,18 @@ export class BunSqliteLibraryStore
 
         this.#database!.run(
           `UPDATE library_item_formats
-            SET source_path = ?, added_at = ?, provenance = ?
+            SET source_path = ?, added_at = ?, provenance = ?,
+              content_bytes = ?, content_sha256 = ?
             WHERE library_item_id = ? AND format = ?`,
-          [storedSourcePath, addedAt, installed ? "managed" : "referenced", id, format],
+          [
+            storedSourcePath,
+            addedAt,
+            installed ? "managed" : "referenced",
+            installedFingerprint?.bytes ?? null,
+            installedFingerprint?.sha256 ?? null,
+            id,
+            format,
+          ],
         );
         this.#database!.run("UPDATE library_items SET updated_at = ? WHERE id = ?", [addedAt, id]);
         if (installed) {

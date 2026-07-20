@@ -171,13 +171,13 @@ async function createSqlFixture(filename: string): Promise<void> {
 }
 
 describe("BunSqliteLibraryStore", () => {
-  it("persists add, get, list, and remove across injected-path reopenings at schema v6", async () => {
+  it("persists add, get, list, and remove across injected-path reopenings at schema v7", async () => {
     const first = createStore();
     expect(await first.open({ config: {} })).toEqual({ ok: true, value: null });
     expect(await first.add({ item })).toEqual({ ok: true, value: item });
     first.close();
 
-    expect(schemaVersion()).toBe(6);
+    expect(schemaVersion()).toBe(7);
     using stored = new Database(databasePath, { strict: true });
     expect(
       stored
@@ -224,7 +224,7 @@ describe("BunSqliteLibraryStore", () => {
     expect(await third.list({})).toEqual({ ok: true, value: [] });
     third.close();
 
-    expect(schemaVersion()).toBe(6);
+    expect(schemaVersion()).toBe(7);
     expect(stored.query("SELECT * FROM library_item_formats").all()).toEqual([]);
   });
 
@@ -277,7 +277,7 @@ describe("BunSqliteLibraryStore", () => {
     });
     store.close();
 
-    expect(schemaVersion()).toBe(6);
+    expect(schemaVersion()).toBe(7);
     expect(await readFile(`${databasePath}.v2.backup`)).toEqual(databaseBefore);
     using migrated = new Database(databasePath, { strict: true });
     expect(migrated.query("PRAGMA foreign_key_check").all()).toEqual([]);
@@ -369,7 +369,7 @@ describe("BunSqliteLibraryStore", () => {
     });
     store.close();
 
-    expect(schemaVersion()).toBe(6);
+    expect(schemaVersion()).toBe(7);
     expect(await readFile(`${databasePath}.v4.backup`)).toEqual(databaseBefore);
     using backup = new Database(`${databasePath}.v4.backup`, { strict: true });
     expect(backup.query<{ user_version: number }, []>("PRAGMA user_version").get()).toEqual({
@@ -391,6 +391,7 @@ describe("BunSqliteLibraryStore", () => {
         .all(),
     ).toEqual([
       { name: "library_item_authors_by_name" },
+      { name: "library_item_formats_by_fingerprint" },
       { name: "library_item_formats_by_format" },
       { name: "library_item_languages_by_language" },
       { name: "library_item_tags_by_tag" },
@@ -423,7 +424,7 @@ describe("BunSqliteLibraryStore", () => {
     });
     store.close();
 
-    expect(schemaVersion()).toBe(6);
+    expect(schemaVersion()).toBe(7);
     expect(await readFile(`${databasePath}.v5.backup`)).toEqual(databaseBefore);
     using migrated = new Database(databasePath, { strict: true });
     expect(
@@ -516,7 +517,7 @@ describe("BunSqliteLibraryStore", () => {
     });
     store.close();
 
-    expect(schemaVersion()).toBe(6);
+    expect(schemaVersion()).toBe(7);
     using migrated = new Database(databasePath, { strict: true });
     expect(
       migrated.query<{ integrity_check: string }, []>("PRAGMA integrity_check").get()
@@ -580,7 +581,7 @@ describe("BunSqliteLibraryStore", () => {
     ]);
   });
 
-  it("treats reopening v6 as a no-op", async () => {
+  it("treats reopening v7 as a no-op", async () => {
     createFrozenV1Fixture();
     const first = createStore();
     expect(await first.open({ config: {} })).toEqual({ ok: true, value: null });
@@ -1820,7 +1821,7 @@ describe("BunSqliteLibraryStore", () => {
     expect(
       initializedDatabase.query<{ user_version: number }, []>("PRAGMA user_version").get()
         ?.user_version,
-    ).toBe(6);
+    ).toBe(7);
     expect(
       initializedDatabase
         .query<{ name: string; type: string }, []>(
