@@ -18,6 +18,7 @@ const ITEM_COUNT = 10_000;
 const SECONDARY_FORMAT_COUNT = 5_000;
 const PAGE_SIZE = 100;
 const ROADMAP_P95_MILLISECONDS = 150;
+const ROADMAP_DATA_LAYER_COLD_READY_MILLISECONDS = 2_000;
 const BENCHMARK_SAMPLES = 20;
 const BENCHMARK_WARMUPS = 3;
 const BENCHMARK_MODE = process.env.TAKIO_LIBRARY_QUERY_BENCHMARK;
@@ -116,6 +117,19 @@ const request: QueryLibraryItemsRequest = {
   },
   sort: { field: "author", direction: "ascending" },
   page: { offset: 0, limit: PAGE_SIZE },
+};
+
+const coldReadyRequest: QueryLibraryItemsRequest = {
+  query: "",
+  filters: {
+    authors: [],
+    tags: [],
+    series: [],
+    languages: [],
+    formats: [],
+  },
+  sort: { field: "title", direction: "ascending" },
+  page: { offset: 0, limit: 25 },
 };
 
 type Facet = keyof LibraryFacetCounts;
@@ -310,6 +324,41 @@ test(
       expect(await store.open({ config: {} })).toEqual({ ok: true, value: null });
       store.close();
       seedCatalogue(databasePath);
+
+      const coldReadyStartedAt = performance.now();
+      const coldReadyStore = new BunSqliteLibraryStore(databasePath);
+      const coldReadyOpenResult = await coldReadyStore.open({ config: {} });
+      const coldReadyResult = coldReadyOpenResult.ok
+        ? await coldReadyStore.query(coldReadyRequest)
+        : coldReadyOpenResult;
+      const coldReadyMilliseconds = performance.now() - coldReadyStartedAt;
+      coldReadyStore.close();
+
+      expect(coldReadyOpenResult).toEqual({ ok: true, value: null });
+      expect(coldReadyResult.ok).toBe(true);
+      if (!coldReadyResult.ok) return;
+      expect(libraryQueryPageSchema.parse(coldReadyResult.value)).toEqual(
+        coldReadyResult.value,
+      );
+      expect(coldReadyResult.value.total).toBe(ITEM_COUNT);
+      expect(coldReadyResult.value.page).toEqual(coldReadyRequest.page);
+      expect(coldReadyResult.value.items).toHaveLength(coldReadyRequest.page.limit);
+      expect(
+        Object.values(coldReadyResult.value.facets).every((facet) => facet.length > 0),
+      ).toBe(true);
+      if (BENCHMARK_MODE) {
+        console.info(
+          `[library-query] data-layer-cold-ready=${coldReadyMilliseconds.toFixed(1)}ms ` +
+            `(fresh store open + default first page; excludes fixture seeding; ` +
+            `not native window launch) roadmap<=${ROADMAP_DATA_LAYER_COLD_READY_MILLISECONDS}ms`,
+        );
+      }
+      if (BENCHMARK_MODE === "enforce") {
+        expect(coldReadyMilliseconds).toBeLessThanOrEqual(
+          ROADMAP_DATA_LAYER_COLD_READY_MILLISECONDS,
+        );
+      }
+
       expect(await store.open({ config: {} })).toEqual({ ok: true, value: null });
 
       const hydrationStatements: string[] = [];
