@@ -1,0 +1,85 @@
+.library-bulk-action-bar {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  padding: 6px 12px;
+  background: #eef2ff;
+  border-block: 1px solid #c7d7fe;
+  color: #344054;
+}
+
+.library-bulk-action-bar__status {
+  display: flex;
+  min-width: max-content;
+  align-items: baseline;
+  gap: 7px;
+  font-size: 0.75rem;
+}
+
+.library-bulk-action-bar__status strong {
+  color: #3730a3;
+  font-weight: 700;
+}
+
+.library-bulk-action-bar__status span {
+  color: #667085;
+  font-size: 0.6875rem;
+}
+
+.library-bulk-action-bar__actions {
+  display: flex;
+  min-width: 0;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.library-bulk-action-bar button {
+  min-height: 28px;
+  padding: 4px 8px;
+  background: #ffffff;
+  border: 1px solid #c7cdd8;
+  border-radius: 4px;
+  color: #475467;
+  font: inherit;
+  font-size: 0.6875rem;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.library-bulk-action-bar button:hover:not(:disabled) {
+  background: #f8f9fb;
+  color: #20242c;
+}
+
+.library-bulk-action-bar button:focus-visible {
+  outline: 2px solid #4f46e5;
+  outline-offset: 2px;
+}
+
+.library-bulk-action-bar button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.library-bulk-action-bar button.library-bulk-action-bar__trash {
+  border-color: #fecdca;
+  color: #b42318;
+}
+
+@media (max-width: 560px) {
+  .library-bulk-action-bar {
+    align-items: stretch;
+  }
+
+  .library-bulk-action-bar__status {
+    flex: 1 0 100%;
+  }
+
+  .library-bulk-action-bar__actions {
+    justify-content: flex-start;
+  }
+}
