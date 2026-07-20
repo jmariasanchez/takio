@@ -10,10 +10,10 @@ store.close();
 ```
 
 The caller must supply the database path. `open` initializes an empty database
-at schema v4, reopens v4 databases, and atomically migrates v1, v2, or v3 after
+at schema v5, reopens v5 databases, and atomically migrates v1 through v4 after
 retaining a verified backup named for the source schema:
-`<database>.v1.backup`, `<database>.v2.backup`, or
-`<database>.v3.backup`. Other schema versions return
+`<database>.v1.backup`, `<database>.v2.backup`,
+`<database>.v3.backup`, or `<database>.v4.backup`. Other schema versions return
 `incompatible-schema`; no production database location is selected here.
 
 Schema v4 records provenance for each stored book format. `managed` means Takio
@@ -24,6 +24,11 @@ schemas recorded a location, not ownership, so treating the path as proof of
 ownership could authorize deletion of a caller-owned file. Consequently,
 managed-looking legacy files are intentionally not deleted automatically and
 may require manual cleanup.
+
+Schema v5 adds ordered authors and languages, identifiers, series and
+publication fields, ratings, saved-library-view storage, and catalogue query
+indexes. Migration does not infer rich metadata from the legacy scalar author,
+so v1 through v4 records retain their exact public shape.
 
 ## Managed format lifecycle
 
@@ -47,7 +52,7 @@ cover. Referenced ebook files never enter the cleanup queue.
 
 ## Deferred cleanup
 
-Schema v4 uses the `managed_file_cleanup` table as a durable cleanup tombstone
+Schema v4 introduced the `managed_file_cleanup` table as a durable cleanup tombstone
 for Takio-owned format and cover files. Before installing a managed copy, the
 store records its generated file name; the tombstone is cleared in the
 transaction that publishes the format. Before removing owned-file metadata, the
@@ -69,17 +74,17 @@ the file.
 
 A migration backup contains database metadata, not referenced files or
 Takio-owned book and cover files. The database and its sibling `items` and
-`covers` directories must therefore be preserved together to recover a v4
+`covers` directories must therefore be preserved together to recover a v5
 library's owned files. To recover a migration backup, close every process using
 the library, preserve the current database and both owned-file roots, copy the
 matching versioned backup to a separate recovery path, and open that copy with
 the current application so it can migrate again. Restoring a backup discards
 database changes made after it was created and can leave newer owned files
 orphaned. Legacy migration backups do not contain cleanup tombstones, while
-opening a v4 database retries the format and cover tombstones that database
+opening a v5 database retries the format and cover tombstones that database
 already records.
 
-There is no in-place downgrade from v4. Older binaries reject a v4 database
-rather than dropping provenance and regaining unsafe path-based deletion
-semantics. Downgrading requires explicitly restoring a pre-v4 backup, with the
-loss of database changes made since that backup.
+There is no in-place downgrade from v5. Older binaries reject a v5 database
+rather than dropping rich metadata or changing ownership semantics. Downgrading
+requires explicitly restoring a compatible versioned backup, with the loss of
+database changes made since that backup.
