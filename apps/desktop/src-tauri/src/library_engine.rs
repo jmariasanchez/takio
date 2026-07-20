@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::{collections::HashSet, path::Path};
 
 use serde_json::{json, Value};
 use tauri_plugin_shell::{process::CommandEvent, ShellExt};
@@ -7,6 +7,7 @@ const ENGINE_NAME: &str = "takio-library-engine";
 const MAX_OUTPUT_BYTES: usize = 8 * 1024 * 1024;
 const MAX_JSON_ARGUMENT_BYTES: usize = 16 * 1024;
 const MAX_LIBRARY_IMPORT_ROOTS: usize = 256;
+const MAX_LIBRARY_EXPORT_IDS: usize = 256;
 
 fn failure(code: &str) -> Value {
     json!({ "ok": false, "error": { "code": code } })
@@ -53,6 +54,48 @@ fn library_import_many_arguments(source_paths: Vec<String>) -> Result<Vec<String
         args.extend(["--source-path".into(), source_path]);
     }
     Ok(args)
+}
+
+fn validate_library_export_many_request(request: &Value) -> Result<(), ()> {
+    let Value::Object(fields) = request else {
+        return Err(());
+    };
+    if fields.len() != 2 {
+        return Err(());
+    }
+
+    let Some(Value::Array(ids)) = fields.get("ids") else {
+        return Err(());
+    };
+    if ids.is_empty() || ids.len() > MAX_LIBRARY_EXPORT_IDS {
+        return Err(());
+    }
+
+    let mut unique_ids = HashSet::with_capacity(ids.len());
+    for id in ids {
+        let Value::String(id) = id else {
+            return Err(());
+        };
+        validate_nonempty(id)?;
+        if !unique_ids.insert(id.as_str()) {
+            return Err(());
+        }
+    }
+
+    let Some(Value::String(destination_path)) = fields.get("destinationPath") else {
+        return Err(());
+    };
+    validate_nonempty(destination_path)
+}
+
+fn library_export_many_arguments(request: Value) -> Result<Vec<String>, ()> {
+    validate_library_export_many_request(&request)?;
+    Ok(vec![
+        "library".into(),
+        "export-many".into(),
+        "--request-json".into(),
+        serialize_nonempty_object(request)?,
+    ])
 }
 
 fn library_open_arguments(id: String, format: String) -> Vec<String> {
@@ -421,6 +464,15 @@ pub async fn library_import_many(app: tauri::AppHandle, source_paths: Vec<String
 }
 
 #[tauri::command]
+pub async fn library_export_many(app: tauri::AppHandle, request: Value) -> Value {
+    let Ok(args) = library_export_many_arguments(request) else {
+        return failure("invalid-arguments");
+    };
+
+    run_engine(&app, args).await
+}
+
+#[tauri::command]
 pub async fn library_attach_format(
     app: tauri::AppHandle,
     id: String,
@@ -774,6 +826,123 @@ mod tests {
         assert!(library_import_many_arguments(vec![" \n".into()]).is_err());
         assert!(library_import_many_arguments(vec!["/Books".into(); 256]).is_ok());
         assert!(library_import_many_arguments(vec!["/Books".into(); 257]).is_err());
+    }
+
+    #[test]
+    fn builds_fixed_export_many_arguments_with_one_literal_json_value() {
+        let request = json!({
+            "ids": [
+                "book --request-json 'one'",
+                "book $(touch /tmp/nope)\n📚",
+            ],
+            "destinationPath": "/Exports/--dest=elsewhere \"quoted\"\n📚",
+        });
+        let request_json = serde_json::to_string(&request).unwrap();
+        let arguments = library_export_many_arguments(request.clone()).unwrap();
+
+        assert_eq!(
+            arguments,
+            vec![
+                "library",
+                "export-many",
+                "--request-json",
+                request_json.as_str(),
+            ]
+        );
+        assert_eq!(arguments.len(), 4);
+        assert_eq!(
+            serde_json::from_str::<Value>(&arguments[3]).unwrap(),
+            request
+        );
+    }
+
+    #[test]
+    fn rejects_malformed_export_many_requests_and_enforces_boundaries() {
+        assert!(library_export_many_arguments(json!({})).is_err());
+        assert!(library_export_many_arguments(json!([])).is_err());
+        assert!(library_export_many_arguments(json!({
+            "ids": ["book-1"],
+        }))
+        .is_err());
+        assert!(library_export_many_arguments(json!({
+            "destinationPath": "/Exports",
+        }))
+        .is_err());
+        assert!(library_export_many_arguments(json!({
+            "ids": [],
+            "destinationPath": "/Exports",
+        }))
+        .is_err());
+        assert!(library_export_many_arguments(json!({
+            "ids": vec!["book-1"; MAX_LIBRARY_EXPORT_IDS + 1],
+            "destinationPath": "/Exports",
+        }))
+        .is_err());
+        assert!(library_export_many_arguments(json!({
+            "ids": ["book-1", "book-1"],
+            "destinationPath": "/Exports",
+        }))
+        .is_err());
+        assert!(library_export_many_arguments(json!({
+            "ids": ["book-1", " \n"],
+            "destinationPath": "/Exports",
+        }))
+        .is_err());
+        assert!(library_export_many_arguments(json!({
+            "ids": ["book-1", 2],
+            "destinationPath": "/Exports",
+        }))
+        .is_err());
+        assert!(library_export_many_arguments(json!({
+            "ids": ["book-1"],
+            "destinationPath": " \n",
+        }))
+        .is_err());
+        assert!(library_export_many_arguments(json!({
+            "ids": ["book-1"],
+            "destinationPath": 2,
+        }))
+        .is_err());
+        assert!(library_export_many_arguments(json!({
+            "ids": ["book-1"],
+            "destinationPath": "/Exports",
+            "overwrite": false,
+        }))
+        .is_err());
+
+        let maximum_ids = (0..MAX_LIBRARY_EXPORT_IDS)
+            .map(|index| format!("book-{index}"))
+            .collect::<Vec<_>>();
+        assert!(library_export_many_arguments(json!({
+            "ids": maximum_ids,
+            "destinationPath": "/Exports",
+        }))
+        .is_ok());
+
+        let empty_path_request = json!({
+            "ids": ["book-1"],
+            "destinationPath": "",
+        });
+        let envelope_bytes = serde_json::to_string(&empty_path_request).unwrap().len();
+        let at_limit = json!({
+            "ids": ["book-1"],
+            "destinationPath": "x".repeat(MAX_JSON_ARGUMENT_BYTES - envelope_bytes),
+        });
+        let over_limit = json!({
+            "ids": ["book-1"],
+            "destinationPath": "x".repeat(MAX_JSON_ARGUMENT_BYTES - envelope_bytes + 1),
+        });
+
+        assert_eq!(
+            serde_json::to_string(&at_limit).unwrap().len(),
+            MAX_JSON_ARGUMENT_BYTES
+        );
+        assert_eq!(
+            serde_json::to_string(&over_limit).unwrap().len(),
+            MAX_JSON_ARGUMENT_BYTES + 1
+        );
+        assert!(library_export_many_arguments(at_limit).is_ok());
+        assert!(library_export_many_arguments(over_limit).is_err());
     }
 
     #[test]
