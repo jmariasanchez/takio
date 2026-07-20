@@ -8,16 +8,21 @@ import {
   type LibraryItem,
 } from "@takio/core";
 import {
+  duplicateCandidatePageSchema,
+  keepDuplicatePairRequestSchema,
+  listDuplicateCandidatesRequestSchema,
   libraryMetadataPatchSchema,
   importLibraryItemsRequestSchema,
   libraryQueryPageSchema,
   libraryTrashPageSchema,
   listLibraryTrashRequestSchema,
   listSavedLibraryViewsRequestSchema,
+  mergeDuplicatePairRequestSchema,
   purgeLibraryItemRequestSchema,
   queryLibraryItemsRequestSchema,
   replaceLibraryFormatRequestSchema,
   removeSavedLibraryViewRequestSchema,
+  reopenDuplicatePairRequestSchema,
   restoreLibraryItemRequestSchema,
   savedLibraryViewSchema,
   saveSavedLibraryViewRequestSchema,
@@ -28,13 +33,18 @@ import type {
   AddLibraryItemResult,
   AttachLibraryFormatRequest,
   AttachLibraryFormatResult,
+  DuplicateCandidate,
+  DuplicateSignal,
   GetLibraryItemRequest,
   GetLibraryItemResult,
   ImportLibraryItemRequest,
   ImportLibraryItemResult,
   ImportLibraryItemsRequest,
   ImportLibraryItemsResult,
+  KeepDuplicatePairRequest,
+  KeepDuplicatePairResult,
   LibraryBatchImportStore,
+  LibraryDuplicateReviewStore,
   LibraryImportEntryOutcome,
   LibraryStore,
   LibraryStoreErrorCode,
@@ -48,6 +58,10 @@ import type {
   ListSavedLibraryViewsResult,
   ListLibraryItemsRequest,
   ListLibraryItemsResult,
+  ListDuplicateCandidatesRequest,
+  ListDuplicateCandidatesResult,
+  MergeDuplicatePairRequest,
+  MergeDuplicatePairResult,
   OpenLibraryRequest,
   OpenLibraryResult,
   PurgeLibraryItemRequest,
@@ -60,6 +74,8 @@ import type {
   RemoveLibraryItemResult,
   RemoveSavedLibraryViewRequest,
   RemoveSavedLibraryViewResult,
+  ReopenDuplicatePairRequest,
+  ReopenDuplicatePairResult,
   RestoreLibraryItemRequest,
   RestoreLibraryItemResult,
   SearchLibraryItemsRequest,
@@ -105,11 +121,12 @@ import { initializationTestSeam } from "./initialization-test-seam.js";
 import { lifecycleTestSeam } from "./lifecycle-test-seam.js";
 import { queryTestSeam } from "./query-test-seam.js";
 
-const SCHEMA_VERSION = 7;
+const SCHEMA_VERSION = 8;
 const incompatibleSchema = Symbol("incompatible-schema");
 const duplicateFormat = Symbol("duplicate-format");
 const sourceChanged = Symbol("source-changed");
 const installedArtifactMismatch = Symbol("installed-artifact-mismatch");
+const duplicateMergeRollback = Symbol("duplicate-merge-rollback");
 
 type StoredLibraryItem = {
   id: unknown;
@@ -280,6 +297,20 @@ function isValidExpectedArtifact(value: unknown): value is ExpectedArtifact {
   );
 }
 
+function isStoredManagedFingerprint(value: unknown): value is ExpectedArtifact {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "bytes" in value &&
+    typeof value.bytes === "number" &&
+    Number.isSafeInteger(value.bytes) &&
+    value.bytes >= 0 &&
+    "sha256" in value &&
+    typeof value.sha256 === "string" &&
+    /^[0-9a-f]{64}$/.test(value.sha256)
+  );
+}
+
 function fingerprintFile(
   path: string,
   expected?: ReturnType<typeof lstatSync>,
@@ -425,24 +456,30 @@ function managedLeafForReferencedPath(
   return realpathSync(resolveManagedFormatPath(root, leaf, format, true)) === path ? leaf : null;
 }
 
-function referencedFormatUsesPath(database: Database, path: string): boolean {
-  const referenced = database
-    .query<{ sourcePath: unknown }, []>(`
-      SELECT source_path AS sourcePath
+function storedFormatUsesPath(database: Database, path: string, storedPath: string): boolean {
+  const formats = database
+    .query<{ sourcePath: unknown; provenance: unknown }, []>(`
+      SELECT source_path AS sourcePath, provenance
       FROM library_item_formats
-      WHERE provenance = 'referenced'
     `)
     .all();
-  for (const row of referenced) {
-    if (typeof row.sourcePath !== "string") {
+  for (const row of formats) {
+    if (row.provenance === "managed" && row.sourcePath === storedPath) {
+      return true;
+    }
+    if (
+      row.provenance !== "referenced" ||
+      typeof row.sourcePath !== "string" ||
+      !isAbsolute(row.sourcePath)
+    ) {
       continue;
     }
     try {
-      if (row.sourcePath === path || realpathSync(row.sourcePath) === realpathSync(path)) {
+      if (realpathSync(row.sourcePath) === realpathSync(path)) {
         return true;
       }
     } catch {
-      // An invalid referenced row cannot own a managed file.
+      // An unreadable reference cannot retain this managed file.
     }
   }
   return false;
@@ -491,10 +528,20 @@ function cleanupOwnedFile(
     if (!pending) {
       return true;
     }
-    if (kind === "format" && existsSync(path) && referencedFormatUsesPath(database, path)) {
+    const stillUsed =
+      kind === "format"
+        ? existsSync(path) && storedFormatUsesPath(database, path, sourcePath)
+        : Boolean(
+            database
+              .query<{ present: number }, [string]>(
+                "SELECT 1 AS present FROM library_items WHERE cover_path = ? LIMIT 1",
+              )
+              .get(sourcePath),
+          );
+    if (stillUsed) {
       database.run(
-        "DELETE FROM managed_file_cleanup WHERE source_path = ? AND kind = 'format'",
-        [sourcePath],
+        "DELETE FROM managed_file_cleanup WHERE source_path = ? AND kind = ?",
+        [sourcePath, kind],
       );
       return true;
     }
@@ -1029,6 +1076,20 @@ function createManagedFingerprintIndex(database: Database): void {
   `);
 }
 
+function createDuplicatePairReviewsTable(database: Database): void {
+  database.run(`
+    CREATE TABLE duplicate_pair_reviews (
+      left_id TEXT NOT NULL REFERENCES library_items(id) ON DELETE CASCADE,
+      right_id TEXT NOT NULL REFERENCES library_items(id) ON DELETE CASCADE,
+      review_token TEXT NOT NULL CHECK (
+        length(review_token) = 64 AND review_token NOT GLOB '*[^0-9a-f]*'
+      ),
+      reviewed_at TEXT NOT NULL,
+      PRIMARY KEY (left_id, right_id)
+    ) STRICT
+  `);
+}
+
 function ensureManagedCleanupTable(database: Database): void {
   database.run(`
     CREATE TABLE IF NOT EXISTS managed_file_cleanup (
@@ -1331,6 +1392,10 @@ function migrateV6ToV7(database: Database, itemsDirectory: string): void {
   createManagedFingerprintIndex(database);
 }
 
+function migrateV7ToV8(database: Database): void {
+  createDuplicatePairReviewsTable(database);
+}
+
 function verifyV4Database(
   database: Database,
   coversDirectory: string,
@@ -1573,6 +1638,61 @@ function verifyV7Database(
     ) {
       throw new Error("The migrated database could not be verified.");
     }
+  }
+}
+
+function verifyV7Backup(
+  path: string,
+  coversDirectory: string,
+  itemsDirectory: string,
+): void {
+  using backup = new Database(path, { strict: true });
+  backup.run("PRAGMA foreign_keys = ON");
+  const version = backup.query<{ user_version: number }, []>("PRAGMA user_version").get()
+    ?.user_version;
+  if (version !== 7) {
+    throw new Error("The pre-migration backup could not be verified.");
+  }
+  verifyV7Database(backup, coversDirectory, itemsDirectory);
+}
+
+function retainVerifiedV7Backup(
+  database: Database,
+  databasePath: string,
+  coversDirectory: string,
+  itemsDirectory: string,
+): void {
+  retainVerifiedBackup(database, `${databasePath}.v7.backup`, (path) =>
+    verifyV7Backup(path, coversDirectory, itemsDirectory),
+  );
+}
+
+function verifyV8Database(
+  database: Database,
+  coversDirectory: string,
+  itemsDirectory: string,
+): void {
+  verifyV7Database(database, coversDirectory, itemsDirectory);
+  const reviews = database
+    .query<{ leftId: unknown; rightId: unknown; reviewToken: unknown; reviewedAt: unknown }, []>(`
+      SELECT left_id AS leftId, right_id AS rightId,
+        review_token AS reviewToken, reviewed_at AS reviewedAt
+      FROM duplicate_pair_reviews
+      ORDER BY left_id, right_id
+    `)
+    .all();
+  if (
+    reviews.some(
+      ({ leftId, rightId, reviewToken, reviewedAt }) =>
+        typeof leftId !== "string" ||
+        typeof rightId !== "string" ||
+        leftId >= rightId ||
+        typeof reviewToken !== "string" ||
+        !/^[0-9a-f]{64}$/.test(reviewToken) ||
+        !isStoredTrashTimestamp(reviewedAt),
+    )
+  ) {
+    throw new Error("The migrated database could not be verified.");
   }
 }
 
@@ -2082,6 +2202,362 @@ function hydrateLibraryPage(
   return success(items);
 }
 
+type DuplicateFormatRow = StoredItemFormat & StoredFingerprint;
+type DuplicateScanResult = {
+  candidates: readonly DuplicateCandidate[];
+  scan: {
+    filesHashed: number;
+    fingerprintsReused: number;
+    unreadableFormats: number;
+  };
+};
+
+function normalizeDuplicateText(value: string): string {
+  return value.normalize("NFKC").trim().replace(/\s+/g, " ").toLowerCase();
+}
+
+function compareDuplicateStrings(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+function duplicatePairKey(leftId: string, rightId: string): string {
+  return JSON.stringify([leftId, rightId]);
+}
+
+function addDuplicateSignal(
+  signalsByPair: Map<string, Map<string, DuplicateSignal>>,
+  leftId: string,
+  rightId: string,
+  signal: DuplicateSignal,
+): void {
+  if (leftId === rightId) {
+    return;
+  }
+  const [canonicalLeft, canonicalRight] =
+    compareDuplicateStrings(leftId, rightId) < 0 ? [leftId, rightId] : [rightId, leftId];
+  const pairKey = duplicatePairKey(canonicalLeft, canonicalRight);
+  let signals = signalsByPair.get(pairKey);
+  if (!signals) {
+    signals = new Map();
+    signalsByPair.set(pairKey, signals);
+  }
+  signals.set(JSON.stringify(signal), signal);
+}
+
+function duplicateSignalSortKey(signal: DuplicateSignal): string {
+  switch (signal.kind) {
+    case "same-content":
+      return `0\u0000${signal.leftFormat}\u0000${signal.rightFormat}\u0000${String(signal.bytes).padStart(16, "0")}\u0000${signal.sha256}`;
+    case "same-identifier":
+      return `1\u0000${normalizeDuplicateText(signal.scheme)}\u0000${signal.value}`;
+    case "same-title-author":
+      return `2\u0000${normalizeDuplicateText(signal.title)}\u0000${normalizeDuplicateText(signal.author)}`;
+  }
+}
+
+function duplicateAuthors(item: LibraryItem): readonly string[] {
+  const values = item.authors?.map(({ name }) => name) ?? (item.author ? [item.author] : []);
+  return [...new Map(values.map((value) => [normalizeDuplicateText(value), value.trim()])).values()]
+    .filter((value) => normalizeDuplicateText(value).length > 0)
+    .sort((left, right) =>
+      compareDuplicateStrings(normalizeDuplicateText(left), normalizeDuplicateText(right)),
+    );
+}
+
+function scanDuplicateCandidates(
+  database: Database,
+  coversDirectory: string,
+  itemsDirectory: string,
+): LibraryStoreResult<DuplicateScanResult> {
+  const rows = database
+    .query<StoredLibraryItem, []>(`
+      SELECT id, title, added_at AS addedAt,
+        author, series, series_index AS seriesIndex, publisher,
+        published_date AS publishedDate, rating,
+        description, cover_path AS coverPath, updated_at AS updatedAt
+      FROM library_items
+      WHERE trashed_at IS NULL
+      ORDER BY id
+    `)
+    .all();
+  const hydrated = hydrateLibraryPage(database, coversDirectory, itemsDirectory, rows);
+  if (!hydrated.ok) {
+    return hydrated;
+  }
+
+  const itemsById = new Map(hydrated.value.map((item) => [item.id, item]));
+  const signalsByPair = new Map<string, Map<string, DuplicateSignal>>();
+  const formats = database
+    .query<DuplicateFormatRow, []>(`
+      SELECT library_item_formats.library_item_id AS libraryItemId,
+        library_item_formats.source_path AS sourcePath,
+        library_item_formats.format,
+        library_item_formats.added_at AS addedAt,
+        library_item_formats.provenance,
+        library_item_formats.position,
+        library_item_formats.content_bytes AS contentBytes,
+        library_item_formats.content_sha256 AS contentSha256
+      FROM library_item_formats
+      JOIN library_items ON library_items.id = library_item_formats.library_item_id
+      WHERE library_items.trashed_at IS NULL
+      ORDER BY library_item_formats.library_item_id, library_item_formats.position
+    `)
+    .all();
+  const fingerprints = new Map<
+    string,
+    { itemId: string; format: FormatId; bytes: number; sha256: string }[]
+  >();
+  let filesHashed = 0;
+  let fingerprintsReused = 0;
+  let unreadableFormats = 0;
+
+  for (const row of formats) {
+    const parsedFormat = bookFormatSchema.safeParse({
+      sourcePath: row.sourcePath,
+      format: row.format,
+      addedAt: row.addedAt,
+      provenance: row.provenance,
+    });
+    if (!parsedFormat.success || !Number.isSafeInteger(row.position) || (row.position as number) < 0) {
+      return failure("invalid-stored-data");
+    }
+
+    let fingerprint: ExpectedArtifact | null = null;
+    if (parsedFormat.data.provenance === "managed") {
+      if (!isStoredManagedFingerprint({ bytes: row.contentBytes, sha256: row.contentSha256 })) {
+        return failure("invalid-stored-data");
+      }
+      fingerprint = { bytes: row.contentBytes as number, sha256: row.contentSha256 as string };
+      fingerprintsReused += 1;
+    } else {
+      const current = fingerprintFile(parsedFormat.data.sourcePath);
+      if (!current.ok) {
+        unreadableFormats += 1;
+        continue;
+      }
+      fingerprint = current.value;
+      filesHashed += 1;
+    }
+    if (fingerprint.bytes === 0) {
+      continue;
+    }
+    const key = `${fingerprint.bytes}\u0000${fingerprint.sha256}`;
+    const entries = fingerprints.get(key) ?? [];
+    entries.push({
+      itemId: row.libraryItemId,
+      format: parsedFormat.data.format,
+      bytes: fingerprint.bytes,
+      sha256: fingerprint.sha256,
+    });
+    fingerprints.set(key, entries);
+  }
+
+  for (const entries of fingerprints.values()) {
+    for (let leftIndex = 0; leftIndex < entries.length; leftIndex += 1) {
+      for (let rightIndex = leftIndex + 1; rightIndex < entries.length; rightIndex += 1) {
+        const leftEntry = entries[leftIndex]!;
+        const rightEntry = entries[rightIndex]!;
+        const [left, right] =
+          compareDuplicateStrings(leftEntry.itemId, rightEntry.itemId) < 0
+            ? [leftEntry, rightEntry]
+            : [rightEntry, leftEntry];
+        addDuplicateSignal(signalsByPair, left.itemId, right.itemId, {
+          kind: "same-content",
+          leftFormat: left.format,
+          rightFormat: right.format,
+          bytes: left.bytes,
+          sha256: left.sha256,
+        });
+      }
+    }
+  }
+
+  const identifiers = new Map<string, { itemId: string; scheme: string; value: string }[]>();
+  const titlesAndAuthors = new Map<string, { itemId: string; title: string; author: string }[]>();
+  for (const item of hydrated.value) {
+    for (const [scheme, value] of Object.entries(item.identifiers ?? {})) {
+      const normalizedScheme = normalizeDuplicateText(scheme);
+      const canonicalValue = value.trim();
+      if (normalizedScheme.length === 0 || canonicalValue.length === 0) {
+        continue;
+      }
+      const key = JSON.stringify([normalizedScheme, canonicalValue]);
+      const entries = identifiers.get(key) ?? [];
+      entries.push({ itemId: item.id, scheme: scheme.trim(), value: canonicalValue });
+      identifiers.set(key, entries);
+    }
+    const normalizedTitle = normalizeDuplicateText(item.title);
+    if (normalizedTitle.length > 0) {
+      for (const author of duplicateAuthors(item)) {
+        const key = JSON.stringify([normalizedTitle, normalizeDuplicateText(author)]);
+        const entries = titlesAndAuthors.get(key) ?? [];
+        entries.push({ itemId: item.id, title: item.title.trim(), author: author.trim() });
+        titlesAndAuthors.set(key, entries);
+      }
+    }
+  }
+
+  for (const entries of identifiers.values()) {
+    for (let left = 0; left < entries.length; left += 1) {
+      for (let right = left + 1; right < entries.length; right += 1) {
+        addDuplicateSignal(signalsByPair, entries[left]!.itemId, entries[right]!.itemId, {
+          kind: "same-identifier",
+          scheme: entries[left]!.scheme,
+          value: entries[left]!.value,
+        });
+      }
+    }
+  }
+  for (const entries of titlesAndAuthors.values()) {
+    for (let left = 0; left < entries.length; left += 1) {
+      for (let right = left + 1; right < entries.length; right += 1) {
+        addDuplicateSignal(signalsByPair, entries[left]!.itemId, entries[right]!.itemId, {
+          kind: "same-title-author",
+          title: entries[left]!.title,
+          author: entries[left]!.author,
+        });
+      }
+    }
+  }
+
+  const candidates: DuplicateCandidate[] = [];
+  for (const [key, signalMap] of signalsByPair) {
+    const pair = JSON.parse(key) as unknown;
+    if (
+      !Array.isArray(pair) ||
+      pair.length !== 2 ||
+      typeof pair[0] !== "string" ||
+      typeof pair[1] !== "string"
+    ) {
+      return failure("invalid-stored-data");
+    }
+    const [leftId, rightId] = pair;
+    const left = itemsById.get(leftId);
+    const right = itemsById.get(rightId);
+    if (!left || !right) {
+      return failure("invalid-stored-data");
+    }
+    const signals = [...signalMap.values()].sort((a, b) =>
+      compareDuplicateStrings(duplicateSignalSortKey(a), duplicateSignalSortKey(b)),
+    );
+    const reviewToken = createHash("sha256")
+      .update(JSON.stringify({ version: 1, leftId, rightId, signals }))
+      .digest("hex");
+    candidates.push({ left, right, signals, reviewToken });
+  }
+  candidates.sort((left, right) => {
+    const bySignals = compareDuplicateStrings(
+      duplicateSignalSortKey(left.signals[0]!),
+      duplicateSignalSortKey(right.signals[0]!),
+    );
+    if (bySignals !== 0) return bySignals;
+    const byLeftTitle = compareDuplicateStrings(
+      normalizeDuplicateText(left.left.title),
+      normalizeDuplicateText(right.left.title),
+    );
+    if (byLeftTitle !== 0) return byLeftTitle;
+    const byRightTitle = compareDuplicateStrings(
+      normalizeDuplicateText(left.right.title),
+      normalizeDuplicateText(right.right.title),
+    );
+    if (byRightTitle !== 0) return byRightTitle;
+    return (
+      compareDuplicateStrings(left.left.id, right.left.id) ||
+      compareDuplicateStrings(left.right.id, right.right.id)
+    );
+  });
+
+  return success({
+    candidates,
+    scan: { filesHashed, fingerprintsReused, unreadableFormats },
+  });
+}
+
+function applyDuplicateMetadata(
+  current: LibraryItem,
+  patch: MergeDuplicatePairRequest["metadata"],
+  updatedAt: string,
+): LibraryStoreResult<LibraryItem> {
+  const authors = patch.authors === null ? undefined : (patch.authors ?? current.authors);
+  const author =
+    patch.authors !== undefined
+      ? authors
+          ?.map(({ name }) => name.trim())
+          .filter((name) => name.length > 0)
+          .join(", ")
+      : patch.author === null
+        ? undefined
+        : (patch.author ?? current.author);
+  const updated = libraryItemSchema.safeParse({
+    ...current,
+    title: patch.title ?? current.title,
+    author,
+    authors,
+    series: patch.series === null ? undefined : (patch.series ?? current.series),
+    seriesIndex:
+      patch.seriesIndex === null ? undefined : (patch.seriesIndex ?? current.seriesIndex),
+    publisher: patch.publisher === null ? undefined : (patch.publisher ?? current.publisher),
+    languages: patch.languages === null ? undefined : (patch.languages ?? current.languages),
+    identifiers:
+      patch.identifiers === null ? undefined : (patch.identifiers ?? current.identifiers),
+    publishedDate:
+      patch.publishedDate === null ? undefined : (patch.publishedDate ?? current.publishedDate),
+    rating: patch.rating === null ? undefined : (patch.rating ?? current.rating),
+    description:
+      patch.description === null ? undefined : (patch.description ?? current.description),
+    tags: patch.tags,
+    updatedAt,
+  });
+  return updated.success ? success(updated.data) : failure("invalid-stored-data");
+}
+
+function writeDuplicateMetadata(
+  database: Database,
+  item: LibraryItem,
+  patch: MergeDuplicatePairRequest["metadata"],
+): void {
+  database.run(
+    `UPDATE library_items
+      SET title = ?, author = ?, series = ?, series_index = ?,
+        publisher = ?, published_date = ?, rating = ?,
+        description = ?, updated_at = ?
+      WHERE id = ?`,
+    [
+      item.title,
+      item.author ?? null,
+      item.series ?? null,
+      item.seriesIndex ?? null,
+      item.publisher ?? null,
+      item.publishedDate ?? null,
+      item.rating ?? null,
+      item.description ?? null,
+      item.updatedAt ?? null,
+      item.id,
+    ],
+  );
+  database.run("DELETE FROM library_item_tags WHERE library_item_id = ?", [item.id]);
+  writeTags(database, item.id, item.tags);
+  database.run(`
+    DELETE FROM tags
+    WHERE NOT EXISTS (
+      SELECT 1 FROM library_item_tags
+      WHERE library_item_tags.tag_normalized_name = tags.normalized_name
+    )
+  `);
+  if (patch.authors !== undefined) {
+    database.run("DELETE FROM library_item_authors WHERE library_item_id = ?", [item.id]);
+    writeAuthors(database, item.id, item.authors ?? []);
+  }
+  if (patch.languages !== undefined) {
+    database.run("DELETE FROM library_item_languages WHERE library_item_id = ?", [item.id]);
+    writeLanguages(database, item.id, item.languages ?? []);
+  }
+  if (patch.identifiers !== undefined) {
+    database.run("DELETE FROM library_item_identifiers WHERE library_item_id = ?", [item.id]);
+    writeIdentifiers(database, item.id, item.identifiers ?? {});
+  }
+}
+
 function parseSavedLibraryView(row: StoredSavedLibraryView): LibraryStoreResult<SavedLibraryView> {
   if (typeof row.definitionJson !== "string") {
     return failure("invalid-stored-data");
@@ -2104,6 +2580,7 @@ export class BunSqliteLibraryStore
   implements
     LibraryStore,
     LibraryBatchImportStore,
+    LibraryDuplicateReviewStore,
     LibraryFormatReplacementStore,
     LibraryItemTrashStore,
     LibraryQueryStore,
@@ -2175,7 +2652,8 @@ export class BunSqliteLibraryStore
           createLibraryQueryIndexes(database!);
           createLibraryTrashIndex(database!);
           createManagedFingerprintIndex(database!);
-          verifyV7Database(database!, this.#coversDirectory, this.#itemsDirectory);
+          createDuplicatePairReviewsTable(database!);
+          verifyV8Database(database!, this.#coversDirectory, this.#itemsDirectory);
           database!.run(`PRAGMA user_version = ${SCHEMA_VERSION}`);
         } else if (version === 1) {
           retainVerifiedV1Backup(database!, this.#databasePath);
@@ -2190,7 +2668,8 @@ export class BunSqliteLibraryStore
           migrateV4ToV5(database!);
           migrateV5ToV6(database!);
           migrateV6ToV7(database!, this.#itemsDirectory);
-          verifyV7Database(database!, this.#coversDirectory, this.#itemsDirectory);
+          migrateV7ToV8(database!);
+          verifyV8Database(database!, this.#coversDirectory, this.#itemsDirectory);
           database!.run(`PRAGMA user_version = ${SCHEMA_VERSION}`);
         } else if (version === 2) {
           retainVerifiedV2Backup(database!, this.#databasePath, this.#coversDirectory);
@@ -2199,7 +2678,8 @@ export class BunSqliteLibraryStore
           migrateV4ToV5(database!);
           migrateV5ToV6(database!);
           migrateV6ToV7(database!, this.#itemsDirectory);
-          verifyV7Database(database!, this.#coversDirectory, this.#itemsDirectory);
+          migrateV7ToV8(database!);
+          verifyV8Database(database!, this.#coversDirectory, this.#itemsDirectory);
           database!.run(`PRAGMA user_version = ${SCHEMA_VERSION}`);
         } else if (version === 3) {
           retainVerifiedV3Backup(database!, this.#databasePath, this.#coversDirectory);
@@ -2207,7 +2687,8 @@ export class BunSqliteLibraryStore
           migrateV4ToV5(database!);
           migrateV5ToV6(database!);
           migrateV6ToV7(database!, this.#itemsDirectory);
-          verifyV7Database(database!, this.#coversDirectory, this.#itemsDirectory);
+          migrateV7ToV8(database!);
+          verifyV8Database(database!, this.#coversDirectory, this.#itemsDirectory);
           database!.run(`PRAGMA user_version = ${SCHEMA_VERSION}`);
         } else if (version === 4) {
           retainVerifiedV4Backup(
@@ -2219,7 +2700,8 @@ export class BunSqliteLibraryStore
           migrateV4ToV5(database!);
           migrateV5ToV6(database!);
           migrateV6ToV7(database!, this.#itemsDirectory);
-          verifyV7Database(database!, this.#coversDirectory, this.#itemsDirectory);
+          migrateV7ToV8(database!);
+          verifyV8Database(database!, this.#coversDirectory, this.#itemsDirectory);
           database!.run(`PRAGMA user_version = ${SCHEMA_VERSION}`);
         } else if (version === 5) {
           retainVerifiedV5Backup(
@@ -2230,7 +2712,8 @@ export class BunSqliteLibraryStore
           );
           migrateV5ToV6(database!);
           migrateV6ToV7(database!, this.#itemsDirectory);
-          verifyV7Database(database!, this.#coversDirectory, this.#itemsDirectory);
+          migrateV7ToV8(database!);
+          verifyV8Database(database!, this.#coversDirectory, this.#itemsDirectory);
           database!.run(`PRAGMA user_version = ${SCHEMA_VERSION}`);
         } else if (version === 6) {
           retainVerifiedV6Backup(
@@ -2240,7 +2723,18 @@ export class BunSqliteLibraryStore
             this.#itemsDirectory,
           );
           migrateV6ToV7(database!, this.#itemsDirectory);
-          verifyV7Database(database!, this.#coversDirectory, this.#itemsDirectory);
+          migrateV7ToV8(database!);
+          verifyV8Database(database!, this.#coversDirectory, this.#itemsDirectory);
+          database!.run(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+        } else if (version === 7) {
+          retainVerifiedV7Backup(
+            database!,
+            this.#databasePath,
+            this.#coversDirectory,
+            this.#itemsDirectory,
+          );
+          migrateV7ToV8(database!);
+          verifyV8Database(database!, this.#coversDirectory, this.#itemsDirectory);
           database!.run(`PRAGMA user_version = ${SCHEMA_VERSION}`);
         } else if (version !== SCHEMA_VERSION) {
           throw incompatibleSchema;
@@ -3634,6 +4128,382 @@ export class BunSqliteLibraryStore
     } catch {
       return failure("storage-unavailable");
     }
+  }
+
+  async listDuplicateCandidates(
+    request: ListDuplicateCandidatesRequest,
+  ): Promise<ListDuplicateCandidatesResult> {
+    if (!this.#database) {
+      return failure("storage-unavailable");
+    }
+    const parsedRequest = listDuplicateCandidatesRequestSchema.safeParse(request);
+    if (!parsedRequest.success) {
+      return failure("invalid-arguments");
+    }
+
+    try {
+      return this.#database.transaction((): ListDuplicateCandidatesResult => {
+        const scanned = scanDuplicateCandidates(
+          this.#database!,
+          this.#coversDirectory,
+          this.#itemsDirectory,
+        );
+        if (!scanned.ok) {
+          return scanned;
+        }
+        const reviews = this.#database!
+          .query<
+            { leftId: unknown; rightId: unknown; reviewToken: unknown; reviewedAt: unknown },
+            []
+          >(`
+            SELECT left_id AS leftId, right_id AS rightId,
+              review_token AS reviewToken, reviewed_at AS reviewedAt
+            FROM duplicate_pair_reviews
+          `)
+          .all();
+        const reviewedTokens = new Map<string, string>();
+        for (const row of reviews) {
+          if (
+            typeof row.leftId !== "string" ||
+            typeof row.rightId !== "string" ||
+            row.leftId >= row.rightId ||
+            typeof row.reviewToken !== "string" ||
+            !/^[0-9a-f]{64}$/.test(row.reviewToken) ||
+            !isStoredTrashTimestamp(row.reviewedAt)
+          ) {
+            return failure("invalid-stored-data");
+          }
+          reviewedTokens.set(duplicatePairKey(row.leftId, row.rightId), row.reviewToken);
+        }
+        const matching = scanned.value.candidates.filter((candidate) => {
+          const reviewed =
+            reviewedTokens.get(duplicatePairKey(candidate.left.id, candidate.right.id)) ===
+            candidate.reviewToken;
+          return parsedRequest.data.disposition === "kept-both" ? reviewed : !reviewed;
+        });
+        const page = duplicateCandidatePageSchema.safeParse({
+          candidates: matching.slice(
+            parsedRequest.data.page.offset,
+            parsedRequest.data.page.offset + parsedRequest.data.page.limit,
+          ),
+          total: matching.length,
+          page: parsedRequest.data.page,
+          scan: scanned.value.scan,
+        });
+        return page.success ? success(page.data) : failure("invalid-stored-data");
+      })();
+    } catch {
+      return failure("storage-unavailable");
+    }
+  }
+
+  #setDuplicateDisposition(
+    request: KeepDuplicatePairRequest | ReopenDuplicatePairRequest,
+    keep: boolean,
+  ): KeepDuplicatePairResult | ReopenDuplicatePairResult {
+    if (!this.#database) {
+      return failure("storage-unavailable");
+    }
+    try {
+      return this.#database.transaction((): KeepDuplicatePairResult => {
+        const scanned = scanDuplicateCandidates(
+          this.#database!,
+          this.#coversDirectory,
+          this.#itemsDirectory,
+        );
+        if (!scanned.ok) {
+          return scanned;
+        }
+        const candidate = scanned.value.candidates.find(
+          ({ left, right }) => left.id === request.leftId && right.id === request.rightId,
+        );
+        if (!candidate || candidate.reviewToken !== request.reviewToken) {
+          return failure("stale-review");
+        }
+        if (keep) {
+          this.#database!.run(
+            `INSERT INTO duplicate_pair_reviews (left_id, right_id, review_token, reviewed_at)
+              VALUES (?, ?, ?, ?)
+              ON CONFLICT(left_id, right_id) DO UPDATE SET
+                review_token = excluded.review_token,
+                reviewed_at = excluded.reviewed_at`,
+            [request.leftId, request.rightId, request.reviewToken, new Date().toISOString()],
+          );
+        } else {
+          const reviewed = this.#database!
+            .query<{ reviewToken: unknown }, [string, string]>(
+              `SELECT review_token AS reviewToken
+                FROM duplicate_pair_reviews
+                WHERE left_id = ? AND right_id = ?`,
+            )
+            .get(request.leftId, request.rightId);
+          if (!reviewed || reviewed.reviewToken !== request.reviewToken) {
+            return failure("stale-review");
+          }
+          this.#database!.run(
+            "DELETE FROM duplicate_pair_reviews WHERE left_id = ? AND right_id = ?",
+            [request.leftId, request.rightId],
+          );
+        }
+        return success(null);
+      }).immediate();
+    } catch {
+      return failure("storage-unavailable");
+    }
+  }
+
+  async keepDuplicatePair(request: KeepDuplicatePairRequest): Promise<KeepDuplicatePairResult> {
+    const parsedRequest = keepDuplicatePairRequestSchema.safeParse(request);
+    return parsedRequest.success
+      ? this.#setDuplicateDisposition(parsedRequest.data, true)
+      : failure("invalid-arguments");
+  }
+
+  async reopenDuplicatePair(
+    request: ReopenDuplicatePairRequest,
+  ): Promise<ReopenDuplicatePairResult> {
+    const parsedRequest = reopenDuplicatePairRequestSchema.safeParse(request);
+    return parsedRequest.success
+      ? this.#setDuplicateDisposition(parsedRequest.data, false)
+      : failure("invalid-arguments");
+  }
+
+  async mergeDuplicatePair(request: MergeDuplicatePairRequest): Promise<MergeDuplicatePairResult> {
+    if (!this.#database) {
+      return failure("storage-unavailable");
+    }
+    const parsedRequest = mergeDuplicatePairRequestSchema.safeParse(request);
+    if (!parsedRequest.success) {
+      return failure("invalid-arguments");
+    }
+
+    type MergeOutcome =
+      | { kind: "failure"; code: LibraryStoreErrorCode }
+      | {
+          kind: "merged";
+          target: LibraryItem;
+          source: LibraryItem;
+          cleanupPath?: string;
+        };
+    let outcome: MergeOutcome;
+    let rollbackCode: LibraryStoreErrorCode = "storage-unavailable";
+    try {
+      outcome = this.#database.transaction((): MergeOutcome => {
+        const scanned = scanDuplicateCandidates(
+          this.#database!,
+          this.#coversDirectory,
+          this.#itemsDirectory,
+        );
+        if (!scanned.ok) {
+          return { kind: "failure", code: scanned.error.code };
+        }
+        const leftId =
+          parsedRequest.data.targetId < parsedRequest.data.sourceId
+            ? parsedRequest.data.targetId
+            : parsedRequest.data.sourceId;
+        const rightId =
+          parsedRequest.data.targetId < parsedRequest.data.sourceId
+            ? parsedRequest.data.sourceId
+            : parsedRequest.data.targetId;
+        const candidate = scanned.value.candidates.find(
+          ({ left, right }) => left.id === leftId && right.id === rightId,
+        );
+        if (!candidate || candidate.reviewToken !== parsedRequest.data.reviewToken) {
+          return { kind: "failure", code: "stale-review" };
+        }
+        const currentTarget =
+          candidate.left.id === parsedRequest.data.targetId ? candidate.left : candidate.right;
+        const currentSource =
+          candidate.left.id === parsedRequest.data.sourceId ? candidate.left : candidate.right;
+        const updatedAt = new Date().toISOString();
+        const updatedTarget = applyDuplicateMetadata(
+          currentTarget,
+          parsedRequest.data.metadata,
+          updatedAt,
+        );
+        if (!updatedTarget.ok) {
+          return { kind: "failure", code: updatedTarget.error.code };
+        }
+
+        const targetFormats = new Set(currentTarget.formats.map(({ format }) => format));
+        const sourceRows = this.#database!
+          .query<DuplicateFormatRow, [string]>(`
+            SELECT library_item_id AS libraryItemId, source_path AS sourcePath,
+              format, added_at AS addedAt, provenance, position,
+              content_bytes AS contentBytes, content_sha256 AS contentSha256
+            FROM library_item_formats
+            WHERE library_item_id = ?
+            ORDER BY position
+          `)
+          .all(parsedRequest.data.sourceId);
+        const sourceFormats = new Map<
+          FormatId,
+          {
+            format: FormatId;
+            sourcePath: string;
+            addedAt: string;
+            provenance: "managed" | "referenced";
+            contentBytes: number | null;
+            contentSha256: string | null;
+          }
+        >();
+        for (const row of sourceRows) {
+          const format = bookFormatSchema.safeParse({
+            sourcePath: row.sourcePath,
+            format: row.format,
+            addedAt: row.addedAt,
+            provenance: row.provenance,
+          });
+          if (
+            !format.success ||
+            !Number.isSafeInteger(row.position) ||
+            (row.position as number) < 0 ||
+            (format.data.provenance === "managed" &&
+              !isStoredManagedFingerprint({ bytes: row.contentBytes, sha256: row.contentSha256 })) ||
+            (format.data.provenance === "referenced" &&
+              (row.contentBytes !== null || row.contentSha256 !== null))
+          ) {
+            return { kind: "failure", code: "invalid-stored-data" };
+          }
+          sourceFormats.set(format.data.format, {
+            ...format.data,
+            contentBytes: format.data.provenance === "managed" ? (row.contentBytes as number) : null,
+            contentSha256:
+              format.data.provenance === "managed" ? (row.contentSha256 as string) : null,
+          });
+        }
+        for (const format of parsedRequest.data.addSourceFormats) {
+          if (targetFormats.has(format) || !sourceFormats.has(format)) {
+            return { kind: "failure", code: "invalid-arguments" };
+          }
+        }
+
+        const storedCovers = this.#database!
+          .query<{ id: unknown; coverPath: unknown }, [string, string]>(`
+            SELECT id, cover_path AS coverPath
+            FROM library_items
+            WHERE id IN (?, ?)
+            ORDER BY id
+          `)
+          .all(parsedRequest.data.targetId, parsedRequest.data.sourceId);
+        if (storedCovers.length !== 2) {
+          return { kind: "failure", code: "stale-review" };
+        }
+        const targetCover = storedCovers.find(({ id }) => id === parsedRequest.data.targetId)?.coverPath;
+        const sourceCover = storedCovers.find(({ id }) => id === parsedRequest.data.sourceId)?.coverPath;
+        if (
+          (targetCover !== null && typeof targetCover !== "string") ||
+          (sourceCover !== null && typeof sourceCover !== "string")
+        ) {
+          return { kind: "failure", code: "invalid-stored-data" };
+        }
+        const selectedCover =
+          parsedRequest.data.cover === "target"
+            ? targetCover
+            : parsedRequest.data.cover === "source"
+              ? sourceCover
+              : null;
+        if (parsedRequest.data.cover === "source" && sourceCover === null) {
+          return { kind: "failure", code: "invalid-arguments" };
+        }
+        if (selectedCover !== null) {
+          resolveCoverCleanupPath(this.#coversDirectory, selectedCover);
+        }
+
+        writeDuplicateMetadata(this.#database!, updatedTarget.value, parsedRequest.data.metadata);
+        const nextPosition = currentTarget.formats.length;
+        parsedRequest.data.addSourceFormats.forEach((format, index) => {
+          const row = sourceFormats.get(format)!;
+          this.#database!.run(
+            `INSERT INTO library_item_formats
+              (library_item_id, format, source_path, added_at, provenance, position,
+                content_bytes, content_sha256)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+            [
+              parsedRequest.data.targetId,
+              row.format,
+              row.sourcePath,
+              row.addedAt,
+              row.provenance,
+              nextPosition + index,
+              row.contentBytes,
+              row.contentSha256,
+            ],
+          );
+        });
+        this.#database!.run("UPDATE library_items SET cover_path = ? WHERE id = ?", [
+          selectedCover,
+          parsedRequest.data.targetId,
+        ]);
+        const trashed = this.#database!.run(
+          "UPDATE library_items SET trashed_at = ?, updated_at = ? WHERE id = ? AND trashed_at IS NULL",
+          [updatedAt, updatedAt, parsedRequest.data.sourceId],
+        );
+        if (trashed.changes !== 1) {
+          rollbackCode = "stale-review";
+          throw duplicateMergeRollback;
+        }
+        this.#database!.run(
+          "DELETE FROM duplicate_pair_reviews WHERE left_id = ? AND right_id = ?",
+          [leftId, rightId],
+        );
+
+        let cleanupPath: string | undefined;
+        if (typeof targetCover === "string" && targetCover !== selectedCover) {
+          resolveCoverCleanupPath(this.#coversDirectory, targetCover);
+          this.#database!.run(
+            "INSERT OR IGNORE INTO managed_file_cleanup (source_path, kind) VALUES (?, 'cover')",
+            [targetCover],
+          );
+          cleanupPath = targetCover;
+        }
+        const storedTarget = readStoredItem(
+          this.#database!,
+          this.#coversDirectory,
+          this.#itemsDirectory,
+          parsedRequest.data.targetId,
+        );
+        const storedSource = readStoredItem(
+          this.#database!,
+          this.#coversDirectory,
+          this.#itemsDirectory,
+          parsedRequest.data.sourceId,
+        );
+        if (!storedTarget.ok || !storedSource.ok || !storedTarget.value || !storedSource.value) {
+          rollbackCode =
+            !storedTarget.ok
+              ? storedTarget.error.code
+              : !storedSource.ok
+                ? storedSource.error.code
+                : "invalid-stored-data";
+          throw duplicateMergeRollback;
+        }
+        return {
+          kind: "merged",
+          target: storedTarget.value,
+          source: storedSource.value,
+          cleanupPath,
+        };
+      }).immediate();
+    } catch (error) {
+      return failure(error === duplicateMergeRollback ? rollbackCode : "storage-unavailable");
+    }
+
+    if (outcome.kind === "failure") {
+      return failure(outcome.code);
+    }
+    const cleanupPending =
+      outcome.cleanupPath === undefined
+        ? false
+        : !attemptOwnedFileCleanup(this.#database, this.#coversDirectory, this.#itemsDirectory, {
+            sourcePath: outcome.cleanupPath,
+            kind: "cover",
+          });
+    return success({
+      target: outcome.target,
+      trashedSource: outcome.source,
+      cleanupPending,
+    });
   }
 
   async listSavedViews(
