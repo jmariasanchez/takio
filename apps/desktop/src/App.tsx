@@ -228,6 +228,7 @@ export default function App() {
   const formatMutationPending = useRef(false);
   const bulkMutationPending = useRef(false);
   const duplicateMutationPending = useRef(false);
+  const postBulkFocusPending = useRef(false);
   const importPending = useRef(false);
   const openPending = useRef(false);
   const importButton = useRef<HTMLButtonElement>(null);
@@ -277,6 +278,23 @@ export default function App() {
     postFormatFocusControlId.current = undefined;
     (document.getElementById(controlId) ?? importButton.current)?.focus();
   }, [items, pendingAction]);
+
+  useEffect(() => {
+    if (
+      !postBulkFocusPending.current ||
+      pendingAction !== null ||
+      bulkTagsDialogOpen ||
+      librarySelection.selectedItemIds.length > 0
+    ) {
+      return;
+    }
+
+    const frame = window.requestAnimationFrame(() => {
+      postBulkFocusPending.current = false;
+      searchInput.current?.focus();
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [bulkTagsDialogOpen, librarySelection.selectedItemIds.length, pendingAction]);
 
   const commitLibraryQuery = useCallback((next: LibraryQueryState): void => {
     libraryQueryRef.current = next;
@@ -1632,7 +1650,7 @@ export default function App() {
     bookFormat: BookFormat,
     focusControlId: string,
   ): Promise<void> {
-    if (openPending.current) {
+    if (bulkMutationPending.current || openPending.current) {
       return;
     }
 
@@ -1828,7 +1846,7 @@ export default function App() {
   }
 
   async function sendItem(item: LibraryItem, bookFormat: BookFormat) {
-    if (deviceMutationPending.current) {
+    if (bulkMutationPending.current || deviceMutationPending.current) {
       return;
     }
     selectLibraryItem(item.id);
@@ -1871,7 +1889,7 @@ export default function App() {
   }
 
   async function ejectSelectedDestination() {
-    if (deviceMutationPending.current) {
+    if (bulkMutationPending.current || deviceMutationPending.current) {
       return;
     }
     if (!selectedDestination) {
@@ -1914,6 +1932,18 @@ export default function App() {
     : null;
   const selectedItem = catalogueItems.find((item) => item.id === selectedItemId) ?? null;
 
+  function restoreFocusIfBulkSelectionCleared(
+    selectedIds: readonly string[],
+    removedIds: readonly string[],
+  ): void {
+    const removed = new Set(removedIds);
+    if (selectedIds.length === 0 || selectedIds.some((id) => !removed.has(id))) {
+      return;
+    }
+
+    postBulkFocusPending.current = true;
+  }
+
   async function hydrateBulkTargets(
     selectedIds: readonly string[],
     reportDialogError = false,
@@ -1930,6 +1960,7 @@ export default function App() {
       .map(({ id }) => id);
     if (missingIds.length > 0) {
       dispatchLibrarySelection({ type: "remove-items", ids: missingIds });
+      restoreFocusIfBulkSelectionCleared(selectedIds, missingIds);
     }
 
     if (hydration.counts.failed > 0) {
@@ -2017,6 +2048,7 @@ export default function App() {
       }
 
       dispatchLibrarySelection({ type: "remove-items", ids: completedIds });
+      restoreFocusIfBulkSelectionCleared(selectedIds, completedIds);
       const libraryLoaded = await loadLibrary(false);
       const summary = `${updated} updated; ${missing} missing; ${failed} failed.${libraryLoaded ? "" : " Library refresh failed."}`;
       setNotice({ kind: failed > 0 || !libraryLoaded ? "error" : "status", text: summary });
@@ -2095,6 +2127,7 @@ export default function App() {
       }
 
       dispatchLibrarySelection({ type: "remove-items", ids: completedIds });
+      restoreFocusIfBulkSelectionCleared(selectedIds, completedIds);
       setDraft((current) =>
         current && completedIds.includes(current.id) ? null : current,
       );
@@ -2200,6 +2233,7 @@ export default function App() {
       }
 
       dispatchLibrarySelection({ type: "remove-items", ids: completedIds });
+      restoreFocusIfBulkSelectionCleared(selectedIds, completedIds);
       const [jobsLoaded, libraryLoaded] = await Promise.all([
         loadJobs(false),
         loadLibrary(false),
@@ -2278,6 +2312,7 @@ export default function App() {
       }
 
       dispatchLibrarySelection({ type: "remove-items", ids: completedIds });
+      restoreFocusIfBulkSelectionCleared(selectedIds, completedIds);
       const libraryLoaded = await loadLibrary(false);
       const summary = `${sent} sent; ${planned.convertible} need conversion; ${planned.unavailable} unavailable; ${hydrated.missingIds.length} missing; ${failed} failed.${libraryLoaded ? "" : " Library refresh failed."}`;
       setNotice({ kind: failed > 0 || !libraryLoaded ? "error" : "status", text: summary });
@@ -2301,6 +2336,9 @@ export default function App() {
   }
 
   async function openSelectedItem(): Promise<void> {
+    if (bulkMutationPending.current) {
+      return;
+    }
     if (!selectedItem) {
       setNotice({ kind: "error", text: "Choose a library item before opening." });
       return;
@@ -2313,6 +2351,9 @@ export default function App() {
   }
 
   async function sendSelectedItem(): Promise<void> {
+    if (bulkMutationPending.current) {
+      return;
+    }
     if (!selectedItem) {
       setNotice({ kind: "error", text: "Choose a library item before sending." });
       return;
@@ -2547,8 +2588,11 @@ export default function App() {
             onConvert: () => void convertBulkSelectionToPdf(),
             onSend: () => void sendBulkSelection(),
             onMoveToTrash: () => void moveBulkSelectionToTrash(),
-            onClearSelection: () =>
-              dispatchLibrarySelection({ type: "clear-selection" }),
+            onClearSelection: () => {
+              const selectedIds = [...librarySelection.selectedItemIds];
+              dispatchLibrarySelection({ type: "clear-selection" });
+              restoreFocusIfBulkSelectionCleared(selectedIds, selectedIds);
+            },
             onCloseTagsDialog: closeBulkTagsDialog,
             onApplyTags: (operation, tags) => void applyBulkTags(operation, tags),
           }}
