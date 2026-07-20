@@ -189,6 +189,7 @@ describe("takio CLI", () => {
     ["library", "add", "--help"],
     ["library", "import", "--help"],
     ["library", "import-many", "--help"],
+    ["library", "export-many", "--help"],
     ["library", "get", "--help"],
     ["library", "open", "--help"],
     ["library", "update", "--help"],
@@ -205,6 +206,7 @@ describe("takio CLI", () => {
     ["library", "help", "add"],
     ["library", "help", "import"],
     ["library", "help", "import-many"],
+    ["library", "help", "export-many"],
     ["library", "help", "get"],
     ["library", "help", "open"],
     ["library", "help", "list"],
@@ -224,6 +226,7 @@ describe("takio CLI", () => {
     ["help", "library", "add"],
     ["help", "library", "import"],
     ["help", "library", "import-many"],
+    ["help", "library", "export-many"],
     ["help", "library", "get"],
     ["help", "library", "open"],
     ["help", "library", "list"],
@@ -502,6 +505,117 @@ describe("takio CLI", () => {
           env,
         ),
       );
+    });
+
+    it("rejects invalid export JSON before opening library storage", async () => {
+      const blockedDataDirectory = join(directory!, "export-storage-blocked");
+      await Bun.write(blockedDataDirectory, "storage must not open");
+      const env = { TAKIO_DATA_DIR: blockedDataDirectory };
+      const destinationPath = join(directory!, "exports");
+      const oversizedRequest = JSON.stringify({
+        ids: ["book-1"],
+        destinationPath: "é".repeat(8_192),
+      });
+      expect(oversizedRequest.length).toBeLessThanOrEqual(16 * 1024);
+      expect(Buffer.byteLength(oversizedRequest, "utf8")).toBeGreaterThan(
+        16 * 1024,
+      );
+
+      const invalidRequests = [
+        "",
+        "{",
+        "[]",
+        JSON.stringify({ ids: [], destinationPath }),
+        JSON.stringify({
+          ids: Array.from({ length: 257 }, (_, index) => `book-${index}`),
+          destinationPath,
+        }),
+        JSON.stringify({ ids: ["book-1", "book-1"], destinationPath }),
+        JSON.stringify({ ids: ["   "], destinationPath }),
+        JSON.stringify({ ids: ["book-1"], destinationPath: "   " }),
+        JSON.stringify({ ids: ["book-1"], destinationPath, unexpected: true }),
+        oversizedRequest,
+      ];
+
+      expectInvalidArgumentsProcess(
+        await invokeProcess(["library", "export-many"], env),
+      );
+      for (const request of invalidRequests) {
+        expectInvalidArgumentsProcess(
+          await invokeProcess(
+            ["library", "export-many", "--request-json", request],
+            env,
+          ),
+        );
+      }
+    });
+
+    it("exports a valid request as one exact process report", async () => {
+      const sourceContents = "export protocol contents";
+      const sourcePath = join(directory!, "export-protocol.epub");
+      const destinationDirectory = join(directory!, "export destination");
+      await Promise.all([
+        Bun.write(sourcePath, sourceContents),
+        mkdir(destinationDirectory),
+      ]);
+      const env = { TAKIO_DATA_DIR: directory };
+      const imported = parseProcessOutput(
+        await invokeProcess(
+          ["library", "import", "--source-path", sourcePath],
+          env,
+        ),
+      ) as {
+        ok: true;
+        value: { item: { id: string; title: string } };
+      };
+      const item = imported.value.item;
+      const itemHash = new Bun.CryptoHasher("sha256")
+        .update(item.id)
+        .digest("hex");
+      const exportedPath = join(
+        await realpath(destinationDirectory),
+        `${item.title} [${itemHash}].epub`,
+      );
+      const expected = {
+        ok: true,
+        value: {
+          outcomes: [
+            {
+              status: "exported",
+              itemId: item.id,
+              format: "epub",
+              provenance: "managed",
+              destinationPath: exportedPath,
+              bytes: Buffer.byteLength(sourceContents),
+              sha256: new Bun.CryptoHasher("sha256")
+                .update(sourceContents)
+                .digest("hex"),
+            },
+            {
+              status: "failed",
+              itemId: "missing-export-item",
+              code: "item-not-found",
+            },
+          ],
+          counts: { total: 2, exported: 1, skipped: 0, failed: 1 },
+        },
+      };
+
+      const result = await invokeProcess(
+        [
+          "library",
+          "export-many",
+          "--request-json",
+          JSON.stringify({
+            ids: [item.id, "missing-export-item"],
+            destinationPath: destinationDirectory,
+          }),
+        ],
+        env,
+      );
+
+      expect(parseProcessOutput(result)).toEqual(expected);
+      expect(await Bun.file(exportedPath).text()).toBe(sourceContents);
     });
 
     it("trashes, lists, restores, and purges through the strict process protocol", async () => {

@@ -12,6 +12,7 @@ import {
   type FormatId,
 } from "@takio/core";
 import {
+  exportLibraryItemsRequestSchema,
   importLibraryItemsRequestSchema,
   keepDuplicatePairRequestSchema,
   libraryMetadataPatchSchema,
@@ -26,6 +27,7 @@ import {
   restoreLibraryItemRequestSchema,
   saveSavedLibraryViewRequestSchema,
   trashLibraryItemRequestSchema,
+  type ExportLibraryItemsRequest,
   type ImportLibraryItemsRequest,
   type KeepDuplicatePairRequest,
   type LibraryMetadataPatch,
@@ -880,6 +882,32 @@ export function createProgram(
         const { store } = await openLibraryStore(options.db, command);
         try {
           const result = await store.importMany(request);
+          if (!result.ok) {
+            command.error("", { exitCode: 1, code: result.error.code });
+          }
+          write(JSON.stringify({ ok: true, value: result.value }));
+        } finally {
+          store.close();
+        }
+      },
+    );
+
+  storageCommand(library.command("export-many").helpOption(false), writeError)
+    .option("--db <path>", "database path")
+    .requiredOption("--request-json <json>", "export request as JSON")
+    .action(
+      async (
+        options: { db?: string; requestJson: string },
+        command: Command,
+      ) => {
+        const request: ExportLibraryItemsRequest = parseLibraryJsonRequest(
+          options.requestJson,
+          exportLibraryItemsRequestSchema,
+          command,
+        );
+        const { store } = await openLibraryStore(options.db, command);
+        try {
+          const result = await store.exportMany(request);
           if (!result.ok) {
             command.error("", { exitCode: 1, code: result.error.code });
           }
