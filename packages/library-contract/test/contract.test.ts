@@ -5,14 +5,21 @@ import {
   LIBRARY_QUERY_SORT_FIELDS,
   LIBRARY_STORE_ERROR_CODES,
   DUPLICATE_REVIEW_DISPOSITIONS,
+  LIBRARY_IMPORT_DUPLICATE_REASONS,
+  LIBRARY_IMPORT_FAILURE_CODES,
+  LIBRARY_IMPORT_SKIPPED_REASONS,
   MAX_LIBRARY_QUERY_PAGE_SIZE,
+  MAX_LIBRARY_IMPORT_ROOTS,
   MAX_SAVED_LIBRARY_VIEW_NAME_LENGTH,
   type AddLibraryItemRequest,
   type AttachLibraryFormatRequest,
   type ImportLibraryItemRequest,
+  type ImportLibraryItemsRequest,
   type KeepDuplicatePairResult,
   type LibraryDuplicateReviewStore,
   type LibraryImportWireResult,
+  type LibraryBatchImportStore,
+  type LibraryBatchImportWireResult,
   type LibraryListWireResult,
   type LibraryFormatReplacementStore,
   type LibraryItemTrashStore,
@@ -43,6 +50,9 @@ import {
   type ReopenDuplicatePairResult,
   type TrashLibraryItemResult,
   libraryMetadataPatchSchema,
+  importLibraryItemsRequestSchema,
+  libraryImportEntryOutcomeSchema,
+  libraryImportReportSchema,
   duplicateCandidatePageSchema,
   duplicateCandidateSchema,
   duplicateSignalSchema,
@@ -102,6 +112,115 @@ const duplicateItem = {
 const duplicateReviewToken = "a".repeat(64);
 
 describe("LibraryStore", () => {
+  it("defines strict recursive import requests and exactly accounted outcomes", async () => {
+    const request: ImportLibraryItemsRequest = {
+      roots: ["/external/books", "/external/standalone.epub"],
+    };
+    const outcomes = [
+      {
+        status: "imported",
+        sourcePath: "/external/books/left-hand.epub",
+        item: canonicalItem,
+      },
+      {
+        status: "skipped",
+        sourcePath: "/external/books/cover.jpg",
+        reason: "unsupported-format",
+      },
+      {
+        status: "skipped",
+        sourcePath: "/external/books/linked",
+        reason: "symbolic-link",
+      },
+      {
+        status: "skipped",
+        sourcePath: "/external/books/pipe",
+        reason: "unsupported-file-type",
+      },
+      {
+        status: "duplicate",
+        sourcePath: "/external/standalone.epub",
+        existing: { itemId: canonicalItem.id, format: "epub" },
+        reason: "existing-library",
+      },
+      {
+        status: "duplicate",
+        sourcePath: "/external/books/copy.epub",
+        existing: { itemId: canonicalItem.id, format: "epub" },
+        reason: "earlier-in-request",
+      },
+      {
+        status: "failed",
+        sourcePath: "/external/books/missing.pdf",
+        code: "not-found",
+      },
+    ] as const;
+    const result: LibraryBatchImportWireResult = {
+      ok: true,
+      value: {
+        outcomes,
+        counts: { total: 7, imported: 1, skipped: 3, duplicates: 2, failed: 1 },
+      },
+    };
+    const store: LibraryBatchImportStore = {
+      importMany: async () => result,
+    };
+
+    expect(MAX_LIBRARY_IMPORT_ROOTS).toBe(256);
+    expect(LIBRARY_IMPORT_SKIPPED_REASONS).toEqual([
+      "unsupported-format",
+      "symbolic-link",
+      "unsupported-file-type",
+    ]);
+    expect(LIBRARY_IMPORT_DUPLICATE_REASONS).toEqual([
+      "existing-library",
+      "earlier-in-request",
+    ]);
+    expect(LIBRARY_IMPORT_FAILURE_CODES).toEqual([
+      "not-found",
+      "unreadable",
+      "source-changed",
+      "storage-unavailable",
+      "invalid-title",
+    ]);
+    expect(importLibraryItemsRequestSchema.parse(request)).toEqual(request);
+    expect(outcomes.map((outcome) => libraryImportEntryOutcomeSchema.parse(outcome))).toEqual(
+      outcomes,
+    );
+    expect(libraryImportReportSchema.parse(result.value)).toEqual(result.value);
+    await expect(store.importMany(request)).resolves.toEqual(result);
+    expect(JSON.parse(JSON.stringify({ request, result }))).toEqual({ request, result });
+
+    for (const invalid of [
+      {},
+      { roots: [] },
+      { roots: ["   "] },
+      { roots: ["/external/books"], recursive: true },
+      { roots: Array.from({ length: MAX_LIBRARY_IMPORT_ROOTS + 1 }, (_, index) => `/book-${index}`) },
+    ]) {
+      expect(importLibraryItemsRequestSchema.safeParse(invalid).success).toBe(false);
+    }
+
+    for (const count of ["total", "imported", "skipped", "duplicates", "failed"] as const) {
+      expect(
+        libraryImportReportSchema.safeParse({
+          ...result.value,
+          counts: { ...result.value.counts, [count]: result.value.counts[count] + 1 },
+        }).success,
+      ).toBe(false);
+    }
+
+    for (const invalid of [
+      { ...outcomes[0], unexpected: true },
+      { ...outcomes[1], reason: "hidden-file" },
+      { ...outcomes[4], reason: "same-title" },
+      { ...outcomes[6], code: "permission-denied" },
+      { ...outcomes[6], status: "error" },
+    ]) {
+      expect(libraryImportEntryOutcomeSchema.safeParse(invalid).success).toBe(false);
+    }
+  });
+
   it("defines bounded pages, literal queries, rich filters, and deterministic sorts", async () => {
     const request: QueryLibraryItemsRequest = {
       query: 'title:"darkness"',

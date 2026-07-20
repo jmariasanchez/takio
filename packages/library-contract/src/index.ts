@@ -12,8 +12,25 @@ import {
 import { z } from "zod";
 
 export const MAX_LIBRARY_QUERY_PAGE_SIZE = 100;
+export const MAX_LIBRARY_IMPORT_ROOTS = 256;
 export const MAX_SAVED_LIBRARY_VIEW_NAME_LENGTH = 120;
 export const DUPLICATE_REVIEW_DISPOSITIONS = ["unreviewed", "kept-both"] as const;
+export const LIBRARY_IMPORT_SKIPPED_REASONS = [
+  "unsupported-format",
+  "symbolic-link",
+  "unsupported-file-type",
+] as const;
+export const LIBRARY_IMPORT_DUPLICATE_REASONS = [
+  "existing-library",
+  "earlier-in-request",
+] as const;
+export const LIBRARY_IMPORT_FAILURE_CODES = [
+  "not-found",
+  "unreadable",
+  "source-changed",
+  "storage-unavailable",
+  "invalid-title",
+] as const;
 
 export const LIBRARY_QUERY_SORT_FIELDS = [
   "title",
@@ -375,6 +392,108 @@ export const trashLibraryItemRequestSchema = libraryItemLifecycleRequestSchema;
 export const restoreLibraryItemRequestSchema = libraryItemLifecycleRequestSchema;
 export const purgeLibraryItemRequestSchema = libraryItemLifecycleRequestSchema;
 
+const libraryImportPathSchema = z
+  .string()
+  .min(1)
+  .refine((path) => path.trim().length > 0, { message: "Import paths must not be blank." });
+
+export const importLibraryItemsRequestSchema = z
+  .object({
+    roots: z
+      .array(libraryImportPathSchema)
+      .min(1)
+      .max(MAX_LIBRARY_IMPORT_ROOTS)
+      .readonly(),
+  })
+  .strict()
+  .readonly();
+
+const importedLibraryEntrySchema = z
+  .object({
+    status: z.literal("imported"),
+    sourcePath: libraryImportPathSchema,
+    item: libraryItemSchema,
+  })
+  .strict();
+
+const skippedLibraryImportEntrySchema = z
+  .object({
+    status: z.literal("skipped"),
+    sourcePath: libraryImportPathSchema,
+    reason: z.enum(LIBRARY_IMPORT_SKIPPED_REASONS),
+  })
+  .strict();
+
+const duplicateLibraryImportEntrySchema = z
+  .object({
+    status: z.literal("duplicate"),
+    sourcePath: libraryImportPathSchema,
+    existing: z
+      .object({
+        itemId: z.string().min(1),
+        format: z.enum(FORMAT_IDS),
+      })
+      .strict()
+      .readonly(),
+    reason: z.enum(LIBRARY_IMPORT_DUPLICATE_REASONS),
+  })
+  .strict();
+
+const failedLibraryImportEntrySchema = z
+  .object({
+    status: z.literal("failed"),
+    sourcePath: libraryImportPathSchema,
+    code: z.enum(LIBRARY_IMPORT_FAILURE_CODES),
+  })
+  .strict();
+
+export const libraryImportEntryOutcomeSchema = z
+  .discriminatedUnion("status", [
+    importedLibraryEntrySchema,
+    skippedLibraryImportEntrySchema,
+    duplicateLibraryImportEntrySchema,
+    failedLibraryImportEntrySchema,
+  ])
+  .readonly();
+
+const libraryImportCountsSchema = z
+  .object({
+    total: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
+    imported: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
+    skipped: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
+    duplicates: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
+    failed: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
+  })
+  .strict()
+  .readonly();
+
+export const libraryImportReportSchema = z
+  .object({
+    outcomes: z.array(libraryImportEntryOutcomeSchema).readonly(),
+    counts: libraryImportCountsSchema,
+  })
+  .strict()
+  .superRefine((report, context) => {
+    const expected = {
+      total: report.outcomes.length,
+      imported: report.outcomes.filter(({ status }) => status === "imported").length,
+      skipped: report.outcomes.filter(({ status }) => status === "skipped").length,
+      duplicates: report.outcomes.filter(({ status }) => status === "duplicate").length,
+      failed: report.outcomes.filter(({ status }) => status === "failed").length,
+    } as const;
+
+    for (const count of Object.keys(expected) as (keyof typeof expected)[]) {
+      if (report.counts[count] !== expected[count]) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["counts", count],
+          message: `Import ${count} must match the reported outcomes.`,
+        });
+      }
+    }
+  })
+  .readonly();
+
 export type LibraryQueryFilters = z.infer<typeof libraryQueryFiltersSchema>;
 export type LibraryQuerySort = z.infer<typeof libraryQuerySortSchema>;
 export type LibraryQueryDefinition = z.infer<typeof libraryQueryDefinitionSchema>;
@@ -401,6 +520,9 @@ export type RemoveSavedLibraryViewRequest = z.infer<typeof removeSavedLibraryVie
 export type TrashLibraryItemRequest = z.infer<typeof trashLibraryItemRequestSchema>;
 export type RestoreLibraryItemRequest = z.infer<typeof restoreLibraryItemRequestSchema>;
 export type PurgeLibraryItemRequest = z.infer<typeof purgeLibraryItemRequestSchema>;
+export type ImportLibraryItemsRequest = z.infer<typeof importLibraryItemsRequestSchema>;
+export type LibraryImportEntryOutcome = z.infer<typeof libraryImportEntryOutcomeSchema>;
+export type LibraryImportReport = z.infer<typeof libraryImportReportSchema>;
 
 export const LIBRARY_STORE_ERROR_CODES = [
   "duplicate-id",
@@ -547,6 +669,7 @@ export type ListLibraryItemsResult = LibraryStoreResult<readonly LibraryItem[]>;
 export type GetLibraryItemResult = LibraryStoreResult<LibraryItem | null>;
 export type AddLibraryItemResult = LibraryStoreResult<LibraryItem>;
 export type ImportLibraryItemResult = LibraryStoreResult<LibraryItem>;
+export type ImportLibraryItemsResult = LibraryStoreResult<LibraryImportReport>;
 export type AttachLibraryFormatResult = LibraryStoreResult<LibraryItem | null>;
 export type ReplaceLibraryFormatResult = LibraryStoreResult<{
   readonly item: LibraryItem | null;
@@ -588,6 +711,7 @@ export type LibraryListWireResult = LibraryStoreResult<{
   readonly items: readonly LibraryItem[];
 }>;
 export type LibraryImportWireResult = LibraryStoreResult<{ readonly item: LibraryItem }>;
+export type LibraryBatchImportWireResult = ImportLibraryItemsResult;
 export type LibraryRemoveWireResult = LibraryStoreResult<{
   readonly item: LibraryItem | null;
   readonly cleanupPending: boolean;
@@ -641,6 +765,10 @@ export interface SavedLibraryViewStore {
 
 export interface LibraryFormatReplacementStore {
   replaceFormat(request: ReplaceLibraryFormatRequest): Promise<ReplaceLibraryFormatResult>;
+}
+
+export interface LibraryBatchImportStore {
+  importMany(request: ImportLibraryItemsRequest): Promise<ImportLibraryItemsResult>;
 }
 
 export interface LibraryDuplicateReviewStore {

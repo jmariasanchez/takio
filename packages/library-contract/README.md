@@ -17,6 +17,23 @@ paging is deliberately session state rather than part of a saved view.
 capabilities are separate from `LibraryStore` so existing adapters remain
 compatible while runtimes adopt them.
 
+`LibraryBatchImportStore` adds recursive multi-root import without changing the
+single-file `LibraryStore.import` contract. Requests contain 1–256 nonblank root
+paths. Roots are visited in caller order; directory entries are traversed depth
+first in raw code-unit name order. Directories do not produce outcomes. Symbolic
+links are never followed, including root symlinks, and are reported as skipped.
+Unsupported regular formats and other unsupported file types are also skipped;
+missing or unreadable roots and entries are reported as failures without stopping
+their remaining siblings.
+
+Each encountered entry has exactly one ordered `imported`, `skipped`, `duplicate`,
+or `failed` outcome. Counts must equal both those outcome groups and the complete
+outcome list. A duplicate is byte-identical content already managed by Takio or
+encountered earlier in the same request; overlapping roots are therefore reported
+rather than silently collapsed. Each imported entry is atomic, but the batch is
+not: entry failures remain in a successful report, while the outer
+`LibraryStoreResult` represents request- or store-level failure.
+
 `LibraryItemTrashStore` adds an explicit reversible lifecycle. `listTrash`
 provides bounded pages of at most 100 trashed items, ordered by newest trash
 transition first and then by id for deterministic ties. `trash` moves an active
