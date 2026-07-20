@@ -1305,11 +1305,16 @@ type LibraryFacet = "authors" | "tags" | "series" | "languages" | "formats";
 type SqlParameter = string | number;
 type SqlFragment = { sql: string; parameters: SqlParameter[] };
 type StoredFacetRow = { facet: unknown; value: unknown; count: unknown };
+type StoredLibraryQueryRow = StoredLibraryItem & { total: unknown };
+const libraryFacets: readonly LibraryFacet[] = [
+  "authors",
+  "tags",
+  "series",
+  "languages",
+  "formats",
+];
 
-function buildLibraryMatch(
-  request: QueryLibraryItemsRequest,
-  omittedFacet?: LibraryFacet,
-): SqlFragment {
+function buildLibrarySearch(request: QueryLibraryItemsRequest): SqlFragment {
   const clauses: string[] = [];
   const parameters: SqlParameter[] = [];
 
@@ -1342,54 +1347,80 @@ function buildLibraryMatch(
     parameters.push(pattern, pattern, pattern, pattern, pattern, pattern, pattern, pattern, pattern);
   }
 
-  if (omittedFacet !== "authors" && request.filters.authors.length > 0) {
-    const values = JSON.stringify(request.filters.authors);
-    clauses.push(`(
-      library_items.author COLLATE NOCASE IN (SELECT value FROM json_each(?))
-      OR EXISTS (
-        SELECT 1 FROM library_item_authors
-        WHERE library_item_authors.library_item_id = library_items.id
-          AND library_item_authors.name COLLATE NOCASE IN (SELECT value FROM json_each(?))
-      )
-    )`);
-    parameters.push(values, values);
-  }
-
-  if (omittedFacet !== "tags" && request.filters.tags.length > 0) {
-    clauses.push(`EXISTS (
-      SELECT 1 FROM library_item_tags
-      WHERE library_item_tags.library_item_id = library_items.id
-        AND library_item_tags.tag_normalized_name IN (SELECT value FROM json_each(?))
-    )`);
-    parameters.push(JSON.stringify(request.filters.tags.map((tag) => tag.toLowerCase())));
-  }
-
-  if (omittedFacet !== "series" && request.filters.series.length > 0) {
-    clauses.push(
-      "library_items.series COLLATE NOCASE IN (SELECT value FROM json_each(?))",
-    );
-    parameters.push(JSON.stringify(request.filters.series));
-  }
-
-  if (omittedFacet !== "languages" && request.filters.languages.length > 0) {
-    clauses.push(`EXISTS (
-      SELECT 1 FROM library_item_languages
-      WHERE library_item_languages.library_item_id = library_items.id
-        AND library_item_languages.language COLLATE NOCASE IN (SELECT value FROM json_each(?))
-    )`);
-    parameters.push(JSON.stringify(request.filters.languages));
-  }
-
-  if (omittedFacet !== "formats" && request.filters.formats.length > 0) {
-    clauses.push(`EXISTS (
-      SELECT 1 FROM library_item_formats
-      WHERE library_item_formats.library_item_id = library_items.id
-        AND library_item_formats.format IN (SELECT value FROM json_each(?))
-    )`);
-    parameters.push(JSON.stringify(request.filters.formats));
-  }
-
   return { sql: clauses.length === 0 ? "1" : clauses.join(" AND "), parameters };
+}
+
+function buildLibraryFacetFilter(
+  request: QueryLibraryItemsRequest,
+  facet: LibraryFacet,
+): SqlFragment {
+  if (facet === "authors" && request.filters.authors.length > 0) {
+    const values = JSON.stringify(request.filters.authors);
+    return {
+      sql: `(
+        library_items.author COLLATE NOCASE IN (SELECT value FROM json_each(?))
+        OR EXISTS (
+          SELECT 1 FROM library_item_authors
+          WHERE library_item_authors.library_item_id = library_items.id
+            AND library_item_authors.name COLLATE NOCASE IN (SELECT value FROM json_each(?))
+        )
+      )`,
+      parameters: [values, values],
+    };
+  }
+  if (facet === "tags" && request.filters.tags.length > 0) {
+    return {
+      sql: `EXISTS (
+        SELECT 1 FROM library_item_tags
+        WHERE library_item_tags.library_item_id = library_items.id
+          AND library_item_tags.tag_normalized_name IN (SELECT value FROM json_each(?))
+      )`,
+      parameters: [JSON.stringify(request.filters.tags.map((tag) => tag.toLowerCase()))],
+    };
+  }
+  if (facet === "series" && request.filters.series.length > 0) {
+    return {
+      sql: "library_items.series COLLATE NOCASE IN (SELECT value FROM json_each(?))",
+      parameters: [JSON.stringify(request.filters.series)],
+    };
+  }
+  if (facet === "languages" && request.filters.languages.length > 0) {
+    return {
+      sql: `EXISTS (
+        SELECT 1 FROM library_item_languages
+        WHERE library_item_languages.library_item_id = library_items.id
+          AND library_item_languages.language COLLATE NOCASE IN (SELECT value FROM json_each(?))
+      )`,
+      parameters: [JSON.stringify(request.filters.languages)],
+    };
+  }
+  if (facet === "formats" && request.filters.formats.length > 0) {
+    return {
+      sql: `EXISTS (
+        SELECT 1 FROM library_item_formats
+        WHERE library_item_formats.library_item_id = library_items.id
+          AND library_item_formats.format IN (SELECT value FROM json_each(?))
+      )`,
+      parameters: [JSON.stringify(request.filters.formats)],
+    };
+  }
+  return { sql: "1", parameters: [] };
+}
+
+function buildLibraryMatch(
+  request: QueryLibraryItemsRequest,
+  omittedFacet?: LibraryFacet,
+): SqlFragment {
+  const fragments = [
+    buildLibrarySearch(request),
+    ...libraryFacets
+      .filter((facet) => facet !== omittedFacet)
+      .map((facet) => buildLibraryFacetFilter(request, facet)),
+  ];
+  return {
+    sql: fragments.map(({ sql }) => sql).filter((sql) => sql !== "1").join(" AND ") || "1",
+    parameters: fragments.flatMap(({ parameters }) => parameters),
+  };
 }
 
 function buildLibraryOrder(request: QueryLibraryItemsRequest): string {
@@ -1412,13 +1443,22 @@ function buildLibraryOrder(request: QueryLibraryItemsRequest): string {
 }
 
 function buildFacetQuery(request: QueryLibraryItemsRequest): SqlFragment {
-  const authors = buildLibraryMatch(request, "authors");
-  const tags = buildLibraryMatch(request, "tags");
-  const series = buildLibraryMatch(request, "series");
-  const languages = buildLibraryMatch(request, "languages");
-  const formats = buildLibraryMatch(request, "formats");
+  const search = buildLibrarySearch(request);
+  const filters = Object.fromEntries(
+    libraryFacets.map((facet) => [facet, buildLibraryFacetFilter(request, facet)]),
+  ) as Record<LibraryFacet, SqlFragment>;
   return {
     sql: `
+      WITH facet_candidates AS MATERIALIZED (
+        SELECT library_items.id, library_items.series,
+          ${filters.authors.sql} AS matches_authors,
+          ${filters.tags.sql} AS matches_tags,
+          ${filters.series.sql} AS matches_series,
+          ${filters.languages.sql} AS matches_languages,
+          ${filters.formats.sql} AS matches_formats
+        FROM library_items
+        WHERE ${search.sql}
+      )
       SELECT facet, value, count FROM (
         SELECT 'authors' AS facet, MIN(author_values.value) AS value,
           COUNT(DISTINCT author_values.library_item_id) AS count
@@ -1428,54 +1468,75 @@ function buildFacetQuery(request: QueryLibraryItemsRequest): SqlFragment {
           UNION ALL
           SELECT library_item_id, name AS value FROM library_item_authors
         ) AS author_values
-        JOIN library_items ON library_items.id = author_values.library_item_id
-        WHERE ${authors.sql}
+        JOIN facet_candidates
+          ON facet_candidates.id = author_values.library_item_id
+        WHERE facet_candidates.matches_tags
+          AND facet_candidates.matches_series
+          AND facet_candidates.matches_languages
+          AND facet_candidates.matches_formats
         GROUP BY author_values.value COLLATE NOCASE
 
         UNION ALL
 
         SELECT 'tags' AS facet, MIN(tags.name) AS value,
-          COUNT(DISTINCT library_items.id) AS count
+          COUNT(*) AS count
         FROM library_item_tags
         JOIN tags ON tags.normalized_name = library_item_tags.tag_normalized_name
-        JOIN library_items ON library_items.id = library_item_tags.library_item_id
-        WHERE ${tags.sql}
+        JOIN facet_candidates
+          ON facet_candidates.id = library_item_tags.library_item_id
+        WHERE facet_candidates.matches_authors
+          AND facet_candidates.matches_series
+          AND facet_candidates.matches_languages
+          AND facet_candidates.matches_formats
         GROUP BY tags.normalized_name
 
         UNION ALL
 
-        SELECT 'series' AS facet, MIN(library_items.series) AS value,
-          COUNT(DISTINCT library_items.id) AS count
-        FROM library_items
-        WHERE library_items.series IS NOT NULL AND ${series.sql}
-        GROUP BY library_items.series COLLATE NOCASE
+        SELECT 'series' AS facet, MIN(facet_candidates.series) AS value,
+          COUNT(*) AS count
+        FROM facet_candidates
+        WHERE facet_candidates.series IS NOT NULL
+          AND facet_candidates.matches_authors
+          AND facet_candidates.matches_tags
+          AND facet_candidates.matches_languages
+          AND facet_candidates.matches_formats
+        GROUP BY facet_candidates.series COLLATE NOCASE
 
         UNION ALL
 
         SELECT 'languages' AS facet, MIN(library_item_languages.language) AS value,
-          COUNT(DISTINCT library_items.id) AS count
+          COUNT(DISTINCT facet_candidates.id) AS count
         FROM library_item_languages
-        JOIN library_items ON library_items.id = library_item_languages.library_item_id
-        WHERE ${languages.sql}
+        JOIN facet_candidates
+          ON facet_candidates.id = library_item_languages.library_item_id
+        WHERE facet_candidates.matches_authors
+          AND facet_candidates.matches_tags
+          AND facet_candidates.matches_series
+          AND facet_candidates.matches_formats
         GROUP BY library_item_languages.language COLLATE NOCASE
 
         UNION ALL
 
         SELECT 'formats' AS facet, MIN(library_item_formats.format) AS value,
-          COUNT(DISTINCT library_items.id) AS count
+          COUNT(*) AS count
         FROM library_item_formats
-        JOIN library_items ON library_items.id = library_item_formats.library_item_id
-        WHERE ${formats.sql}
+        JOIN facet_candidates
+          ON facet_candidates.id = library_item_formats.library_item_id
+        WHERE facet_candidates.matches_authors
+          AND facet_candidates.matches_tags
+          AND facet_candidates.matches_series
+          AND facet_candidates.matches_languages
         GROUP BY library_item_formats.format
       )
       ORDER BY facet, value COLLATE NOCASE, value
     `,
     parameters: [
-      ...authors.parameters,
-      ...tags.parameters,
-      ...series.parameters,
-      ...languages.parameters,
-      ...formats.parameters,
+      ...filters.authors.parameters,
+      ...filters.tags.parameters,
+      ...filters.series.parameters,
+      ...filters.languages.parameters,
+      ...filters.formats.parameters,
+      ...search.parameters,
     ],
   };
 }
@@ -2784,21 +2845,15 @@ export class BunSqliteLibraryStore
     try {
       return this.#database.transaction((): QueryLibraryItemsResult => {
         const match = buildLibraryMatch(parsedRequest.data);
-        const total = this.#database!
-          .query<{ total: unknown }, SqlParameter[]>(`
-            SELECT COUNT(*) AS total
-            FROM library_items
-            WHERE ${match.sql}
-          `)
-          .get(...match.parameters)?.total;
         const rows = this.#database!
-          .query<StoredLibraryItem, SqlParameter[]>(`
+          .query<StoredLibraryQueryRow, SqlParameter[]>(`
             SELECT library_items.id, library_items.title,
               library_items.added_at AS addedAt, library_items.author,
               library_items.series, library_items.series_index AS seriesIndex,
               library_items.publisher, library_items.published_date AS publishedDate,
               library_items.rating, library_items.description,
-              library_items.cover_path AS coverPath, library_items.updated_at AS updatedAt
+              library_items.cover_path AS coverPath, library_items.updated_at AS updatedAt,
+              COUNT(*) OVER () AS total
             FROM library_items
             LEFT JOIN library_item_authors AS primary_author
               ON primary_author.library_item_id = library_items.id
@@ -2808,6 +2863,15 @@ export class BunSqliteLibraryStore
             LIMIT ? OFFSET ?
           `)
           .all(...match.parameters, parsedRequest.data.page.limit, parsedRequest.data.page.offset);
+        const total =
+          rows[0]?.total ??
+          this.#database!
+            .query<{ total: unknown }, SqlParameter[]>(`
+              SELECT COUNT(*) AS total
+              FROM library_items
+              WHERE ${match.sql}
+            `)
+            .get(...match.parameters)?.total;
         const facetQuery = buildFacetQuery(parsedRequest.data);
         const facetRows = this.#database!
           .query<StoredFacetRow, SqlParameter[]>(facetQuery.sql)
