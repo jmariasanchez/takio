@@ -1,34 +1,84 @@
+import type {
+  LibraryFacetCounts,
+  LibraryQueryFilters,
+  SavedLibraryView,
+} from "@takio/library-contract";
+
 import "./LibraryFacetSidebar.css";
 
-export type LibraryFacetView = {
-  readonly count: number;
-  readonly id: string;
-  readonly label: string;
-};
-
-export type LibraryFacetGroup = {
-  readonly id: string;
-  readonly label: string;
-  readonly views: readonly LibraryFacetView[];
-};
+type FacetKey = keyof LibraryQueryFilters;
+type FacetValue = LibraryFacetCounts[FacetKey][number];
 
 export type LibraryFacetSidebarProps = {
-  readonly groups: readonly LibraryFacetGroup[];
-  readonly selectedViewId: string | null;
-  readonly onSelectView: (id: string) => void;
+  readonly facets: LibraryFacetCounts;
+  readonly filters: LibraryQueryFilters;
+  readonly savedViews: readonly SavedLibraryView[];
+  readonly currentSavedViewId: string | null;
+  readonly onChangeFilters: (filters: LibraryQueryFilters) => void;
+  readonly onClearAll: () => void;
+  readonly onApplySavedView: (id: string) => void;
+  readonly onSaveSavedView: () => void;
+  readonly onRemoveSavedView: (id: string) => void;
 };
 
+const facetGroups: readonly { key: FacetKey; label: string }[] = [
+  { key: "authors", label: "Authors" },
+  { key: "tags", label: "Tags" },
+  { key: "series", label: "Series" },
+  { key: "languages", label: "Languages" },
+  { key: "formats", label: "Formats" },
+];
+
+function comparisonValue(key: FacetKey, value: string): string {
+  return key === "formats" ? value : value.toLowerCase();
+}
+
+function isSelected(filters: LibraryQueryFilters, key: FacetKey, value: string): boolean {
+  const comparison = comparisonValue(key, value);
+  return (filters[key] as readonly string[]).some(
+    (candidate) => comparisonValue(key, candidate) === comparison,
+  );
+}
+
+function toggledFilters(
+  filters: LibraryQueryFilters,
+  key: FacetKey,
+  value: string,
+): LibraryQueryFilters {
+  const comparison = comparisonValue(key, value);
+  const current = filters[key] as readonly string[];
+  const selected = current.some(
+    (candidate) => comparisonValue(key, candidate) === comparison,
+  );
+  return {
+    ...filters,
+    [key]: selected
+      ? current.filter((candidate) => comparisonValue(key, candidate) !== comparison)
+      : [...current, value],
+  } as LibraryQueryFilters;
+}
+
 function countLabel(count: number): string {
-  return `${count} ${count === 1 ? "book" : "books"}`;
+  return `${count.toLocaleString()} ${count === 1 ? "book" : "books"}`;
+}
+
+function displayValue(key: FacetKey, value: string): string {
+  return key === "formats" ? value.toUpperCase() : value;
 }
 
 export function LibraryFacetSidebar({
-  groups,
-  selectedViewId,
-  onSelectView,
+  facets,
+  filters,
+  savedViews,
+  currentSavedViewId,
+  onChangeFilters,
+  onClearAll,
+  onApplySavedView,
+  onSaveSavedView,
+  onRemoveSavedView,
 }: LibraryFacetSidebarProps) {
   return (
-    <nav className="library-facets" aria-label="Library views">
+    <nav className="library-facets" aria-label="Library filters and saved views">
       <div className="library-facets__heading">
         <span className="library-facets__mark" aria-hidden="true">
           T
@@ -36,42 +86,94 @@ export function LibraryFacetSidebar({
         <span>Takio</span>
       </div>
 
-      <div className="library-facets__groups">
-        {groups.map((group) => (
-          <section
-            className="library-facets__group"
-            aria-labelledby={`library-facet-group-${group.id}`}
-            key={group.id}
-          >
-            <h2 id={`library-facet-group-${group.id}`}>{group.label}</h2>
-            <ul>
-              {group.views.map((view) => {
-                const selected = view.id === selectedViewId;
+      <div className="library-facets__body">
+        <button
+          type="button"
+          className="library-facets__all"
+          aria-label="All books, clear current query"
+          onClick={onClearAll}
+        >
+          <span>All books</span>
+          <span aria-hidden="true">Clear</span>
+        </button>
 
+        <section
+          className="library-facets__group library-facets__saved"
+          aria-labelledby="library-saved-views-heading"
+        >
+          <div className="library-facets__group-heading">
+            <h2 id="library-saved-views-heading">Saved views</h2>
+            <button type="button" onClick={onSaveSavedView}>
+              Save current
+            </button>
+          </div>
+          {savedViews.length === 0 ? (
+            <p className="library-facets__empty">No saved views</p>
+          ) : (
+            <ul>
+              {savedViews.map((view) => {
+                const current = view.id === currentSavedViewId;
                 return (
-                  <li key={view.id}>
+                  <li className="library-facets__saved-row" key={view.id}>
                     <button
                       type="button"
-                      aria-label={`${view.label}, ${countLabel(view.count)}`}
-                      aria-pressed={selected}
-                      className={
-                        selected
-                          ? "library-facets__view is-selected"
-                          : "library-facets__view"
-                      }
-                      onClick={() => onSelectView(view.id)}
+                      aria-pressed={current}
+                      className={`library-facets__saved-view${current ? " is-selected" : ""}`}
+                      onClick={() => onApplySavedView(view.id)}
                     >
-                      <span>{view.label}</span>
-                      <span className="library-facets__count" aria-hidden="true">
-                        {view.count.toLocaleString()}
-                      </span>
+                      {view.name}
+                    </button>
+                    <button
+                      type="button"
+                      className="library-facets__remove"
+                      aria-label={`Remove saved view ${view.name}`}
+                      onClick={() => onRemoveSavedView(view.id)}
+                    >
+                      ×
                     </button>
                   </li>
                 );
               })}
             </ul>
-          </section>
-        ))}
+          )}
+        </section>
+
+        {facetGroups.map(({ key, label }) => {
+          const values = facets[key] as readonly FacetValue[];
+          if (values.length === 0) {
+            return null;
+          }
+          const headingId = `library-facet-${key}-heading`;
+          return (
+            <section className="library-facets__group" aria-labelledby={headingId} key={key}>
+              <h2 id={headingId}>{label}</h2>
+              <ul>
+                {values.map(({ value, count }) => {
+                  const selected = isSelected(filters, key, value);
+                  const visibleValue = displayValue(key, value);
+                  return (
+                    <li key={value}>
+                      <label
+                        className={`library-facets__facet${selected ? " is-selected" : ""}`}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={selected}
+                          aria-label={`${visibleValue}, ${countLabel(count)}`}
+                          onChange={() => onChangeFilters(toggledFilters(filters, key, value))}
+                        />
+                        <span className="library-facets__label">{visibleValue}</span>
+                        <span className="library-facets__count" aria-hidden="true">
+                          {count.toLocaleString()}
+                        </span>
+                      </label>
+                    </li>
+                  );
+                })}
+              </ul>
+            </section>
+          );
+        })}
       </div>
     </nav>
   );
