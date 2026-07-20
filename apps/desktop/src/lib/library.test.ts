@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import type {
+  ListLibraryTrashRequest,
   LibraryMetadataPatch,
   QueryLibraryItemsRequest,
   SaveSavedLibraryViewRequest,
@@ -11,17 +12,21 @@ import {
   describeUnexpectedLibraryError,
   importLibraryItem,
   listLibraryItems,
+  listLibraryTrash,
   listSavedLibraryViews,
   openLibraryItem,
   parseLibraryTags,
+  purgeLibraryItem,
   queryLibraryItems,
   removeLibraryCover,
   removeLibraryFormat,
   removeLibraryItem,
   removeSavedLibraryView,
+  restoreLibraryItem,
   saveSavedLibraryView,
   searchLibraryItems,
   setLibraryCover,
+  trashLibraryItem,
   updateLibraryItem,
   type LibraryInvoker,
 } from "./library";
@@ -107,6 +112,16 @@ const queryPage = {
   },
 } as const;
 
+const trashRequest = {
+  page: { offset: 0, limit: 25 },
+} as const satisfies ListLibraryTrashRequest;
+
+const trashPage = {
+  items: [validItem],
+  total: 1,
+  page: trashRequest.page,
+} as const;
+
 const metadataPatch = {
   title: "A new title",
   author: null,
@@ -153,6 +168,15 @@ test("uses only the fixed desktop library commands and argument names", async ()
     if (command === "library_query") {
       return { ok: true, value: queryPage } as never;
     }
+    if (command === "library_trash_list") {
+      return { ok: true, value: trashPage } as never;
+    }
+    if (command === "library_purge") {
+      return {
+        ok: true,
+        value: { item: null, cleanupPending: false },
+      } as never;
+    }
     if (command === "library_saved_views_list") {
       return { ok: true, value: { views: [savedView] } } as never;
     }
@@ -183,6 +207,10 @@ test("uses only the fixed desktop library commands and argument names", async ()
   await updateLibraryItem("item-1", metadataPatch, invokeCommand);
   await searchLibraryItems("classic", invokeCommand);
   await queryLibraryItems(queryRequest, invokeCommand);
+  await listLibraryTrash(trashRequest, invokeCommand);
+  await trashLibraryItem({ id: validItem.id }, invokeCommand);
+  await restoreLibraryItem({ id: validItem.id }, invokeCommand);
+  await purgeLibraryItem({ id: validItem.id }, invokeCommand);
   await listSavedLibraryViews(invokeCommand);
   await saveSavedLibraryView(savedViewRequest, invokeCommand);
   await removeSavedLibraryView({ id: savedView.id }, invokeCommand);
@@ -223,6 +251,10 @@ test("uses only the fixed desktop library commands and argument names", async ()
     },
     { command: "library_search", args: { query: "classic" } },
     { command: "library_query", args: { request: queryRequest } },
+    { command: "library_trash_list", args: { request: trashRequest } },
+    { command: "library_trash", args: { request: { id: validItem.id } } },
+    { command: "library_restore", args: { request: { id: validItem.id } } },
+    { command: "library_purge", args: { request: { id: validItem.id } } },
     { command: "library_saved_views_list", args: undefined },
     { command: "library_saved_view_save", args: { request: savedViewRequest } },
     {
@@ -335,6 +367,120 @@ test("passes valid query pages, facets, and saved views through", async () => {
       async () => removeViewResult as never,
     ),
   ).toBe(removeViewResult);
+});
+
+test("passes strict trash lifecycle responses through", async () => {
+  const listResult = { ok: true, value: trashPage } as const;
+  const trashResult = { ok: true, value: { item: validItem } } as const;
+  const restoreResult = { ok: true, value: { item: null } } as const;
+  const purgeResult = {
+    ok: true,
+    value: { item: null, cleanupPending: true },
+  } as const;
+  const activePurge = { ok: false, error: { code: "not-trashed" } } as const;
+
+  expect(
+    await listLibraryTrash(trashRequest, async () => listResult as never),
+  ).toBe(listResult);
+  expect(
+    await trashLibraryItem(
+      { id: validItem.id },
+      async () => trashResult as never,
+    ),
+  ).toBe(trashResult);
+  expect(
+    await restoreLibraryItem(
+      { id: validItem.id },
+      async () => restoreResult as never,
+    ),
+  ).toBe(restoreResult);
+  expect(
+    await purgeLibraryItem(
+      { id: validItem.id },
+      async () => purgeResult as never,
+    ),
+  ).toBe(purgeResult);
+  expect(
+    await purgeLibraryItem(
+      { id: validItem.id },
+      async () => activePurge as never,
+    ),
+  ).toBe(activePurge);
+});
+
+test("rejects invalid trash requests before invoking the desktop command", async () => {
+  let invocations = 0;
+  const invokeCommand: LibraryInvoker = async () => {
+    invocations += 1;
+    return { ok: true, value: { item: null } } as never;
+  };
+
+  expect(
+    await listLibraryTrash(
+      { page: { offset: 0, limit: 101 } } as ListLibraryTrashRequest,
+      invokeCommand,
+    ),
+  ).toEqual({ ok: false, error: { code: "invalid-arguments" } });
+  expect(await trashLibraryItem({ id: "" }, invokeCommand)).toEqual({
+    ok: false,
+    error: { code: "invalid-arguments" },
+  });
+  expect(
+    await restoreLibraryItem(
+      { id: validItem.id, extra: true } as never,
+      invokeCommand,
+    ),
+  ).toEqual({ ok: false, error: { code: "invalid-arguments" } });
+  expect(await purgeLibraryItem({ id: "" }, invokeCommand)).toEqual({
+    ok: false,
+    error: { code: "invalid-arguments" },
+  });
+  expect(invocations).toBe(0);
+});
+
+test("rejects malformed or request-mismatched trash responses", async () => {
+  for (const value of [
+    { ...trashPage, page: { ...trashPage.page, offset: 1 } },
+    { ...trashPage, extra: true },
+    { ...trashPage, items: [{ ...validItem, formats: [] }] },
+    { ...trashPage, total: 0 },
+  ]) {
+    expect(
+      await listLibraryTrash(
+        trashRequest,
+        async () => ({ ok: true, value }) as never,
+      ),
+    ).toEqual({ ok: false, error: { code: "protocol-error" } });
+  }
+
+  for (const operation of [trashLibraryItem, restoreLibraryItem]) {
+    for (const value of [
+      {},
+      { item: validItem, extra: true },
+      { item: { ...validItem, formats: [] } },
+    ]) {
+      expect(
+        await operation(
+          { id: validItem.id },
+          async () => ({ ok: true, value }) as never,
+        ),
+      ).toEqual({ ok: false, error: { code: "protocol-error" } });
+    }
+  }
+
+  for (const value of [
+    { item: null },
+    { item: null, cleanupPending: "no" },
+    { item: null, cleanupPending: false, extra: true },
+    { item: { ...validItem, formats: [] }, cleanupPending: false },
+  ]) {
+    expect(
+      await purgeLibraryItem(
+        { id: validItem.id },
+        async () => ({ ok: true, value }) as never,
+      ),
+    ).toEqual({ ok: false, error: { code: "protocol-error" } });
+  }
 });
 
 test("rejects invalid query inputs before invoking the desktop command", async () => {

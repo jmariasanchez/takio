@@ -3,11 +3,16 @@ import { FORMAT_IDS, libraryItemSchema, normalizeTags } from "@takio/core";
 import type { FormatId, LibraryItem } from "@takio/core";
 import {
   libraryQueryPageSchema,
+  libraryTrashPageSchema,
+  listLibraryTrashRequestSchema,
+  purgeLibraryItemRequestSchema,
   queryLibraryItemsRequestSchema,
   replaceLibraryFormatRequestSchema,
   removeSavedLibraryViewRequestSchema,
+  restoreLibraryItemRequestSchema,
   savedLibraryViewSchema,
   saveSavedLibraryViewRequestSchema,
+  trashLibraryItemRequestSchema,
 } from "@takio/library-contract";
 import type {
   LibraryCoverWireResult,
@@ -15,17 +20,25 @@ import type {
   LibraryListWireResult,
   LibraryMetadataPatch,
   LibraryQueryWireResult,
+  LibraryPurgeWireResult,
   LibraryReplaceFormatWireResult,
   LibraryRemoveWireResult,
+  LibraryRestoreWireResult,
   LibrarySavedViewWireResult,
   LibrarySavedViewsWireResult,
   LibrarySearchWireResult,
   LibraryStoreResult,
+  LibraryTrashListWireResult,
+  LibraryTrashWireResult,
   LibraryUpdateWireResult,
+  ListLibraryTrashRequest,
+  PurgeLibraryItemRequest,
   QueryLibraryItemsRequest,
   ReplaceLibraryFormatRequest,
   RemoveSavedLibraryViewRequest,
+  RestoreLibraryItemRequest,
   SaveSavedLibraryViewRequest,
+  TrashLibraryItemRequest,
 } from "@takio/library-contract";
 
 export type LibraryBridgeErrorCode =
@@ -52,6 +65,14 @@ export type DesktopLibraryUpdateResult = LibraryUpdateWireResult | LibraryBridge
 export type DesktopLibraryCoverResult = LibraryCoverWireResult | LibraryBridgeFailure;
 export type DesktopLibrarySearchResult = LibrarySearchWireResult | LibraryBridgeFailure;
 export type DesktopLibraryQueryResult = LibraryQueryWireResult | LibraryBridgeFailure;
+export type DesktopLibraryTrashListResult =
+  LibraryTrashListWireResult | LibraryBridgeFailure;
+export type DesktopLibraryTrashResult =
+  LibraryTrashWireResult | LibraryBridgeFailure;
+export type DesktopLibraryRestoreResult =
+  LibraryRestoreWireResult | LibraryBridgeFailure;
+export type DesktopLibraryPurgeResult =
+  LibraryPurgeWireResult | LibraryBridgeFailure;
 export type DesktopLibrarySavedViewsResult =
   | LibrarySavedViewsWireResult
   | LibraryBridgeFailure;
@@ -133,6 +154,22 @@ function isRemoveValue(value: unknown): boolean {
 function hasOnlyKey(value: Record<string, unknown>, key: string): boolean {
   const keys = Object.keys(value);
   return keys.length === 1 && keys[0] === key;
+}
+
+function isStrictItemValue(value: unknown): boolean {
+  return (
+    isRecord(value) && hasOnlyKey(value, "item") && isItemValue(value, true)
+  );
+}
+
+function isStrictCleanupValue(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    Object.keys(value).length === 2 &&
+    Object.hasOwn(value, "item") &&
+    Object.hasOwn(value, "cleanupPending") &&
+    isRemoveValue(value)
+  );
 }
 
 function isSavedViewsValue(value: unknown): boolean {
@@ -268,6 +305,61 @@ export async function queryLibraryItems(
       parsed.data.page.limit === request.page.limit
     );
   });
+}
+
+export async function listLibraryTrash(
+  request: ListLibraryTrashRequest,
+  invokeCommand: LibraryInvoker = invokeTauri,
+): Promise<DesktopLibraryTrashListResult> {
+  if (!listLibraryTrashRequestSchema.safeParse(request).success) {
+    return invalidArguments();
+  }
+
+  const result = await invokeCommand<unknown>("library_trash_list", { request });
+  return decodeLibraryResult<LibraryTrashListWireResult>(result, (value) => {
+    const parsed = libraryTrashPageSchema.safeParse(value);
+    return (
+      parsed.success &&
+      parsed.data.page.offset === request.page.offset &&
+      parsed.data.page.limit === request.page.limit
+    );
+  });
+}
+
+export async function trashLibraryItem(
+  request: TrashLibraryItemRequest,
+  invokeCommand: LibraryInvoker = invokeTauri,
+): Promise<DesktopLibraryTrashResult> {
+  if (!trashLibraryItemRequestSchema.safeParse(request).success) {
+    return invalidArguments();
+  }
+
+  const result = await invokeCommand<unknown>("library_trash", { request });
+  return decodeLibraryResult<LibraryTrashWireResult>(result, isStrictItemValue);
+}
+
+export async function restoreLibraryItem(
+  request: RestoreLibraryItemRequest,
+  invokeCommand: LibraryInvoker = invokeTauri,
+): Promise<DesktopLibraryRestoreResult> {
+  if (!restoreLibraryItemRequestSchema.safeParse(request).success) {
+    return invalidArguments();
+  }
+
+  const result = await invokeCommand<unknown>("library_restore", { request });
+  return decodeLibraryResult<LibraryRestoreWireResult>(result, isStrictItemValue);
+}
+
+export async function purgeLibraryItem(
+  request: PurgeLibraryItemRequest,
+  invokeCommand: LibraryInvoker = invokeTauri,
+): Promise<DesktopLibraryPurgeResult> {
+  if (!purgeLibraryItemRequestSchema.safeParse(request).success) {
+    return invalidArguments();
+  }
+
+  const result = await invokeCommand<unknown>("library_purge", { request });
+  return decodeLibraryResult<LibraryPurgeWireResult>(result, isStrictCleanupValue);
 }
 
 export async function listSavedLibraryViews(

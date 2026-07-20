@@ -201,6 +201,32 @@ fn library_query_arguments(request: Value) -> Result<Vec<String>, ()> {
     ])
 }
 
+fn library_trash_arguments(action: &str, request: Value) -> Result<Vec<String>, ()> {
+    Ok(vec![
+        "library".into(),
+        "trash".into(),
+        action.into(),
+        "--request-json".into(),
+        serialize_nonempty_object(request)?,
+    ])
+}
+
+fn library_trash_list_arguments(request: Value) -> Result<Vec<String>, ()> {
+    library_trash_arguments("list", request)
+}
+
+fn library_trash_move_arguments(request: Value) -> Result<Vec<String>, ()> {
+    library_trash_arguments("move", request)
+}
+
+fn library_trash_restore_arguments(request: Value) -> Result<Vec<String>, ()> {
+    library_trash_arguments("restore", request)
+}
+
+fn library_trash_purge_arguments(request: Value) -> Result<Vec<String>, ()> {
+    library_trash_arguments("purge", request)
+}
+
 fn library_saved_views_list_arguments() -> Vec<String> {
     vec!["library".into(), "saved-views".into(), "list".into()]
 }
@@ -373,6 +399,42 @@ pub async fn library_update(app: tauri::AppHandle, id: String, patch: Value) -> 
 #[tauri::command]
 pub async fn library_query(app: tauri::AppHandle, request: Value) -> Value {
     let Ok(args) = library_query_arguments(request) else {
+        return failure("invalid-arguments");
+    };
+
+    run_engine(&app, args).await
+}
+
+#[tauri::command]
+pub async fn library_trash_list(app: tauri::AppHandle, request: Value) -> Value {
+    let Ok(args) = library_trash_list_arguments(request) else {
+        return failure("invalid-arguments");
+    };
+
+    run_engine(&app, args).await
+}
+
+#[tauri::command]
+pub async fn library_trash(app: tauri::AppHandle, request: Value) -> Value {
+    let Ok(args) = library_trash_move_arguments(request) else {
+        return failure("invalid-arguments");
+    };
+
+    run_engine(&app, args).await
+}
+
+#[tauri::command]
+pub async fn library_restore(app: tauri::AppHandle, request: Value) -> Value {
+    let Ok(args) = library_trash_restore_arguments(request) else {
+        return failure("invalid-arguments");
+    };
+
+    run_engine(&app, args).await
+}
+
+#[tauri::command]
+pub async fn library_purge(app: tauri::AppHandle, request: Value) -> Value {
+    let Ok(args) = library_trash_purge_arguments(request) else {
         return failure("invalid-arguments");
     };
 
@@ -819,12 +881,59 @@ mod tests {
     }
 
     #[test]
+    fn builds_fixed_trash_lifecycle_arguments_with_one_literal_json_value() {
+        let list_request = json!({ "page": { "offset": 0, "limit": 25 } });
+        let list_json = serde_json::to_string(&list_request).unwrap();
+        assert_eq!(
+            library_trash_list_arguments(list_request.clone()).unwrap(),
+            vec![
+                "library",
+                "trash",
+                "list",
+                "--request-json",
+                list_json.as_str(),
+            ]
+        );
+
+        let lifecycle_request = json!({ "id": "book --request-json 'two'\n📚" });
+        let lifecycle_json = serde_json::to_string(&lifecycle_request).unwrap();
+        for (build, action) in [
+            (
+                library_trash_move_arguments as fn(Value) -> Result<Vec<String>, ()>,
+                "move",
+            ),
+            (library_trash_restore_arguments, "restore"),
+            (library_trash_purge_arguments, "purge"),
+        ] {
+            let arguments = build(lifecycle_request.clone()).unwrap();
+            assert_eq!(
+                arguments,
+                vec![
+                    "library",
+                    "trash",
+                    action,
+                    "--request-json",
+                    lifecycle_json.as_str(),
+                ]
+            );
+            assert_eq!(
+                serde_json::from_str::<Value>(&arguments[4]).unwrap(),
+                lifecycle_request
+            );
+        }
+    }
+
+    #[test]
     fn rejects_empty_nonobject_and_oversized_json_requests() {
-        let builders: [fn(Value) -> Result<Vec<String>, ()>; 4] = [
+        let builders: [fn(Value) -> Result<Vec<String>, ()>; 8] = [
             library_query_arguments,
             library_saved_view_save_arguments,
             library_saved_view_remove_arguments,
             library_replace_format_arguments,
+            library_trash_list_arguments,
+            library_trash_move_arguments,
+            library_trash_restore_arguments,
+            library_trash_purge_arguments,
         ];
         let envelope_bytes = br#"{"value":""}"#.len();
         let at_limit = json!({
