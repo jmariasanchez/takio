@@ -5,6 +5,7 @@ use tauri_plugin_shell::{process::CommandEvent, ShellExt};
 
 const ENGINE_NAME: &str = "takio-library-engine";
 const MAX_OUTPUT_BYTES: usize = 8 * 1024 * 1024;
+const MAX_PATCH_JSON_BYTES: usize = 16 * 1024;
 
 fn failure(code: &str) -> Value {
     json!({ "ok": false, "error": { "code": code } })
@@ -151,29 +152,28 @@ fn jobs_cancel_arguments(id: String) -> Vec<String> {
     vec!["jobs".into(), "cancel".into(), "--id".into(), id]
 }
 
-fn update_arguments(
-    id: String,
-    title: Option<String>,
-    author: Option<String>,
-    description: Option<String>,
-    tags: Vec<String>,
-) -> Vec<String> {
-    let mut args = vec!["library".into(), "update".into(), "--id".into(), id];
-    for (flag, value) in [
-        ("--title", title),
-        ("--author", author),
-        ("--description", description),
-    ] {
-        if let Some(value) = value {
-            args.push(flag.into());
-            args.push(value);
-        }
+fn update_arguments(id: String, patch: Value) -> Result<Vec<String>, ()> {
+    validate_nonempty(&id)?;
+    let Value::Object(fields) = &patch else {
+        return Err(());
+    };
+    if fields.is_empty() {
+        return Err(());
     }
-    for tag in tags {
-        args.push("--tag".into());
-        args.push(tag);
+
+    let patch_json = serde_json::to_string(&patch).map_err(|_| ())?;
+    if patch_json.len() > MAX_PATCH_JSON_BYTES {
+        return Err(());
     }
-    args
+
+    Ok(vec![
+        "library".into(),
+        "update".into(),
+        "--id".into(),
+        id,
+        "--patch-json".into(),
+        patch_json,
+    ])
 }
 
 fn parse_engine_record(exit_code: Option<i32>, stdout: &[u8], stderr: &[u8]) -> Value {
@@ -304,19 +304,12 @@ pub async fn library_remove_format(app: tauri::AppHandle, id: String, format: St
 }
 
 #[tauri::command]
-pub async fn library_update(
-    app: tauri::AppHandle,
-    id: String,
-    title: Option<String>,
-    author: Option<String>,
-    description: Option<String>,
-    tags: Vec<String>,
-) -> Value {
-    if validate_nonempty(&id).is_err() {
+pub async fn library_update(app: tauri::AppHandle, id: String, patch: Value) -> Value {
+    let Ok(args) = update_arguments(id, patch) else {
         return failure("invalid-arguments");
-    }
+    };
 
-    run_engine(&app, update_arguments(id, title, author, description, tags)).await
+    run_engine(&app, args).await
 }
 
 #[tauri::command]
@@ -558,30 +551,89 @@ mod tests {
     }
 
     #[test]
-    fn builds_complete_metadata_replacement_arguments() {
+    fn preserves_nested_rich_metadata_as_one_patch_json_argument() {
+        let patch = json!({
+            "title": "New title",
+            "authors": [
+                { "name": "Ursula K. Le Guin", "role": "author" },
+                { "name": "Virginia Kidd", "role": "editor" },
+            ],
+            "identifiers": { "isbn": "978-0-123-45678-9" },
+            "publishedDate": { "year": 1969, "month": 3 },
+        });
+        let patch_json = serde_json::to_string(&patch).unwrap();
+        let arguments = update_arguments("book-1".into(), patch.clone()).unwrap();
+
         assert_eq!(
-            update_arguments(
-                "book-1".into(),
-                Some("New title".into()),
-                Some(String::new()),
-                None,
-                vec!["Classic".into(), "Science Fiction".into()],
-            ),
+            arguments,
             vec![
                 "library",
                 "update",
                 "--id",
                 "book-1",
-                "--title",
-                "New title",
-                "--author",
-                "",
-                "--tag",
-                "Classic",
-                "--tag",
-                "Science Fiction",
+                "--patch-json",
+                patch_json.as_str(),
             ]
         );
+        assert_eq!(serde_json::from_str::<Value>(&arguments[5]).unwrap(), patch);
+    }
+
+    #[test]
+    fn rejects_blank_ids_and_empty_or_nonobject_patches() {
+        assert!(update_arguments(" ".into(), json!({ "title": "Title" })).is_err());
+        assert!(update_arguments("book-1".into(), json!({})).is_err());
+        assert!(update_arguments("book-1".into(), json!([])).is_err());
+        assert!(update_arguments("book-1".into(), json!(["title"])).is_err());
+        assert!(update_arguments("book-1".into(), json!("")).is_err());
+        assert!(update_arguments("book-1".into(), json!("title")).is_err());
+        assert!(update_arguments("book-1".into(), Value::Null).is_err());
+    }
+
+    #[test]
+    fn keeps_special_characters_inside_exact_literal_argv_boundaries() {
+        let id = "book --id 'two'\n$HOME";
+        let patch = json!({
+            "title": "--title=$(touch /tmp/nope) \"quoted\"\nnext line",
+            "tags": ["a,b", "--patch-json", "emoji: 📚"],
+        });
+        let patch_json = serde_json::to_string(&patch).unwrap();
+
+        assert_eq!(
+            update_arguments(id.into(), patch).unwrap(),
+            vec![
+                "library",
+                "update",
+                "--id",
+                id,
+                "--patch-json",
+                patch_json.as_str(),
+            ]
+        );
+    }
+
+    #[test]
+    fn enforces_the_serialized_patch_utf8_byte_limit() {
+        let envelope_bytes = br#"{"value":""}"#.len();
+        let at_limit = json!({
+            "value": "x".repeat(MAX_PATCH_JSON_BYTES - envelope_bytes),
+        });
+        let over_limit = json!({
+            "value": format!(
+                "{}📚",
+                "x".repeat(MAX_PATCH_JSON_BYTES - envelope_bytes - 3),
+            ),
+        });
+
+        assert_eq!(
+            serde_json::to_string(&at_limit).unwrap().len(),
+            MAX_PATCH_JSON_BYTES
+        );
+        assert_eq!(
+            serde_json::to_string(&over_limit).unwrap().len(),
+            MAX_PATCH_JSON_BYTES + 1
+        );
+        assert!(update_arguments("book-1".into(), at_limit).is_ok());
+        assert!(update_arguments("book-1".into(), over_limit).is_err());
     }
 
     #[test]
