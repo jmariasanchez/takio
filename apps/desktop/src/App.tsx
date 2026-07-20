@@ -30,7 +30,10 @@ import type {
   ReopenDuplicatePairRequest,
   SavedLibraryView,
 } from "@takio/library-contract";
-import { MAX_LIBRARY_IMPORT_ROOTS } from "@takio/library-contract";
+import {
+  MAX_LIBRARY_EXPORT_ITEMS,
+  MAX_LIBRARY_IMPORT_ROOTS,
+} from "@takio/library-contract";
 
 import {
   DeviceControls,
@@ -87,6 +90,7 @@ import {
   attachLibraryFormat,
   describeLibraryError,
   describeUnexpectedLibraryError,
+  exportLibraryItems,
   getLibraryItem,
   importLibraryItems,
   keepDuplicatePair,
@@ -2152,6 +2156,95 @@ export default function App() {
     }
   }
 
+  async function saveBulkSelectionToDisk(): Promise<void> {
+    const selectedIds = [...librarySelection.selectedItemIds];
+    if (
+      selectedIds.length === 0 ||
+      pendingAction !== null ||
+      bulkMutationPending.current ||
+      saveViewDialogOpen ||
+      importDialogOpen ||
+      trashDialogOpen ||
+      duplicateDialogOpen ||
+      bulkTagsDialogOpen
+    ) {
+      return;
+    }
+    if (selectedIds.length > MAX_LIBRARY_EXPORT_ITEMS) {
+      setNotice({
+        kind: "error",
+        text: `Choose no more than ${MAX_LIBRARY_EXPORT_ITEMS} books to save to disk.`,
+      });
+      return;
+    }
+
+    bulkMutationPending.current = true;
+    setBulkPendingAction("export");
+    setPendingAction("bulk-export");
+    try {
+      let selection: string | string[] | null;
+      try {
+        selection = await open({
+          directory: true,
+          multiple: false,
+          title: "Choose a folder for exported books",
+        });
+      } catch (error) {
+        setNotice({ kind: "error", text: describeUnexpectedLibraryError(error) });
+        return;
+      }
+      if (typeof selection !== "string") {
+        return;
+      }
+
+      setNotice(null);
+      const result = await exportLibraryItems({
+        ids: selectedIds,
+        destinationPath: selection,
+      });
+      if (!result.ok) {
+        setNotice({ kind: "error", text: describeLibraryError(result.error.code) });
+        return;
+      }
+
+      const failedItemIds = new Set(
+        result.value.outcomes.flatMap((outcome) =>
+          outcome.status === "failed" && outcome.code !== "item-not-found"
+            ? [outcome.itemId]
+            : [],
+        ),
+      );
+      const reportedItemIds = new Set(
+        result.value.outcomes.map((outcome) => outcome.itemId),
+      );
+      const completedIds = selectedIds.filter(
+        (id) => reportedItemIds.has(id) && !failedItemIds.has(id),
+      );
+      dispatchLibrarySelection({ type: "remove-items", ids: completedIds });
+      restoreFocusIfBulkSelectionCleared(selectedIds, completedIds);
+
+      const collisionCount = result.value.outcomes.filter(
+        (outcome) =>
+          outcome.status === "skipped" && outcome.reason === "destination-exists",
+      ).length;
+      const missingCount = result.value.outcomes.filter(
+        (outcome) => outcome.status === "failed" && outcome.code === "item-not-found",
+      ).length;
+      const otherFailureCount = result.value.counts.failed - missingCount;
+      const summary = `${result.value.counts.exported} exported; ${collisionCount} already existed; ${missingCount} missing; ${otherFailureCount} failed.`;
+      setNotice({
+        kind: result.value.counts.failed > 0 ? "error" : "status",
+        text: summary,
+      });
+    } catch (error) {
+      setNotice({ kind: "error", text: describeUnexpectedLibraryError(error) });
+    } finally {
+      bulkMutationPending.current = false;
+      setBulkPendingAction(null);
+      setPendingAction(null);
+    }
+  }
+
   async function convertBulkSelectionToPdf(): Promise<void> {
     const selectedIds = [...librarySelection.selectedItemIds];
     if (
@@ -2584,6 +2677,7 @@ export default function App() {
               preferredDeviceFormat !== null,
             tagsDialogOpen: bulkTagsDialogOpen,
             tagsDialogError: bulkTagsDialogError,
+            onExport: () => void saveBulkSelectionToDisk(),
             onEditTags: openBulkTagsDialog,
             onConvert: () => void convertBulkSelectionToPdf(),
             onSend: () => void sendBulkSelection(),
