@@ -15,10 +15,12 @@ import {
   libraryMetadataPatchSchema,
   queryLibraryItemsRequestSchema,
   removeSavedLibraryViewRequestSchema,
+  replaceLibraryFormatRequestSchema,
   saveSavedLibraryViewRequestSchema,
   type LibraryMetadataPatch,
   type QueryLibraryItemsRequest,
   type RemoveSavedLibraryViewRequest,
+  type ReplaceLibraryFormatRequest,
   type SaveSavedLibraryViewRequest,
 } from "@takio/library-contract";
 import { BunSqliteLibraryStore } from "@takio/library-store-bun";
@@ -892,6 +894,32 @@ export function createProgram(
             command.error("", { exitCode: 1, code: result.error.code });
           }
           write(JSON.stringify({ ok: true, value: { item: result.value } }));
+        } finally {
+          store.close();
+        }
+      },
+    );
+
+  storageCommand(format.command("replace").helpOption(false), writeError)
+    .option("--db <path>", "database path")
+    .requiredOption("--request-json <json>", "atomic format replacement request as JSON")
+    .action(
+      async (
+        options: { db?: string; requestJson: string },
+        command: Command,
+      ) => {
+        const request = parseLibraryJsonRequest<ReplaceLibraryFormatRequest>(
+          options.requestJson,
+          replaceLibraryFormatRequestSchema,
+          command,
+        );
+        const { store } = await openLibraryStore(options.db, command);
+        try {
+          const result = await store.replaceFormat(request);
+          if (!result.ok) {
+            command.error("", { exitCode: 1, code: result.error.code });
+          }
+          write(JSON.stringify({ ok: true, value: result.value }));
         } finally {
           store.close();
         }

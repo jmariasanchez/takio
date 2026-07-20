@@ -223,6 +223,7 @@ describe("takio CLI", () => {
     ["help", "library", "format"],
     ["help", "library", "format", "import"],
     ["help", "library", "format", "attach"],
+    ["help", "library", "format", "replace"],
     ["help", "library", "format", "remove"],
     ["help", "library", "cover"],
     ["help", "library", "cover", "set"],
@@ -1431,6 +1432,215 @@ describe("takio CLI", () => {
         value: { cleanupPending: false },
       });
       expect(await Bun.file(mobiPath).text()).toBe("mobi contents");
+    });
+
+    it("atomically replaces a managed format across processes and rejects a stale snapshot", async () => {
+      const originalSourcePath = join(directory!, "replace-managed-original.epub");
+      const replacementSourcePath = join(directory!, "replace-managed-new.epub");
+      await Promise.all([
+        Bun.write(originalSourcePath, "original managed contents"),
+        Bun.write(replacementSourcePath, "replacement managed contents"),
+      ]);
+      const env = { TAKIO_DATA_DIR: directory };
+      const imported = parseProcessOutput(
+        await invokeProcess(["library", "import", "--source-path", originalSourcePath], env),
+      ) as {
+        value: {
+          item: {
+            id: string;
+            formats: Array<{
+              sourcePath: string;
+              format: string;
+              addedAt: string;
+              provenance: "managed" | "referenced";
+            }>;
+          };
+        };
+      };
+      const originalFormat = imported.value.item.formats[0]!;
+      const request = {
+        id: imported.value.item.id,
+        format: "epub",
+        expectedCurrent: {
+          sourcePath: originalFormat.sourcePath,
+          addedAt: originalFormat.addedAt,
+          provenance: originalFormat.provenance,
+        },
+        source: { kind: "copy", path: replacementSourcePath },
+      };
+
+      const replaced = parseProcessOutput(
+        await invokeProcess(
+          ["library", "format", "replace", "--request-json", JSON.stringify(request)],
+          env,
+        ),
+      ) as {
+        value: {
+          item: {
+            id: string;
+            formats: Array<{
+              sourcePath: string;
+              format: string;
+              addedAt: string;
+              provenance: "managed" | "referenced";
+            }>;
+          };
+          cleanupPending: boolean;
+        };
+      };
+      const replacementFormat = replaced.value.item.formats.find(
+        (candidate) => candidate.format === "epub",
+      )!;
+      expect(replaced.value.cleanupPending).toBe(false);
+      expect(replacementFormat.provenance).toBe("managed");
+      expect(replacementFormat.sourcePath).toStartWith(join(directory!, "items"));
+      expect(replacementFormat.sourcePath).not.toBe(originalFormat.sourcePath);
+      expect(await Bun.file(replacementFormat.sourcePath).text()).toBe(
+        "replacement managed contents",
+      );
+      expect(await Bun.file(originalFormat.sourcePath).exists()).toBe(false);
+      expect(await Bun.file(replacementSourcePath).text()).toBe("replacement managed contents");
+
+      const stale = await invokeProcess(
+        ["library", "format", "replace", "--request-json", JSON.stringify(request)],
+        env,
+      );
+      expect(stale.exitCode).toBe(1);
+      expect(stale.stderr).toBe("");
+      expect(JSON.parse(stale.stdout)).toEqual({
+        ok: false,
+        error: { code: "format-changed" },
+      });
+
+      const reopened = parseProcessOutput(
+        await invokeProcess(["library", "get", "--id", imported.value.item.id], env),
+      ) as { value: { item: unknown } };
+      expect(reopened.value.item).toEqual(replaced.value.item);
+      expect(await readdir(join(directory!, "items"))).toHaveLength(1);
+    });
+
+    it("atomically replaces a referenced format across processes without deleting external files", async () => {
+      const originalSourcePath = join(directory!, "replace-reference-original.epub");
+      const replacementSourcePath = join(directory!, "replace-reference-new.epub");
+      await Promise.all([
+        Bun.write(originalSourcePath, "original referenced contents"),
+        Bun.write(replacementSourcePath, "replacement referenced contents"),
+      ]);
+      const added = parseProcessOutput(
+        await invokeProcess([
+          "library",
+          "add",
+          "--db",
+          databasePath!,
+          "--id",
+          "replace-reference",
+          "--title",
+          "Replace reference",
+          "--source-path",
+          originalSourcePath,
+          "--format",
+          "epub",
+          "--added-at",
+          "2026-07-20T12:00:00.000Z",
+        ]),
+      ) as {
+        value: {
+          item: {
+            formats: Array<{
+              sourcePath: string;
+              format: string;
+              addedAt: string;
+              provenance: "managed" | "referenced";
+            }>;
+          };
+        };
+      };
+      const originalFormat = added.value.item.formats[0]!;
+      const request = {
+        id: "replace-reference",
+        format: "epub",
+        expectedCurrent: {
+          sourcePath: originalFormat.sourcePath,
+          addedAt: originalFormat.addedAt,
+          provenance: originalFormat.provenance,
+        },
+        source: { kind: "reference", path: replacementSourcePath },
+      };
+
+      const replaced = parseProcessOutput(
+        await invokeProcess([
+          "library",
+          "format",
+          "replace",
+          "--db",
+          databasePath!,
+          "--request-json",
+          JSON.stringify(request),
+        ]),
+      ) as {
+        value: {
+          item: { formats: Array<{ sourcePath: string; format: string; provenance: string }> };
+          cleanupPending: boolean;
+        };
+      };
+      expect(replaced.value.cleanupPending).toBe(false);
+      expect(replaced.value.item.formats.find((candidate) => candidate.format === "epub")).toEqual(
+        expect.objectContaining({
+          sourcePath: await realpath(replacementSourcePath),
+          provenance: "referenced",
+        }),
+      );
+      expect(await Bun.file(originalSourcePath).text()).toBe("original referenced contents");
+      expect(await Bun.file(replacementSourcePath).text()).toBe("replacement referenced contents");
+
+      const reopened = parseProcessOutput(
+        await invokeProcess([
+          "library",
+          "get",
+          "--db",
+          databasePath!,
+          "--id",
+          "replace-reference",
+        ]),
+      ) as { value: { item: unknown } };
+      expect(reopened.value.item).toEqual(replaced.value.item);
+    });
+
+    it("rejects invalid format replacement JSON before opening library storage", async () => {
+      const blockedDataDirectory = join(directory!, "not-a-directory");
+      await Bun.write(blockedDataDirectory, "opening storage through this path must fail");
+      const env = { TAKIO_DATA_DIR: blockedDataDirectory };
+      const validRequest = {
+        id: "never-open",
+        format: "epub",
+        expectedCurrent: {
+          sourcePath: "/tmp/original.epub",
+          addedAt: "2026-07-20T12:00:00.000Z",
+          provenance: "referenced",
+        },
+        source: { kind: "reference", path: "/tmp/replacement.epub" },
+      };
+      const oversizedRequest = JSON.stringify({
+        ...validRequest,
+        source: { kind: "reference", path: "é".repeat(8_192) },
+      });
+      expect(oversizedRequest.length).toBeLessThanOrEqual(16 * 1024);
+      expect(Buffer.byteLength(oversizedRequest, "utf8")).toBeGreaterThan(16 * 1024);
+
+      for (const payload of [
+        "{",
+        "[]",
+        JSON.stringify({ ...validRequest, unexpected: true }),
+        JSON.stringify({ ...validRequest, expectedCurrent: { sourcePath: "/tmp/original.epub" } }),
+        oversizedRequest,
+      ]) {
+        expectInvalidArgumentsProcess(
+          await invokeProcess(
+            ["library", "format", "replace", "--request-json", payload],
+            env,
+          ),
+        );
+      }
     });
 
     it("reports format command errors without exposing a provenance option", async () => {
