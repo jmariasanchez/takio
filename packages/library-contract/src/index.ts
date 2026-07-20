@@ -176,6 +176,36 @@ export const libraryQueryPageSchema = z
   })
   .readonly();
 
+export const listLibraryTrashRequestSchema = z
+  .object({ page: libraryQueryPageRequestSchema })
+  .strict()
+  .readonly();
+
+export const libraryTrashPageSchema = z
+  .object({
+    items: z.array(libraryItemSchema).max(MAX_LIBRARY_QUERY_PAGE_SIZE).readonly(),
+    total: z.number().int().min(0),
+    page: libraryQueryPageRequestSchema,
+  })
+  .strict()
+  .superRefine((result, context) => {
+    if (result.items.length > result.page.limit) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["items"],
+        message: "A trash page cannot contain more items than its requested limit.",
+      });
+    }
+    if (result.items.length > 0 && result.page.offset + result.items.length > result.total) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["total"],
+        message: "The total must account for every item in the returned trash page.",
+      });
+    }
+  })
+  .readonly();
+
 export const savedLibraryViewDefinitionSchema = z
   .object({
     version: z.literal(1),
@@ -219,6 +249,15 @@ export const removeSavedLibraryViewRequestSchema = z
   .strict()
   .readonly();
 
+const libraryItemLifecycleRequestSchema = z
+  .object({ id: z.string().min(1) })
+  .strict()
+  .readonly();
+
+export const trashLibraryItemRequestSchema = libraryItemLifecycleRequestSchema;
+export const restoreLibraryItemRequestSchema = libraryItemLifecycleRequestSchema;
+export const purgeLibraryItemRequestSchema = libraryItemLifecycleRequestSchema;
+
 export type LibraryQueryFilters = z.infer<typeof libraryQueryFiltersSchema>;
 export type LibraryQuerySort = z.infer<typeof libraryQuerySortSchema>;
 export type LibraryQueryDefinition = z.infer<typeof libraryQueryDefinitionSchema>;
@@ -229,11 +268,16 @@ export type LibraryFormatFacetValue = z.infer<typeof libraryFormatFacetValueSche
 export type LibraryLanguageFacetValue = z.infer<typeof libraryLanguageFacetValueSchema>;
 export type LibraryFacetCounts = z.infer<typeof libraryFacetCountsSchema>;
 export type LibraryQueryPage = z.infer<typeof libraryQueryPageSchema>;
+export type ListLibraryTrashRequest = z.infer<typeof listLibraryTrashRequestSchema>;
+export type LibraryTrashPage = z.infer<typeof libraryTrashPageSchema>;
 export type SavedLibraryViewDefinition = z.infer<typeof savedLibraryViewDefinitionSchema>;
 export type SavedLibraryView = z.infer<typeof savedLibraryViewSchema>;
 export type ListSavedLibraryViewsRequest = z.infer<typeof listSavedLibraryViewsRequestSchema>;
 export type SaveSavedLibraryViewRequest = z.infer<typeof saveSavedLibraryViewRequestSchema>;
 export type RemoveSavedLibraryViewRequest = z.infer<typeof removeSavedLibraryViewRequestSchema>;
+export type TrashLibraryItemRequest = z.infer<typeof trashLibraryItemRequestSchema>;
+export type RestoreLibraryItemRequest = z.infer<typeof restoreLibraryItemRequestSchema>;
+export type PurgeLibraryItemRequest = z.infer<typeof purgeLibraryItemRequestSchema>;
 
 export const LIBRARY_STORE_ERROR_CODES = [
   "duplicate-id",
@@ -244,6 +288,7 @@ export const LIBRARY_STORE_ERROR_CODES = [
   "duplicate-format",
   "last-format",
   "format-changed",
+  "not-trashed",
 ] as const;
 
 export type LibraryStoreErrorCode = (typeof LIBRARY_STORE_ERROR_CODES)[number];
@@ -372,6 +417,13 @@ export type QueryLibraryItemsResult = LibraryStoreResult<LibraryQueryPage>;
 export type ListSavedLibraryViewsResult = LibraryStoreResult<readonly SavedLibraryView[]>;
 export type SaveSavedLibraryViewResult = LibraryStoreResult<SavedLibraryView>;
 export type RemoveSavedLibraryViewResult = LibraryStoreResult<SavedLibraryView | null>;
+export type ListLibraryTrashResult = LibraryStoreResult<LibraryTrashPage>;
+export type TrashLibraryItemResult = LibraryStoreResult<LibraryItem | null>;
+export type RestoreLibraryItemResult = LibraryStoreResult<LibraryItem | null>;
+export type PurgeLibraryItemResult = LibraryStoreResult<{
+  readonly item: LibraryItem | null;
+  readonly cleanupPending: boolean;
+}>;
 
 export type LibraryListWireResult = LibraryStoreResult<{
   readonly items: readonly LibraryItem[];
@@ -401,8 +453,20 @@ export type LibrarySavedViewsWireResult = LibraryStoreResult<{
 export type LibrarySavedViewWireResult = LibraryStoreResult<{
   readonly view: SavedLibraryView | null;
 }>;
+export type LibraryTrashWireResult = LibraryStoreResult<{
+  readonly item: LibraryItem | null;
+}>;
+export type LibraryTrashListWireResult = LibraryStoreResult<LibraryTrashPage>;
+export type LibraryRestoreWireResult = LibraryStoreResult<{
+  readonly item: LibraryItem | null;
+}>;
+export type LibraryPurgeWireResult = LibraryStoreResult<{
+  readonly item: LibraryItem | null;
+  readonly cleanupPending: boolean;
+}>;
 
 export interface LibraryQueryStore {
+  /** Returns active items only; trashed items do not contribute to items, totals, or facets. */
   query(request: QueryLibraryItemsRequest): Promise<QueryLibraryItemsResult>;
 }
 
@@ -416,8 +480,32 @@ export interface LibraryFormatReplacementStore {
   replaceFormat(request: ReplaceLibraryFormatRequest): Promise<ReplaceLibraryFormatResult>;
 }
 
+export interface LibraryItemTrashStore {
+  /**
+   * Lists trashed items in pages of at most 100, newest trash transition first and then by id.
+   */
+  listTrash(request: ListLibraryTrashRequest): Promise<ListLibraryTrashResult>;
+  /**
+   * Moves an active item to trash. Repeating the request returns the already-trashed item;
+   * a missing or previously purged id succeeds with null.
+   */
+  trash(request: TrashLibraryItemRequest): Promise<TrashLibraryItemResult>;
+  /**
+   * Restores a trashed item. Repeating the request returns the already-active item;
+   * a missing or previously purged id succeeds with null.
+   */
+  restore(request: RestoreLibraryItemRequest): Promise<RestoreLibraryItemResult>;
+  /**
+   * Permanently removes a trashed item. Active items fail with `not-trashed`;
+   * repeating a successful purge returns a null item with no cleanup pending. The cleanup flag
+   * reports Takio-managed files that still await deletion.
+   */
+  purge(request: PurgeLibraryItemRequest): Promise<PurgeLibraryItemResult>;
+}
+
 export interface LibraryStore {
   open(request: OpenLibraryRequest): Promise<OpenLibraryResult>;
+  /** Returns active items only; trashed items are excluded. */
   list(request: ListLibraryItemsRequest): Promise<ListLibraryItemsResult>;
   get(request: GetLibraryItemRequest): Promise<GetLibraryItemResult>;
   add(request: AddLibraryItemRequest): Promise<AddLibraryItemResult>;
@@ -427,6 +515,7 @@ export interface LibraryStore {
   update(request: UpdateLibraryItemRequest): Promise<UpdateLibraryItemResult>;
   setCover(request: SetLibraryCoverRequest): Promise<SetLibraryCoverResult>;
   removeCover(request: RemoveLibraryCoverRequest): Promise<RemoveLibraryCoverResult>;
+  /** Searches active items only; trashed items are excluded. */
   search(request: SearchLibraryItemsRequest): Promise<SearchLibraryItemsResult>;
   remove(request: RemoveLibraryItemRequest): Promise<RemoveLibraryItemResult>;
 }

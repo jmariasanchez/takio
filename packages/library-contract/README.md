@@ -17,6 +17,22 @@ paging is deliberately session state rather than part of a saved view.
 capabilities are separate from `LibraryStore` so existing adapters remain
 compatible while runtimes adopt them.
 
+`LibraryItemTrashStore` adds an explicit reversible lifecycle. `listTrash`
+provides bounded pages of at most 100 trashed items, ordered by newest trash
+transition first and then by id for deterministic ties. `trash` moves an active
+item out of normal `list`, `search`, and `LibraryQueryStore.query` results,
+including query totals and facets. Repeating `trash` returns the already-trashed
+item. `restore` returns the item to normal results, and repeating it returns the
+already-active item. Either operation succeeds with `null` when the id is
+missing or was already purged. Trashing preserves the item's identity, so its id
+remains occupied.
+
+`purge` is the only irreversible trash operation. It succeeds only for a
+trashed item; attempting to purge an active item fails with `not-trashed`.
+Successful purge returns `{ item, cleanupPending }`, using the same managed-file
+cleanup reporting as existing removals. A retry after purge succeeds with
+`{ item: null, cleanupPending: false }`.
+
 `import` creates a managed library copy. `attachFormat` requires an explicit
 `copy` or `reference` source: a copy becomes `managed`, while a reference remains
 caller-owned. Every format in a returned `LibraryItem` therefore has explicit
@@ -37,7 +53,8 @@ cleanup.
 Stable error codes are `duplicate-id`, `invalid-stored-data`,
 `storage-unavailable`, `incompatible-schema`, `invalid-arguments`,
 `duplicate-format`, `last-format`, and `format-changed`. Consumers should branch
-on these codes, not driver messages.
+on these codes, not driver messages. The trash capability additionally uses
+`not-trashed` when an irreversible purge targets an active item.
 
 `LibraryStoreConfig` is intentionally empty until a runtime adapter establishes
 a real cross-runtime configuration need. Database paths, schema versions,

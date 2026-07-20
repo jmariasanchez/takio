@@ -12,11 +12,19 @@ import {
   type LibraryImportWireResult,
   type LibraryListWireResult,
   type LibraryFormatReplacementStore,
+  type LibraryItemTrashStore,
   type LibraryMetadataPatch,
+  type LibraryPurgeWireResult,
   type LibraryQueryStore,
   type LibraryReplaceFormatWireResult,
   type LibraryRemoveWireResult,
+  type LibraryRestoreWireResult,
+  type LibraryTrashListWireResult,
+  type LibraryTrashWireResult,
+  type ListLibraryTrashResult,
+  type PurgeLibraryItemResult,
   type QueryLibraryItemsRequest,
+  type RestoreLibraryItemResult,
   type SavedLibraryViewStore,
   type LibraryStore,
   type LibraryStoreResult,
@@ -25,13 +33,19 @@ import {
   type RemoveLibraryItemResult,
   type ReplaceLibraryFormatRequest,
   type ReplaceLibraryFormatResult,
+  type TrashLibraryItemResult,
   libraryMetadataPatchSchema,
   libraryQueryPageSchema,
+  libraryTrashPageSchema,
+  listLibraryTrashRequestSchema,
+  purgeLibraryItemRequestSchema,
   queryLibraryItemsRequestSchema,
   replaceLibraryFormatRequestSchema,
   removeSavedLibraryViewRequestSchema,
+  restoreLibraryItemRequestSchema,
   saveSavedLibraryViewRequestSchema,
   savedLibraryViewSchema,
+  trashLibraryItemRequestSchema,
 } from "../src/index.js";
 
 const canonicalItem = {
@@ -399,6 +413,7 @@ describe("LibraryStore", () => {
       "duplicate-format",
       "last-format",
       "format-changed",
+      "not-trashed",
     ]);
 
     const result: LibraryStoreResult<never> = {
@@ -425,13 +440,119 @@ describe("LibraryStore", () => {
       ok: true,
       value: { item: canonicalItem, cleanupPending: true },
     };
+    const trashed: LibraryTrashWireResult = {
+      ok: true,
+      value: { item: canonicalItem },
+    };
+    const restored: LibraryRestoreWireResult = {
+      ok: true,
+      value: { item: canonicalItem },
+    };
+    const purged: LibraryPurgeWireResult = {
+      ok: true,
+      value: { item: canonicalItem, cleanupPending: true },
+    };
+    const trashList: LibraryTrashListWireResult = {
+      ok: true,
+      value: {
+        items: [canonicalItem],
+        total: 1,
+        page: { offset: 0, limit: 25 },
+      },
+    };
 
-    expect(JSON.parse(JSON.stringify({ listed, imported, removed, replaced }))).toEqual({
+    expect(
+      JSON.parse(
+        JSON.stringify({ listed, imported, removed, replaced, trashList, trashed, restored, purged }),
+      ),
+    ).toEqual({
       listed,
       imported,
       removed,
       replaced,
+      trashList,
+      trashed,
+      restored,
+      purged,
     });
+  });
+
+  it("defines retry-safe trash, restore, and purge boundaries", async () => {
+    const request = { id: canonicalItem.id } as const;
+    const listRequest = { page: { offset: 0, limit: 25 } } as const;
+    const listResult: ListLibraryTrashResult = {
+      ok: true,
+      value: { items: [canonicalItem], total: 1, page: listRequest.page },
+    };
+    const trashResult: TrashLibraryItemResult = { ok: true, value: canonicalItem };
+    const restoreResult: RestoreLibraryItemResult = { ok: true, value: canonicalItem };
+    const purgeResult: PurgeLibraryItemResult = {
+      ok: true,
+      value: { item: canonicalItem, cleanupPending: true },
+    };
+    const trashStore: LibraryItemTrashStore = {
+      listTrash: async () => listResult,
+      trash: async () => trashResult,
+      restore: async () => restoreResult,
+      purge: async () => purgeResult,
+    };
+
+    expect(listLibraryTrashRequestSchema.parse(listRequest)).toEqual(listRequest);
+    expect(libraryTrashPageSchema.parse(listResult.value)).toEqual(listResult.value);
+    expect(trashLibraryItemRequestSchema.parse(request)).toEqual(request);
+    expect(restoreLibraryItemRequestSchema.parse(request)).toEqual(request);
+    expect(purgeLibraryItemRequestSchema.parse(request)).toEqual(request);
+    await expect(trashStore.listTrash(listRequest)).resolves.toEqual(listResult);
+    await expect(trashStore.trash(request)).resolves.toEqual(trashResult);
+    await expect(trashStore.trash(request)).resolves.toEqual(trashResult);
+    await expect(trashStore.restore(request)).resolves.toEqual(restoreResult);
+    await expect(trashStore.restore(request)).resolves.toEqual(restoreResult);
+    await expect(trashStore.purge(request)).resolves.toEqual(purgeResult);
+
+    for (const invalid of [{ id: "" }, { id: canonicalItem.id, force: true }, {}, null]) {
+      expect(trashLibraryItemRequestSchema.safeParse(invalid).success).toBe(false);
+      expect(restoreLibraryItemRequestSchema.safeParse(invalid).success).toBe(false);
+      expect(purgeLibraryItemRequestSchema.safeParse(invalid).success).toBe(false);
+    }
+    expect(
+      listLibraryTrashRequestSchema.safeParse({
+        page: { offset: 0, limit: MAX_LIBRARY_QUERY_PAGE_SIZE + 1 },
+      }).success,
+    ).toBe(false);
+    expect(
+      listLibraryTrashRequestSchema.safeParse({ ...listRequest, includeActive: true }).success,
+    ).toBe(false);
+    expect(
+      libraryTrashPageSchema.safeParse({
+        ...listResult.value,
+        items: [canonicalItem, { ...canonicalItem, id: "book-2" }],
+        total: 2,
+        page: { offset: 0, limit: 1 },
+      }).success,
+    ).toBe(false);
+    expect(libraryTrashPageSchema.safeParse({ ...listResult.value, total: 0 }).success).toBe(false);
+
+    const missingTrash: TrashLibraryItemResult = { ok: true, value: null };
+    const missingRestore: RestoreLibraryItemResult = { ok: true, value: null };
+    const repeatedPurge: PurgeLibraryItemResult = {
+      ok: true,
+      value: { item: null, cleanupPending: false },
+    };
+    const activePurge: PurgeLibraryItemResult = {
+      ok: false,
+      error: { code: "not-trashed" },
+    };
+    const retryResults = {
+      trashResult,
+      restoreResult,
+      purgeResult,
+      listResult,
+      missingTrash,
+      missingRestore,
+      repeatedPurge,
+    };
+    expect(JSON.parse(JSON.stringify(retryResults))).toEqual(retryResults);
+    expect(activePurge).toEqual({ ok: false, error: { code: "not-trashed" } });
   });
 
   it("requires the authoritative format aggregate on add and wire items", () => {
@@ -626,6 +747,10 @@ describe("LibraryStore", () => {
       ok: true,
       value: { item: canonicalItem, cleanupPending: false },
     };
+    const purge: PurgeLibraryItemResult = {
+      ok: true,
+      value: { item: canonicalItem, cleanupPending: true },
+    };
 
     if (false) {
       // @ts-expect-error Cleanup status cannot be omitted from whole-item removal.
@@ -638,12 +763,18 @@ describe("LibraryStore", () => {
         ok: true,
         value: { item: canonicalItem },
       };
-      expect([incompleteItemRemoval, incompleteFormatRemoval]).toBeUndefined();
+      // @ts-expect-error Cleanup status cannot be omitted from permanent purge.
+      const incompletePurge: PurgeLibraryItemResult = {
+        ok: true,
+        value: { item: canonicalItem },
+      };
+      expect([incompleteItemRemoval, incompleteFormatRemoval, incompletePurge]).toBeUndefined();
     }
 
-    expect(JSON.parse(JSON.stringify({ itemRemoval, formatRemoval }))).toEqual({
+    expect(JSON.parse(JSON.stringify({ itemRemoval, formatRemoval, purge }))).toEqual({
       itemRemoval,
       formatRemoval,
+      purge,
     });
   });
 });
