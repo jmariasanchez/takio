@@ -195,6 +195,11 @@ describe("takio CLI", () => {
     ["library", "cover", "--help"],
     ["library", "cover", "set", "--help"],
     ["library", "cover", "remove", "--help"],
+    ["library", "trash", "--help"],
+    ["library", "trash", "list", "--help"],
+    ["library", "trash", "move", "--help"],
+    ["library", "trash", "restore", "--help"],
+    ["library", "trash", "purge", "--help"],
     ["library", "remove", "--help"],
     ["library", "help", "add"],
     ["library", "help", "import"],
@@ -204,6 +209,7 @@ describe("takio CLI", () => {
     ["library", "help", "update"],
     ["library", "help", "search"],
     ["library", "help", "cover"],
+    ["library", "help", "trash"],
     ["library", "help", "remove"],
   ]) {
     it(`reports ${args.join(" ")} as one JSON failure record`, async () => {
@@ -228,6 +234,11 @@ describe("takio CLI", () => {
     ["help", "library", "cover"],
     ["help", "library", "cover", "set"],
     ["help", "library", "cover", "remove"],
+    ["help", "library", "trash"],
+    ["help", "library", "trash", "list"],
+    ["help", "library", "trash", "move"],
+    ["help", "library", "trash", "restore"],
+    ["help", "library", "trash", "purge"],
     ["help", "library", "remove"],
   ]) {
     it(`preserves root-owned ${args.join(" ")} help`, async () => {
@@ -381,6 +392,124 @@ describe("takio CLI", () => {
         ok: true,
         value: { item: imported.value.item, cleanupPending: false },
       });
+    });
+
+    it("trashes, lists, restores, and purges through the strict process protocol", async () => {
+      const sourcePath = join(directory!, "trash-process-book.epub");
+      await Bun.write(sourcePath, "trash process contents");
+      const env = { TAKIO_DATA_DIR: directory };
+      const request = { id: "" };
+
+      const imported = parseProcessOutput(
+        await invokeProcess(["library", "import", "--source-path", sourcePath], env),
+      ) as { ok: true; value: { item: { id: string; sourcePath: string } } };
+      const item = imported.value.item;
+      request.id = item.id;
+
+      expect(
+        parseProcessOutput(
+          await invokeProcess(
+            ["library", "trash", "move", "--request-json", JSON.stringify(request)],
+            env,
+          ),
+        ),
+      ).toEqual({ ok: true, value: { item } });
+      expect(
+        parseProcessOutput(await invokeProcess(["library", "list"], env)),
+      ).toEqual({ ok: true, value: { items: [] } });
+
+      const page = { offset: 0, limit: 1 };
+      expect(
+        parseProcessOutput(
+          await invokeProcess(
+            [
+              "library",
+              "trash",
+              "list",
+              "--request-json",
+              JSON.stringify({ page }),
+            ],
+            env,
+          ),
+        ),
+      ).toEqual({ ok: true, value: { items: [item], total: 1, page } });
+
+      expect(
+        parseProcessOutput(
+          await invokeProcess(
+            ["library", "trash", "restore", "--request-json", JSON.stringify(request)],
+            env,
+          ),
+        ),
+      ).toEqual({ ok: true, value: { item } });
+      expect(
+        parseProcessOutput(
+          await invokeProcess(
+            [
+              "library",
+              "trash",
+              "list",
+              "--request-json",
+              JSON.stringify({ page }),
+            ],
+            env,
+          ),
+        ),
+      ).toEqual({ ok: true, value: { items: [], total: 0, page } });
+
+      expect(
+        parseProcessOutput(
+          await invokeProcess(
+            ["library", "trash", "move", "--request-json", JSON.stringify(request)],
+            env,
+          ),
+        ),
+      ).toEqual({ ok: true, value: { item } });
+      expect(
+        parseProcessOutput(
+          await invokeProcess(
+            ["library", "trash", "purge", "--request-json", JSON.stringify(request)],
+            env,
+          ),
+        ),
+      ).toEqual({ ok: true, value: { item, cleanupPending: false } });
+      expect(
+        parseProcessOutput(
+          await invokeProcess(
+            ["library", "trash", "purge", "--request-json", JSON.stringify(request)],
+            env,
+          ),
+        ),
+      ).toEqual({
+        ok: true,
+        value: { item: null, cleanupPending: false },
+      });
+    });
+
+    it("refuses to purge an active item without changing remove semantics", async () => {
+      const sourcePath = join(directory!, "active-purge.epub");
+      await Bun.write(sourcePath, "active purge contents");
+      await addItem("active-purge", sourcePath);
+
+      const purged = await invoke([
+        "library",
+        "trash",
+        "purge",
+        "--db",
+        databasePath!,
+        "--request-json",
+        JSON.stringify({ id: "active-purge" }),
+      ]);
+
+      expect(purged.exitCode).toBe(1);
+      expect(parseOutput(purged.output)).toEqual({
+        ok: false,
+        error: { code: "not-trashed" },
+      });
+      const listed = await invoke(["library", "list", "--db", databasePath!]);
+      expect(
+        (parseOutput(listed.output) as { value: { items: { id: string }[] } }).value.items,
+      ).toMatchObject([{ id: "active-purge" }]);
     });
 
     it("adds and durably lists an item through separate invocations", async () => {
@@ -1184,6 +1313,29 @@ describe("takio CLI", () => {
           "--request-json",
           JSON.stringify({ id: oversizedText }),
         ],
+        ["library", "trash", "list", "--request-json", "{"],
+        [
+          "library",
+          "trash",
+          "list",
+          "--request-json",
+          JSON.stringify({ page: { offset: 0, limit: 101 } }),
+        ],
+        [
+          "library",
+          "trash",
+          "move",
+          "--request-json",
+          JSON.stringify({ id: "item", unexpected: true }),
+        ],
+        [
+          "library",
+          "trash",
+          "restore",
+          "--request-json",
+          JSON.stringify({ id: "" }),
+        ],
+        ["library", "trash", "purge", "--request-json", JSON.stringify({})],
       ];
 
       for (const args of invalidRequests) {

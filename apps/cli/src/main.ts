@@ -13,15 +13,23 @@ import {
 } from "@takio/core";
 import {
   libraryMetadataPatchSchema,
+  listLibraryTrashRequestSchema,
+  purgeLibraryItemRequestSchema,
   queryLibraryItemsRequestSchema,
   removeSavedLibraryViewRequestSchema,
   replaceLibraryFormatRequestSchema,
+  restoreLibraryItemRequestSchema,
   saveSavedLibraryViewRequestSchema,
+  trashLibraryItemRequestSchema,
   type LibraryMetadataPatch,
+  type ListLibraryTrashRequest,
+  type PurgeLibraryItemRequest,
   type QueryLibraryItemsRequest,
   type RemoveSavedLibraryViewRequest,
   type ReplaceLibraryFormatRequest,
+  type RestoreLibraryItemRequest,
   type SaveSavedLibraryViewRequest,
+  type TrashLibraryItemRequest,
 } from "@takio/library-contract";
 import { BunSqliteLibraryStore } from "@takio/library-store-bun";
 import {
@@ -1314,6 +1322,115 @@ export function createProgram(
         store.close();
       }
     });
+
+  const trash = storageCommand(library.command("trash"), writeError)
+    .helpOption(false)
+    .addHelpCommand(false)
+    .description("Manage trashed library items");
+
+  storageCommand(trash.command("list").helpOption(false), writeError)
+    .option("--db <path>", "database path")
+    .requiredOption("--request-json <json>", "trash page request as JSON")
+    .action(
+      async (
+        options: { db?: string; requestJson: string },
+        command: Command,
+      ) => {
+        const request = parseLibraryJsonRequest<ListLibraryTrashRequest>(
+          options.requestJson,
+          listLibraryTrashRequestSchema,
+          command,
+        );
+        const { store } = await openLibraryStore(options.db, command);
+        try {
+          const result = await store.listTrash(request);
+          if (!result.ok) {
+            command.error("", { exitCode: 1, code: result.error.code });
+          }
+          write(JSON.stringify({ ok: true, value: result.value }));
+        } finally {
+          store.close();
+        }
+      },
+    );
+
+  storageCommand(trash.command("move").helpOption(false), writeError)
+    .option("--db <path>", "database path")
+    .requiredOption("--request-json <json>", "trash request as JSON")
+    .action(
+      async (
+        options: { db?: string; requestJson: string },
+        command: Command,
+      ) => {
+        const request = parseLibraryJsonRequest<TrashLibraryItemRequest>(
+          options.requestJson,
+          trashLibraryItemRequestSchema,
+          command,
+        );
+        const { store } = await openLibraryStore(options.db, command);
+        try {
+          const result = await store.trash(request);
+          if (!result.ok) {
+            command.error("", { exitCode: 1, code: result.error.code });
+          }
+          write(JSON.stringify({ ok: true, value: { item: result.value } }));
+        } finally {
+          store.close();
+        }
+      },
+    );
+
+  storageCommand(trash.command("restore").helpOption(false), writeError)
+    .option("--db <path>", "database path")
+    .requiredOption("--request-json <json>", "restore request as JSON")
+    .action(
+      async (
+        options: { db?: string; requestJson: string },
+        command: Command,
+      ) => {
+        const request = parseLibraryJsonRequest<RestoreLibraryItemRequest>(
+          options.requestJson,
+          restoreLibraryItemRequestSchema,
+          command,
+        );
+        const { store } = await openLibraryStore(options.db, command);
+        try {
+          const result = await store.restore(request);
+          if (!result.ok) {
+            command.error("", { exitCode: 1, code: result.error.code });
+          }
+          write(JSON.stringify({ ok: true, value: { item: result.value } }));
+        } finally {
+          store.close();
+        }
+      },
+    );
+
+  storageCommand(trash.command("purge").helpOption(false), writeError)
+    .option("--db <path>", "database path")
+    .requiredOption("--request-json <json>", "purge request as JSON")
+    .action(
+      async (
+        options: { db?: string; requestJson: string },
+        command: Command,
+      ) => {
+        const request = parseLibraryJsonRequest<PurgeLibraryItemRequest>(
+          options.requestJson,
+          purgeLibraryItemRequestSchema,
+          command,
+        );
+        const { store } = await openLibraryStore(options.db, command);
+        try {
+          const result = await store.purge(request);
+          if (!result.ok) {
+            command.error("", { exitCode: 1, code: result.error.code });
+          }
+          write(JSON.stringify({ ok: true, value: result.value }));
+        } finally {
+          store.close();
+        }
+      },
+    );
 
   storageCommand(library.command("remove").helpOption(false), writeError)
     .option("--db <path>", "database path")
