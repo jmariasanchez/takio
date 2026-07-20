@@ -676,6 +676,157 @@ describe("BunSqliteLibraryStore", () => {
     });
   });
 
+  it("atomically replaces rich metadata in order and persists it across every read path", async () => {
+    const first = createStore();
+    expect(await first.open({ config: {} })).toEqual({ ok: true, value: null });
+    expect(await first.add({ item: richItem })).toEqual({ ok: true, value: richItem });
+
+    const updated = await first.update({
+      id: richItem.id,
+      patch: {
+        title: "  The Dispossessed  ",
+        author: "This legacy value is ignored",
+        authors: [
+          { name: "  Octavia E. Butler  ", sortName: "  Butler, Octavia E.  " },
+          { name: "Samuel R. Delany" },
+        ],
+        series: "  Hainish Novels  ",
+        seriesIndex: 6,
+        publisher: "  Harper & Row  ",
+        languages: ["fr", "en-US"],
+        identifiers: { isbn: "9780061054884", goodreads: "13651" },
+        publishedDate: "1974-05-01",
+        rating: 9.25,
+        description: "  An anarchist utopia.  ",
+        tags: ["  Science   Fiction  ", "Award Winner"],
+      },
+    });
+    expect(updated).toEqual({
+      ok: true,
+      value: {
+        ...richItem,
+        title: "The Dispossessed",
+        author: "Octavia E. Butler, Samuel R. Delany",
+        authors: [
+          { name: "Octavia E. Butler", sortName: "Butler, Octavia E." },
+          { name: "Samuel R. Delany" },
+        ],
+        series: "Hainish Novels",
+        seriesIndex: 6,
+        publisher: "Harper & Row",
+        languages: ["fr", "en-US"],
+        identifiers: { goodreads: "13651", isbn: "9780061054884" },
+        publishedDate: "1974-05-01",
+        rating: 9.25,
+        description: "An anarchist utopia.",
+        tags: ["Science Fiction", "Award Winner"],
+        updatedAt: expect.any(String),
+      },
+    });
+    if (!updated.ok || !updated.value) {
+      throw new Error("Expected rich metadata replacement");
+    }
+
+    expect(await first.get({ id: richItem.id })).toEqual(updated);
+    expect(await first.list({})).toEqual({ ok: true, value: [updated.value] });
+    expect(await first.search({ query: "Samuel R. Delany" })).toEqual({
+      ok: true,
+      value: [updated.value],
+    });
+    expect(
+      await first.query({
+        query: "9780061054884",
+        filters: {
+          authors: ["Samuel R. Delany"],
+          tags: ["Award Winner"],
+          series: ["Hainish Novels"],
+          languages: ["fr"],
+          formats: ["epub"],
+        },
+        sort: { field: "title", direction: "ascending" },
+        page: { offset: 0, limit: 10 },
+      }),
+    ).toMatchObject({ ok: true, value: { items: [updated.value], total: 1 } });
+
+    using stored = new Database(databasePath, { strict: true });
+    expect(
+      stored
+        .query("SELECT name, sort_name, position FROM library_item_authors ORDER BY position")
+        .all(),
+    ).toEqual([
+      { name: "Octavia E. Butler", sort_name: "Butler, Octavia E.", position: 0 },
+      { name: "Samuel R. Delany", sort_name: null, position: 1 },
+    ]);
+    expect(
+      stored
+        .query("SELECT language, position FROM library_item_languages ORDER BY position")
+        .all(),
+    ).toEqual([
+      { language: "fr", position: 0 },
+      { language: "en-US", position: 1 },
+    ]);
+    first.close();
+
+    const reopened = createStore();
+    expect(await reopened.open({ config: {} })).toEqual({ ok: true, value: null });
+    expect(await reopened.get({ id: richItem.id })).toEqual(updated);
+  });
+
+  it("clears every nullable metadata field and relation", async () => {
+    const store = createStore();
+    expect(await store.open({ config: {} })).toEqual({ ok: true, value: null });
+    expect(await store.add({ item: richItem })).toEqual({ ok: true, value: richItem });
+
+    const cleared = await store.update({
+      id: richItem.id,
+      patch: {
+        author: null,
+        authors: null,
+        series: null,
+        seriesIndex: null,
+        publisher: null,
+        languages: null,
+        identifiers: null,
+        publishedDate: null,
+        rating: null,
+        description: null,
+        tags: [],
+      },
+    });
+    expect(cleared).toEqual({
+      ok: true,
+      value: {
+        id: richItem.id,
+        title: richItem.title,
+        sourcePath: richItem.sourcePath,
+        format: richItem.format,
+        addedAt: richItem.addedAt,
+        formats: richItem.formats,
+        tags: [],
+        updatedAt: expect.any(String),
+      },
+    });
+
+    using stored = new Database(databasePath, { strict: true });
+    expect(stored.query("SELECT * FROM library_item_authors").all()).toEqual([]);
+    expect(stored.query("SELECT * FROM library_item_languages").all()).toEqual([]);
+    expect(stored.query("SELECT * FROM library_item_identifiers").all()).toEqual([]);
+  });
+
+  it("rejects invalid metadata patches before changing stored data", async () => {
+    const store = createStore();
+    expect(await store.open({ config: {} })).toEqual({ ok: true, value: null });
+    expect(await store.add({ item: richItem })).toEqual({ ok: true, value: richItem });
+
+    expect(
+      await store.update({
+        id: richItem.id,
+        patch: { rating: 11, tags: [] } as never,
+      }),
+    ).toEqual({ ok: false, error: { code: "invalid-arguments" } });
+    expect(await store.get({ id: richItem.id })).toEqual({ ok: true, value: richItem });
+  });
+
   it("preserves rich metadata ordering and date precision through legacy updates and reopen", async () => {
     const first = createStore();
     expect(await first.open({ config: {} })).toEqual({ ok: true, value: null });
@@ -742,27 +893,34 @@ describe("BunSqliteLibraryStore", () => {
     expect(await reopened.get({ id: richItem.id })).toEqual(updated);
   });
 
-  it("rolls scalar and tag changes back together when tag replacement fails", async () => {
+  it("rolls scalar and relation changes back together when a child write fails", async () => {
     const store = createStore();
     await store.open({ config: {} });
-    await store.add({ item: { ...item, author: "Original", tags: ["Classic"] } });
-    const before = await store.get({ id: item.id });
+    await store.add({ item: richItem });
+    const before = await store.get({ id: richItem.id });
 
     using database = new Database(databasePath);
     database.run(`
-      CREATE TRIGGER reject_tag_replacement
-      BEFORE INSERT ON library_item_tags
+      CREATE TRIGGER reject_language_replacement
+      BEFORE INSERT ON library_item_languages
       BEGIN
-        SELECT RAISE(ABORT, 'injected tag failure');
+        SELECT RAISE(ABORT, 'injected language failure');
       END
     `);
     expect(
       await store.update({
-        id: item.id,
-        patch: { author: "Changed", tags: ["New"] },
+        id: richItem.id,
+        patch: {
+          title: "Changed",
+          authors: [{ name: "Changed Author" }],
+          series: "Changed Series",
+          languages: ["de"],
+          identifiers: { isbn: "changed" },
+          tags: ["Changed"],
+        },
       }),
     ).toEqual({ ok: false, error: { code: "storage-unavailable" } });
-    expect(await store.get({ id: item.id })).toEqual(before);
+    expect(await store.get({ id: richItem.id })).toEqual(before);
   });
 
   it("searches metadata and tags literally with stable, duplicate-free ordering", async () => {

@@ -7,6 +7,7 @@ import {
   type LibraryItem,
 } from "@takio/core";
 import {
+  libraryMetadataPatchSchema,
   libraryQueryPageSchema,
   listSavedLibraryViewsRequestSchema,
   queryLibraryItemsRequestSchema,
@@ -1225,28 +1226,52 @@ function writeTags(database: Database, itemId: string, tags: readonly string[]):
   }
 }
 
-function writeRichMetadata(database: Database, item: LibraryItem): void {
-  for (const [position, author] of (item.authors ?? []).entries()) {
+function writeAuthors(
+  database: Database,
+  itemId: string,
+  authors: NonNullable<LibraryItem["authors"]>,
+): void {
+  for (const [position, author] of authors.entries()) {
     database.run(
       `INSERT INTO library_item_authors
         (library_item_id, name, sort_name, position) VALUES (?, ?, ?, ?)`,
-      [item.id, author.name, author.sortName ?? null, position],
+      [itemId, author.name, author.sortName ?? null, position],
     );
   }
-  for (const [position, language] of (item.languages ?? []).entries()) {
+}
+
+function writeLanguages(
+  database: Database,
+  itemId: string,
+  languages: NonNullable<LibraryItem["languages"]>,
+): void {
+  for (const [position, language] of languages.entries()) {
     database.run(
       `INSERT INTO library_item_languages
         (library_item_id, language, position) VALUES (?, ?, ?)`,
-      [item.id, language, position],
+      [itemId, language, position],
     );
   }
-  for (const [scheme, value] of Object.entries(item.identifiers ?? {})) {
+}
+
+function writeIdentifiers(
+  database: Database,
+  itemId: string,
+  identifiers: NonNullable<LibraryItem["identifiers"]>,
+): void {
+  for (const [scheme, value] of Object.entries(identifiers)) {
     database.run(
       `INSERT INTO library_item_identifiers
         (library_item_id, scheme, value) VALUES (?, ?, ?)`,
-      [item.id, scheme, value],
+      [itemId, scheme, value],
     );
   }
+}
+
+function writeRichMetadata(database: Database, item: LibraryItem): void {
+  writeAuthors(database, item.id, item.authors ?? []);
+  writeLanguages(database, item.id, item.languages ?? []);
+  writeIdentifiers(database, item.id, item.identifiers ?? {});
 }
 
 function readStoredItem(
@@ -2287,8 +2312,9 @@ export class BunSqliteLibraryStore
     if (!this.#database) {
       return failure("storage-unavailable");
     }
-    if (!Array.isArray(patch.tags)) {
-      return failure("invalid-stored-data");
+    const parsedPatch = libraryMetadataPatchSchema.safeParse(patch);
+    if (!parsedPatch.success) {
+      return failure("invalid-arguments");
     }
 
     try {
@@ -2303,25 +2329,57 @@ export class BunSqliteLibraryStore
           return current;
         }
 
+        const authors =
+          parsedPatch.data.authors === null
+            ? undefined
+            : (parsedPatch.data.authors ?? current.value.authors);
+        const author =
+          parsedPatch.data.authors !== undefined
+            ? authors
+                ?.map(({ name }) => name.trim())
+                .filter((name) => name.length > 0)
+                .join(", ")
+            : parsedPatch.data.author === null
+              ? undefined
+              : (parsedPatch.data.author ?? current.value.author);
         const updated = libraryItemSchema.safeParse({
           ...current.value,
-          title:
-            typeof patch.title === "string"
-              ? patch.title.trim()
-              : (patch.title ?? current.value.title),
-          author:
-            patch.author === null
+          title: parsedPatch.data.title ?? current.value.title,
+          author,
+          authors,
+          series:
+            parsedPatch.data.series === null
               ? undefined
-              : typeof patch.author === "string"
-                ? patch.author.trim()
-                : (patch.author ?? current.value.author),
+              : (parsedPatch.data.series ?? current.value.series),
+          seriesIndex:
+            parsedPatch.data.seriesIndex === null
+              ? undefined
+              : (parsedPatch.data.seriesIndex ?? current.value.seriesIndex),
+          publisher:
+            parsedPatch.data.publisher === null
+              ? undefined
+              : (parsedPatch.data.publisher ?? current.value.publisher),
+          languages:
+            parsedPatch.data.languages === null
+              ? undefined
+              : (parsedPatch.data.languages ?? current.value.languages),
+          identifiers:
+            parsedPatch.data.identifiers === null
+              ? undefined
+              : (parsedPatch.data.identifiers ?? current.value.identifiers),
+          publishedDate:
+            parsedPatch.data.publishedDate === null
+              ? undefined
+              : (parsedPatch.data.publishedDate ?? current.value.publishedDate),
+          rating:
+            parsedPatch.data.rating === null
+              ? undefined
+              : (parsedPatch.data.rating ?? current.value.rating),
           description:
-            patch.description === null
+            parsedPatch.data.description === null
               ? undefined
-              : typeof patch.description === "string"
-                ? patch.description.trim()
-                : (patch.description ?? current.value.description),
-          tags: patch.tags,
+              : (parsedPatch.data.description ?? current.value.description),
+          tags: parsedPatch.data.tags,
           updatedAt: new Date().toISOString(),
         });
         if (!updated.success) {
@@ -2330,11 +2388,18 @@ export class BunSqliteLibraryStore
 
         this.#database!.run(
           `UPDATE library_items
-            SET title = ?, author = ?, description = ?, updated_at = ?
+            SET title = ?, author = ?, series = ?, series_index = ?,
+              publisher = ?, published_date = ?, rating = ?,
+              description = ?, updated_at = ?
             WHERE id = ?`,
           [
             updated.data.title,
             updated.data.author ?? null,
+            updated.data.series ?? null,
+            updated.data.seriesIndex ?? null,
+            updated.data.publisher ?? null,
+            updated.data.publishedDate ?? null,
+            updated.data.rating ?? null,
             updated.data.description ?? null,
             updated.data.updatedAt ?? null,
             id,
@@ -2349,6 +2414,18 @@ export class BunSqliteLibraryStore
             WHERE library_item_tags.tag_normalized_name = tags.normalized_name
           )
         `);
+        if (parsedPatch.data.authors !== undefined) {
+          this.#database!.run("DELETE FROM library_item_authors WHERE library_item_id = ?", [id]);
+          writeAuthors(this.#database!, id, updated.data.authors ?? []);
+        }
+        if (parsedPatch.data.languages !== undefined) {
+          this.#database!.run("DELETE FROM library_item_languages WHERE library_item_id = ?", [id]);
+          writeLanguages(this.#database!, id, updated.data.languages ?? []);
+        }
+        if (parsedPatch.data.identifiers !== undefined) {
+          this.#database!.run("DELETE FROM library_item_identifiers WHERE library_item_id = ?", [id]);
+          writeIdentifiers(this.#database!, id, updated.data.identifiers ?? {});
+        }
         return readStoredItem(
           this.#database!,
           this.#coversDirectory,
