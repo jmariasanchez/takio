@@ -1,4 +1,9 @@
 import { expect, test } from "bun:test";
+import type {
+  LibraryMetadataPatch,
+  QueryLibraryItemsRequest,
+  SaveSavedLibraryViewRequest,
+} from "@takio/library-contract";
 
 import {
   attachLibraryFormat,
@@ -6,11 +11,15 @@ import {
   describeUnexpectedLibraryError,
   importLibraryItem,
   listLibraryItems,
+  listSavedLibraryViews,
   openLibraryItem,
   parseLibraryTags,
+  queryLibraryItems,
   removeLibraryCover,
   removeLibraryFormat,
   removeLibraryItem,
+  removeSavedLibraryView,
+  saveSavedLibraryView,
   searchLibraryItems,
   setLibraryCover,
   updateLibraryItem,
@@ -38,11 +47,80 @@ const validItem = {
     },
   ],
   author: "An author",
+  authors: [{ name: "An author", sortName: "Author, An" }],
+  series: "A series",
+  seriesIndex: 2,
+  publisher: "A publisher",
+  languages: ["en"],
+  identifiers: { isbn: "9780000000001" },
+  publishedDate: "2026-07-18",
+  rating: 8,
   description: "A description",
   coverPath: "/Covers/item-1.jpg",
   tags: ["Classic"],
   updatedAt: "2026-07-19T12:00:00.000Z",
 } as const;
+
+const queryRequest = {
+  query: "title",
+  filters: {
+    authors: ["An author"],
+    tags: ["Classic"],
+    series: ["A series"],
+    languages: ["en"],
+    formats: ["epub"],
+  },
+  sort: { field: "author", direction: "ascending" },
+  page: { offset: 0, limit: 25 },
+} as const satisfies QueryLibraryItemsRequest;
+
+const savedViewRequest = {
+  id: "favourites",
+  name: "Favourites",
+  definition: {
+    version: 1,
+    query: queryRequest.query,
+    filters: queryRequest.filters,
+    sort: queryRequest.sort,
+  },
+} as const satisfies SaveSavedLibraryViewRequest;
+
+const savedView = {
+  ...savedViewRequest,
+  createdAt: "2026-07-20T10:00:00.000Z",
+  updatedAt: "2026-07-20T10:30:00.000Z",
+} as const;
+
+const queryPage = {
+  items: [validItem],
+  total: 1,
+  page: queryRequest.page,
+  facets: {
+    authors: [{ value: "An author", count: 1 }],
+    tags: [{ value: "Classic", count: 1 }],
+    series: [{ value: "A series", count: 1 }],
+    languages: [{ value: "en", count: 1 }],
+    formats: [
+      { value: "epub", count: 1 },
+      { value: "pdf", count: 1 },
+    ],
+  },
+} as const;
+
+const metadataPatch = {
+  title: "A new title",
+  author: null,
+  authors: [{ name: "Another author", sortName: "Author, Another" }],
+  series: "Another series",
+  seriesIndex: 3,
+  publisher: "Another publisher",
+  languages: ["en-GB"],
+  identifiers: { isbn: "9780000000002" },
+  publishedDate: "2026-07-20",
+  rating: 9,
+  description: "A description",
+  tags: ["Classic", "Science Fiction"],
+} as const satisfies LibraryMetadataPatch;
 
 test("uses only the fixed desktop library commands and argument names", async () => {
   const calls: Array<{ command: string; args?: Record<string, unknown> }> = [];
@@ -72,6 +150,18 @@ test("uses only the fixed desktop library commands and argument names", async ()
         value: { item: null, cleanupPending: false },
       } as never;
     }
+    if (command === "library_query") {
+      return { ok: true, value: queryPage } as never;
+    }
+    if (command === "library_saved_views_list") {
+      return { ok: true, value: { views: [savedView] } } as never;
+    }
+    if (command === "library_saved_view_save") {
+      return { ok: true, value: { view: savedView } } as never;
+    }
+    if (command === "library_saved_view_remove") {
+      return { ok: true, value: { view: null } } as never;
+    }
     return { ok: true, value: { item: null } } as never;
   };
 
@@ -90,17 +180,12 @@ test("uses only the fixed desktop library commands and argument names", async ()
     invokeCommand,
   );
   await removeLibraryFormat("item-1", "pdf", invokeCommand);
-  await updateLibraryItem(
-    "item-1",
-    {
-      title: "A new title",
-      author: null,
-      description: "A description",
-      tags: ["Classic", "Science Fiction"],
-    },
-    invokeCommand,
-  );
+  await updateLibraryItem("item-1", metadataPatch, invokeCommand);
   await searchLibraryItems("classic", invokeCommand);
+  await queryLibraryItems(queryRequest, invokeCommand);
+  await listSavedLibraryViews(invokeCommand);
+  await saveSavedLibraryView(savedViewRequest, invokeCommand);
+  await removeSavedLibraryView({ id: savedView.id }, invokeCommand);
   await setLibraryCover("item-1", "/Pictures/A cover.jpg", invokeCommand);
   await removeLibraryCover("item-1", invokeCommand);
   await removeLibraryItem("item-1", invokeCommand);
@@ -133,13 +218,17 @@ test("uses only the fixed desktop library commands and argument names", async ()
       command: "library_update",
       args: {
         id: "item-1",
-        title: "A new title",
-        author: "",
-        description: "A description",
-        tags: ["Classic", "Science Fiction"],
+        patch: metadataPatch,
       },
     },
     { command: "library_search", args: { query: "classic" } },
+    { command: "library_query", args: { request: queryRequest } },
+    { command: "library_saved_views_list", args: undefined },
+    { command: "library_saved_view_save", args: { request: savedViewRequest } },
+    {
+      command: "library_saved_view_remove",
+      args: { request: { id: savedView.id } },
+    },
     {
       command: "library_cover_set",
       args: { id: "item-1", sourcePath: "/Pictures/A cover.jpg" },
@@ -148,11 +237,21 @@ test("uses only the fixed desktop library commands and argument names", async ()
     { command: "library_remove", args: { id: "item-1" } },
     { command: "library_open", args: { id: "item-1", format: "pdf" } },
   ]);
+
+  const updateArgs = calls.find(({ command }) => command === "library_update")?.args;
+  expect(updateArgs?.patch).toBe(metadataPatch);
+  expect((updateArgs?.patch as LibraryMetadataPatch | undefined)?.authors).toBe(
+    metadataPatch.authors,
+  );
+  expect((updateArgs?.patch as LibraryMetadataPatch | undefined)?.identifiers).toBe(
+    metadataPatch.identifiers,
+  );
 });
 
 test("passes valid library responses through with authoritative format order", async () => {
   const listResult = { ok: true, value: { items: [validItem] } } as const;
   const importResult = { ok: true, value: { item: validItem } } as const;
+  const updateResult = { ok: true, value: { item: validItem } } as const;
   const removeResult = {
     ok: true,
     value: { item: null, cleanupPending: true },
@@ -199,12 +298,130 @@ test("passes valid library responses through with authoritative format order", a
   expect(
     await removeLibraryFormat(validItem.id, "pdf", async () => removeResult as never),
   ).toBe(removeResult);
+  expect(
+    await updateLibraryItem(validItem.id, metadataPatch, async () =>
+      updateResult as never,
+    ),
+  ).toBe(updateResult);
   expect(await removeLibraryItem(validItem.id, async () => removeResult as never)).toBe(
     removeResult,
   );
   expect(await openLibraryItem(validItem.id, "pdf", async () => openResult as never)).toBe(
     openResult,
   );
+});
+
+test("passes valid query pages, facets, and saved views through", async () => {
+  const queryResult = { ok: true, value: queryPage } as const;
+  const listViewsResult = {
+    ok: true,
+    value: { views: [savedView] },
+  } as const;
+  const saveViewResult = { ok: true, value: { view: savedView } } as const;
+  const removeViewResult = { ok: true, value: { view: null } } as const;
+
+  expect(
+    await queryLibraryItems(queryRequest, async () => queryResult as never),
+  ).toBe(queryResult);
+  expect(await listSavedLibraryViews(async () => listViewsResult as never)).toBe(
+    listViewsResult,
+  );
+  expect(
+    await saveSavedLibraryView(savedViewRequest, async () => saveViewResult as never),
+  ).toBe(saveViewResult);
+  expect(
+    await removeSavedLibraryView(
+      { id: savedView.id },
+      async () => removeViewResult as never,
+    ),
+  ).toBe(removeViewResult);
+});
+
+test("rejects invalid query inputs before invoking the desktop command", async () => {
+  let invoked = false;
+  const invalidRequest = {
+    ...queryRequest,
+    page: { ...queryRequest.page, limit: 101 },
+  } as QueryLibraryItemsRequest;
+
+  expect(
+    await queryLibraryItems(invalidRequest, async () => {
+      invoked = true;
+      return { ok: true, value: queryPage } as never;
+    }),
+  ).toEqual({ ok: false, error: { code: "invalid-arguments" } });
+  expect(invoked).toBe(false);
+});
+
+test("rejects malformed, over-limit, and inconsistent query responses", async () => {
+  const malformedValues = [
+    {
+      ...queryPage,
+      items: [{ ...validItem, authors: [{ name: "" }] }],
+    },
+    {
+      ...queryPage,
+      facets: {
+        ...queryPage.facets,
+        formats: [{ value: "lit", count: 1 }],
+      },
+    },
+    {
+      ...queryPage,
+      items: Array.from({ length: queryRequest.page.limit + 1 }, (_, index) => ({
+        ...validItem,
+        id: `item-${index}`,
+      })),
+      total: queryRequest.page.limit + 1,
+    },
+    { ...queryPage, total: 0 },
+    { ...queryPage, page: { ...queryPage.page, offset: 1 } },
+  ];
+
+  for (const value of malformedValues) {
+    expect(
+      await queryLibraryItems(queryRequest, async () => ({ ok: true, value }) as never),
+    ).toEqual({ ok: false, error: { code: "protocol-error" } });
+  }
+});
+
+test("rejects malformed saved-view responses and invalid write requests", async () => {
+  const malformedListValues = [
+    { views: [{ ...savedView, definition: { ...savedView.definition, version: 2 } }] },
+    { views: [{ ...savedView, updatedAt: "today" }] },
+    { views: [savedView], extra: true },
+  ];
+
+  for (const value of malformedListValues) {
+    expect(
+      await listSavedLibraryViews(async () => ({ ok: true, value }) as never),
+    ).toEqual({ ok: false, error: { code: "protocol-error" } });
+  }
+
+  expect(
+    await saveSavedLibraryView(savedViewRequest, async () => ({
+      ok: true,
+      value: { view: null },
+    }) as never),
+  ).toEqual({ ok: false, error: { code: "protocol-error" } });
+  expect(
+    await removeSavedLibraryView({ id: savedView.id }, async () => ({
+      ok: true,
+      value: { view: { ...savedView, name: " " } },
+    }) as never),
+  ).toEqual({ ok: false, error: { code: "protocol-error" } });
+
+  let invoked = false;
+  expect(
+    await saveSavedLibraryView(
+      { ...savedViewRequest, name: " " },
+      async () => {
+        invoked = true;
+        return { ok: true, value: { view: savedView } } as never;
+      },
+    ),
+  ).toEqual({ ok: false, error: { code: "invalid-arguments" } });
+  expect(invoked).toBe(false);
 });
 
 test("rejects malformed or mismatched exact-format open responses", async () => {

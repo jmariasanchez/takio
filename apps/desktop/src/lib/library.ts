@@ -1,15 +1,28 @@
 import { invoke } from "@tauri-apps/api/core";
 import { FORMAT_IDS, libraryItemSchema, normalizeTags } from "@takio/core";
 import type { FormatId, LibraryItem } from "@takio/core";
+import {
+  libraryQueryPageSchema,
+  queryLibraryItemsRequestSchema,
+  removeSavedLibraryViewRequestSchema,
+  savedLibraryViewSchema,
+  saveSavedLibraryViewRequestSchema,
+} from "@takio/library-contract";
 import type {
   LibraryCoverWireResult,
   LibraryImportWireResult,
   LibraryListWireResult,
   LibraryMetadataPatch,
+  LibraryQueryWireResult,
   LibraryRemoveWireResult,
+  LibrarySavedViewWireResult,
+  LibrarySavedViewsWireResult,
   LibrarySearchWireResult,
   LibraryStoreResult,
   LibraryUpdateWireResult,
+  QueryLibraryItemsRequest,
+  RemoveSavedLibraryViewRequest,
+  SaveSavedLibraryViewRequest,
 } from "@takio/library-contract";
 
 export type LibraryBridgeErrorCode =
@@ -32,6 +45,13 @@ export type DesktopLibraryRemoveResult = LibraryRemoveWireResult | LibraryBridge
 export type DesktopLibraryUpdateResult = LibraryUpdateWireResult | LibraryBridgeFailure;
 export type DesktopLibraryCoverResult = LibraryCoverWireResult | LibraryBridgeFailure;
 export type DesktopLibrarySearchResult = LibrarySearchWireResult | LibraryBridgeFailure;
+export type DesktopLibraryQueryResult = LibraryQueryWireResult | LibraryBridgeFailure;
+export type DesktopLibrarySavedViewsResult =
+  | LibrarySavedViewsWireResult
+  | LibraryBridgeFailure;
+export type DesktopLibrarySavedViewResult =
+  | LibrarySavedViewWireResult
+  | LibraryBridgeFailure;
 export type DesktopLibraryOpenResult =
   | {
       readonly ok: true;
@@ -56,6 +76,10 @@ const invokeTauri: LibraryInvoker = (command, args) => invoke(command, args);
 
 function protocolError(): LibraryBridgeFailure {
   return { ok: false, error: { code: "protocol-error" } };
+}
+
+function invalidArguments(): LibraryBridgeFailure {
+  return { ok: false, error: { code: "invalid-arguments" } };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -97,6 +121,29 @@ function isRemoveValue(value: unknown): boolean {
     isRecord(value) &&
     isItemValue(value, true) &&
     typeof value.cleanupPending === "boolean"
+  );
+}
+
+function hasOnlyKey(value: Record<string, unknown>, key: string): boolean {
+  const keys = Object.keys(value);
+  return keys.length === 1 && keys[0] === key;
+}
+
+function isSavedViewsValue(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    hasOnlyKey(value, "views") &&
+    Array.isArray(value.views) &&
+    value.views.every((view) => savedLibraryViewSchema.safeParse(view).success)
+  );
+}
+
+function isSavedViewValue(value: unknown, nullable: boolean): boolean {
+  return (
+    isRecord(value) &&
+    hasOnlyKey(value, "view") &&
+    (savedLibraryViewSchema.safeParse(value.view).success ||
+      (nullable && value.view === null))
   );
 }
 
@@ -172,13 +219,7 @@ export async function updateLibraryItem(
   patch: LibraryMetadataPatch,
   invokeCommand: LibraryInvoker = invokeTauri,
 ): Promise<DesktopLibraryUpdateResult> {
-  const result = await invokeCommand<unknown>("library_update", {
-    id,
-    title: patch.title,
-    author: patch.author === null ? "" : patch.author,
-    description: patch.description === null ? "" : patch.description,
-    tags: [...patch.tags],
-  });
+  const result = await invokeCommand<unknown>("library_update", { id, patch });
   return decodeLibraryResult<LibraryUpdateWireResult>(result, (value) =>
     isItemValue(value, true),
   );
@@ -190,6 +231,60 @@ export async function searchLibraryItems(
 ): Promise<DesktopLibrarySearchResult> {
   const result = await invokeCommand<unknown>("library_search", { query });
   return decodeLibraryResult<LibrarySearchWireResult>(result, isItemsValue);
+}
+
+export async function queryLibraryItems(
+  request: QueryLibraryItemsRequest,
+  invokeCommand: LibraryInvoker = invokeTauri,
+): Promise<DesktopLibraryQueryResult> {
+  if (!queryLibraryItemsRequestSchema.safeParse(request).success) {
+    return invalidArguments();
+  }
+
+  const result = await invokeCommand<unknown>("library_query", { request });
+  return decodeLibraryResult<LibraryQueryWireResult>(result, (value) => {
+    const parsed = libraryQueryPageSchema.safeParse(value);
+    return (
+      parsed.success &&
+      parsed.data.page.offset === request.page.offset &&
+      parsed.data.page.limit === request.page.limit
+    );
+  });
+}
+
+export async function listSavedLibraryViews(
+  invokeCommand: LibraryInvoker = invokeTauri,
+): Promise<DesktopLibrarySavedViewsResult> {
+  const result = await invokeCommand<unknown>("library_saved_views_list");
+  return decodeLibraryResult<LibrarySavedViewsWireResult>(result, isSavedViewsValue);
+}
+
+export async function saveSavedLibraryView(
+  request: SaveSavedLibraryViewRequest,
+  invokeCommand: LibraryInvoker = invokeTauri,
+): Promise<DesktopLibrarySavedViewResult> {
+  if (!saveSavedLibraryViewRequestSchema.safeParse(request).success) {
+    return invalidArguments();
+  }
+
+  const result = await invokeCommand<unknown>("library_saved_view_save", { request });
+  return decodeLibraryResult<LibrarySavedViewWireResult>(result, (value) =>
+    isSavedViewValue(value, false),
+  );
+}
+
+export async function removeSavedLibraryView(
+  request: RemoveSavedLibraryViewRequest,
+  invokeCommand: LibraryInvoker = invokeTauri,
+): Promise<DesktopLibrarySavedViewResult> {
+  if (!removeSavedLibraryViewRequestSchema.safeParse(request).success) {
+    return invalidArguments();
+  }
+
+  const result = await invokeCommand<unknown>("library_saved_view_remove", { request });
+  return decodeLibraryResult<LibrarySavedViewWireResult>(result, (value) =>
+    isSavedViewValue(value, true),
+  );
 }
 
 export async function setLibraryCover(
