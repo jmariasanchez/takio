@@ -32,6 +32,12 @@ const completedJob = {
   },
 } as const;
 
+const linkedCompletedJob = {
+  ...completedJob,
+  libraryItemId: "book-1",
+  attachment: { status: "pending" },
+} as const;
+
 test("uses only the fixed desktop job commands and argument names", async () => {
   const calls: Array<{ command: string; args?: Record<string, unknown> }> = [];
   const invokeCommand: JobInvoker = async (command, args) => {
@@ -93,6 +99,48 @@ test("accepts an empty run-next result", async () => {
   }) as never);
 
   expect(result).toEqual({ ok: true, value: { job: null } });
+});
+
+test("decodes only valid linked attachment states", async () => {
+  const attachmentFinishedAt = "2026-07-19T12:03:00.000Z";
+  const validJobs = [
+    { ...queuedJob, libraryItemId: "book-1" },
+    linkedCompletedJob,
+    {
+      ...linkedCompletedJob,
+      attachment: { status: "attached", finishedAt: attachmentFinishedAt },
+    },
+    {
+      ...linkedCompletedJob,
+      attachment: {
+        status: "failed",
+        errorCode: "library-unavailable",
+        finishedAt: attachmentFinishedAt,
+      },
+    },
+  ] as const;
+
+  expect(
+    await listConversionJobs(async () => ({ ok: true, value: { jobs: validJobs } }) as never),
+  ).toEqual({ ok: true, value: { jobs: validJobs } });
+
+  const invalidJobs = [
+    { ...completedJob, libraryItemId: "book-1" },
+    { ...completedJob, attachment: { status: "pending" } },
+    { ...linkedCompletedJob, attachment: { status: "pending", finishedAt: attachmentFinishedAt } },
+    { ...linkedCompletedJob, attachment: { status: "attached" } },
+    {
+      ...linkedCompletedJob,
+      attachment: { status: "failed", errorCode: " ", finishedAt: attachmentFinishedAt },
+    },
+    { ...queuedJob, libraryItemId: "book-1", attachment: { status: "pending" } },
+  ] as const;
+
+  for (const job of invalidJobs) {
+    expect(
+      await listConversionJobs(async () => ({ ok: true, value: { jobs: [job] } }) as never),
+    ).toEqual({ ok: false, error: { code: "protocol-error" } });
+  }
 });
 
 test("rejects malformed successful job records at the bridge boundary", async () => {

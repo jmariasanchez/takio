@@ -5,9 +5,16 @@ export const JOB_STATUSES = ["queued", "running", "completed", "failed", "cancel
 
 export type JobStatus = (typeof JOB_STATUSES)[number];
 
+export type JobAttachment =
+  | { readonly status: "pending" }
+  | { readonly status: "attached"; readonly finishedAt: string }
+  | { readonly status: "failed"; readonly errorCode: string; readonly finishedAt: string };
+
 export type ConversionJob = {
   readonly id: string;
   readonly status: JobStatus;
+  readonly libraryItemId?: string;
+  readonly attachment?: JobAttachment;
   readonly inputPath: string;
   readonly inputFormat: FormatId;
   readonly outputFormat: FormatId;
@@ -87,12 +94,35 @@ function isFailure(value: unknown): value is JobFailure {
   );
 }
 
+function readAttachment(value: unknown): JobAttachment | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+  if (value.status === "pending") {
+    return value.finishedAt === undefined && value.errorCode === undefined
+      ? { status: "pending" }
+      : null;
+  }
+  if (value.status === "attached") {
+    return isTimestamp(value.finishedAt) && value.errorCode === undefined
+      ? { status: "attached", finishedAt: value.finishedAt }
+      : null;
+  }
+  if (value.status === "failed") {
+    return isTimestamp(value.finishedAt) && isNonemptyString(value.errorCode)
+      ? { status: "failed", errorCode: value.errorCode, finishedAt: value.finishedAt }
+      : null;
+  }
+  return null;
+}
+
 function readJob(value: unknown): ConversionJob | null {
   if (
     !isRecord(value) ||
     !isNonemptyString(value.id) ||
     !value.id.startsWith("job_") ||
     !JOB_STATUSES.includes(value.status as JobStatus) ||
+    (value.libraryItemId !== undefined && !isNonemptyString(value.libraryItemId)) ||
     !isNonemptyString(value.inputPath) ||
     !isFormat(value.inputFormat) ||
     !isFormat(value.outputFormat) ||
@@ -105,6 +135,7 @@ function readJob(value: unknown): ConversionJob | null {
   const base = {
     id: value.id,
     status: value.status as JobStatus,
+    ...(typeof value.libraryItemId === "string" ? { libraryItemId: value.libraryItemId } : {}),
     inputPath: value.inputPath,
     inputFormat: value.inputFormat,
     outputFormat: value.outputFormat,
@@ -114,9 +145,14 @@ function readJob(value: unknown): ConversionJob | null {
   const absent = (field: unknown) => field === undefined;
 
   if (value.status === "queued") {
-    return [value.startedAt, value.finishedAt, value.ownerPid, value.errorCode, value.artifact].every(
-      absent,
-    )
+    return [
+      value.startedAt,
+      value.finishedAt,
+      value.ownerPid,
+      value.errorCode,
+      value.artifact,
+      value.attachment,
+    ].every(absent)
       ? base
       : null;
   }
@@ -125,7 +161,7 @@ function readJob(value: unknown): ConversionJob | null {
     return isTimestamp(value.startedAt) &&
       Number.isSafeInteger(value.ownerPid) &&
       (value.ownerPid as number) > 0 &&
-      [value.finishedAt, value.errorCode, value.artifact].every(absent)
+      [value.finishedAt, value.errorCode, value.artifact, value.attachment].every(absent)
       ? { ...base, startedAt: value.startedAt, ownerPid: value.ownerPid as number }
       : null;
   }
@@ -145,8 +181,16 @@ function readJob(value: unknown): ConversionJob | null {
     ) {
       return null;
     }
+    const attachment = readAttachment(value.attachment);
+    if (
+      (typeof value.libraryItemId === "string" && attachment === null) ||
+      (value.libraryItemId === undefined && !absent(value.attachment))
+    ) {
+      return null;
+    }
     return {
       ...base,
+      ...(attachment ? { attachment } : {}),
       startedAt: value.startedAt,
       finishedAt: value.finishedAt,
       artifact: {
@@ -162,7 +206,7 @@ function readJob(value: unknown): ConversionJob | null {
       isTimestamp(value.finishedAt) &&
       absent(value.ownerPid) &&
       isNonemptyString(value.errorCode) &&
-      absent(value.artifact)
+      [value.artifact, value.attachment].every(absent)
       ? {
           ...base,
           startedAt: value.startedAt,
@@ -174,7 +218,7 @@ function readJob(value: unknown): ConversionJob | null {
 
   return absent(value.startedAt) &&
     isTimestamp(value.finishedAt) &&
-    [value.ownerPid, value.errorCode, value.artifact].every(absent)
+    [value.ownerPid, value.errorCode, value.artifact, value.attachment].every(absent)
     ? { ...base, finishedAt: value.finishedAt }
     : null;
 }
