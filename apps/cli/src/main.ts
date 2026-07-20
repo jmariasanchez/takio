@@ -60,6 +60,7 @@ import {
 } from "./destinations.js";
 import { reconcileJobAttachment } from "./job-attachment.js";
 import { JOB_STATUSES, JobStore, type ConversionJob, type JobStatus } from "./job-store.js";
+import { enrichImportedLibraryOutcomes } from "./library-import.js";
 
 type LibraryPaths = {
   readonly databasePath: string;
@@ -850,7 +851,13 @@ export function createProgram(
           if (!result.ok) {
             command.error("", { exitCode: 1, code: result.error.code });
           }
-          write(JSON.stringify({ ok: true, value: { item: result.value } }));
+          const [outcome] = await enrichImportedLibraryOutcomes(
+            store,
+            [{ status: "imported", sourcePath: options.sourcePath, item: result.value }],
+            { titleOverride: options.title },
+          );
+          const item = outcome?.status === "imported" ? outcome.item : result.value;
+          write(JSON.stringify({ ok: true, value: { item } }));
         } finally {
           store.close();
         }
@@ -885,7 +892,8 @@ export function createProgram(
           if (!result.ok) {
             command.error("", { exitCode: 1, code: result.error.code });
           }
-          write(JSON.stringify({ ok: true, value: result.value }));
+          const outcomes = await enrichImportedLibraryOutcomes(store, result.value.outcomes);
+          write(JSON.stringify({ ok: true, value: { ...result.value, outcomes } }));
         } finally {
           store.close();
         }

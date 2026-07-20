@@ -12,6 +12,7 @@ const AVAILABLE_BACKEND = {
   ok: true,
   path: "/configured/ebook-convert",
 } as const satisfies EbookConvertDiscovery;
+const FAKE_EBOOK_META = join(import.meta.dir, "fixtures/fake-ebook-meta.ts");
 
 async function invoke(
   args: string[],
@@ -299,13 +300,16 @@ describe("takio CLI", () => {
     let directory: string | undefined;
     let databasePath: string | undefined;
     let previousDataDirectory: string | undefined;
+    let previousEbookMeta: string | undefined;
 
     beforeEach(async () => {
       directory = undefined;
       databasePath = undefined;
       previousDataDirectory = process.env.TAKIO_DATA_DIR;
+      previousEbookMeta = process.env.TAKIO_EBOOK_META;
       directory = await mkdtemp(join(tmpdir(), "takio-cli-"));
       databasePath = join(directory, "library.sqlite");
+      process.env.TAKIO_EBOOK_META = join(directory, "missing-ebook-meta");
     });
 
     afterEach(async () => {
@@ -313,6 +317,11 @@ describe("takio CLI", () => {
         delete process.env.TAKIO_DATA_DIR;
       } else {
         process.env.TAKIO_DATA_DIR = previousDataDirectory;
+      }
+      if (previousEbookMeta === undefined) {
+        delete process.env.TAKIO_EBOOK_META;
+      } else {
+        process.env.TAKIO_EBOOK_META = previousEbookMeta;
       }
       if (directory) {
         await rm(directory, { recursive: true, force: true });
@@ -349,7 +358,7 @@ describe("takio CLI", () => {
       expect(await Bun.file(join(directory!, "library.sqlite")).exists()).toBe(true);
     });
 
-    it("imports, lists, and removes through the desktop process protocol", async () => {
+    it("keeps the filename fallback without a metadata backend across the process protocol", async () => {
       const sourcePath = join(directory!, "process-book.epub");
       await Bun.write(sourcePath, "process owned contents");
       const env = { TAKIO_DATA_DIR: directory };
@@ -400,6 +409,66 @@ describe("takio CLI", () => {
       });
     });
 
+    it("enriches a single import while preserving an explicit title", async () => {
+      const sourcePath = join(directory!, "single-metadata.epub");
+      await Bun.write(
+        sourcePath,
+        JSON.stringify({
+          fakeEbookMeta: {
+            opf: `<package><metadata>
+              <dc:title>Extracted title</dc:title>
+              <dc:creator opf:role="aut">Extracted Author</dc:creator>
+            </metadata></package>`,
+          },
+        }),
+      );
+      const env = {
+        TAKIO_DATA_DIR: directory,
+        TAKIO_EBOOK_META: FAKE_EBOOK_META,
+      };
+
+      const imported = parseProcessOutput(
+        await invokeProcess(
+          [
+            "library",
+            "import",
+            "--source-path",
+            sourcePath,
+            "--title",
+            "Explicit title",
+          ],
+          env,
+        ),
+      ) as {
+        ok: true;
+        value: {
+          item: {
+            id: string;
+            title: string;
+            authors?: Array<{ name: string }>;
+          };
+        };
+      };
+
+      expect(imported.value.item).toMatchObject({
+        title: "Explicit title",
+        authors: [{ name: "Extracted Author" }],
+      });
+      const reopened = parseProcessOutput(
+        await invokeProcess(
+          ["library", "get", "--id", imported.value.item.id],
+          env,
+        ),
+      ) as {
+        ok: true;
+        value: { item: { title: string; authors?: Array<{ name: string }> } };
+      };
+      expect(reopened.value.item).toMatchObject({
+        title: "Explicit title",
+        authors: [{ name: "Extracted Author" }],
+      });
+    });
+
     it("recursively imports repeated roots in caller order with every outcome accounted for", async () => {
       const root = join(directory!, "batch roots [literal]");
       const nested = join(root, "nested");
@@ -409,11 +478,31 @@ describe("takio CLI", () => {
       const nestedImportedPath = join(nested, "c.pdf");
       const duplicatePath = join(directory!, "duplicate.epub");
       const missingPath = join(directory!, "missing.epub");
-      await Bun.write(importedPath, "batch duplicate contents");
+      const cover = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1]);
+      const duplicateContents = JSON.stringify({
+        fakeEbookMeta: {
+          opf: `<package><metadata>
+            <dc:title>First embedded title</dc:title>
+            <dc:creator opf:role="aut">First Author</dc:creator>
+          </metadata></package>`,
+          coverBase64: cover.toString("base64"),
+        },
+      });
+      await Bun.write(importedPath, duplicateContents);
       await Bun.write(skippedPath, "unsupported contents");
-      await Bun.write(nestedImportedPath, "nested pdf contents");
-      await Bun.write(duplicatePath, "batch duplicate contents");
-      const env = { TAKIO_DATA_DIR: directory };
+      await Bun.write(
+        nestedImportedPath,
+        JSON.stringify({
+          fakeEbookMeta: {
+            opf: "<package><metadata><dc:title>Second embedded title</dc:title></metadata></package>",
+          },
+        }),
+      );
+      await Bun.write(duplicatePath, duplicateContents);
+      const env = {
+        TAKIO_DATA_DIR: directory,
+        TAKIO_EBOOK_META: FAKE_EBOOK_META,
+      };
 
       const imported = parseProcessOutput(
         await invokeProcess(
@@ -435,7 +524,12 @@ describe("takio CLI", () => {
           outcomes: Array<{
             status: string;
             sourcePath: string;
-            item?: { id: string; title: string };
+            item?: {
+              id: string;
+              title: string;
+              authors?: Array<{ name: string }>;
+              coverPath?: string;
+            };
           }>;
           counts: {
             total: number;
@@ -480,8 +574,13 @@ describe("takio CLI", () => {
           counts: { total: 5, imported: 2, skipped: 1, duplicates: 1, failed: 1 },
         },
       });
-      expect(firstItem!.title).toBe("a");
-      expect(nestedItem!.title).toBe("c");
+      expect(firstItem).toMatchObject({
+        title: "First embedded title",
+        authors: [{ name: "First Author" }],
+      });
+      expect(nestedItem!.title).toBe("Second embedded title");
+      expect(firstItem!.coverPath).toBeDefined();
+      expect(Buffer.from(await Bun.file(firstItem!.coverPath!).arrayBuffer())).toEqual(cover);
     });
 
     it("rejects zero or more than 256 batch roots before opening library storage", async () => {
@@ -1316,7 +1415,7 @@ describe("takio CLI", () => {
         "{",
         "[]",
         JSON.stringify({ tags: [], sourcePath: "/tmp/forbidden.epub" }),
-        JSON.stringify({ title: "Missing required tags" }),
+        JSON.stringify({ title: " " }),
         oversizedPayload,
       ];
 
