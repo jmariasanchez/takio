@@ -188,6 +188,7 @@ describe("takio CLI", () => {
     ["library", "--help"],
     ["library", "add", "--help"],
     ["library", "import", "--help"],
+    ["library", "import-many", "--help"],
     ["library", "get", "--help"],
     ["library", "open", "--help"],
     ["library", "update", "--help"],
@@ -203,6 +204,7 @@ describe("takio CLI", () => {
     ["library", "remove", "--help"],
     ["library", "help", "add"],
     ["library", "help", "import"],
+    ["library", "help", "import-many"],
     ["library", "help", "get"],
     ["library", "help", "open"],
     ["library", "help", "list"],
@@ -221,6 +223,7 @@ describe("takio CLI", () => {
     ["help", "library"],
     ["help", "library", "add"],
     ["help", "library", "import"],
+    ["help", "library", "import-many"],
     ["help", "library", "get"],
     ["help", "library", "open"],
     ["help", "library", "list"],
@@ -392,6 +395,113 @@ describe("takio CLI", () => {
         ok: true,
         value: { item: imported.value.item, cleanupPending: false },
       });
+    });
+
+    it("recursively imports repeated roots in caller order with every outcome accounted for", async () => {
+      const root = join(directory!, "batch roots [literal]");
+      const nested = join(root, "nested");
+      await mkdir(nested, { recursive: true });
+      const importedPath = join(root, "a.epub");
+      const skippedPath = join(root, "b.bin");
+      const nestedImportedPath = join(nested, "c.pdf");
+      const duplicatePath = join(directory!, "duplicate.epub");
+      const missingPath = join(directory!, "missing.epub");
+      await Bun.write(importedPath, "batch duplicate contents");
+      await Bun.write(skippedPath, "unsupported contents");
+      await Bun.write(nestedImportedPath, "nested pdf contents");
+      await Bun.write(duplicatePath, "batch duplicate contents");
+      const env = { TAKIO_DATA_DIR: directory };
+
+      const imported = parseProcessOutput(
+        await invokeProcess(
+          [
+            "library",
+            "import-many",
+            "--source-path",
+            missingPath,
+            "--source-path",
+            root,
+            "--source-path",
+            duplicatePath,
+          ],
+          env,
+        ),
+      ) as {
+        ok: true;
+        value: {
+          outcomes: Array<{
+            status: string;
+            sourcePath: string;
+            item?: { id: string; title: string };
+          }>;
+          counts: {
+            total: number;
+            imported: number;
+            skipped: number;
+            duplicates: number;
+            failed: number;
+          };
+        };
+      };
+      const firstItem = imported.value.outcomes[1]?.item;
+      const nestedItem = imported.value.outcomes[3]?.item;
+      expect(firstItem).toBeDefined();
+      expect(nestedItem).toBeDefined();
+      expect(imported).toEqual({
+        ok: true,
+        value: {
+          outcomes: [
+            { status: "failed", sourcePath: missingPath, code: "not-found" },
+            {
+              status: "imported",
+              sourcePath: importedPath,
+              item: firstItem,
+            },
+            {
+              status: "skipped",
+              sourcePath: skippedPath,
+              reason: "unsupported-format",
+            },
+            {
+              status: "imported",
+              sourcePath: nestedImportedPath,
+              item: nestedItem,
+            },
+            {
+              status: "duplicate",
+              sourcePath: duplicatePath,
+              existing: { itemId: firstItem!.id, format: "epub" },
+              reason: "earlier-in-request",
+            },
+          ],
+          counts: { total: 5, imported: 2, skipped: 1, duplicates: 1, failed: 1 },
+        },
+      });
+      expect(firstItem!.title).toBe("a");
+      expect(nestedItem!.title).toBe("c");
+    });
+
+    it("rejects zero or more than 256 batch roots before opening library storage", async () => {
+      const blockedDataDirectory = join(directory!, "batch-storage-blocked");
+      await Bun.write(blockedDataDirectory, "storage must not open");
+      const env = { TAKIO_DATA_DIR: blockedDataDirectory };
+
+      expectInvalidArgumentsProcess(
+        await invokeProcess(["library", "import-many"], env),
+      );
+      expectInvalidArgumentsProcess(
+        await invokeProcess(
+          [
+            "library",
+            "import-many",
+            ...Array.from({ length: 257 }, (_, index) => [
+              "--source-path",
+              join(directory!, `root-${index}`),
+            ]).flat(),
+          ],
+          env,
+        ),
+      );
     });
 
     it("trashes, lists, restores, and purges through the strict process protocol", async () => {

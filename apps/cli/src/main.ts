@@ -12,6 +12,7 @@ import {
   type FormatId,
 } from "@takio/core";
 import {
+  importLibraryItemsRequestSchema,
   libraryMetadataPatchSchema,
   listLibraryTrashRequestSchema,
   purgeLibraryItemRequestSchema,
@@ -21,6 +22,7 @@ import {
   restoreLibraryItemRequestSchema,
   saveSavedLibraryViewRequestSchema,
   trashLibraryItemRequestSchema,
+  type ImportLibraryItemsRequest,
   type LibraryMetadataPatch,
   type ListLibraryTrashRequest,
   type PurgeLibraryItemRequest,
@@ -839,6 +841,41 @@ export function createProgram(
             command.error("", { exitCode: 1, code: result.error.code });
           }
           write(JSON.stringify({ ok: true, value: { item: result.value } }));
+        } finally {
+          store.close();
+        }
+      },
+    );
+
+  storageCommand(library.command("import-many").helpOption(false), writeError)
+    .option("--db <path>", "database path")
+    .requiredOption(
+      "--source-path <path>",
+      "file or directory to import recursively (repeatable)",
+      (sourcePath: string, sourcePaths: string[] | undefined) => [
+        ...(sourcePaths ?? []),
+        sourcePath,
+      ],
+    )
+    .action(
+      async (
+        options: { db?: string; sourcePath: string[] },
+        command: Command,
+      ) => {
+        const parsedRequest = importLibraryItemsRequestSchema.safeParse({
+          roots: options.sourcePath,
+        });
+        if (!parsedRequest.success) {
+          command.error("", { exitCode: 1, code: "invalid-arguments" });
+        }
+        const request: ImportLibraryItemsRequest = parsedRequest.data;
+        const { store } = await openLibraryStore(options.db, command);
+        try {
+          const result = await store.importMany(request);
+          if (!result.ok) {
+            command.error("", { exitCode: 1, code: result.error.code });
+          }
+          write(JSON.stringify({ ok: true, value: result.value }));
         } finally {
           store.close();
         }
