@@ -1,19 +1,30 @@
 import { describe, expect, it } from "bun:test";
 
 import {
+  LIBRARY_QUERY_SORT_DIRECTIONS,
+  LIBRARY_QUERY_SORT_FIELDS,
   LIBRARY_STORE_ERROR_CODES,
+  MAX_LIBRARY_QUERY_PAGE_SIZE,
   type AddLibraryItemRequest,
   type AttachLibraryFormatRequest,
   type ImportLibraryItemRequest,
   type LibraryImportWireResult,
   type LibraryListWireResult,
   type LibraryMetadataPatch,
+  type LibraryQueryStore,
   type LibraryRemoveWireResult,
+  type QueryLibraryItemsRequest,
+  type SavedLibraryViewStore,
   type LibraryStore,
   type LibraryStoreResult,
   type RemoveLibraryFormatRequest,
   type RemoveLibraryFormatResult,
   type RemoveLibraryItemResult,
+  libraryQueryPageSchema,
+  queryLibraryItemsRequestSchema,
+  removeSavedLibraryViewRequestSchema,
+  saveSavedLibraryViewRequestSchema,
+  savedLibraryViewSchema,
 } from "../src/index.js";
 
 const canonicalItem = {
@@ -40,6 +51,201 @@ const canonicalItem = {
 } as const;
 
 describe("LibraryStore", () => {
+  it("defines bounded pages, literal queries, rich filters, and deterministic sorts", async () => {
+    const request: QueryLibraryItemsRequest = {
+      query: 'title:"darkness"',
+      filters: {
+        authors: ["Ursula K. Le Guin"],
+        tags: ["Classic"],
+        series: ["Hainish Cycle"],
+        languages: ["en"],
+        formats: ["epub", "pdf"],
+      },
+      sort: { field: "title", direction: "ascending" },
+      page: { offset: 0, limit: MAX_LIBRARY_QUERY_PAGE_SIZE },
+    };
+    const queryStore: LibraryQueryStore = {
+      query: async (parsedRequest) => ({
+        ok: true,
+        value: {
+          items: [],
+          total: 0,
+          page: parsedRequest.page,
+          facets: { authors: [], tags: [], series: [], languages: [], formats: [] },
+        },
+      }),
+    };
+
+    expect(LIBRARY_QUERY_SORT_FIELDS).toEqual([
+      "title",
+      "author",
+      "series",
+      "publishedDate",
+      "rating",
+      "addedAt",
+      "updatedAt",
+    ]);
+    expect(LIBRARY_QUERY_SORT_DIRECTIONS).toEqual(["ascending", "descending"]);
+    expect(queryLibraryItemsRequestSchema.parse(request)).toEqual(request);
+    await expect(queryStore.query(request)).resolves.toMatchObject({ ok: true });
+
+    for (const field of ["series", "publishedDate", "rating"] as const) {
+      expect(
+        queryLibraryItemsRequestSchema.safeParse({ ...request, sort: { ...request.sort, field } })
+          .success,
+      ).toBe(true);
+    }
+
+    expect(
+      queryLibraryItemsRequestSchema.safeParse({
+        ...request,
+        page: { offset: 0, limit: MAX_LIBRARY_QUERY_PAGE_SIZE + 1 },
+      }).success,
+    ).toBe(false);
+    expect(
+      queryLibraryItemsRequestSchema.safeParse({
+        ...request,
+        filters: { ...request.filters, tags: ["Classic", "classic"] },
+      }).success,
+    ).toBe(false);
+    expect(
+      queryLibraryItemsRequestSchema.safeParse({
+        ...request,
+        filters: { ...request.filters, series: ["Earthsea", "earthsea"] },
+      }).success,
+    ).toBe(false);
+    expect(
+      queryLibraryItemsRequestSchema.safeParse({
+        ...request,
+        filters: { ...request.filters, languages: ["en", "EN"] },
+      }).success,
+    ).toBe(false);
+    expect(
+      queryLibraryItemsRequestSchema.safeParse({
+        ...request,
+        filters: { ...request.filters, languages: ["not_a_tag"] },
+      }).success,
+    ).toBe(false);
+    expect(
+      queryLibraryItemsRequestSchema.safeParse({
+        ...request,
+        sort: { field: "publisher", direction: "ascending" },
+      }).success,
+    ).toBe(false);
+
+    if (false) {
+      // @ts-expect-error Paging is required for database-backed library queries.
+      const unpaged: QueryLibraryItemsRequest = {
+        query: "",
+        filters: { authors: [], tags: [], series: [], languages: [], formats: [] },
+        sort: { field: "title", direction: "ascending" },
+      };
+      const unsupportedSort: QueryLibraryItemsRequest = {
+        ...request,
+        // @ts-expect-error Publisher is not an available library-table sort.
+        sort: { field: "publisher", direction: "ascending" },
+      };
+      expect([unpaged, unsupportedSort]).toBeUndefined();
+    }
+  });
+
+  it("validates page totals, limits, and library facet values", () => {
+    const page = {
+      items: [canonicalItem],
+      total: 1,
+      page: { offset: 0, limit: 1 },
+      facets: {
+        authors: [{ value: "Ursula K. Le Guin", count: 1 }],
+        tags: [{ value: "Classic", count: 1 }],
+        series: [{ value: "Hainish Cycle", count: 1 }],
+        languages: [{ value: "en", count: 1 }],
+        formats: [
+          { value: "epub", count: 1 },
+          { value: "pdf", count: 1 },
+        ],
+      },
+    } as const;
+
+    expect(libraryQueryPageSchema.parse(page)).toEqual(page);
+    expect(
+      libraryQueryPageSchema.safeParse({
+        ...page,
+        page: { offset: 0, limit: 1 },
+        items: [canonicalItem, { ...canonicalItem, id: "book-2" }],
+        total: 2,
+      }).success,
+    ).toBe(false);
+    expect(libraryQueryPageSchema.safeParse({ ...page, total: 0 }).success).toBe(false);
+    expect(
+      libraryQueryPageSchema.safeParse({
+        ...page,
+        items: [],
+        total: 1,
+        page: { offset: 100, limit: 1 },
+      }).success,
+    ).toBe(true);
+    expect(
+      libraryQueryPageSchema.safeParse({
+        ...page,
+        facets: { ...page.facets, formats: [{ value: "lit", count: 1 }] },
+      }).success,
+    ).toBe(false);
+    expect(
+      libraryQueryPageSchema.safeParse({
+        ...page,
+        facets: { ...page.facets, languages: [{ value: "not_a_tag", count: 1 }] },
+      }).success,
+    ).toBe(false);
+  });
+
+  it("keeps saved views versioned, page-independent, and JSON-safe", async () => {
+    const request = {
+      id: "view-1",
+      name: "Classics",
+      definition: {
+        version: 1,
+        query: "",
+        filters: {
+          authors: [],
+          tags: ["Classic"],
+          series: ["Hainish Cycle"],
+          languages: ["en"],
+          formats: ["epub"],
+        },
+        sort: { field: "series", direction: "ascending" },
+      },
+    } as const;
+    const saved = {
+      ...request,
+      createdAt: "2026-07-20T10:00:00.000Z",
+      updatedAt: "2026-07-20T10:00:00.000Z",
+    } as const;
+    const viewStore: SavedLibraryViewStore = {
+      listSavedViews: async () => ({ ok: true, value: [saved] }),
+      saveSavedView: async () => ({ ok: true, value: saved }),
+      removeSavedView: async () => ({ ok: true, value: saved }),
+    };
+
+    expect(saveSavedLibraryViewRequestSchema.parse(request)).toEqual(request);
+    expect(savedLibraryViewSchema.parse(saved)).toEqual(saved);
+    expect(JSON.parse(JSON.stringify(saved))).toEqual(saved);
+    await expect(viewStore.listSavedViews({})).resolves.toEqual({ ok: true, value: [saved] });
+    await expect(viewStore.saveSavedView(request)).resolves.toEqual({ ok: true, value: saved });
+    await expect(viewStore.removeSavedView({ id: request.id })).resolves.toEqual({
+      ok: true,
+      value: saved,
+    });
+
+    expect(
+      saveSavedLibraryViewRequestSchema.safeParse({
+        ...request,
+        definition: { ...request.definition, page: { offset: 0, limit: 100 } },
+      }).success,
+    ).toBe(false);
+    expect(removeSavedLibraryViewRequestSchema.safeParse({ id: "" }).success).toBe(false);
+    expect(savedLibraryViewSchema.safeParse({ ...saved, definition: { ...saved.definition, version: 2 } }).success).toBe(false);
+  });
+
   it("keeps missing records JSON-safe across asynchronous boundaries", async () => {
     const store: LibraryStore = {
       open: async () => ({ ok: true, value: null }),

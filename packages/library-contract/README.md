@@ -7,6 +7,14 @@ removal, metadata update, owned-cover, and literal search operations using the
 canonical `LibraryItem` from `@takio/core`. Every operation returns a JSON-safe
 `LibraryStoreResult`.
 
+`LibraryQueryStore` adds database-backed query pages of at most 100 items with
+author, tag, series, language, and format facets and deterministic table
+sorting. Query text remains a literal substring rather than a structured search
+grammar. `SavedLibraryViewStore` persists versioned query, filter, and sort
+definitions; paging is deliberately session state rather than part of a saved
+view. These capabilities are separate from `LibraryStore` so existing `list`
+and literal `search` adapters remain compatible while runtimes adopt them.
+
 `import` creates a managed library copy. `attachFormat` requires an explicit
 `copy` or `reference` source: a copy becomes `managed`, while a reference remains
 caller-owned. Every format in a returned `LibraryItem` therefore has explicit
