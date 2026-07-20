@@ -215,6 +215,8 @@ export default function App() {
     useState<LibraryWorkspaceBulkActions["pendingAction"]>(null);
   const [bulkTagsDialogOpen, setBulkTagsDialogOpen] = useState(false);
   const [bulkTagsDialogError, setBulkTagsDialogError] = useState<string | null>(null);
+  const [bulkMetadataDialogOpen, setBulkMetadataDialogOpen] = useState(false);
+  const [bulkMetadataDialogError, setBulkMetadataDialogError] = useState<string | null>(null);
   const [searchPending, setSearchPending] = useState(false);
   const [draft, setDraft] = useState<MetadataDraft | null>(null);
   const [conversionDraft, setConversionDraft] = useState<ConversionDraft | null>(null);
@@ -294,6 +296,7 @@ export default function App() {
       !postBulkFocusPending.current ||
       pendingAction !== null ||
       bulkTagsDialogOpen ||
+      bulkMetadataDialogOpen ||
       librarySelection.selectedItemIds.length > 0
     ) {
       return;
@@ -304,7 +307,12 @@ export default function App() {
       searchInput.current?.focus();
     });
     return () => window.cancelAnimationFrame(frame);
-  }, [bulkTagsDialogOpen, librarySelection.selectedItemIds.length, pendingAction]);
+  }, [
+    bulkMetadataDialogOpen,
+    bulkTagsDialogOpen,
+    librarySelection.selectedItemIds.length,
+    pendingAction,
+  ]);
 
   const commitLibraryQuery = useCallback((next: LibraryQueryState): void => {
     libraryQueryRef.current = next;
@@ -2031,6 +2039,7 @@ export default function App() {
     if (
       pendingAction !== null ||
       bulkMutationPending.current ||
+      bulkMetadataDialogOpen ||
       librarySelection.selectedItemIds.length === 0
     ) {
       return;
@@ -2043,6 +2052,94 @@ export default function App() {
     if (!bulkMutationPending.current) {
       setBulkTagsDialogError(null);
       setBulkTagsDialogOpen(false);
+    }
+  }
+
+  function openBulkMetadataDialog(): void {
+    if (
+      pendingAction !== null ||
+      bulkMutationPending.current ||
+      bulkTagsDialogOpen ||
+      saveViewDialogOpen ||
+      importDialogOpen ||
+      trashDialogOpen ||
+      duplicateDialogOpen ||
+      librarySelection.selectedItemIds.length === 0
+    ) {
+      return;
+    }
+    setBulkMetadataDialogError(null);
+    setBulkMetadataDialogOpen(true);
+  }
+
+  function closeBulkMetadataDialog(): void {
+    if (!bulkMutationPending.current) {
+      setBulkMetadataDialogError(null);
+      setBulkMetadataDialogOpen(false);
+    }
+  }
+
+  async function applyBulkMetadata(patch: LibraryMetadataPatch): Promise<void> {
+    const selectedIds = [...librarySelection.selectedItemIds];
+    if (
+      selectedIds.length === 0 ||
+      pendingAction !== null ||
+      bulkMutationPending.current ||
+      !bulkMetadataDialogOpen
+    ) {
+      return;
+    }
+
+    bulkMutationPending.current = true;
+    setBulkPendingAction("metadata");
+    setPendingAction("bulk-metadata");
+    setBulkMetadataDialogError(null);
+    setNotice(null);
+    try {
+      const hydration = await hydrateSelectedLibraryItems(selectedIds, getLibraryItem);
+      let updated = 0;
+      let missing = hydration.counts.missing;
+      let failed = hydration.counts.failed;
+      const completedIds: string[] = [];
+
+      for (const outcome of hydration.outcomes) {
+        if (outcome.status !== "found") {
+          continue;
+        }
+        try {
+          const result = await updateLibraryItem(outcome.id, patch);
+          if (!result.ok) {
+            failed += 1;
+          } else if (!result.value.item) {
+            missing += 1;
+          } else {
+            updated += 1;
+            completedIds.push(outcome.id);
+          }
+        } catch {
+          failed += 1;
+        }
+      }
+
+      dispatchLibrarySelection({ type: "remove-items", ids: completedIds });
+      restoreFocusIfBulkSelectionCleared(selectedIds, completedIds);
+      const libraryLoaded = await loadLibrary(false);
+      const summary = `${updated} updated; ${missing} missing; ${failed} failed.${libraryLoaded ? "" : " Library refresh failed."}`;
+      const hasErrors = missing > 0 || failed > 0 || !libraryLoaded;
+      setNotice({ kind: hasErrors ? "error" : "status", text: summary });
+      if (hasErrors) {
+        setBulkMetadataDialogError(summary);
+      } else {
+        setBulkMetadataDialogOpen(false);
+      }
+    } catch (error) {
+      const message = describeUnexpectedLibraryError(error);
+      setBulkMetadataDialogError(message);
+      setNotice({ kind: "error", text: message });
+    } finally {
+      bulkMutationPending.current = false;
+      setBulkPendingAction(null);
+      setPendingAction(null);
     }
   }
 
@@ -2208,7 +2305,8 @@ export default function App() {
       importDialogOpen ||
       trashDialogOpen ||
       duplicateDialogOpen ||
-      bulkTagsDialogOpen
+      bulkTagsDialogOpen ||
+      bulkMetadataDialogOpen
     ) {
       return;
     }
@@ -2719,8 +2817,11 @@ export default function App() {
               preferredDeviceFormat !== null,
             tagsDialogOpen: bulkTagsDialogOpen,
             tagsDialogError: bulkTagsDialogError,
+            metadataDialogOpen: bulkMetadataDialogOpen,
+            metadataDialogError: bulkMetadataDialogError,
             onExport: () => void saveBulkSelectionToDisk(),
             onEditTags: openBulkTagsDialog,
+            onEditMetadata: openBulkMetadataDialog,
             onConvert: () => void convertBulkSelectionToPdf(),
             onSend: () => void sendBulkSelection(),
             onMoveToTrash: () => void moveBulkSelectionToTrash(),
@@ -2730,7 +2831,9 @@ export default function App() {
               restoreFocusIfBulkSelectionCleared(selectedIds, selectedIds);
             },
             onCloseTagsDialog: closeBulkTagsDialog,
+            onCloseMetadataDialog: closeBulkMetadataDialog,
             onApplyTags: (operation, tags) => void applyBulkTags(operation, tags),
+            onApplyMetadata: (patch) => void applyBulkMetadata(patch),
           }}
           conversionDraft={conversionDraft}
           currentSavedViewId={currentSavedViewId}

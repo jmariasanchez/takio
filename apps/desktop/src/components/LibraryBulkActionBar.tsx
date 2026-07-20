@@ -2,6 +2,7 @@ import "./LibraryBulkActionBar.css";
 
 export type LibraryBulkPendingAction =
   | "tags"
+  | "metadata"
   | "export"
   | "convert"
   | "send"
@@ -15,6 +16,7 @@ export type LibraryBulkActionBarProps = {
   readonly canSend: boolean;
   readonly onExport: () => void;
   readonly onEditTags: () => void;
+  readonly onEditMetadata: () => void;
   readonly onConvert: () => void;
   readonly onSend: () => void;
   readonly onMoveToTrash: () => void;
@@ -23,6 +25,7 @@ export type LibraryBulkActionBarProps = {
 
 const pendingLabels: Readonly<Record<LibraryBulkPendingAction, string>> = {
   tags: "Updating tags…",
+  metadata: "Updating metadata…",
   export: "Saving to disk…",
   convert: "Converting…",
   send: "Sending…",
@@ -37,6 +40,7 @@ export function LibraryBulkActionBar({
   canSend,
   onExport,
   onEditTags,
+  onEditMetadata,
   onConvert,
   onSend,
   onMoveToTrash,
@@ -78,6 +82,9 @@ export function LibraryBulkActionBar({
         </button>
         <button type="button" disabled={controlsDisabled} onClick={onEditTags}>
           Edit tags
+        </button>
+        <button type="button" disabled={controlsDisabled} onClick={onEditMetadata}>
+          Edit metadata…
         </button>
         <button
           type="button"

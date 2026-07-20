@@ -29,6 +29,7 @@ import {
   LibraryBulkActionBar,
   type LibraryBulkPendingAction,
 } from "./LibraryBulkActionBar";
+import { LibraryBulkMetadataDialog } from "./LibraryBulkMetadataDialog";
 import {
   LibraryBulkTagsDialog,
   type LibraryBulkTagsOperation,
@@ -74,17 +75,22 @@ export type LibraryWorkspaceBulkActions = {
   readonly canSend: boolean;
   readonly tagsDialogOpen: boolean;
   readonly tagsDialogError: string | null;
+  readonly metadataDialogOpen: boolean;
+  readonly metadataDialogError: string | null;
   readonly onExport: () => void;
   readonly onEditTags: () => void;
+  readonly onEditMetadata: () => void;
   readonly onConvert: () => void;
   readonly onSend: () => void;
   readonly onMoveToTrash: () => void;
   readonly onClearSelection: () => void;
   readonly onCloseTagsDialog: () => void;
+  readonly onCloseMetadataDialog: () => void;
   readonly onApplyTags: (
     operation: LibraryBulkTagsOperation,
     tags: readonly string[],
   ) => void;
+  readonly onApplyMetadata: (patch: LibraryMetadataPatch) => void;
 };
 
 export type LibraryWorkspaceProps = {
@@ -709,6 +715,7 @@ export function LibraryWorkspace({
                   canSend={bulkActions.canSend}
                   onExport={bulkActions.onExport}
                   onEditTags={bulkActions.onEditTags}
+                  onEditMetadata={bulkActions.onEditMetadata}
                   onConvert={bulkActions.onConvert}
                   onSend={bulkActions.onSend}
                   onMoveToTrash={bulkActions.onMoveToTrash}
@@ -789,14 +796,24 @@ export function LibraryWorkspace({
       />
 
       {bulkActions ? (
-        <LibraryBulkTagsDialog
-          open={bulkActions.tagsDialogOpen}
-          selectedCount={selectedItemIds.length}
-          pending={bulkActions.pendingAction === "tags"}
-          error={bulkActions.tagsDialogError}
-          onClose={bulkActions.onCloseTagsDialog}
-          onApply={bulkActions.onApplyTags}
-        />
+        <>
+          <LibraryBulkTagsDialog
+            open={bulkActions.tagsDialogOpen}
+            selectedCount={selectedItemIds.length}
+            pending={bulkActions.pendingAction === "tags"}
+            error={bulkActions.tagsDialogError}
+            onClose={bulkActions.onCloseTagsDialog}
+            onApply={bulkActions.onApplyTags}
+          />
+          <LibraryBulkMetadataDialog
+            open={bulkActions.metadataDialogOpen}
+            selectedCount={selectedItemIds.length}
+            pending={bulkActions.pendingAction === "metadata"}
+            error={bulkActions.metadataDialogError}
+            onClose={bulkActions.onCloseMetadataDialog}
+            onApply={bulkActions.onApplyMetadata}
+          />
+        </>
       ) : null}
     </>
   );

@@ -33,6 +33,7 @@ function props(
     canSend: true,
     onExport: () => undefined,
     onEditTags: () => undefined,
+    onEditMetadata: () => undefined,
     onConvert: () => undefined,
     onSend: () => undefined,
     onMoveToTrash: () => undefined,
@@ -69,6 +70,7 @@ test("offers only the requested bulk library actions without introducing a readi
   for (const label of [
     "Save to disk…",
     "Edit tags",
+    "Edit metadata…",
     "Convert",
     "Send",
     "Move to Trash",
@@ -77,7 +79,7 @@ test("offers only the requested bulk library actions without introducing a readi
     expect(markup).toContain(`>${label}</button>`);
   }
   expect(markup).toContain('title="Copy every attached format to a folder"');
-  expect(markup.match(/<button/g)).toHaveLength(6);
+  expect(markup.match(/<button/g)).toHaveLength(7);
   expect(markup).not.toMatch(/reader|viewer|open book/i);
 });
 
@@ -90,6 +92,9 @@ test("disables conversion and sending independently when the selection is inelig
   expect(buttons.find(({ props }) => props.children === "Edit tags")?.props.disabled).toBe(
     false,
   );
+  expect(
+    buttons.find(({ props }) => props.children === "Edit metadata…")?.props.disabled,
+  ).toBe(false);
   expect(buttons.find(({ props }) => props.children === "Convert")?.props.disabled).toBe(
     true,
   );
@@ -115,7 +120,7 @@ test("announces pending work and disables every control so the target cannot cha
 
   expect(markup).toContain('aria-busy="true"');
   expect(markup).toContain("Saving to disk…");
-  expect(buttons).toHaveLength(6);
+  expect(buttons).toHaveLength(7);
   expect(buttons.every(({ props }) => props.disabled)).toBe(true);
 });
 
@@ -126,7 +131,7 @@ test("globally disables every control while unrelated library work is pending", 
 
   expect(markup).toContain('aria-busy="false"');
   expect(markup).not.toContain("Updating tags…");
-  expect(buttons).toHaveLength(6);
+  expect(buttons).toHaveLength(7);
   expect(buttons.every(({ props }) => props.disabled)).toBe(true);
 });
 
@@ -136,6 +141,7 @@ test("emits each controlled action exactly once while enabled", () => {
     props({
       onExport: () => calls.push("export"),
       onEditTags: () => calls.push("tags"),
+      onEditMetadata: () => calls.push("metadata"),
       onConvert: () => calls.push("convert"),
       onSend: () => calls.push("send"),
       onMoveToTrash: () => calls.push("trash"),
@@ -148,5 +154,13 @@ test("emits each controlled action exactly once while enabled", () => {
     button.props.onClick?.();
   }
 
-  expect(calls).toEqual(["export", "tags", "convert", "send", "trash", "clear"]);
+  expect(calls).toEqual([
+    "export",
+    "tags",
+    "metadata",
+    "convert",
+    "send",
+    "trash",
+    "clear",
+  ]);
 });

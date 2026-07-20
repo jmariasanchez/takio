@@ -273,14 +273,19 @@ test("renders controlled bulk actions and tag-dialog state for the exact selecti
     canSend: false,
     tagsDialogOpen: true,
     tagsDialogError: "One update failed.",
+    metadataDialogOpen: false,
+    metadataDialogError: null,
     onExport: () => undefined,
     onEditTags: () => undefined,
+    onEditMetadata: () => undefined,
     onConvert: () => undefined,
     onSend: () => undefined,
     onMoveToTrash: () => undefined,
     onClearSelection: () => undefined,
     onCloseTagsDialog: () => undefined,
+    onCloseMetadataDialog: () => undefined,
     onApplyTags: () => undefined,
+    onApplyMetadata: () => undefined,
   } as const satisfies NonNullable<LibraryWorkspaceProps["bulkActions"]>;
 
   const markup = renderWorkspace({
@@ -292,11 +297,46 @@ test("renders controlled bulk actions and tag-dialog state for the exact selecti
   expect(markup).toContain("2 books selected");
   expect(markup).toContain("Updating tags…");
   expect(markup).toContain(">Save to disk…</button>");
+  expect(markup).toContain(">Edit metadata…</button>");
   expect(markup).toContain('title="Copy every attached format to a folder"');
   expect(markup).toContain('title="Sending is not available for this selection"');
   expect(markup).toContain('role="dialog"');
   expect(markup).toContain("Update tags for <strong>2 books</strong>");
   expect(markup).toContain("One update failed.");
+});
+
+test("renders bulk metadata as a distinct controlled workflow with safe shared fields", () => {
+  const markup = renderWorkspace({
+    selectedItemIds: [item.id, "off-page"],
+    bulkActions: {
+      pendingAction: "metadata",
+      canConvert: true,
+      canSend: true,
+      tagsDialogOpen: false,
+      tagsDialogError: null,
+      metadataDialogOpen: true,
+      metadataDialogError: "One metadata update failed.",
+      onExport: () => undefined,
+      onEditTags: () => undefined,
+      onEditMetadata: () => undefined,
+      onConvert: () => undefined,
+      onSend: () => undefined,
+      onMoveToTrash: () => undefined,
+      onClearSelection: () => undefined,
+      onCloseTagsDialog: () => undefined,
+      onCloseMetadataDialog: () => undefined,
+      onApplyTags: () => undefined,
+      onApplyMetadata: () => undefined,
+    },
+  });
+
+  expect(markup).toContain("Updating metadata…");
+  expect(markup).toContain("Update metadata for <strong>2 books</strong>");
+  expect(markup).toContain("One metadata update failed.");
+  for (const field of ["Publisher", "Series", "Series index", "Rating", "Languages"]) {
+    expect(markup).toContain(`<legend>${field}</legend>`);
+  }
+  expect(markup).not.toMatch(/<legend>(?:Title|Authors|Tags)<\/legend>/);
 });
 
 test("omits bulk controls without the controlled integration and disables library input globally", () => {
@@ -312,14 +352,19 @@ test("omits bulk controls without the controlled integration and disables librar
       canSend: true,
       tagsDialogOpen: false,
       tagsDialogError: null,
+      metadataDialogOpen: false,
+      metadataDialogError: null,
       onExport: () => undefined,
       onEditTags: () => undefined,
+      onEditMetadata: () => undefined,
       onConvert: () => undefined,
       onSend: () => undefined,
       onMoveToTrash: () => undefined,
       onClearSelection: () => undefined,
       onCloseTagsDialog: () => undefined,
+      onCloseMetadataDialog: () => undefined,
       onApplyTags: () => undefined,
+      onApplyMetadata: () => undefined,
     },
   });
   const search = markup.match(/<input[^>]*id="library-search"[^>]*>/)?.[0];
