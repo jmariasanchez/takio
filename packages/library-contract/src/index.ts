@@ -12,6 +12,7 @@ import {
 import { z } from "zod";
 
 export const MAX_LIBRARY_QUERY_PAGE_SIZE = 100;
+export const MAX_SAVED_LIBRARY_VIEW_NAME_LENGTH = 120;
 
 export const LIBRARY_QUERY_SORT_FIELDS = [
   "title",
@@ -185,10 +186,16 @@ export const savedLibraryViewDefinitionSchema = z
   .strict()
   .readonly();
 
+const savedLibraryViewNameSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(MAX_SAVED_LIBRARY_VIEW_NAME_LENGTH);
+
 export const savedLibraryViewSchema = z
   .object({
     id: z.string().min(1),
-    name: z.string().trim().min(1),
+    name: savedLibraryViewNameSchema,
     definition: savedLibraryViewDefinitionSchema,
     createdAt: z.string().datetime(),
     updatedAt: z.string().datetime(),
@@ -201,7 +208,7 @@ export const listSavedLibraryViewsRequestSchema = z.object({}).strict().readonly
 export const saveSavedLibraryViewRequestSchema = z
   .object({
     id: z.string().min(1),
-    name: z.string().trim().min(1),
+    name: savedLibraryViewNameSchema,
     definition: savedLibraryViewDefinitionSchema,
   })
   .strict()

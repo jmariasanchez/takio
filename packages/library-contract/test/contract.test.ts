@@ -5,6 +5,7 @@ import {
   LIBRARY_QUERY_SORT_FIELDS,
   LIBRARY_STORE_ERROR_CODES,
   MAX_LIBRARY_QUERY_PAGE_SIZE,
+  MAX_SAVED_LIBRARY_VIEW_NAME_LENGTH,
   type AddLibraryItemRequest,
   type AttachLibraryFormatRequest,
   type ImportLibraryItemRequest,
@@ -256,6 +257,40 @@ describe("LibraryStore", () => {
     ).toBe(false);
     expect(removeSavedLibraryViewRequestSchema.safeParse({ id: "" }).success).toBe(false);
     expect(savedLibraryViewSchema.safeParse({ ...saved, definition: { ...saved.definition, version: 2 } }).success).toBe(false);
+  });
+
+  it("bounds saved-view names after trimming", () => {
+    const name = "v".repeat(MAX_SAVED_LIBRARY_VIEW_NAME_LENGTH);
+    const request = {
+      id: "view-1",
+      name,
+      definition: {
+        version: 1,
+        query: "",
+        filters: { authors: [], tags: [], series: [], languages: [], formats: [] },
+        sort: { field: "title", direction: "ascending" },
+      },
+    } as const;
+    const saved = {
+      ...request,
+      createdAt: "2026-07-20T10:00:00.000Z",
+      updatedAt: "2026-07-20T10:00:00.000Z",
+    } as const;
+
+    expect(saveSavedLibraryViewRequestSchema.parse({ ...request, name: ` ${name} ` }).name).toBe(
+      name,
+    );
+    expect(savedLibraryViewSchema.safeParse(saved).success).toBe(true);
+
+    const overLimitName = `${name}v`;
+    expect(
+      saveSavedLibraryViewRequestSchema.safeParse({ ...request, name: overLimitName }).success,
+    ).toBe(false);
+    expect(savedLibraryViewSchema.safeParse({ ...saved, name: overLimitName }).success).toBe(false);
+    expect(saveSavedLibraryViewRequestSchema.safeParse({ ...request, name: "   " }).success).toBe(
+      false,
+    );
+    expect(savedLibraryViewSchema.safeParse({ ...saved, name: "   " }).success).toBe(false);
   });
 
   it("keeps missing records JSON-safe across asynchronous boundaries", async () => {

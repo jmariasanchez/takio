@@ -11,8 +11,9 @@ canonical `LibraryItem` from `@takio/core`. Every operation returns a JSON-safe
 author, tag, series, language, and format facets and deterministic table
 sorting. Query text remains a literal substring rather than a structured search
 grammar. `SavedLibraryViewStore` persists versioned query, filter, and sort
-definitions; paging is deliberately session state rather than part of a saved
-view. `LibraryFormatReplacementStore` adds atomic format replacement. These
+definitions; names are trimmed, nonblank, and limited to 120 characters, while
+paging is deliberately session state rather than part of a saved view.
+`LibraryFormatReplacementStore` adds atomic format replacement. These
 capabilities are separate from `LibraryStore` so existing adapters remain
 compatible while runtimes adopt them.
 
