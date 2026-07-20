@@ -12,6 +12,7 @@ import { draftFor } from "../lib/metadata-draft";
 import {
   LibraryWorkspace,
   openSaveViewWithPaneClosed,
+  restoreSaveViewDialogFocus,
   resolveGeneralSend,
   type LibraryWorkspaceProps,
 } from "./LibraryWorkspace";
@@ -148,6 +149,27 @@ test("closes a compact pane before opening the saved-view modal so overlays cann
   );
 
   expect(calls).toEqual(["pane:closed", "dialog:open"]);
+});
+
+test("restores saved-view focus to the mounted compact trigger and uses search on desktop", () => {
+  const calls: string[] = [];
+  const compactTrigger = { focus: () => calls.push("compact-facets") };
+  const desktopSearch = { focus: () => calls.push("desktop-search") };
+
+  expect(
+    restoreSaveViewDialogFocus(true, false, compactTrigger, desktopSearch),
+  ).toBe(true);
+  expect(calls).toEqual(["compact-facets"]);
+
+  expect(
+    restoreSaveViewDialogFocus(true, false, null, desktopSearch),
+  ).toBe(true);
+  expect(calls).toEqual(["compact-facets", "desktop-search"]);
+
+  expect(
+    restoreSaveViewDialogFocus(false, false, compactTrigger, desktopSearch),
+  ).toBe(false);
+  expect(calls).toEqual(["compact-facets", "desktop-search"]);
 });
 
 test("composes authoritative facets, table query state, selection, and inspector", () => {

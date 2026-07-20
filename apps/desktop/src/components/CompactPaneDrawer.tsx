@@ -4,6 +4,8 @@ import "./CompactPaneDrawer.css";
 
 export type CompactPane = "facets" | "inspector";
 
+export const compactFacetsTriggerId = "library-compact-facets-trigger";
+
 export type CompactPaneDrawerProps = {
   readonly facets: ReactNode;
   readonly facetsLabel?: string;
@@ -128,6 +130,7 @@ export function CompactPaneDrawer({
       <div className="compact-pane-drawer__triggers" role="group" aria-label="Library panels">
         <button
           ref={facetsTrigger}
+          id={compactFacetsTriggerId}
           type="button"
           aria-controls={facetsPanelId}
           aria-expanded={openPane === "facets"}

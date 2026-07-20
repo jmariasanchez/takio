@@ -67,6 +67,7 @@ test("keeps the center primary and mounts one controlled compact drawer copy of 
 
   expect(markup).toContain('aria-label="Book results"');
   expect(markup).toContain('role="group" aria-label="Library panels"');
+  expect(markup).toContain('id="library-compact-facets-trigger"');
   expect(markup).toContain('aria-expanded="false" aria-haspopup="dialog">Filter library');
   expect(markup).toContain('aria-expanded="true" aria-haspopup="dialog">Book details');
   expect(markup).toContain('role="dialog" aria-labelledby=');

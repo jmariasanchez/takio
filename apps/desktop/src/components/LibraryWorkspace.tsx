@@ -12,7 +12,7 @@ import type {
   LibraryQuerySort,
   SavedLibraryView,
 } from "@takio/library-contract";
-import { useEffect, useState, type FormEvent, type RefObject } from "react";
+import { useEffect, useRef, useState, type FormEvent, type RefObject } from "react";
 
 import type { ConversionChoice } from "../lib/conversion-choices";
 import {
@@ -33,7 +33,10 @@ import { LibraryTable } from "./LibraryTable";
 import { LibraryWorkspaceLayout } from "./LibraryWorkspaceLayout";
 import { MetadataEditor } from "./MetadataEditor";
 import { SaveLibraryViewDialog } from "./SaveLibraryViewDialog";
-import type { CompactPane } from "./CompactPaneDrawer";
+import {
+  compactFacetsTriggerId,
+  type CompactPane,
+} from "./CompactPaneDrawer";
 import "./LibraryWorkspace.css";
 
 export type LibraryState = "loading" | "ready" | "error";
@@ -137,6 +140,22 @@ export function openSaveViewWithPaneClosed(
 ): void {
   closePane(null);
   openSaveView();
+}
+
+type FocusTarget = { focus: () => void };
+
+export function restoreSaveViewDialogFocus(
+  wasOpen: boolean,
+  open: boolean,
+  compactFacetsTrigger: FocusTarget | null,
+  desktopFallback: FocusTarget | null,
+): boolean {
+  if (!wasOpen || open) {
+    return false;
+  }
+
+  (compactFacetsTrigger ?? desktopFallback)?.focus();
+  return true;
 }
 
 function InspectorManagement({
@@ -487,6 +506,7 @@ export function LibraryWorkspace({
   onSetDraft,
 }: LibraryWorkspaceProps) {
   const [openPane, setOpenPane] = useState<CompactPane | null>(null);
+  const previousSaveViewDialogOpen = useRef(saveViewDialogOpen);
   const selectedItem = items.find(({ id }) => id === selectedItemId) ?? null;
   const busy = libraryState === "loading" || searchPending;
 
@@ -495,6 +515,24 @@ export function LibraryWorkspace({
       setOpenPane("inspector");
     }
   }, [conversionDraft]);
+
+  useEffect(() => {
+    const wasOpen = previousSaveViewDialogOpen.current;
+    previousSaveViewDialogOpen.current = saveViewDialogOpen;
+    if (!wasOpen || saveViewDialogOpen) {
+      return;
+    }
+
+    const frame = window.requestAnimationFrame(() => {
+      restoreSaveViewDialogFocus(
+        wasOpen,
+        saveViewDialogOpen,
+        document.getElementById(compactFacetsTriggerId),
+        searchInput.current,
+      );
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [saveViewDialogOpen, searchInput]);
 
   const facetSidebar = (
     <LibraryFacetSidebar
