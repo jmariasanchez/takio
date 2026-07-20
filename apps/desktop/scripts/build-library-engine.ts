@@ -1,13 +1,11 @@
 import { mkdir } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
-const portableMacOsDependencyPrefixes = [
-  "/System/Library/",
-  "/usr/lib/",
-  "@rpath/",
-  "@loader_path/",
-  "@executable_path/",
-];
+import {
+  assertMatchingBunVersion,
+  createCompileCommand,
+  nonportableMacOsDependencies,
+} from "./build-library-engine-helpers";
 
 function commandOutput(bytes: Uint8Array): string {
   return new TextDecoder().decode(bytes).trim();
@@ -25,15 +23,7 @@ function assertPortableMacOsDependencies(executablePath: string, label: string):
     );
   }
 
-  const dependencies = commandOutput(result.stdout)
-    .split("\n")
-    .slice(1)
-    .map((line) => line.trim().split(" (compatibility version", 1)[0])
-    .filter(Boolean);
-  const nonportableDependencies = dependencies.filter(
-    (dependency) =>
-      !portableMacOsDependencyPrefixes.some((prefix) => dependency.startsWith(prefix)),
-  );
+  const nonportableDependencies = nonportableMacOsDependencies(commandOutput(result.stdout));
   if (nonportableDependencies.length > 0) {
     throw new Error(
       [
@@ -63,14 +53,7 @@ function verifyBunVersion(executablePath: string): void {
 
   const actualVersion = commandOutput(result.stdout);
   const expectedVersion = process.versions.bun;
-  if (actualVersion !== expectedVersion) {
-    throw new Error(
-      "Bun compile executable version mismatch: expected " +
-        expectedVersion +
-        ", got " +
-        actualVersion,
-    );
-  }
+  assertMatchingBunVersion(expectedVersion, actualVersion);
 }
 
 const triples: Record<string, string> = {
@@ -101,17 +84,12 @@ if (process.platform === "darwin") {
 
 await mkdir(binariesDirectory, { recursive: true });
 
-const compileCommand = [
+const compileCommand = createCompileCommand(
   process.execPath,
-  "build",
-  "--compile",
   join(import.meta.dir, "../../cli/src/main.ts"),
-  "--outfile",
   outputPath,
-];
-if (compileExecutableOverride) {
-  compileCommand.splice(3, 0, "--compile-executable-path=" + compileExecutablePath);
-}
+  compileExecutableOverride ? compileExecutablePath : undefined,
+);
 const processResult = Bun.spawn({
   cmd: compileCommand,
   stdout: "inherit",
