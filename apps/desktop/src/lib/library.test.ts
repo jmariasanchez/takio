@@ -1,7 +1,10 @@
 import { expect, test } from "bun:test";
 import type {
+  KeepDuplicatePairRequest,
+  ListDuplicateCandidatesRequest,
   ListLibraryTrashRequest,
   LibraryMetadataPatch,
+  MergeDuplicatePairRequest,
   QueryLibraryItemsRequest,
   SaveSavedLibraryViewRequest,
 } from "@takio/library-contract";
@@ -13,9 +16,12 @@ import {
   getLibraryItem,
   importLibraryItem,
   importLibraryItems,
+  keepDuplicatePair,
+  listDuplicateCandidates,
   listLibraryItems,
   listLibraryTrash,
   listSavedLibraryViews,
+  mergeDuplicatePair,
   openLibraryItem,
   parseLibraryTags,
   purgeLibraryItem,
@@ -24,6 +30,7 @@ import {
   removeLibraryFormat,
   removeLibraryItem,
   removeSavedLibraryView,
+  reopenDuplicatePair,
   restoreLibraryItem,
   saveSavedLibraryView,
   searchLibraryItems,
@@ -66,6 +73,56 @@ const validItem = {
   coverPath: "/Covers/item-1.jpg",
   tags: ["Classic"],
   updatedAt: "2026-07-19T12:00:00.000Z",
+} as const;
+
+const duplicateItem = {
+  ...validItem,
+  id: "item-2",
+  coverPath: "/Covers/item-2.jpg",
+} as const;
+
+const duplicateReviewToken = "a".repeat(64);
+
+const duplicateListRequest = {
+  page: { offset: 0, limit: 25 },
+  disposition: "unreviewed",
+} as const satisfies ListDuplicateCandidatesRequest;
+
+const duplicateReviewRequest = {
+  leftId: validItem.id,
+  rightId: duplicateItem.id,
+  reviewToken: duplicateReviewToken,
+} as const satisfies KeepDuplicatePairRequest;
+
+const duplicateMergeRequest = {
+  targetId: validItem.id,
+  sourceId: duplicateItem.id,
+  reviewToken: duplicateReviewToken,
+  metadata: { title: validItem.title, tags: validItem.tags },
+  addSourceFormats: ["pdf"],
+  cover: "target",
+} as const satisfies MergeDuplicatePairRequest;
+
+const duplicateCandidatePage = {
+  candidates: [
+    {
+      left: validItem,
+      right: duplicateItem,
+      signals: [
+        {
+          kind: "same-content",
+          leftFormat: "epub",
+          rightFormat: "epub",
+          bytes: 42,
+          sha256: "b".repeat(64),
+        },
+      ],
+      reviewToken: duplicateReviewToken,
+    },
+  ],
+  total: 1,
+  page: duplicateListRequest.page,
+  scan: { filesHashed: 2, fingerprintsReused: 0, unreadableFormats: 0 },
 } as const;
 
 const queryRequest = {
@@ -317,6 +374,168 @@ test("uses only the fixed desktop library commands and argument names", async ()
   expect((updateArgs?.patch as LibraryMetadataPatch | undefined)?.identifiers).toBe(
     metadataPatch.identifiers,
   );
+});
+
+test("uses fixed duplicate desktop commands and one request argument", async () => {
+  const calls: Array<{ command: string; args?: Record<string, unknown> }> = [];
+  const invokeCommand: LibraryInvoker = async (command, args) => {
+    calls.push({ command, args });
+    if (command === "library_duplicates_list") {
+      return { ok: true, value: duplicateCandidatePage } as never;
+    }
+    if (command === "library_duplicates_merge") {
+      return {
+        ok: true,
+        value: {
+          target: validItem,
+          trashedSource: duplicateItem,
+          cleanupPending: false,
+        },
+      } as never;
+    }
+    return { ok: true, value: null } as never;
+  };
+
+  await listDuplicateCandidates(duplicateListRequest, invokeCommand);
+  await keepDuplicatePair(duplicateReviewRequest, invokeCommand);
+  await reopenDuplicatePair(duplicateReviewRequest, invokeCommand);
+  await mergeDuplicatePair(duplicateMergeRequest, invokeCommand);
+
+  expect(calls).toEqual([
+    {
+      command: "library_duplicates_list",
+      args: { request: duplicateListRequest },
+    },
+    {
+      command: "library_duplicates_keep",
+      args: { request: duplicateReviewRequest },
+    },
+    {
+      command: "library_duplicates_reopen",
+      args: { request: duplicateReviewRequest },
+    },
+    {
+      command: "library_duplicates_merge",
+      args: { request: duplicateMergeRequest },
+    },
+  ]);
+});
+
+test("rejects invalid duplicate requests before desktop invocation", async () => {
+  let invocations = 0;
+  const invokeCommand: LibraryInvoker = async () => {
+    invocations += 1;
+    return { ok: true, value: null } as never;
+  };
+
+  expect(
+    await listDuplicateCandidates(
+      {
+        ...duplicateListRequest,
+        page: { ...duplicateListRequest.page, limit: 101 },
+      } as ListDuplicateCandidatesRequest,
+      invokeCommand,
+    ),
+  ).toEqual({ ok: false, error: { code: "invalid-arguments" } });
+  expect(
+    await keepDuplicatePair(
+      { ...duplicateReviewRequest, rightId: duplicateReviewRequest.leftId },
+      invokeCommand,
+    ),
+  ).toEqual({ ok: false, error: { code: "invalid-arguments" } });
+  expect(
+    await reopenDuplicatePair(
+      { ...duplicateReviewRequest, reviewToken: "A".repeat(64) },
+      invokeCommand,
+    ),
+  ).toEqual({ ok: false, error: { code: "invalid-arguments" } });
+  expect(
+    await mergeDuplicatePair(
+      { ...duplicateMergeRequest, sourceId: duplicateMergeRequest.targetId },
+      invokeCommand,
+    ),
+  ).toEqual({ ok: false, error: { code: "invalid-arguments" } });
+  expect(invocations).toBe(0);
+});
+
+test("decodes duplicate candidate pages with the exact requested page", async () => {
+  const result = { ok: true, value: duplicateCandidatePage } as const;
+  expect(
+    await listDuplicateCandidates(duplicateListRequest, async () => result as never),
+  ).toBe(result);
+
+  for (const value of [
+    {
+      ...duplicateCandidatePage,
+      page: { ...duplicateCandidatePage.page, offset: 1 },
+    },
+    { ...duplicateCandidatePage, extra: true },
+    { ...duplicateCandidatePage, total: 0 },
+    {
+      ...duplicateCandidatePage,
+      candidates: [
+        {
+          ...duplicateCandidatePage.candidates[0],
+          reviewToken: "not-a-review-token",
+        },
+      ],
+    },
+  ]) {
+    expect(
+      await listDuplicateCandidates(
+        duplicateListRequest,
+        async () => ({ ok: true, value }) as never,
+      ),
+    ).toEqual({ ok: false, error: { code: "protocol-error" } });
+  }
+});
+
+test("requires exact null duplicate disposition success values", async () => {
+  const success = { ok: true, value: null } as const;
+  expect(
+    await keepDuplicatePair(duplicateReviewRequest, async () => success as never),
+  ).toBe(success);
+  expect(
+    await reopenDuplicatePair(duplicateReviewRequest, async () => success as never),
+  ).toBe(success);
+
+  for (const operation of [keepDuplicatePair, reopenDuplicatePair]) {
+    for (const value of [{}, false, { kept: true }]) {
+      expect(
+        await operation(
+          duplicateReviewRequest,
+          async () => ({ ok: true, value }) as never,
+        ),
+      ).toEqual({ ok: false, error: { code: "protocol-error" } });
+    }
+  }
+});
+
+test("requires exact duplicate merge keys and request-matched item IDs", async () => {
+  const value = {
+    target: validItem,
+    trashedSource: duplicateItem,
+    cleanupPending: false,
+  } as const;
+  const result = { ok: true, value } as const;
+  expect(
+    await mergeDuplicatePair(duplicateMergeRequest, async () => result as never),
+  ).toBe(result);
+
+  for (const malformedValue of [
+    { ...value, extra: true },
+    { ...value, target: duplicateItem },
+    { ...value, trashedSource: validItem },
+    { ...value, cleanupPending: "no" },
+    { target: validItem, cleanupPending: false },
+  ]) {
+    expect(
+      await mergeDuplicatePair(
+        duplicateMergeRequest,
+        async () => ({ ok: true, value: malformedValue }) as never,
+      ),
+    ).toEqual({ ok: false, error: { code: "protocol-error" } });
+  }
 });
 
 test("gets one item with strict success, missing, and domain responses", async () => {

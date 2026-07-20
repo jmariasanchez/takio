@@ -225,6 +225,32 @@ fn library_query_arguments(request: Value) -> Result<Vec<String>, ()> {
     ])
 }
 
+fn library_duplicates_arguments(action: &str, request: Value) -> Result<Vec<String>, ()> {
+    Ok(vec![
+        "library".into(),
+        "duplicates".into(),
+        action.into(),
+        "--request-json".into(),
+        serialize_nonempty_object(request)?,
+    ])
+}
+
+fn library_duplicates_list_arguments(request: Value) -> Result<Vec<String>, ()> {
+    library_duplicates_arguments("list", request)
+}
+
+fn library_duplicates_keep_arguments(request: Value) -> Result<Vec<String>, ()> {
+    library_duplicates_arguments("keep", request)
+}
+
+fn library_duplicates_reopen_arguments(request: Value) -> Result<Vec<String>, ()> {
+    library_duplicates_arguments("reopen", request)
+}
+
+fn library_duplicates_merge_arguments(request: Value) -> Result<Vec<String>, ()> {
+    library_duplicates_arguments("merge", request)
+}
+
 fn library_trash_arguments(action: &str, request: Value) -> Result<Vec<String>, ()> {
     Ok(vec![
         "library".into(),
@@ -441,6 +467,42 @@ pub async fn library_update(app: tauri::AppHandle, id: String, patch: Value) -> 
 #[tauri::command]
 pub async fn library_query(app: tauri::AppHandle, request: Value) -> Value {
     let Ok(args) = library_query_arguments(request) else {
+        return failure("invalid-arguments");
+    };
+
+    run_engine(&app, args).await
+}
+
+#[tauri::command]
+pub async fn library_duplicates_list(app: tauri::AppHandle, request: Value) -> Value {
+    let Ok(args) = library_duplicates_list_arguments(request) else {
+        return failure("invalid-arguments");
+    };
+
+    run_engine(&app, args).await
+}
+
+#[tauri::command]
+pub async fn library_duplicates_keep(app: tauri::AppHandle, request: Value) -> Value {
+    let Ok(args) = library_duplicates_keep_arguments(request) else {
+        return failure("invalid-arguments");
+    };
+
+    run_engine(&app, args).await
+}
+
+#[tauri::command]
+pub async fn library_duplicates_reopen(app: tauri::AppHandle, request: Value) -> Value {
+    let Ok(args) = library_duplicates_reopen_arguments(request) else {
+        return failure("invalid-arguments");
+    };
+
+    run_engine(&app, args).await
+}
+
+#[tauri::command]
+pub async fn library_duplicates_merge(app: tauri::AppHandle, request: Value) -> Value {
+    let Ok(args) = library_duplicates_merge_arguments(request) else {
         return failure("invalid-arguments");
     };
 
@@ -956,6 +1018,43 @@ mod tests {
     }
 
     #[test]
+    fn builds_fixed_duplicate_review_arguments_with_one_literal_json_value() {
+        let request = json!({
+            "leftId": "book --request-json 'one'",
+            "rightId": "book $(touch /tmp/nope)\n📚",
+            "reviewToken": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        });
+        let request_json = serde_json::to_string(&request).unwrap();
+
+        for (build, action) in [
+            (
+                library_duplicates_list_arguments as fn(Value) -> Result<Vec<String>, ()>,
+                "list",
+            ),
+            (library_duplicates_keep_arguments, "keep"),
+            (library_duplicates_reopen_arguments, "reopen"),
+            (library_duplicates_merge_arguments, "merge"),
+        ] {
+            let arguments = build(request.clone()).unwrap();
+            assert_eq!(
+                arguments,
+                vec![
+                    "library",
+                    "duplicates",
+                    action,
+                    "--request-json",
+                    request_json.as_str(),
+                ]
+            );
+            assert_eq!(arguments.len(), 5);
+            assert_eq!(
+                serde_json::from_str::<Value>(&arguments[4]).unwrap(),
+                request
+            );
+        }
+    }
+
+    #[test]
     fn builds_fixed_trash_lifecycle_arguments_with_one_literal_json_value() {
         let list_request = json!({ "page": { "offset": 0, "limit": 25 } });
         let list_json = serde_json::to_string(&list_request).unwrap();
@@ -1000,11 +1099,15 @@ mod tests {
 
     #[test]
     fn rejects_empty_nonobject_and_oversized_json_requests() {
-        let builders: [fn(Value) -> Result<Vec<String>, ()>; 8] = [
+        let builders: [fn(Value) -> Result<Vec<String>, ()>; 12] = [
             library_query_arguments,
             library_saved_view_save_arguments,
             library_saved_view_remove_arguments,
             library_replace_format_arguments,
+            library_duplicates_list_arguments,
+            library_duplicates_keep_arguments,
+            library_duplicates_reopen_arguments,
+            library_duplicates_merge_arguments,
             library_trash_list_arguments,
             library_trash_move_arguments,
             library_trash_restore_arguments,

@@ -2,22 +2,31 @@ import { invoke } from "@tauri-apps/api/core";
 import { FORMAT_IDS, libraryItemSchema, normalizeTags } from "@takio/core";
 import type { FormatId, LibraryItem } from "@takio/core";
 import {
+  duplicateCandidatePageSchema,
+  keepDuplicatePairRequestSchema,
   libraryImportReportSchema,
   libraryQueryPageSchema,
   libraryTrashPageSchema,
   listLibraryTrashRequestSchema,
+  listDuplicateCandidatesRequestSchema,
+  mergeDuplicatePairRequestSchema,
   purgeLibraryItemRequestSchema,
   queryLibraryItemsRequestSchema,
   replaceLibraryFormatRequestSchema,
   removeSavedLibraryViewRequestSchema,
+  reopenDuplicatePairRequestSchema,
   restoreLibraryItemRequestSchema,
   savedLibraryViewSchema,
   saveSavedLibraryViewRequestSchema,
   trashLibraryItemRequestSchema,
 } from "@takio/library-contract";
 import type {
+  KeepDuplicatePairRequest,
   LibraryBatchImportWireResult,
   LibraryCoverWireResult,
+  LibraryDuplicateCandidatesWireResult,
+  LibraryDuplicateDispositionWireResult,
+  LibraryDuplicateMergeWireResult,
   LibraryImportWireResult,
   LibraryListWireResult,
   LibraryMetadataPatch,
@@ -33,11 +42,14 @@ import type {
   LibraryTrashListWireResult,
   LibraryTrashWireResult,
   LibraryUpdateWireResult,
+  ListDuplicateCandidatesRequest,
   ListLibraryTrashRequest,
+  MergeDuplicatePairRequest,
   PurgeLibraryItemRequest,
   QueryLibraryItemsRequest,
   ReplaceLibraryFormatRequest,
   RemoveSavedLibraryViewRequest,
+  ReopenDuplicatePairRequest,
   RestoreLibraryItemRequest,
   SaveSavedLibraryViewRequest,
   TrashLibraryItemRequest,
@@ -73,6 +85,15 @@ export type DesktopLibraryUpdateResult = LibraryUpdateWireResult | LibraryBridge
 export type DesktopLibraryCoverResult = LibraryCoverWireResult | LibraryBridgeFailure;
 export type DesktopLibrarySearchResult = LibrarySearchWireResult | LibraryBridgeFailure;
 export type DesktopLibraryQueryResult = LibraryQueryWireResult | LibraryBridgeFailure;
+export type DesktopLibraryDuplicateCandidatesResult =
+  | LibraryDuplicateCandidatesWireResult
+  | LibraryBridgeFailure;
+export type DesktopLibraryDuplicateDispositionResult =
+  | LibraryDuplicateDispositionWireResult
+  | LibraryBridgeFailure;
+export type DesktopLibraryDuplicateMergeResult =
+  | LibraryDuplicateMergeWireResult
+  | LibraryBridgeFailure;
 export type DesktopLibraryTrashListResult =
   LibraryTrashListWireResult | LibraryBridgeFailure;
 export type DesktopLibraryTrashResult =
@@ -125,7 +146,7 @@ function isFormatId(value: unknown): value is FormatId {
   return typeof value === "string" && FORMAT_IDS.some((format) => format === value);
 }
 
-function isLibraryItem(value: unknown): boolean {
+function isLibraryItem(value: unknown): value is LibraryItem {
   return (
     isRecord(value) &&
     Array.isArray(value.tags) &&
@@ -195,6 +216,25 @@ function isSavedViewValue(value: unknown, nullable: boolean): boolean {
     hasOnlyKey(value, "view") &&
     (savedLibraryViewSchema.safeParse(value.view).success ||
       (nullable && value.view === null))
+  );
+}
+
+function isDuplicateMergeValue(
+  value: unknown,
+  targetId: string,
+  sourceId: string,
+): boolean {
+  return (
+    isRecord(value) &&
+    Object.keys(value).length === 3 &&
+    Object.hasOwn(value, "target") &&
+    Object.hasOwn(value, "trashedSource") &&
+    Object.hasOwn(value, "cleanupPending") &&
+    isLibraryItem(value.target) &&
+    value.target.id === targetId &&
+    isLibraryItem(value.trashedSource) &&
+    value.trashedSource.id === sourceId &&
+    typeof value.cleanupPending === "boolean"
   );
 }
 
@@ -338,6 +378,69 @@ export async function queryLibraryItems(
       parsed.data.page.limit === request.page.limit
     );
   });
+}
+
+export async function listDuplicateCandidates(
+  request: ListDuplicateCandidatesRequest,
+  invokeCommand: LibraryInvoker = invokeTauri,
+): Promise<DesktopLibraryDuplicateCandidatesResult> {
+  if (!listDuplicateCandidatesRequestSchema.safeParse(request).success) {
+    return invalidArguments();
+  }
+
+  const result = await invokeCommand<unknown>("library_duplicates_list", { request });
+  return decodeLibraryResult<LibraryDuplicateCandidatesWireResult>(result, (value) => {
+    const parsed = duplicateCandidatePageSchema.safeParse(value);
+    return (
+      parsed.success &&
+      parsed.data.page.offset === request.page.offset &&
+      parsed.data.page.limit === request.page.limit
+    );
+  });
+}
+
+export async function keepDuplicatePair(
+  request: KeepDuplicatePairRequest,
+  invokeCommand: LibraryInvoker = invokeTauri,
+): Promise<DesktopLibraryDuplicateDispositionResult> {
+  if (!keepDuplicatePairRequestSchema.safeParse(request).success) {
+    return invalidArguments();
+  }
+
+  const result = await invokeCommand<unknown>("library_duplicates_keep", { request });
+  return decodeLibraryResult<LibraryDuplicateDispositionWireResult>(
+    result,
+    (value) => value === null,
+  );
+}
+
+export async function reopenDuplicatePair(
+  request: ReopenDuplicatePairRequest,
+  invokeCommand: LibraryInvoker = invokeTauri,
+): Promise<DesktopLibraryDuplicateDispositionResult> {
+  if (!reopenDuplicatePairRequestSchema.safeParse(request).success) {
+    return invalidArguments();
+  }
+
+  const result = await invokeCommand<unknown>("library_duplicates_reopen", { request });
+  return decodeLibraryResult<LibraryDuplicateDispositionWireResult>(
+    result,
+    (value) => value === null,
+  );
+}
+
+export async function mergeDuplicatePair(
+  request: MergeDuplicatePairRequest,
+  invokeCommand: LibraryInvoker = invokeTauri,
+): Promise<DesktopLibraryDuplicateMergeResult> {
+  if (!mergeDuplicatePairRequestSchema.safeParse(request).success) {
+    return invalidArguments();
+  }
+
+  const result = await invokeCommand<unknown>("library_duplicates_merge", { request });
+  return decodeLibraryResult<LibraryDuplicateMergeWireResult>(result, (value) =>
+    isDuplicateMergeValue(value, request.targetId, request.sourceId),
+  );
 }
 
 export async function listLibraryTrash(
