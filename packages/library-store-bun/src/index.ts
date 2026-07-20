@@ -2,13 +2,17 @@ import {
   bookFormatSchema,
   bookFormatsSchema,
   detectFormat,
+  FORMAT_CATALOG,
   FORMAT_IDS,
   libraryItemSchema,
+  sanitizeDestinationFileName,
+  type BookFormatProvenance,
   type FormatId,
   type LibraryItem,
 } from "@takio/core";
 import {
   duplicateCandidatePageSchema,
+  exportLibraryItemsRequestSchema,
   keepDuplicatePairRequestSchema,
   listDuplicateCandidatesRequestSchema,
   libraryMetadataPatchSchema,
@@ -41,10 +45,14 @@ import type {
   ImportLibraryItemResult,
   ImportLibraryItemsRequest,
   ImportLibraryItemsResult,
+  ExportLibraryItemsRequest,
+  ExportLibraryItemsResult,
   KeepDuplicatePairRequest,
   KeepDuplicatePairResult,
   LibraryBatchImportStore,
   LibraryDuplicateReviewStore,
+  LibraryExportEntryOutcome,
+  LibraryExportStore,
   LibraryImportEntryOutcome,
   LibraryStore,
   LibraryStoreErrorCode,
@@ -96,13 +104,15 @@ import type {
   UpdateLibraryItemResult,
 } from "@takio/library-contract";
 import { Database } from "bun:sqlite";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   closeSync,
   constants,
   copyFileSync,
   existsSync,
   fstatSync,
+  fsyncSync,
+  linkSync,
   lstatSync,
   mkdirSync,
   openSync,
@@ -113,6 +123,7 @@ import {
   rmSync,
   statSync,
   unlinkSync,
+  writeSync,
   writeFileSync,
 } from "node:fs";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
@@ -127,6 +138,7 @@ const duplicateFormat = Symbol("duplicate-format");
 const sourceChanged = Symbol("source-changed");
 const installedArtifactMismatch = Symbol("installed-artifact-mismatch");
 const duplicateMergeRollback = Symbol("duplicate-merge-rollback");
+const invalidStoredExport = Symbol("invalid-stored-export");
 
 type StoredLibraryItem = {
   id: unknown;
@@ -381,6 +393,203 @@ function fingerprintFile(
   } finally {
     if (descriptor !== undefined) {
       closeSync(descriptor);
+    }
+  }
+}
+
+const MAX_EXPORT_FILE_NAME_BYTES = 240;
+
+type ExportCopyResult =
+  | { status: "exported"; bytes: number; sha256: string }
+  | { status: "skipped" }
+  | {
+      status: "failed";
+      code: "source-unavailable" | "source-changed" | "destination-unavailable";
+    };
+
+function hasErrorCode(error: unknown, code: string): boolean {
+  return typeof error === "object" && error !== null && "code" in error && error.code === code;
+}
+
+function sameFile(
+  left: ReturnType<typeof fstatSync>,
+  right: ReturnType<typeof fstatSync>,
+): boolean {
+  return (
+    left.isFile() &&
+    right.isFile() &&
+    left.dev === right.dev &&
+    left.ino === right.ino &&
+    left.size === right.size &&
+    left.mtimeMs === right.mtimeMs &&
+    left.ctimeMs === right.ctimeMs
+  );
+}
+
+function truncateUtf8(value: string, maxBytes: number): string {
+  let result = "";
+  let bytes = 0;
+  for (const character of value) {
+    const characterBytes = Buffer.byteLength(character);
+    if (bytes + characterBytes > maxBytes) {
+      break;
+    }
+    result += character;
+    bytes += characterBytes;
+  }
+  return result;
+}
+
+function exportFileName(title: string, itemId: string, format: FormatId): string {
+  const extension = FORMAT_CATALOG.find(({ id }) => id === format)!.extensions[0]!;
+  const identity = createHash("sha256").update(itemId).digest("hex");
+  const suffix = ` [${identity}]${extension}`;
+  const sanitized = sanitizeDestinationFileName(title.normalize("NFC"))
+    ?.trim()
+    .replace(/[. ]+$/u, "");
+  const stem = truncateUtf8(
+    sanitized || "Untitled",
+    MAX_EXPORT_FILE_NAME_BYTES - Buffer.byteLength(suffix),
+  ).replace(/[. ]+$/u, "");
+  return `${stem || "Untitled"}${suffix}`;
+}
+
+function copyExportFile(sourcePath: string, destinationPath: string): ExportCopyResult {
+  try {
+    lstatSync(destinationPath);
+    return { status: "skipped" };
+  } catch (error) {
+    if (!hasErrorCode(error, "ENOENT")) {
+      return { status: "failed", code: "destination-unavailable" };
+    }
+  }
+
+  let source: number | undefined;
+  let canonicalSourcePath: string;
+  try {
+    canonicalSourcePath = realpathSync(sourcePath);
+    source = openSync(canonicalSourcePath, constants.O_RDONLY | constants.O_NOFOLLOW);
+  } catch {
+    return { status: "failed", code: "source-unavailable" };
+  }
+
+  let partial: number | undefined;
+  let partialPath: string | undefined;
+  try {
+    const sourceBefore = fstatSync(source);
+    if (!sourceBefore.isFile() || sourceBefore.size <= 0) {
+      return { status: "failed", code: "source-unavailable" };
+    }
+
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      const candidate = join(dirname(destinationPath), `.takio-export-${randomUUID()}.partial`);
+      try {
+        partial = openSync(
+          candidate,
+          constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
+          0o600,
+        );
+        partialPath = candidate;
+        break;
+      } catch (error) {
+        if (!hasErrorCode(error, "EEXIST")) {
+          return { status: "failed", code: "destination-unavailable" };
+        }
+      }
+    }
+    if (partial === undefined || partialPath === undefined) {
+      return { status: "failed", code: "destination-unavailable" };
+    }
+
+    const hash = createHash("sha256");
+    const buffer = Buffer.allocUnsafe(64 * 1024);
+    let bytes = 0;
+    while (true) {
+      let read: number;
+      try {
+        read = readSync(source, buffer, 0, buffer.length, null);
+      } catch {
+        return { status: "failed", code: "source-unavailable" };
+      }
+      if (read === 0) {
+        break;
+      }
+      hash.update(buffer.subarray(0, read));
+      bytes += read;
+      let written = 0;
+      try {
+        while (written < read) {
+          const count = writeSync(partial, buffer, written, read - written);
+          if (count === 0) {
+            return { status: "failed", code: "destination-unavailable" };
+          }
+          written += count;
+        }
+      } catch {
+        return { status: "failed", code: "destination-unavailable" };
+      }
+    }
+
+    let sourceAfter: ReturnType<typeof fstatSync>;
+    let sourceCurrent: ReturnType<typeof lstatSync>;
+    try {
+      sourceAfter = fstatSync(source);
+      sourceCurrent = lstatSync(canonicalSourcePath);
+    } catch {
+      return { status: "failed", code: "source-changed" };
+    }
+    if (
+      !sameFile(sourceBefore, sourceAfter) ||
+      !sameFile(sourceAfter, sourceCurrent) ||
+      sourceCurrent.isSymbolicLink() ||
+      bytes !== sourceAfter.size
+    ) {
+      return { status: "failed", code: "source-changed" };
+    }
+
+    const sha256 = hash.digest("hex");
+    try {
+      fsyncSync(partial);
+      closeSync(partial);
+      partial = undefined;
+      const verification = fingerprintFile(partialPath);
+      if (
+        !verification.ok ||
+        verification.value.bytes !== bytes ||
+        verification.value.sha256 !== sha256
+      ) {
+        return { status: "failed", code: "destination-unavailable" };
+      }
+      linkSync(partialPath, destinationPath);
+      const directory = openSync(dirname(destinationPath), constants.O_RDONLY);
+      try {
+        fsyncSync(directory);
+      } finally {
+        closeSync(directory);
+      }
+    } catch (error) {
+      return hasErrorCode(error, "EEXIST")
+        ? { status: "skipped" }
+        : { status: "failed", code: "destination-unavailable" };
+    }
+    return { status: "exported", bytes, sha256 };
+  } catch {
+    return { status: "failed", code: "source-unavailable" };
+  } finally {
+    if (partial !== undefined) {
+      closeSync(partial);
+    }
+    if (source !== undefined) {
+      closeSync(source);
+    }
+    if (partialPath !== undefined) {
+      try {
+        unlinkSync(partialPath);
+      } catch (error) {
+        if (!hasErrorCode(error, "ENOENT")) {
+          // The exported target is independent of best-effort partial cleanup.
+        }
+      }
     }
   }
 }
@@ -2581,6 +2790,7 @@ export class BunSqliteLibraryStore
     LibraryStore,
     LibraryBatchImportStore,
     LibraryDuplicateReviewStore,
+    LibraryExportStore,
     LibraryFormatReplacementStore,
     LibraryItemTrashStore,
     LibraryQueryStore,
@@ -3269,6 +3479,150 @@ export class BunSqliteLibraryStore
         imported: outcomes.filter(({ status }) => status === "imported").length,
         skipped: outcomes.filter(({ status }) => status === "skipped").length,
         duplicates: outcomes.filter(({ status }) => status === "duplicate").length,
+        failed: outcomes.filter(({ status }) => status === "failed").length,
+      },
+    });
+  }
+
+  async exportMany(request: ExportLibraryItemsRequest): Promise<ExportLibraryItemsResult> {
+    if (!this.#database) {
+      return failure("storage-unavailable");
+    }
+    const parsedRequest = exportLibraryItemsRequestSchema.safeParse(request);
+    if (!parsedRequest.success) {
+      return failure("invalid-arguments");
+    }
+
+    let destinationDirectory: string;
+    try {
+      destinationDirectory = realpathSync(parsedRequest.data.destinationPath);
+      if (!lstatSync(destinationDirectory).isDirectory()) {
+        return failure("invalid-arguments");
+      }
+    } catch {
+      return failure("invalid-arguments");
+    }
+
+    type PreparedFormat = {
+      format: FormatId;
+      provenance: BookFormatProvenance;
+      sourcePath: string | null;
+    };
+    type PreparedItem =
+      | { itemId: string; missing: true }
+      | { itemId: string; missing: false; title: string; formats: PreparedFormat[] };
+    let items: PreparedItem[];
+    try {
+      items = this.#database.transaction(() =>
+        parsedRequest.data.ids.map((itemId): PreparedItem => {
+          const item = this.#database!
+            .query<{ title: unknown }, [string]>(`
+              SELECT title
+              FROM library_items
+              WHERE id = ? AND trashed_at IS NULL
+            `)
+            .get(itemId);
+          if (!item) {
+            return { itemId, missing: true };
+          }
+          if (typeof item.title !== "string" || item.title.length === 0) {
+            throw invalidStoredExport;
+          }
+
+          const rows = this.#database!
+            .query<StoredPositionedBookFormat, [string]>(`
+              SELECT source_path AS sourcePath, format, added_at AS addedAt,
+                provenance, position
+              FROM library_item_formats
+              WHERE library_item_id = ?
+              ORDER BY position
+            `)
+            .all(itemId);
+          if (rows.length === 0) {
+            throw invalidStoredExport;
+          }
+          const formats = rows.map((row, position): PreparedFormat => {
+            if (
+              row.position !== position ||
+              !FORMAT_IDS.includes(row.format as FormatId) ||
+              (row.provenance !== "managed" && row.provenance !== "referenced")
+            ) {
+              throw invalidStoredExport;
+            }
+            const format = row.format as FormatId;
+            const provenance = row.provenance as BookFormatProvenance;
+            let sourcePath: string | null = null;
+            if (typeof row.sourcePath === "string" && row.sourcePath.length > 0) {
+              try {
+                sourcePath =
+                  provenance === "managed"
+                    ? resolveManagedFormatPath(
+                        this.#itemsDirectory,
+                        row.sourcePath,
+                        format,
+                        false,
+                      )
+                    : row.sourcePath;
+              } catch {
+                sourcePath = null;
+              }
+            }
+            return { format, provenance, sourcePath };
+          });
+          return { itemId, missing: false, title: item.title, formats };
+        }),
+      )();
+    } catch (error) {
+      return failure(error === invalidStoredExport ? "invalid-stored-data" : "storage-unavailable");
+    }
+
+    const outcomes: LibraryExportEntryOutcome[] = [];
+    for (const item of items) {
+      if (item.missing) {
+        outcomes.push({ status: "failed", itemId: item.itemId, code: "item-not-found" });
+        continue;
+      }
+      for (const format of item.formats) {
+        const destinationPath = join(
+          destinationDirectory,
+          exportFileName(item.title, item.itemId, format.format),
+        );
+        const target = {
+          itemId: item.itemId,
+          format: format.format,
+          provenance: format.provenance,
+          destinationPath,
+        } as const;
+        if (format.sourcePath === null) {
+          outcomes.push({
+            status: "failed",
+            ...target,
+            code: "source-unavailable",
+          });
+          continue;
+        }
+        const copied = copyExportFile(format.sourcePath, destinationPath);
+        if (copied.status === "exported") {
+          outcomes.push({
+            status: "exported",
+            ...target,
+            bytes: copied.bytes,
+            sha256: copied.sha256,
+          });
+        } else if (copied.status === "skipped") {
+          outcomes.push({ status: "skipped", ...target, reason: "destination-exists" });
+        } else {
+          outcomes.push({ status: "failed", ...target, code: copied.code });
+        }
+      }
+    }
+
+    return success({
+      outcomes,
+      counts: {
+        total: outcomes.length,
+        exported: outcomes.filter(({ status }) => status === "exported").length,
+        skipped: outcomes.filter(({ status }) => status === "skipped").length,
         failed: outcomes.filter(({ status }) => status === "failed").length,
       },
     });
