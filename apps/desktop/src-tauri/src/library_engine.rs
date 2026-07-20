@@ -5,7 +5,7 @@ use tauri_plugin_shell::{process::CommandEvent, ShellExt};
 
 const ENGINE_NAME: &str = "takio-library-engine";
 const MAX_OUTPUT_BYTES: usize = 8 * 1024 * 1024;
-const MAX_PATCH_JSON_BYTES: usize = 16 * 1024;
+const MAX_JSON_ARGUMENT_BYTES: usize = 16 * 1024;
 
 fn failure(code: &str) -> Value {
     json!({ "ok": false, "error": { "code": code } })
@@ -152,19 +152,25 @@ fn jobs_cancel_arguments(id: String) -> Vec<String> {
     vec!["jobs".into(), "cancel".into(), "--id".into(), id]
 }
 
-fn update_arguments(id: String, patch: Value) -> Result<Vec<String>, ()> {
-    validate_nonempty(&id)?;
-    let Value::Object(fields) = &patch else {
+fn serialize_nonempty_object(value: Value) -> Result<String, ()> {
+    let Value::Object(fields) = &value else {
         return Err(());
     };
     if fields.is_empty() {
         return Err(());
     }
 
-    let patch_json = serde_json::to_string(&patch).map_err(|_| ())?;
-    if patch_json.len() > MAX_PATCH_JSON_BYTES {
+    let value_json = serde_json::to_string(&value).map_err(|_| ())?;
+    if value_json.len() > MAX_JSON_ARGUMENT_BYTES {
         return Err(());
     }
+
+    Ok(value_json)
+}
+
+fn update_arguments(id: String, patch: Value) -> Result<Vec<String>, ()> {
+    validate_nonempty(&id)?;
+    let patch_json = serialize_nonempty_object(patch)?;
 
     Ok(vec![
         "library".into(),
@@ -173,6 +179,39 @@ fn update_arguments(id: String, patch: Value) -> Result<Vec<String>, ()> {
         id,
         "--patch-json".into(),
         patch_json,
+    ])
+}
+
+fn library_query_arguments(request: Value) -> Result<Vec<String>, ()> {
+    Ok(vec![
+        "library".into(),
+        "query".into(),
+        "--request-json".into(),
+        serialize_nonempty_object(request)?,
+    ])
+}
+
+fn library_saved_views_list_arguments() -> Vec<String> {
+    vec!["library".into(), "saved-views".into(), "list".into()]
+}
+
+fn library_saved_view_save_arguments(request: Value) -> Result<Vec<String>, ()> {
+    Ok(vec![
+        "library".into(),
+        "saved-views".into(),
+        "save".into(),
+        "--request-json".into(),
+        serialize_nonempty_object(request)?,
+    ])
+}
+
+fn library_saved_view_remove_arguments(request: Value) -> Result<Vec<String>, ()> {
+    Ok(vec![
+        "library".into(),
+        "saved-views".into(),
+        "remove".into(),
+        "--request-json".into(),
+        serialize_nonempty_object(request)?,
     ])
 }
 
@@ -306,6 +345,38 @@ pub async fn library_remove_format(app: tauri::AppHandle, id: String, format: St
 #[tauri::command]
 pub async fn library_update(app: tauri::AppHandle, id: String, patch: Value) -> Value {
     let Ok(args) = update_arguments(id, patch) else {
+        return failure("invalid-arguments");
+    };
+
+    run_engine(&app, args).await
+}
+
+#[tauri::command]
+pub async fn library_query(app: tauri::AppHandle, request: Value) -> Value {
+    let Ok(args) = library_query_arguments(request) else {
+        return failure("invalid-arguments");
+    };
+
+    run_engine(&app, args).await
+}
+
+#[tauri::command]
+pub async fn library_saved_views_list(app: tauri::AppHandle) -> Value {
+    run_engine(&app, library_saved_views_list_arguments()).await
+}
+
+#[tauri::command]
+pub async fn library_saved_view_save(app: tauri::AppHandle, request: Value) -> Value {
+    let Ok(args) = library_saved_view_save_arguments(request) else {
+        return failure("invalid-arguments");
+    };
+
+    run_engine(&app, args).await
+}
+
+#[tauri::command]
+pub async fn library_saved_view_remove(app: tauri::AppHandle, request: Value) -> Value {
+    let Ok(args) = library_saved_view_remove_arguments(request) else {
         return failure("invalid-arguments");
     };
 
@@ -615,25 +686,113 @@ mod tests {
     fn enforces_the_serialized_patch_utf8_byte_limit() {
         let envelope_bytes = br#"{"value":""}"#.len();
         let at_limit = json!({
-            "value": "x".repeat(MAX_PATCH_JSON_BYTES - envelope_bytes),
+            "value": "x".repeat(MAX_JSON_ARGUMENT_BYTES - envelope_bytes),
         });
         let over_limit = json!({
             "value": format!(
                 "{}📚",
-                "x".repeat(MAX_PATCH_JSON_BYTES - envelope_bytes - 3),
+                "x".repeat(MAX_JSON_ARGUMENT_BYTES - envelope_bytes - 3),
             ),
         });
 
         assert_eq!(
             serde_json::to_string(&at_limit).unwrap().len(),
-            MAX_PATCH_JSON_BYTES
+            MAX_JSON_ARGUMENT_BYTES
         );
         assert_eq!(
             serde_json::to_string(&over_limit).unwrap().len(),
-            MAX_PATCH_JSON_BYTES + 1
+            MAX_JSON_ARGUMENT_BYTES + 1
         );
         assert!(update_arguments("book-1".into(), at_limit).is_ok());
         assert!(update_arguments("book-1".into(), over_limit).is_err());
+    }
+
+    #[test]
+    fn builds_catalogue_query_and_saved_view_arguments_with_one_literal_json_value() {
+        let query = json!({
+            "filter": {
+                "all": [
+                    { "field": "authors.name", "operator": "contains", "value": "O'Brian" },
+                    { "field": "tags", "operator": "equals", "value": "--request-json\n📚" },
+                ],
+            },
+            "sort": [{ "field": "title", "direction": "ascending" }],
+        });
+        let query_json = serde_json::to_string(&query).unwrap();
+        let query_arguments = library_query_arguments(query.clone()).unwrap();
+
+        assert_eq!(
+            query_arguments,
+            vec!["library", "query", "--request-json", query_json.as_str()]
+        );
+        assert_eq!(
+            serde_json::from_str::<Value>(&query_arguments[3]).unwrap(),
+            query
+        );
+        assert_eq!(
+            library_saved_views_list_arguments(),
+            vec!["library", "saved-views", "list"]
+        );
+
+        let save = json!({ "name": "Sci-Fi, \'quoted\'", "request": query });
+        let save_json = serde_json::to_string(&save).unwrap();
+        assert_eq!(
+            library_saved_view_save_arguments(save).unwrap(),
+            vec![
+                "library",
+                "saved-views",
+                "save",
+                "--request-json",
+                save_json.as_str(),
+            ]
+        );
+
+        let remove = json!({ "id": "view --all $(touch /tmp/nope)" });
+        let remove_json = serde_json::to_string(&remove).unwrap();
+        assert_eq!(
+            library_saved_view_remove_arguments(remove).unwrap(),
+            vec![
+                "library",
+                "saved-views",
+                "remove",
+                "--request-json",
+                remove_json.as_str(),
+            ]
+        );
+    }
+
+    #[test]
+    fn rejects_empty_nonobject_and_oversized_catalogue_requests() {
+        let builders: [fn(Value) -> Result<Vec<String>, ()>; 3] = [
+            library_query_arguments,
+            library_saved_view_save_arguments,
+            library_saved_view_remove_arguments,
+        ];
+        let envelope_bytes = br#"{"value":""}"#.len();
+        let at_limit = json!({
+            "value": "x".repeat(MAX_JSON_ARGUMENT_BYTES - envelope_bytes),
+        });
+        let over_limit = json!({
+            "value": "x".repeat(MAX_JSON_ARGUMENT_BYTES - envelope_bytes + 1),
+        });
+
+        assert_eq!(
+            serde_json::to_string(&at_limit).unwrap().len(),
+            MAX_JSON_ARGUMENT_BYTES
+        );
+        assert_eq!(
+            serde_json::to_string(&over_limit).unwrap().len(),
+            MAX_JSON_ARGUMENT_BYTES + 1
+        );
+
+        for build in builders {
+            assert!(build(json!({})).is_err());
+            assert!(build(json!([])).is_err());
+            assert!(build(json!("request")).is_err());
+            assert!(build(Value::Null).is_err());
+            assert!(build(at_limit.clone()).is_ok());
+            assert!(build(over_limit.clone()).is_err());
+        }
     }
 
     #[test]
