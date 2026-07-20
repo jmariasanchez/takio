@@ -266,6 +266,12 @@
   opacity: 0.68;
 }
 
+@media (min-width: 1200px) {
+  .library-table td {
+    height: 52px;
+  }
+}
+
 @container (max-width: 620px) {
   .library-table__added-column,
   .library-table__added-cell {
