@@ -3,11 +3,17 @@ import { describe, expect, it } from "bun:test";
 import {
   InMemoryLibraryRepository,
   BOOK_FORMAT_PROVENANCES,
+  bookAuthorSchema,
   bookFormatSchema,
   bookFormatsSchema,
+  bookIdentifiersSchema,
+  languageTagSchema,
   libraryItemSchema,
   normalizeTags,
+  publishedDateSchema,
+  type BookAuthor,
   type BookFormat,
+  type BookIdentifiers,
   type LibraryItem,
 } from "../src/index.js";
 
@@ -148,6 +154,65 @@ describe("libraryItemSchema", () => {
     expect(() => libraryItemSchema.parse({ ...item, coverPath: " " })).toThrow();
     expect(() => libraryItemSchema.parse({ ...item, tags: ["Classic", " classic "] })).toThrow();
     expect(() => libraryItemSchema.parse({ ...item, tags: [" "] })).toThrow();
+  });
+
+  it("adds ordered structured authors without replacing the legacy author", () => {
+    const authors: readonly BookAuthor[] = [
+      { name: "Ursula K. Le Guin", sortName: "Le Guin, Ursula K." },
+      { name: "Virginia Kidd" },
+    ];
+
+    expect(libraryItemSchema.parse({ ...item, author: "Ursula K. Le Guin", authors })).toMatchObject(
+      { author: "Ursula K. Le Guin", authors },
+    );
+    expect(bookAuthorSchema.parse(authors[0])).toEqual(authors[0]);
+    expect(() => libraryItemSchema.parse({ ...item, authors: [] })).toThrow();
+    expect(() => libraryItemSchema.parse({ ...item, authors: [{ name: " " }] })).toThrow();
+  });
+
+  it("validates richer scalar metadata and identifier values", () => {
+    const identifiers: BookIdentifiers = {
+      isbn: "978-0-441-47812-5",
+      goodreads: "18423",
+    };
+    const metadata = {
+      series: "Hainish Cycle",
+      seriesIndex: 4.5,
+      publisher: "Ace Books",
+      identifiers,
+      rating: 8.5,
+    };
+
+    expect(libraryItemSchema.parse({ ...item, ...metadata })).toMatchObject(metadata);
+    expect(bookIdentifiersSchema.parse(identifiers)).toEqual(identifiers);
+    expect(() => libraryItemSchema.parse({ ...item, series: " " })).toThrow();
+    expect(() => libraryItemSchema.parse({ ...item, seriesIndex: Number.POSITIVE_INFINITY })).toThrow();
+    expect(() => libraryItemSchema.parse({ ...item, identifiers: { isbn: " " } })).toThrow();
+    expect(() => libraryItemSchema.parse({ ...item, rating: -0.1 })).toThrow();
+    expect(() => libraryItemSchema.parse({ ...item, rating: 10.1 })).toThrow();
+  });
+
+  it("preserves language order and publication-date precision", () => {
+    const languages = ["en-US", "fr", "zh-Hant"] as const;
+
+    expect(libraryItemSchema.parse({ ...item, languages })).toMatchObject({ languages });
+    expect(languageTagSchema.parse("en-US")).toBe("en-US");
+    expect(() => libraryItemSchema.parse({ ...item, languages: [] })).toThrow();
+    expect(() => libraryItemSchema.parse({ ...item, languages: ["English (US)"] })).toThrow();
+
+    for (const publishedDate of ["1969", "1969-03", "1969-03-01"]) {
+      expect(publishedDateSchema.parse(publishedDate)).toBe(publishedDate);
+      expect(libraryItemSchema.parse({ ...item, publishedDate })).toMatchObject({ publishedDate });
+    }
+    expect(() => publishedDateSchema.parse("1969-13")).toThrow();
+    expect(() => publishedDateSchema.parse("1969-02-29")).toThrow();
+    expect(() => publishedDateSchema.parse("1969-03-01T00:00:00Z")).toThrow();
+  });
+
+  it("keeps the legacy scalar-author item shape compatible", () => {
+    const legacyMetadataItem = { ...item, author: "Ursula K. Le Guin" };
+
+    expect(libraryItemSchema.parse(legacyMetadataItem)).toEqual(legacyMetadataItem);
   });
 
   it("rejects missing or invalid library fields", () => {

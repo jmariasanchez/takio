@@ -15,12 +15,18 @@ export {
 export {
   BOOK_FORMAT_PROVENANCES,
   InMemoryLibraryRepository,
+  bookAuthorSchema,
   bookFormatSchema,
   bookFormatsSchema,
+  bookIdentifiersSchema,
+  languageTagSchema,
   libraryItemSchema,
   normalizeTags,
+  publishedDateSchema,
+  type BookAuthor,
   type BookFormat,
   type BookFormatProvenance,
+  type BookIdentifiers,
   type LibraryItem,
 } from "./library.js";
 export {
