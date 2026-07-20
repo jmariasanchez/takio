@@ -118,7 +118,7 @@ h2 { font-size: 20px; letter-spacing: -.6px; margin-bottom: 0; }
 .edit-actions { justify-content: flex-end; }
 @media (max-width: 820px) { .content { padding: 38px; }.hero-card, .reader-bar { align-items: flex-start; flex-direction: column; }.reader-controls, .jobs-controls { justify-content: flex-start; }.jobs-heading, .format-panel-heading { align-items: flex-start; flex-direction: column; }.format-panel-actions { justify-content: flex-start; }.job-row, .format-row { grid-template-columns: 1fr; gap: 10px; }.job-cancel, .format-row-actions { justify-self: start; }.format-row-actions { justify-content: flex-start; }.format-last-help { text-align: left; }.format-panel, .conversion-panel, .edit-panel { padding: 20px; }.conversion-panel, .edit-panel { grid-template-columns: 1fr; }.conversion-actions { justify-content: flex-start; }.full-field { grid-column: 1; } }
 
-@media (min-width: 1200px) {
+@media (min-width: 821px) {
   .app-shell {
     height: 100vh;
     min-height: 0;
