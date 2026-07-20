@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
+import {
+  useCallback,
+  useEffect,
+  useReducer,
+  useRef,
+  useState,
+  type FormEvent,
+} from "react";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { confirm, open, save } from "@tauri-apps/plugin-dialog";
@@ -25,6 +32,10 @@ import {
   type SessionDeviceFormatPreferences,
 } from "./components/DeviceControls";
 import { JobsPanel } from "./components/JobsPanel";
+import {
+  LibraryTrashDialog,
+  type LibraryTrashPendingAction,
+} from "./components/LibraryTrashDialog";
 import {
   LibraryWorkspace,
   conversionControlId,
@@ -54,15 +65,18 @@ import {
   describeLibraryError,
   describeUnexpectedLibraryError,
   importLibraryItem,
+  listLibraryTrash,
   listSavedLibraryViews,
   openLibraryItem,
+  purgeLibraryItem,
   queryLibraryItems,
   removeLibraryCover,
   removeLibraryFormat,
-  removeLibraryItem,
   removeSavedLibraryView,
+  restoreLibraryItem,
   saveSavedLibraryView,
   setLibraryCover,
+  trashLibraryItem,
   updateLibraryItem,
 } from "./lib/library";
 import {
@@ -74,6 +88,10 @@ import {
   type LibraryQueryState,
   type LibraryQueryStateAction,
 } from "./lib/library-query-state";
+import {
+  createLibrarySelectionState,
+  librarySelectionReducer,
+} from "./lib/library-selection";
 import "./styles.css";
 
 const supportedExtensions = FORMAT_CATALOG.flatMap((format) =>
@@ -88,6 +106,7 @@ const emptyLibraryFacets: LibraryFacetCounts = {
   formats: [],
 };
 const searchDebounceMilliseconds = 250;
+const trashPageLimit = 25;
 
 type JobsState = "loading" | "ready" | "error";
 type Notice = { readonly kind: "status" | "error"; readonly text: string } | null;
@@ -105,10 +124,23 @@ export default function App() {
   const [libraryQuery, setLibraryQuery] = useState<LibraryQueryState>(() =>
     createLibraryQueryState(),
   );
+  const [librarySelection, dispatchLibrarySelection] = useReducer(
+    librarySelectionReducer,
+    createLibrarySelectionState(),
+  );
   const [savedViews, setSavedViews] = useState<readonly SavedLibraryView[]>([]);
   const [currentSavedViewId, setCurrentSavedViewId] = useState<string | null>(null);
   const [saveViewDialogOpen, setSaveViewDialogOpen] = useState(false);
   const [saveViewDialogError, setSaveViewDialogError] = useState<string | null>(null);
+  const [trashDialogOpen, setTrashDialogOpen] = useState(false);
+  const [trashItems, setTrashItems] = useState<readonly LibraryItem[]>([]);
+  const [trashTotal, setTrashTotal] = useState(0);
+  const [trashPageOffset, setTrashPageOffset] = useState(0);
+  const [trashLoading, setTrashLoading] = useState(false);
+  const [trashPendingItemId, setTrashPendingItemId] = useState<string | null>(null);
+  const [trashPendingAction, setTrashPendingAction] =
+    useState<LibraryTrashPendingAction | null>(null);
+  const [trashError, setTrashError] = useState<string | null>(null);
   const [libraryState, setLibraryState] = useState<LibraryState>("loading");
   const [notice, setNotice] = useState<Notice>(null);
   const [pendingAction, setPendingAction] = useState<string | null>(null);
@@ -124,6 +156,8 @@ export default function App() {
     useState<SessionDeviceFormatPreferences>({});
   const [dropActive, setDropActive] = useState(false);
   const savedViewsRequestSequence = useRef(0);
+  const trashRequestSequence = useRef(0);
+  const trashPageOffsetRef = useRef(0);
   const destinationRequestSequence = useRef(0);
   const jobRequestSequence = useRef(0);
   const deviceMutationPending = useRef(false);
@@ -275,6 +309,59 @@ export default function App() {
     }
   }, []);
 
+  const loadTrash = useCallback(async (initialOffset: number): Promise<boolean> => {
+    const request = ++trashRequestSequence.current;
+    let offset = initialOffset;
+    setTrashLoading(true);
+    setTrashError(null);
+
+    try {
+      while (true) {
+        const result = await listLibraryTrash({
+          page: { offset, limit: trashPageLimit },
+        });
+        if (request !== trashRequestSequence.current) {
+          return false;
+        }
+        if (!result.ok) {
+          setTrashError(describeLibraryError(result.error.code));
+          return false;
+        }
+
+        const boundedOffset =
+          result.value.total === 0
+            ? 0
+            : Math.min(
+                offset,
+                Math.floor((result.value.total - 1) / trashPageLimit) * trashPageLimit,
+              );
+        if (boundedOffset !== offset) {
+          offset = boundedOffset;
+          trashPageOffsetRef.current = boundedOffset;
+          setTrashPageOffset(boundedOffset);
+          setTrashItems([]);
+          continue;
+        }
+
+        trashPageOffsetRef.current = offset;
+        setTrashPageOffset(offset);
+        setTrashItems(result.value.items);
+        setTrashTotal(result.value.total);
+        return true;
+      }
+    } catch (error) {
+      if (request !== trashRequestSequence.current) {
+        return false;
+      }
+      setTrashError(describeUnexpectedLibraryError(error));
+      return false;
+    } finally {
+      if (request === trashRequestSequence.current) {
+        setTrashLoading(false);
+      }
+    }
+  }, []);
+
   const loadDestinations = useCallback(async (showLoading = true): Promise<boolean> => {
     const request = ++destinationRequestSequence.current;
     if (showLoading) {
@@ -362,6 +449,7 @@ export default function App() {
 
     return () => {
       window.clearInterval(destinationRefresh);
+      trashRequestSequence.current += 1;
       if (searchDebounce.current !== null) {
         window.clearTimeout(searchDebounce.current);
       }
@@ -407,6 +495,7 @@ export default function App() {
   }
 
   function changeSearch(searchQuery: string): void {
+    dispatchLibrarySelection({ type: "query-changed" });
     reduceLibraryQuery({ type: "set-query", query: searchQuery });
     setCurrentSavedViewId(null);
     setSearchPending(true);
@@ -430,16 +519,19 @@ export default function App() {
   }
 
   function changeFilters(filters: LibraryQueryFilters): void {
+    dispatchLibrarySelection({ type: "query-changed" });
     setCurrentSavedViewId(null);
     runImmediateLibraryQuery({ type: "set-filters", filters });
   }
 
   function changeSort(sort: LibraryQuerySort): void {
+    dispatchLibrarySelection({ type: "sort-changed" });
     setCurrentSavedViewId(null);
     runImmediateLibraryQuery({ type: "set-sort", sort });
   }
 
   function changePage(offset: number): void {
+    dispatchLibrarySelection({ type: "page-changed" });
     runImmediateLibraryQuery({
       type: "set-page",
       page: { ...libraryQueryRef.current.request.page, offset },
@@ -447,6 +539,7 @@ export default function App() {
   }
 
   function clearLibraryQuery(): void {
+    dispatchLibrarySelection({ type: "query-changed" });
     setCurrentSavedViewId(null);
     runImmediateLibraryQuery({
       type: "apply-saved-view",
@@ -467,8 +560,26 @@ export default function App() {
       return;
     }
 
+    dispatchLibrarySelection({ type: "query-changed" });
     setCurrentSavedViewId(view.id);
     runImmediateLibraryQuery({ type: "apply-saved-view", definition: view.definition });
+  }
+
+  function toggleSelectedLibraryItem(id: string): void {
+    dispatchLibrarySelection({ type: "toggle-item", id });
+    selectLibraryItem(id);
+  }
+
+  function selectLibraryItemRange(
+    id: string,
+    pageItemIds: readonly string[],
+  ): void {
+    dispatchLibrarySelection({ type: "select-range", id, pageItemIds });
+    selectLibraryItem(id);
+  }
+
+  function toggleLibraryPageSelection(pageItemIds: readonly string[]): void {
+    dispatchLibrarySelection({ type: "toggle-page", pageItemIds });
   }
 
   function openSaveViewDialog(): void {
@@ -549,6 +660,114 @@ export default function App() {
     } catch (error) {
       setNotice({ kind: "error", text: describeUnexpectedLibraryError(error) });
     } finally {
+      setPendingAction(null);
+    }
+  }
+
+  function openTrash(): void {
+    if (pendingAction !== null) {
+      return;
+    }
+    trashPageOffsetRef.current = 0;
+    setTrashPageOffset(0);
+    setTrashItems([]);
+    setTrashTotal(0);
+    setTrashError(null);
+    setTrashDialogOpen(true);
+    void loadTrash(0);
+  }
+
+  function closeTrash(): void {
+    if (trashPendingAction !== null) {
+      return;
+    }
+    trashRequestSequence.current += 1;
+    setTrashLoading(false);
+    setTrashError(null);
+    setTrashDialogOpen(false);
+  }
+
+  function changeTrashPage(offset: number): void {
+    if (trashLoading || trashPendingAction !== null) {
+      return;
+    }
+    trashPageOffsetRef.current = offset;
+    setTrashPageOffset(offset);
+    setTrashItems([]);
+    void loadTrash(offset);
+  }
+
+  async function restoreTrashItem(item: LibraryItem): Promise<void> {
+    if (pendingAction !== null) {
+      return;
+    }
+
+    setPendingAction(`trash-restore:${item.id}`);
+    setTrashPendingItemId(item.id);
+    setTrashPendingAction("restore");
+    setTrashError(null);
+    setNotice(null);
+    try {
+      const result = await restoreLibraryItem({ id: item.id });
+      if (!result.ok) {
+        setTrashError(describeLibraryError(result.error.code));
+        return;
+      }
+
+      const [libraryLoaded] = await Promise.all([
+        loadLibrary(false),
+        loadTrash(trashPageOffsetRef.current),
+      ]);
+      if (libraryLoaded) {
+        setNotice({
+          kind: "status",
+          text: result.value.item
+            ? `Restored “${item.title}” to the library.`
+            : `“${item.title}” is no longer in Trash.`,
+        });
+      }
+    } catch (error) {
+      setTrashError(describeUnexpectedLibraryError(error));
+    } finally {
+      setTrashPendingItemId(null);
+      setTrashPendingAction(null);
+      setPendingAction(null);
+    }
+  }
+
+  async function purgeTrashItem(item: LibraryItem): Promise<void> {
+    if (pendingAction !== null) {
+      return;
+    }
+
+    setPendingAction(`trash-purge:${item.id}`);
+    setTrashPendingItemId(item.id);
+    setTrashPendingAction("purge");
+    setTrashError(null);
+    setNotice(null);
+    try {
+      const result = await purgeLibraryItem({ id: item.id });
+      if (!result.ok) {
+        setTrashError(describeLibraryError(result.error.code));
+        return;
+      }
+
+      const trashLoaded = await loadTrash(trashPageOffsetRef.current);
+      if (trashLoaded) {
+        setNotice({
+          kind: "status",
+          text: result.value.item
+            ? result.value.cleanupPending
+              ? `Permanently deleted “${item.title}”. Some Takio-managed files could not be deleted; cleanup is pending.`
+              : `Permanently deleted “${item.title}”.`
+            : `“${item.title}” is no longer in Trash.`,
+        });
+      }
+    } catch (error) {
+      setTrashError(describeUnexpectedLibraryError(error));
+    } finally {
+      setTrashPendingItemId(null);
+      setTrashPendingAction(null);
       setPendingAction(null);
     }
   }
@@ -909,11 +1128,11 @@ export default function App() {
     let approved: boolean;
     try {
       approved = await confirm(
-        `Remove “${item.title}” from your Takio library? Takio will remove managed copies. External files will not be deleted.`,
+        `Move “${item.title}” to Trash? You can restore it later.`,
         {
-          title: "Remove from library",
+          title: "Move to Trash",
           kind: "warning",
-          okLabel: "Remove from library",
+          okLabel: "Move to Trash",
           cancelLabel: "Cancel",
         },
       );
@@ -929,9 +1148,24 @@ export default function App() {
     setPendingAction(`remove:${item.id}`);
     setNotice(null);
     try {
-      const result = await removeLibraryItem(item.id);
+      const result = await trashLibraryItem({ id: item.id });
       if (!result.ok) {
         setNotice({ kind: "error", text: describeLibraryError(result.error.code) });
+        return;
+      }
+
+      if (!result.value.item) {
+        discardMissingItem(item);
+        const [libraryLoaded] = await Promise.all([
+          loadLibrary(false),
+          trashDialogOpen
+            ? loadTrash(trashPageOffsetRef.current)
+            : Promise.resolve(true),
+        ]);
+        if (libraryLoaded) {
+          postRemoveFocusItemId.current = libraryQueryRef.current.selectedItemId;
+        }
+        setNotice({ kind: "error", text: "That library item no longer exists." });
         return;
       }
 
@@ -948,15 +1182,20 @@ export default function App() {
         currentDraft?.id === item.id ? null : currentDraft,
       );
       if (libraryQueryRef.current.selectedItemId === item.id) {
-        selectLibraryItem(null);
+        selectLibraryItem(focusItem?.id ?? null);
       }
       setLibraryState("ready");
-      if (await loadLibrary(false)) {
+      const [libraryLoaded] = await Promise.all([
+        loadLibrary(false),
+        trashDialogOpen
+          ? loadTrash(trashPageOffsetRef.current)
+          : Promise.resolve(true),
+      ]);
+      if (libraryLoaded) {
+        postRemoveFocusItemId.current = libraryQueryRef.current.selectedItemId;
         setNotice({
           kind: "status",
-          text: result.value.cleanupPending
-            ? `Removed “${item.title}”. Some Takio-managed files could not be deleted; cleanup is pending.`
-            : `Removed “${item.title}”.`,
+          text: `Moved “${item.title}” to Trash.`,
         });
       }
     } catch (error) {
@@ -1520,6 +1759,7 @@ export default function App() {
           searchPending={searchPending}
           selectedDestination={selectedDestination}
           selectedItemId={selectedItemId}
+          selectedItemIds={librarySelection.selectedItemIds}
           sort={libraryQuery.request.sort}
           total={cataloguePage?.total ?? 0}
           onApplySavedView={applySavedView}
@@ -1534,6 +1774,7 @@ export default function App() {
           onClearCover={clearCover}
           onEnqueueConversion={enqueueConversion}
           onOpenSaveView={openSaveViewDialog}
+          onOpenTrash={openTrash}
           onOpenItem={openItem}
           onRemoveItem={removeItem}
           onRemoveFormat={removeFormat}
@@ -1542,9 +1783,28 @@ export default function App() {
           onSaveMetadata={saveMetadata}
           onSaveView={saveCurrentView}
           onSelectItem={selectLibraryItem}
+          onSelectItemRange={selectLibraryItemRange}
           onSendItem={sendItem}
           onSetConversionDraft={setConversionDraft}
           onSetDraft={setDraft}
+          onTogglePageSelection={toggleLibraryPageSelection}
+          onToggleSelectedItem={toggleSelectedLibraryItem}
+        />
+
+        <LibraryTrashDialog
+          open={trashDialogOpen}
+          items={trashItems}
+          total={trashTotal}
+          pageOffset={trashPageOffset}
+          pageLimit={trashPageLimit}
+          loading={trashLoading}
+          pendingItemId={trashPendingItemId}
+          pendingAction={trashPendingAction}
+          error={trashError}
+          onClose={closeTrash}
+          onChangePage={changeTrashPage}
+          onRestore={restoreTrashItem}
+          onPurge={purgeTrashItem}
         />
       </section>
     </main>

@@ -11,6 +11,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { draftFor } from "../lib/metadata-draft";
 import {
   LibraryWorkspace,
+  openTrashDialog,
   openSaveViewWithPaneClosed,
   restoreSaveViewDialogFocus,
   resolveGeneralSend,
@@ -107,6 +108,7 @@ function props(overrides: Partial<LibraryWorkspaceProps> = {}): LibraryWorkspace
       kind: "generic",
     },
     selectedItemId: item.id,
+    selectedItemIds: [item.id],
     sort,
     total: 42,
     onApplySavedView: () => undefined,
@@ -122,16 +124,20 @@ function props(overrides: Partial<LibraryWorkspaceProps> = {}): LibraryWorkspace
     onEnqueueConversion: async () => undefined,
     onOpenItem: async () => undefined,
     onOpenSaveView: () => undefined,
+    onOpenTrash: () => undefined,
     onRemoveFormat: async () => undefined,
     onRemoveItem: async () => undefined,
     onRemoveSavedView: () => undefined,
     onRetry: async () => true,
     onSaveMetadata: async () => undefined,
     onSaveView: () => undefined,
+    onSelectItemRange: () => undefined,
     onSelectItem: () => undefined,
     onSendItem: async () => undefined,
     onSetConversionDraft: () => undefined,
     onSetDraft: () => undefined,
+    onTogglePageSelection: () => undefined,
+    onToggleSelectedItem: () => undefined,
     ...overrides,
   };
 }
@@ -149,6 +155,28 @@ test("closes a compact pane before opening the saved-view modal so overlays cann
   );
 
   expect(calls).toEqual(["pane:closed", "dialog:open"]);
+});
+
+test("opens Trash through the parent callback from a stable accessible toolbar trigger", () => {
+  let openCalls = 0;
+
+  openTrashDialog(() => {
+    openCalls += 1;
+  });
+
+  expect(openCalls).toBe(1);
+
+  const markup = renderWorkspace();
+  const trigger = markup.match(/<button id="library-trash-trigger"[^>]*>/)?.[0];
+
+  expect(trigger).toBeDefined();
+  expect(trigger).toContain('aria-haspopup="dialog"');
+  expect(trigger).not.toContain("disabled");
+  expect(markup).toContain(`${trigger ?? ""}Trash</button>`);
+
+  const pendingMarkup = renderWorkspace({ actionsPending: true });
+  const pendingTrigger = pendingMarkup.match(/<button id="library-trash-trigger"[^>]*>/)?.[0];
+  expect(pendingTrigger).toContain('disabled=""');
 });
 
 test("restores saved-view focus to the mounted compact trigger and uses search on desktop", () => {
@@ -189,6 +217,13 @@ test("composes authoritative facets, table query state, selection, and inspector
   expect(markup).toContain("Title");
 });
 
+test("threads controlled multi-selection state into the library table", () => {
+  const markup = renderWorkspace();
+
+  expect(markup).toContain('aria-label="Select current page" checked=""');
+  expect(markup).toContain('aria-label="Select Title" checked=""');
+});
+
 test("preserves selected-book open, send, convert, format, cover, and removal actions", () => {
   const markup = renderWorkspace({
     items: [{ ...item, formats: [epub], sourcePath: epub.sourcePath, format: epub.format }],
@@ -207,10 +242,21 @@ test("preserves selected-book open, send, convert, format, cover, and removal ac
   expect(markup).toContain("Attach a reference…");
   expect(markup).toContain("Choose cover…");
   expect(markup).toContain("Add another format before removing the last one.");
-  expect(markup).toContain("Remove from library");
+  expect(markup).toContain("Move to Trash");
+  expect(markup).not.toContain("Remove from library");
   expect(markup).toContain(
     'aria-label="Convert EPUB to PDF for “Title” before sending to Reader"',
   );
+});
+
+test("describes the reversible item action truthfully while it is pending", () => {
+  const markup = renderWorkspace({
+    actionsPending: true,
+    pendingAction: `remove:${item.id}`,
+  });
+
+  expect(markup).toContain("Moving to Trash…");
+  expect(markup).not.toContain("Removing…");
 });
 
 test("renders an explicit error instead of retaining rows that may belong to failed query intent", () => {

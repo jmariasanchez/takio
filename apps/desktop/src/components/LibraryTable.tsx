@@ -1,7 +1,9 @@
 import { convertFileSrc } from "@tauri-apps/api/core";
 import type { LibraryItem } from "@takio/core";
 import type { LibraryQuerySort } from "@takio/library-contract";
-import { useRef, type KeyboardEvent } from "react";
+import { useEffect, useRef, type KeyboardEvent } from "react";
+
+import { libraryPageSelectionState } from "../lib/library-selection";
 
 import "./LibraryTable.css";
 
@@ -13,10 +15,14 @@ export type LibraryTableProps = {
   readonly pageOffset: number;
   readonly pageLimit: number;
   readonly selectedItemId: string | null;
+  readonly selectedItemIds: readonly string[];
   readonly onChangePage: (offset: number) => void;
   readonly onChangeSort: (sort: LibraryQuerySort) => void;
   readonly onOpenItem: (item: LibraryItem) => void;
   readonly onSelectItem: (id: string) => void;
+  readonly onToggleItem: (id: string) => void;
+  readonly onSelectRange: (id: string, pageItemIds: readonly string[]) => void;
+  readonly onTogglePage: (pageItemIds: readonly string[]) => void;
 };
 
 type PageAction = "next" | "previous";
@@ -93,6 +99,22 @@ export function rowNavigationTarget(
   }
 }
 
+export function handleLibraryItemCheckboxClick(
+  event: Readonly<{ shiftKey: boolean; stopPropagation: () => void }>,
+  id: string,
+  pageItemIds: readonly string[],
+  onToggleItem: (id: string) => void,
+  onSelectRange: (id: string, pageItemIds: readonly string[]) => void,
+): void {
+  event.stopPropagation();
+  if (event.shiftKey) {
+    onSelectRange(id, pageItemIds);
+    return;
+  }
+
+  onToggleItem(id);
+}
+
 function addedDate(value: string): string {
   return new Intl.DateTimeFormat(undefined, {
     day: "numeric",
@@ -125,17 +147,31 @@ export function LibraryTable({
   pageOffset,
   pageLimit,
   selectedItemId,
+  selectedItemIds,
   onChangePage,
   onChangeSort,
   onOpenItem,
   onSelectItem,
+  onToggleItem,
+  onSelectRange,
+  onTogglePage,
 }: LibraryTableProps) {
   const rowRefs = useRef(new Map<string, HTMLTableRowElement>());
+  const pageCheckboxRef = useRef<HTMLInputElement>(null);
+  const pageItemIds = items.map(({ id }) => id);
+  const selectedIds = new Set(selectedItemIds);
+  const pageSelection = libraryPageSelectionState(selectedItemIds, pageItemIds);
   const selectedIndex = items.findIndex(({ id }) => id === selectedItemId);
   const tabStopIndex = selectedIndex >= 0 ? selectedIndex : 0;
   const range = libraryPageRange(pageOffset, items.length, total);
   const previousPage = libraryPageTarget("previous", pageOffset, pageLimit, total);
   const nextPage = libraryPageTarget("next", pageOffset, pageLimit, total);
+
+  useEffect(() => {
+    if (pageCheckboxRef.current) {
+      pageCheckboxRef.current.indeterminate = pageSelection === "some";
+    }
+  }, [pageSelection]);
 
   function moveRowFocus(currentIndex: number, key: RowNavigationKey): void {
     const targetIndex = rowNavigationTarget(key, currentIndex, items.length);
@@ -157,6 +193,10 @@ export function LibraryTable({
     item: LibraryItem,
     index: number,
   ): void {
+    if (event.target !== event.currentTarget) {
+      return;
+    }
+
     if (
       event.key === "ArrowDown" ||
       event.key === "ArrowUp" ||
@@ -220,6 +260,7 @@ export function LibraryTable({
         <table className="library-table">
           <caption>Library books</caption>
           <colgroup>
+            <col className="library-table__selection-column" />
             <col className="library-table__cover-column" />
             <col className="library-table__title-column" />
             <col className="library-table__author-column" />
@@ -228,6 +269,16 @@ export function LibraryTable({
           </colgroup>
           <thead>
             <tr>
+              <th className="library-table__selection-cell" scope="col">
+                <input
+                  ref={pageCheckboxRef}
+                  type="checkbox"
+                  aria-label="Select current page"
+                  checked={pageSelection === "all"}
+                  disabled={busy || pageItemIds.length === 0}
+                  onChange={() => onTogglePage(pageItemIds)}
+                />
+              </th>
               <th className="library-table__cover-cell" aria-label="Cover" scope="col" />
               <th aria-sort={sort.field === "title" ? sort.direction : undefined} scope="col">
                 <button
@@ -283,6 +334,7 @@ export function LibraryTable({
           <tbody>
             {items.map((item, index) => {
               const selected = item.id === selectedItemId;
+              const checked = selectedIds.has(item.id);
 
               return (
                 <tr
@@ -303,6 +355,26 @@ export function LibraryTable({
                   onFocus={() => onSelectItem(item.id)}
                   onKeyDown={(event) => handleRowKeyDown(event, item, index)}
                 >
+                  <td className="library-table__selection-cell">
+                    <input
+                      type="checkbox"
+                      aria-label={`Select ${item.title}`}
+                      checked={checked}
+                      disabled={busy}
+                      onChange={() => undefined}
+                      onClick={(event) =>
+                        handleLibraryItemCheckboxClick(
+                          event,
+                          item.id,
+                          pageItemIds,
+                          onToggleItem,
+                          onSelectRange,
+                        )
+                      }
+                      onDoubleClick={(event) => event.stopPropagation()}
+                      onFocus={(event) => event.stopPropagation()}
+                    />
+                  </td>
                   <td className="library-table__cover-cell">
                     {item.coverPath ? (
                       <img

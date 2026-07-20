@@ -91,6 +91,10 @@
   width: 48px;
 }
 
+.library-table__selection-column {
+  width: 40px;
+}
+
 .library-table__title-column {
   width: 38%;
 }
@@ -140,6 +144,24 @@
 }
 
 .library-table th > button:focus-visible {
+  outline: 2px solid #4f46e5;
+  outline-offset: 2px;
+}
+
+.library-table__selection-cell {
+  padding-inline: 10px 4px;
+  text-align: center;
+}
+
+.library-table__selection-cell input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  vertical-align: middle;
+  accent-color: #4f46e5;
+}
+
+.library-table__selection-cell input:focus-visible {
   outline: 2px solid #4f46e5;
   outline-offset: 2px;
 }

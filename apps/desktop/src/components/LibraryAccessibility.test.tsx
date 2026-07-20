@@ -155,10 +155,14 @@ function renderLibrary(openPane: CompactPane | null = null, compact = true): str
           pageOffset={0}
           pageLimit={25}
           selectedItemId="book-2"
+          selectedItemIds={[]}
           onChangePage={() => undefined}
           onChangeSort={() => undefined}
           onOpenItem={() => undefined}
           onSelectItem={() => undefined}
+          onToggleItem={() => undefined}
+          onSelectRange={() => undefined}
+          onTogglePage={() => undefined}
         />
       }
       toolbar={<input aria-label="Search library" />}
@@ -192,7 +196,7 @@ test("preserves table sorting, paging, and facet semantics in compact compositio
   const markup = renderLibrary("facets");
 
   expect(markup).toContain("<caption>Library books</caption>");
-  expect(markup.match(/scope="col"/g)).toHaveLength(5);
+  expect(markup.match(/scope="col"/g)).toHaveLength(6);
   expect(markup.match(/aria-sort=/g)).toHaveLength(1);
   expect(markup).toContain('aria-sort="ascending"');
   expect(markup).toContain('<select aria-label="Sort field">');

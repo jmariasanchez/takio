@@ -4,6 +4,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 
 import {
   LibraryTable,
+  handleLibraryItemCheckboxClick,
   libraryPageRange,
   libraryPageTarget,
   nextLibrarySort,
@@ -93,6 +94,7 @@ function renderTable(
     readonly pageOffset?: number;
     readonly pageLimit?: number;
     readonly selectedItemId?: string | null;
+    readonly selectedItemIds?: readonly string[];
   } = {},
 ): string {
   return renderToStaticMarkup(
@@ -103,10 +105,14 @@ function renderTable(
       pageOffset={options.pageOffset ?? 0}
       pageLimit={options.pageLimit ?? 25}
       selectedItemId={options.selectedItemId ?? "item-1"}
+      selectedItemIds={options.selectedItemIds ?? []}
       onChangePage={() => undefined}
       onChangeSort={() => undefined}
       onOpenItem={() => undefined}
       onSelectItem={() => undefined}
+      onToggleItem={() => undefined}
+      onSelectRange={() => undefined}
+      onTogglePage={() => undefined}
     />,
   );
 }
@@ -173,6 +179,46 @@ test("keeps exactly one selected row in the tab order", () => {
   expect(markup).toContain('aria-selected="true"');
   expect(markup.match(/tabindex="0"/g)).toHaveLength(1);
   expect(markup.match(/tabindex="-1"/g)).toHaveLength(1);
+});
+
+test("renders explicit page and row selection independently from the active row", () => {
+  const markup = renderTable({ selectedItemId: "item-2", selectedItemIds: ["item-1"] });
+
+  expect(markup.match(/type="checkbox"/g)).toHaveLength(3);
+  expect(markup).toContain('aria-label="Select current page"');
+  expect(markup).toContain('aria-label="Select The Left Hand &amp; Darkness" checked=""');
+  expect(markup).toContain('aria-label="Select Kindred"');
+  expect(markup).toContain('id="library-item-item-2" aria-selected="true"');
+
+  const allSelected = renderTable({ selectedItemIds: items.map(({ id }) => id) });
+  expect(allSelected.match(/checked=""/g)).toHaveLength(3);
+});
+
+test("routes checkbox clicks to one-item or page-bounded range selection without row activation", () => {
+  const calls: string[] = [];
+  const pageItemIds = items.map(({ id }) => id);
+
+  handleLibraryItemCheckboxClick(
+    { shiftKey: false, stopPropagation: () => calls.push("stopped") },
+    "item-1",
+    pageItemIds,
+    (id) => calls.push(`toggle:${id}`),
+    (id, ids) => calls.push(`range:${id}:${ids.join(",")}`),
+  );
+  handleLibraryItemCheckboxClick(
+    { shiftKey: true, stopPropagation: () => calls.push("stopped") },
+    "item-2",
+    pageItemIds,
+    (id) => calls.push(`toggle:${id}`),
+    (id, ids) => calls.push(`range:${id}:${ids.join(",")}`),
+  );
+
+  expect(calls).toEqual([
+    "stopped",
+    "toggle:item-1",
+    "stopped",
+    "range:item-2:item-1,item-2",
+  ]);
 });
 
 test("defines bounded arrow, Home, and End navigation because selection must not wrap", () => {

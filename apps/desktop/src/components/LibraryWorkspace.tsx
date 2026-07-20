@@ -82,6 +82,7 @@ export type LibraryWorkspaceProps = {
   readonly searchPending: boolean;
   readonly selectedDestination: Destination | null;
   readonly selectedItemId: string | null;
+  readonly selectedItemIds: readonly string[];
   readonly sort: LibraryQuerySort;
   readonly total: number;
   readonly onApplySavedView: (id: string) => void;
@@ -105,6 +106,7 @@ export type LibraryWorkspaceProps = {
     focusControlId: string,
   ) => Promise<void>;
   readonly onOpenSaveView: () => void;
+  readonly onOpenTrash: () => void;
   readonly onRemoveFormat: (
     item: LibraryItem,
     bookFormat: BookFormat,
@@ -119,9 +121,12 @@ export type LibraryWorkspaceProps = {
   ) => Promise<void>;
   readonly onSaveView: (name: string) => void;
   readonly onSelectItem: (id: string) => void;
+  readonly onSelectItemRange: (id: string, pageItemIds: readonly string[]) => void;
   readonly onSendItem: (item: LibraryItem, bookFormat: BookFormat) => Promise<void>;
   readonly onSetConversionDraft: (draft: ConversionDraft | null) => void;
   readonly onSetDraft: (draft: MetadataDraft | null) => void;
+  readonly onTogglePageSelection: (pageItemIds: readonly string[]) => void;
+  readonly onToggleSelectedItem: (id: string) => void;
 };
 
 function formatLabel(format: FormatId): string {
@@ -140,6 +145,10 @@ export function openSaveViewWithPaneClosed(
 ): void {
   closePane(null);
   openSaveView();
+}
+
+export function openTrashDialog(onOpenTrash: () => void): void {
+  onOpenTrash();
 }
 
 type FocusTarget = { focus: () => void };
@@ -414,7 +423,7 @@ function InspectorManagement({
               disabled={actionsPending}
               onClick={() => void onRemoveItem(item)}
             >
-              {pendingAction === `remove:${item.id}` ? "Removing…" : "Remove from library"}
+              {pendingAction === `remove:${item.id}` ? "Moving to Trash…" : "Move to Trash"}
             </button>
           </section>
 
@@ -479,6 +488,7 @@ export function LibraryWorkspace({
   searchPending,
   selectedDestination,
   selectedItemId,
+  selectedItemIds,
   sort,
   total,
   onApplySavedView,
@@ -494,6 +504,7 @@ export function LibraryWorkspace({
   onEnqueueConversion,
   onOpenItem,
   onOpenSaveView,
+  onOpenTrash,
   onRemoveFormat,
   onRemoveItem,
   onRemoveSavedView,
@@ -501,9 +512,12 @@ export function LibraryWorkspace({
   onSaveMetadata,
   onSaveView,
   onSelectItem,
+  onSelectItemRange,
   onSendItem,
   onSetConversionDraft,
   onSetDraft,
+  onTogglePageSelection,
+  onToggleSelectedItem,
 }: LibraryWorkspaceProps) {
   const [openPane, setOpenPane] = useState<CompactPane | null>(null);
   const previousSaveViewDialogOpen = useRef(saveViewDialogOpen);
@@ -592,17 +606,29 @@ export function LibraryWorkspace({
                     : `${total.toLocaleString()} ${total === 1 ? "book" : "books"}`}
                 </span>
               </div>
-              <label className="library-workspace__search" htmlFor="library-search">
-                <span>Search library</span>
-                <input
-                  ref={searchInput}
-                  id="library-search"
-                  type="search"
-                  value={query}
-                  placeholder="Title, author, description, or tag"
-                  onChange={(event) => onChangeSearch(event.currentTarget.value)}
-                />
-              </label>
+              <div className="library-workspace__toolbar-actions">
+                <button
+                  id="library-trash-trigger"
+                  className="library-workspace__trash-button"
+                  type="button"
+                  aria-haspopup="dialog"
+                  disabled={actionsPending}
+                  onClick={() => openTrashDialog(onOpenTrash)}
+                >
+                  Trash
+                </button>
+                <label className="library-workspace__search" htmlFor="library-search">
+                  <span>Search library</span>
+                  <input
+                    ref={searchInput}
+                    id="library-search"
+                    type="search"
+                    value={query}
+                    placeholder="Title, author, description, or tag"
+                    onChange={(event) => onChangeSearch(event.currentTarget.value)}
+                  />
+                </label>
+              </div>
             </div>
           }
           table={
@@ -642,6 +668,7 @@ export function LibraryWorkspace({
                   pageLimit={pageLimit}
                   pageOffset={pageOffset}
                   selectedItemId={selectedItemId}
+                  selectedItemIds={selectedItemIds}
                   sort={sort}
                   total={total}
                   onChangePage={onChangePage}
@@ -656,7 +683,10 @@ export function LibraryWorkspace({
                       );
                     }
                   }}
+                  onSelectRange={onSelectItemRange}
                   onSelectItem={onSelectItem}
+                  onToggleItem={onToggleSelectedItem}
+                  onTogglePage={onTogglePageSelection}
                 />
               ) : null}
             </div>
