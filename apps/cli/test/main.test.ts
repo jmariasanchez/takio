@@ -596,6 +596,137 @@ describe("takio CLI", () => {
       });
     });
 
+    it("reviews, reopens, and merges duplicate pairs through the strict process protocol", async () => {
+      const leftPath = join(directory!, "duplicate-left.epub");
+      const rightPath = join(directory!, "duplicate-right.epub");
+      await Promise.all([
+        Bun.write(leftPath, "shared duplicate contents"),
+        Bun.write(rightPath, "shared duplicate contents"),
+      ]);
+      await addItem("duplicate-left", leftPath);
+      await addItem("duplicate-right", rightPath);
+
+      const page = { offset: 0, limit: 10 };
+      const runDuplicateCommand = async (action: string, request: unknown) =>
+        invokeProcess([
+          "library",
+          "duplicates",
+          action,
+          "--db",
+          databasePath!,
+          "--request-json",
+          JSON.stringify(request),
+        ]);
+      const list = async (disposition: "kept-both" | "unreviewed") =>
+        parseProcessOutput(
+          await runDuplicateCommand("list", { page, disposition }),
+        ) as {
+          ok: true;
+          value: {
+            candidates: Array<{
+              left: { id: string; tags: string[] };
+              right: { id: string };
+              reviewToken: string;
+            }>;
+            total: number;
+            page: typeof page;
+            scan: {
+              filesHashed: number;
+              fingerprintsReused: number;
+              unreadableFormats: number;
+            };
+          };
+        };
+
+      const initial = await list("unreviewed");
+      expect(initial.ok).toBe(true);
+      expect(initial.value.page).toEqual(page);
+      expect(initial.value.total).toBe(1);
+      expect(initial.value.candidates).toHaveLength(1);
+      expect(Object.keys(initial.value).sort()).toEqual([
+        "candidates",
+        "page",
+        "scan",
+        "total",
+      ]);
+      const candidate = initial.value.candidates[0]!;
+      expect([candidate.left.id, candidate.right.id]).toEqual([
+        "duplicate-left",
+        "duplicate-right",
+      ]);
+      const pairRequest = {
+        leftId: candidate.left.id,
+        rightId: candidate.right.id,
+        reviewToken: candidate.reviewToken,
+      };
+
+      expect(
+        parseProcessOutput(await runDuplicateCommand("keep", pairRequest)),
+      ).toEqual({ ok: true, value: null });
+      expect((await list("unreviewed")).value.candidates).toEqual([]);
+      expect((await list("kept-both")).value.candidates).toHaveLength(1);
+
+      expect(
+        parseProcessOutput(await runDuplicateCommand("reopen", pairRequest)),
+      ).toEqual({ ok: true, value: null });
+      expect((await list("unreviewed")).value.candidates).toHaveLength(1);
+
+      const stale = await runDuplicateCommand("keep", {
+        ...pairRequest,
+        reviewToken: "0".repeat(64),
+      });
+      expect(stale.exitCode).not.toBe(0);
+      expect(stale.stderr).toBe("");
+      expect(JSON.parse(stale.stdout)).toEqual({
+        ok: false,
+        error: { code: "stale-review" },
+      });
+
+      const merged = parseProcessOutput(
+        await runDuplicateCommand("merge", {
+          targetId: candidate.left.id,
+          sourceId: candidate.right.id,
+          reviewToken: candidate.reviewToken,
+          metadata: { tags: candidate.left.tags },
+          addSourceFormats: [],
+          cover: "target",
+        }),
+      ) as {
+        ok: true;
+        value: {
+          target: { id: string };
+          trashedSource: { id: string };
+          cleanupPending: boolean;
+        };
+      };
+      expect(merged.value.target.id).toBe(candidate.left.id);
+      expect(merged.value.trashedSource.id).toBe(candidate.right.id);
+      expect(merged.value.cleanupPending).toBe(false);
+      expect(Object.keys(merged.value).sort()).toEqual([
+        "cleanupPending",
+        "target",
+        "trashedSource",
+      ]);
+      expect((await list("unreviewed")).value.candidates).toEqual([]);
+
+      const active = parseProcessOutput(
+        await invokeProcess(["library", "list", "--db", databasePath!]),
+      ) as { value: { items: Array<{ id: string }> } };
+      expect(active.value.items.map(({ id }) => id)).toEqual([candidate.left.id]);
+      const trash = parseProcessOutput(
+        await invokeProcess([
+          "library",
+          "trash",
+          "list",
+          "--db",
+          databasePath!,
+          "--request-json",
+          JSON.stringify({ page }),
+        ]),
+      ) as { value: { items: Array<{ id: string }> } };
+      expect(trash.value.items.map(({ id }) => id)).toEqual([candidate.right.id]);
+    });
+
     it("refuses to purge an active item without changing remove semantics", async () => {
       const sourcePath = join(directory!, "active-purge.epub");
       await Bun.write(sourcePath, "active purge contents");
@@ -1377,6 +1508,7 @@ describe("takio CLI", () => {
       };
       const oversizedText = "é".repeat(8_192);
       const oversizedQuery = JSON.stringify({ ...query, query: oversizedText });
+      const reviewToken = "0".repeat(64);
       expect(oversizedQuery.length).toBeLessThanOrEqual(16 * 1024);
       expect(Buffer.byteLength(oversizedQuery, "utf8")).toBeGreaterThan(16 * 1024);
       const invalidRequests = [
@@ -1446,6 +1578,54 @@ describe("takio CLI", () => {
           JSON.stringify({ id: "" }),
         ],
         ["library", "trash", "purge", "--request-json", JSON.stringify({})],
+        ["library", "duplicates", "list", "--request-json", "{"],
+        [
+          "library",
+          "duplicates",
+          "list",
+          "--request-json",
+          JSON.stringify({
+            page: { offset: 0, limit: 10 },
+            disposition: "ignored",
+          }),
+        ],
+        [
+          "library",
+          "duplicates",
+          "keep",
+          "--request-json",
+          JSON.stringify({
+            leftId: "right",
+            rightId: "left",
+            reviewToken,
+          }),
+        ],
+        [
+          "library",
+          "duplicates",
+          "reopen",
+          "--request-json",
+          JSON.stringify({
+            leftId: "left",
+            rightId: "right",
+            reviewToken,
+            unexpected: true,
+          }),
+        ],
+        [
+          "library",
+          "duplicates",
+          "merge",
+          "--request-json",
+          JSON.stringify({
+            targetId: "item",
+            sourceId: "item",
+            reviewToken,
+            metadata: {},
+            addSourceFormats: ["epub", "epub"],
+            cover: "invalid",
+          }),
+        ],
       ];
 
       for (const args of invalidRequests) {

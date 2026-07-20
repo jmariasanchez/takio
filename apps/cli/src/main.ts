@@ -13,22 +13,30 @@ import {
 } from "@takio/core";
 import {
   importLibraryItemsRequestSchema,
+  keepDuplicatePairRequestSchema,
   libraryMetadataPatchSchema,
+  listDuplicateCandidatesRequestSchema,
   listLibraryTrashRequestSchema,
+  mergeDuplicatePairRequestSchema,
   purgeLibraryItemRequestSchema,
   queryLibraryItemsRequestSchema,
   removeSavedLibraryViewRequestSchema,
   replaceLibraryFormatRequestSchema,
+  reopenDuplicatePairRequestSchema,
   restoreLibraryItemRequestSchema,
   saveSavedLibraryViewRequestSchema,
   trashLibraryItemRequestSchema,
   type ImportLibraryItemsRequest,
+  type KeepDuplicatePairRequest,
   type LibraryMetadataPatch,
+  type ListDuplicateCandidatesRequest,
   type ListLibraryTrashRequest,
+  type MergeDuplicatePairRequest,
   type PurgeLibraryItemRequest,
   type QueryLibraryItemsRequest,
   type RemoveSavedLibraryViewRequest,
   type ReplaceLibraryFormatRequest,
+  type ReopenDuplicatePairRequest,
   type RestoreLibraryItemRequest,
   type SaveSavedLibraryViewRequest,
   type TrashLibraryItemRequest,
@@ -1213,6 +1221,115 @@ export function createProgram(
         const { store } = await openLibraryStore(options.db, command);
         try {
           const result = await store.query(request);
+          if (!result.ok) {
+            command.error("", { exitCode: 1, code: result.error.code });
+          }
+          write(JSON.stringify({ ok: true, value: result.value }));
+        } finally {
+          store.close();
+        }
+      },
+    );
+
+  const duplicates = storageCommand(library.command("duplicates"), writeError)
+    .helpOption(false)
+    .addHelpCommand(false)
+    .description("Review duplicate library items");
+
+  storageCommand(duplicates.command("list").helpOption(false), writeError)
+    .option("--db <path>", "database path")
+    .requiredOption("--request-json <json>", "duplicate candidate page request as JSON")
+    .action(
+      async (
+        options: { db?: string; requestJson: string },
+        command: Command,
+      ) => {
+        const request = parseLibraryJsonRequest<ListDuplicateCandidatesRequest>(
+          options.requestJson,
+          listDuplicateCandidatesRequestSchema,
+          command,
+        );
+        const { store } = await openLibraryStore(options.db, command);
+        try {
+          const result = await store.listDuplicateCandidates(request);
+          if (!result.ok) {
+            command.error("", { exitCode: 1, code: result.error.code });
+          }
+          write(JSON.stringify({ ok: true, value: result.value }));
+        } finally {
+          store.close();
+        }
+      },
+    );
+
+  storageCommand(duplicates.command("keep").helpOption(false), writeError)
+    .option("--db <path>", "database path")
+    .requiredOption("--request-json <json>", "duplicate pair keep request as JSON")
+    .action(
+      async (
+        options: { db?: string; requestJson: string },
+        command: Command,
+      ) => {
+        const request = parseLibraryJsonRequest<KeepDuplicatePairRequest>(
+          options.requestJson,
+          keepDuplicatePairRequestSchema,
+          command,
+        );
+        const { store } = await openLibraryStore(options.db, command);
+        try {
+          const result = await store.keepDuplicatePair(request);
+          if (!result.ok) {
+            command.error("", { exitCode: 1, code: result.error.code });
+          }
+          write(JSON.stringify({ ok: true, value: result.value }));
+        } finally {
+          store.close();
+        }
+      },
+    );
+
+  storageCommand(duplicates.command("reopen").helpOption(false), writeError)
+    .option("--db <path>", "database path")
+    .requiredOption("--request-json <json>", "duplicate pair reopen request as JSON")
+    .action(
+      async (
+        options: { db?: string; requestJson: string },
+        command: Command,
+      ) => {
+        const request = parseLibraryJsonRequest<ReopenDuplicatePairRequest>(
+          options.requestJson,
+          reopenDuplicatePairRequestSchema,
+          command,
+        );
+        const { store } = await openLibraryStore(options.db, command);
+        try {
+          const result = await store.reopenDuplicatePair(request);
+          if (!result.ok) {
+            command.error("", { exitCode: 1, code: result.error.code });
+          }
+          write(JSON.stringify({ ok: true, value: result.value }));
+        } finally {
+          store.close();
+        }
+      },
+    );
+
+  storageCommand(duplicates.command("merge").helpOption(false), writeError)
+    .option("--db <path>", "database path")
+    .requiredOption("--request-json <json>", "duplicate pair merge request as JSON")
+    .action(
+      async (
+        options: { db?: string; requestJson: string },
+        command: Command,
+      ) => {
+        const request = parseLibraryJsonRequest<MergeDuplicatePairRequest>(
+          options.requestJson,
+          mergeDuplicatePairRequestSchema,
+          command,
+        );
+        const { store } = await openLibraryStore(options.db, command);
+        try {
+          const result = await store.mergeDuplicatePair(request);
           if (!result.ok) {
             command.error("", { exitCode: 1, code: result.error.code });
           }
