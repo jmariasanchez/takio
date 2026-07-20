@@ -43,6 +43,27 @@ const secondItem: LibraryItem = {
   tags: [],
 };
 
+const richItem: LibraryItem = {
+  ...item,
+  author: "Ursula K. Le Guin",
+  authors: [
+    { name: "Ursula K. Le Guin", sortName: "Le Guin, Ursula K." },
+    { name: "Michael Chabon" },
+  ],
+  series: "Hainish Cycle",
+  seriesIndex: 4.5,
+  publisher: "Ace Books",
+  languages: ["en-US", "fr", "zh-Hant"],
+  identifiers: {
+    ISBN: "9780441478125",
+    isbn: "0441478123",
+  },
+  publishedDate: "1969-03",
+  rating: 8.75,
+  description: "A novel of the Hainish Cycle.",
+  tags: ["Science Fiction"],
+};
+
 const migratedV1Item: LibraryItem = {
   ...item,
   formats: [{ ...item.formats[0]!, addedAt: item.addedAt }],
@@ -73,6 +94,7 @@ afterEach(async () => {
   delete initializationTestSeam.afterVersionZeroPreflight;
   delete initializationTestSeam.duringV1ToV2Migration;
   delete initializationTestSeam.duringV2ToV3Migration;
+  delete initializationTestSeam.duringV4ToV5Migration;
 
   const closeErrors: unknown[] = [];
   for (const store of stores) {
@@ -138,13 +160,13 @@ async function createSqlFixture(filename: string): Promise<void> {
 }
 
 describe("BunSqliteLibraryStore", () => {
-  it("persists add, get, list, and remove across injected-path reopenings at schema v4", async () => {
+  it("persists add, get, list, and remove across injected-path reopenings at schema v5", async () => {
     const first = createStore();
     expect(await first.open({ config: {} })).toEqual({ ok: true, value: null });
     expect(await first.add({ item })).toEqual({ ok: true, value: item });
     first.close();
 
-    expect(schemaVersion()).toBe(4);
+    expect(schemaVersion()).toBe(5);
     using stored = new Database(databasePath, { strict: true });
     expect(
       stored
@@ -191,7 +213,7 @@ describe("BunSqliteLibraryStore", () => {
     expect(await third.list({})).toEqual({ ok: true, value: [] });
     third.close();
 
-    expect(schemaVersion()).toBe(4);
+    expect(schemaVersion()).toBe(5);
     expect(stored.query("SELECT * FROM library_item_formats").all()).toEqual([]);
   });
 
@@ -244,7 +266,7 @@ describe("BunSqliteLibraryStore", () => {
     });
     store.close();
 
-    expect(schemaVersion()).toBe(4);
+    expect(schemaVersion()).toBe(5);
     expect(await readFile(`${databasePath}.v2.backup`)).toEqual(databaseBefore);
     using migrated = new Database(databasePath, { strict: true });
     expect(migrated.query("PRAGMA foreign_key_check").all()).toEqual([]);
@@ -282,6 +304,133 @@ describe("BunSqliteLibraryStore", () => {
     ]);
   });
 
+  it("backs up and migrates frozen v4 without inventing rich metadata", async () => {
+    await createSqlFixture("schema-v4.sql");
+    const databaseBefore = await readFile(databasePath);
+
+    const store = createStore();
+    expect(await store.open({ config: {} })).toEqual({ ok: true, value: null });
+    expect(await store.list({})).toEqual({
+      ok: true,
+      value: [
+        {
+          id: "book-v4-minimal",
+          title: "Kindred",
+          sourcePath: "library/kindred.mobi",
+          format: "mobi",
+          addedAt: "2026-07-11T07:00:00.000Z",
+          formats: [
+            {
+              sourcePath: "library/kindred.mobi",
+              format: "mobi",
+              addedAt: "2026-07-11T07:05:00.000Z",
+              provenance: "referenced",
+            },
+          ],
+          tags: [],
+        },
+        {
+          id: "book-v4-complete",
+          title: "Parable of the Sower",
+          sourcePath: "library/parable-of-the-sower.epub",
+          format: "epub",
+          addedAt: "2026-07-12T08:00:00.000Z",
+          formats: [
+            {
+              sourcePath: "library/parable-of-the-sower.epub",
+              format: "epub",
+              addedAt: "2026-07-12T08:05:00.000Z",
+              provenance: "referenced",
+            },
+            {
+              sourcePath: "library/parable-of-the-sower.pdf",
+              format: "pdf",
+              addedAt: "2026-07-12T08:10:00.000Z",
+              provenance: "referenced",
+            },
+          ],
+          author: "Octavia E. Butler",
+          description: "The first Earthseed novel.",
+          tags: ["Science Fiction", "Classic"],
+          updatedAt: "2026-07-13T09:30:00.000Z",
+        },
+      ],
+    });
+    store.close();
+
+    expect(schemaVersion()).toBe(5);
+    expect(await readFile(`${databasePath}.v4.backup`)).toEqual(databaseBefore);
+    using backup = new Database(`${databasePath}.v4.backup`, { strict: true });
+    expect(backup.query<{ user_version: number }, []>("PRAGMA user_version").get()).toEqual({
+      user_version: 4,
+    });
+    using migrated = new Database(databasePath, { strict: true });
+    expect(migrated.query("SELECT * FROM library_item_authors").all()).toEqual([]);
+    expect(migrated.query("SELECT * FROM library_item_languages").all()).toEqual([]);
+    expect(migrated.query("SELECT * FROM library_item_identifiers").all()).toEqual([]);
+    expect(migrated.query("SELECT * FROM saved_library_views").all()).toEqual([]);
+    expect(
+      migrated
+        .query<{ name: string }, []>(`
+          SELECT name
+          FROM sqlite_schema
+          WHERE type = 'index' AND name NOT GLOB 'sqlite_*'
+          ORDER BY name
+        `)
+        .all(),
+    ).toEqual([
+      { name: "library_item_authors_by_name" },
+      { name: "library_item_formats_by_format" },
+      { name: "library_item_languages_by_language" },
+      { name: "library_item_tags_by_tag" },
+      { name: "library_items_by_added_at" },
+      { name: "library_items_by_author" },
+      { name: "library_items_by_published_date" },
+      { name: "library_items_by_rating" },
+      { name: "library_items_by_series" },
+      { name: "library_items_by_title" },
+      { name: "library_items_by_updated_at" },
+      { name: "saved_library_views_by_name" },
+    ]);
+    expect(migrated.query("PRAGMA foreign_key_check").all()).toEqual([]);
+    expect(
+      migrated.query<{ integrity_check: string }, []>("PRAGMA integrity_check").get()
+        ?.integrity_check,
+    ).toBe("ok");
+  });
+
+  it("rolls frozen v4 back byte-for-byte when v5 migration is interrupted", async () => {
+    await createSqlFixture("schema-v4.sql");
+    const databaseBefore = await readFile(databasePath);
+    initializationTestSeam.duringV4ToV5Migration = () => {
+      throw new Error("injected v4-to-v5 migration failure");
+    };
+
+    const store = createStore();
+    expect(await store.open({ config: {} })).toEqual({
+      ok: false,
+      error: { code: "storage-unavailable" },
+    });
+
+    expect(await readFile(databasePath)).toEqual(databaseBefore);
+    expect(await readFile(`${databasePath}.v4.backup`)).toEqual(databaseBefore);
+    expect(schemaVersion()).toBe(4);
+    using rolledBack = new Database(databasePath, { strict: true });
+    expect(
+      rolledBack
+        .query<{ name: string }, []>("PRAGMA table_info(library_items)")
+        .all()
+        .map(({ name }) => name),
+    ).not.toContain("series");
+    expect(
+      rolledBack
+        .query<{ name: string }, []>(
+          "SELECT name FROM sqlite_schema WHERE type = 'table' ORDER BY name",
+        )
+        .all(),
+    ).not.toContainEqual({ name: "library_item_authors" });
+  });
+
   it("backs up and migrates a frozen v1 library without changing original fields", async () => {
     createFrozenV1Fixture();
 
@@ -293,7 +442,7 @@ describe("BunSqliteLibraryStore", () => {
     });
     store.close();
 
-    expect(schemaVersion()).toBe(4);
+    expect(schemaVersion()).toBe(5);
     using migrated = new Database(databasePath, { strict: true });
     expect(
       migrated.query<{ integrity_check: string }, []>("PRAGMA integrity_check").get()
@@ -357,7 +506,7 @@ describe("BunSqliteLibraryStore", () => {
     ]);
   });
 
-  it("treats reopening v4 as a no-op", async () => {
+  it("treats reopening v5 as a no-op", async () => {
     createFrozenV1Fixture();
     const first = createStore();
     expect(await first.open({ config: {} })).toEqual({ ok: true, value: null });
@@ -525,6 +674,72 @@ describe("BunSqliteLibraryStore", () => {
       ok: true,
       value: { author: undefined, description: undefined, tags: [] },
     });
+  });
+
+  it("preserves rich metadata ordering and date precision through legacy updates and reopen", async () => {
+    const first = createStore();
+    expect(await first.open({ config: {} })).toEqual({ ok: true, value: null });
+    expect(await first.add({ item: richItem })).toEqual({ ok: true, value: richItem });
+
+    const updated = await first.update({
+      id: richItem.id,
+      patch: {
+        author: "U. K. Le Guin",
+        tags: ["Classic"],
+      },
+    });
+    expect(updated).toEqual({
+      ok: true,
+      value: {
+        ...richItem,
+        author: "U. K. Le Guin",
+        tags: ["Classic"],
+        updatedAt: expect.any(String),
+      },
+    });
+    if (!updated.ok || !updated.value) {
+      throw new Error("Expected a rich metadata item");
+    }
+
+    using stored = new Database(databasePath, { strict: true });
+    expect(
+      stored
+        .query<{ name: string; sortName: string | null; position: number }, []>(`
+          SELECT name, sort_name AS sortName, position
+          FROM library_item_authors
+          ORDER BY position
+        `)
+        .all(),
+    ).toEqual([
+      { name: "Ursula K. Le Guin", sortName: "Le Guin, Ursula K.", position: 0 },
+      { name: "Michael Chabon", sortName: null, position: 1 },
+    ]);
+    expect(
+      stored
+        .query<{ language: string; position: number }, []>(`
+          SELECT language, position
+          FROM library_item_languages
+          ORDER BY position
+        `)
+        .all(),
+    ).toEqual([
+      { language: "en-US", position: 0 },
+      { language: "fr", position: 1 },
+      { language: "zh-Hant", position: 2 },
+    ]);
+    expect(
+      stored
+        .query<{ publishedDate: string }, []>(`
+          SELECT published_date AS publishedDate
+          FROM library_items
+        `)
+        .get(),
+    ).toEqual({ publishedDate: "1969-03" });
+    first.close();
+
+    const reopened = createStore();
+    expect(await reopened.open({ config: {} })).toEqual({ ok: true, value: null });
+    expect(await reopened.get({ id: richItem.id })).toEqual(updated);
   });
 
   it("rolls scalar and tag changes back together when tag replacement fails", async () => {
@@ -877,18 +1092,24 @@ describe("BunSqliteLibraryStore", () => {
     expect(
       initializedDatabase.query<{ user_version: number }, []>("PRAGMA user_version").get()
         ?.user_version,
-    ).toBe(4);
+    ).toBe(5);
     expect(
       initializedDatabase
         .query<{ name: string; type: string }, []>(
-          "SELECT name, type FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' ORDER BY name",
+          `SELECT name, type FROM sqlite_schema
+            WHERE type = 'table' AND name NOT GLOB 'sqlite_*'
+            ORDER BY name`,
         )
         .all(),
     ).toEqual([
+      { name: "library_item_authors", type: "table" },
       { name: "library_item_formats", type: "table" },
+      { name: "library_item_identifiers", type: "table" },
+      { name: "library_item_languages", type: "table" },
       { name: "library_item_tags", type: "table" },
       { name: "library_items", type: "table" },
       { name: "managed_file_cleanup", type: "table" },
+      { name: "saved_library_views", type: "table" },
       { name: "tags", type: "table" },
     ]);
   });
@@ -918,6 +1139,71 @@ describe("BunSqliteLibraryStore", () => {
     const malformedTag = createStore();
     expect(await malformedTag.open({ config: {} })).toEqual({ ok: true, value: null });
     expect(await malformedTag.list({})).toEqual({
+      ok: false,
+      error: { code: "invalid-stored-data" },
+    });
+  });
+
+  it("reports malformed rich metadata without normalizing or dropping it", async () => {
+    const initializer = createStore();
+    await initializer.open({ config: {} });
+    await initializer.add({ item: richItem });
+    initializer.close();
+
+    using database = new Database(databasePath, { strict: true });
+    database.run("UPDATE library_items SET published_date = '1969-13' WHERE id = ?", [
+      richItem.id,
+    ]);
+    const malformedDate = createStore();
+    expect(await malformedDate.open({ config: {} })).toEqual({ ok: true, value: null });
+    expect(await malformedDate.get({ id: richItem.id })).toEqual({
+      ok: false,
+      error: { code: "invalid-stored-data" },
+    });
+    malformedDate.close();
+
+    database.run("UPDATE library_items SET published_date = '1969-03' WHERE id = ?", [
+      richItem.id,
+    ]);
+    database.run(
+      "UPDATE library_item_authors SET position = 3 WHERE library_item_id = ? AND position = 1",
+      [richItem.id],
+    );
+    const malformedAuthorOrder = createStore();
+    expect(await malformedAuthorOrder.open({ config: {} })).toEqual({ ok: true, value: null });
+    expect(await malformedAuthorOrder.list({})).toEqual({
+      ok: false,
+      error: { code: "invalid-stored-data" },
+    });
+    malformedAuthorOrder.close();
+
+    database.run(
+      "UPDATE library_item_authors SET position = 1 WHERE library_item_id = ? AND position = 3",
+      [richItem.id],
+    );
+    database.run(
+      "UPDATE library_item_languages SET position = 4 WHERE library_item_id = ? AND position = 2",
+      [richItem.id],
+    );
+    const malformedLanguageOrder = createStore();
+    expect(await malformedLanguageOrder.open({ config: {} })).toEqual({ ok: true, value: null });
+    expect(await malformedLanguageOrder.get({ id: richItem.id })).toEqual({
+      ok: false,
+      error: { code: "invalid-stored-data" },
+    });
+    malformedLanguageOrder.close();
+
+    database.run(
+      "UPDATE library_item_languages SET position = 2 WHERE library_item_id = ? AND position = 4",
+      [richItem.id],
+    );
+    database.run(
+      "UPDATE library_item_identifiers SET scheme = ' ISBN ' WHERE library_item_id = ? AND scheme = 'ISBN'",
+      [richItem.id],
+    );
+    const malformedIdentifier = createStore();
+    expect(await malformedIdentifier.open({ config: {} })).toEqual({ ok: true, value: null });
+    expect(await malformedIdentifier.get({ id: richItem.id })).toEqual({
       ok: false,
       error: { code: "invalid-stored-data" },
     });

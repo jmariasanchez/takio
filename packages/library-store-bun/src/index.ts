@@ -59,7 +59,7 @@ import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } 
 import { initializationTestSeam } from "./initialization-test-seam.js";
 import { lifecycleTestSeam } from "./lifecycle-test-seam.js";
 
-const SCHEMA_VERSION = 4;
+const SCHEMA_VERSION = 5;
 const incompatibleSchema = Symbol("incompatible-schema");
 const duplicateFormat = Symbol("duplicate-format");
 const sourceChanged = Symbol("source-changed");
@@ -70,6 +70,11 @@ type StoredLibraryItem = {
   title: unknown;
   addedAt: unknown;
   author: unknown;
+  series?: unknown;
+  seriesIndex?: unknown;
+  publisher?: unknown;
+  publishedDate?: unknown;
+  rating?: unknown;
   description: unknown;
   coverPath: unknown;
   updatedAt: unknown;
@@ -85,6 +90,9 @@ type StoredBookFormat = StoredV3BookFormat & { provenance: unknown };
 type StoredPositionedBookFormat = StoredBookFormat & { position: unknown };
 type StoredPositionedV3BookFormat = StoredV3BookFormat & { position: unknown };
 type StoredTag = { name: unknown };
+type StoredAuthor = { name: unknown; sortName: unknown; position: unknown };
+type StoredLanguage = { language: unknown; position: unknown };
+type StoredIdentifier = { scheme: unknown; value: unknown };
 type CleanupKind = "cover" | "format";
 type StoredCleanupPath = { sourcePath: unknown; kind: unknown };
 type CleanupJob = { sourcePath: string; kind: CleanupKind };
@@ -450,6 +458,81 @@ function readTags(database: Database, itemId: string): unknown[] {
     .map(({ name }) => name);
 }
 
+type StoredRichMetadata = {
+  authors?: unknown;
+  languages?: unknown;
+  identifiers?: unknown;
+};
+
+function readRichMetadata(
+  database: Database,
+  itemId: string,
+): LibraryStoreResult<StoredRichMetadata> {
+  const storedAuthors = database
+    .query<StoredAuthor, [string]>(`
+      SELECT name, sort_name AS sortName, position
+      FROM library_item_authors
+      WHERE library_item_id = ?
+      ORDER BY position
+    `)
+    .all(itemId);
+  const storedLanguages = database
+    .query<StoredLanguage, [string]>(`
+      SELECT language, position
+      FROM library_item_languages
+      WHERE library_item_id = ?
+      ORDER BY position
+    `)
+    .all(itemId);
+
+  if (
+    storedAuthors.some(({ position }, index) => position !== index) ||
+    storedLanguages.some(({ position }, index) => position !== index)
+  ) {
+    return failure("invalid-stored-data");
+  }
+
+  const storedIdentifiers = database
+    .query<StoredIdentifier, [string]>(`
+      SELECT scheme, value
+      FROM library_item_identifiers
+      WHERE library_item_id = ?
+      ORDER BY scheme
+    `)
+    .all(itemId);
+  const identifierEntries: [string, unknown][] = [];
+  const schemes = new Set<string>();
+  for (const { scheme, value } of storedIdentifiers) {
+    if (typeof scheme !== "string") {
+      return failure("invalid-stored-data");
+    }
+    const canonicalScheme = scheme.trim();
+    if (canonicalScheme.length === 0 || scheme !== canonicalScheme || schemes.has(canonicalScheme)) {
+      return failure("invalid-stored-data");
+    }
+    schemes.add(canonicalScheme);
+    identifierEntries.push([canonicalScheme, value]);
+  }
+
+  return success({
+    authors:
+      storedAuthors.length === 0
+        ? undefined
+        : storedAuthors.map(({ name, sortName }) => ({
+            name,
+            sortName: sortName ?? undefined,
+          })),
+    languages:
+      storedLanguages.length === 0
+        ? undefined
+        : storedLanguages.map(({ language }) => language),
+    identifiers:
+      identifierEntries.length === 0
+        ? undefined
+        : Object.fromEntries(identifierEntries),
+  });
+}
+
 function parseItem(
   coversDirectory: string,
   row: StoredLibraryItem,
@@ -457,6 +540,7 @@ function parseItem(
   format: unknown,
   formats: unknown,
   tags: unknown[],
+  richMetadata: StoredRichMetadata = {},
 ): LibraryStoreResult<LibraryItem> {
   let coverPath: string | undefined;
   try {
@@ -471,6 +555,12 @@ function parseItem(
     format,
     formats,
     author: row.author ?? undefined,
+    ...richMetadata,
+    series: row.series ?? undefined,
+    seriesIndex: row.seriesIndex ?? undefined,
+    publisher: row.publisher ?? undefined,
+    publishedDate: row.publishedDate ?? undefined,
+    rating: row.rating ?? undefined,
     description: row.description ?? undefined,
     coverPath,
     updatedAt: row.updatedAt ?? undefined,
@@ -510,6 +600,7 @@ function readItem(
   coversDirectory: string,
   itemsDirectory: string,
   row: StoredLibraryItem,
+  includeRichMetadata = true,
 ): LibraryStoreResult<LibraryItem> {
   if (typeof row.id !== "string") {
     return failure("invalid-stored-data");
@@ -540,6 +631,11 @@ function readItem(
     return failure("invalid-stored-data");
   }
 
+  const richMetadata = includeRichMetadata ? readRichMetadata(database, row.id) : success({});
+  if (!richMetadata.ok) {
+    return richMetadata;
+  }
+
   return parseItem(
     coversDirectory,
     row,
@@ -547,6 +643,7 @@ function readItem(
     formats.data[0]!.format,
     formats.data,
     readTags(database, row.id),
+    richMetadata.value,
   );
 }
 
@@ -638,6 +735,85 @@ function createMetadataTables(database: Database): void {
       UNIQUE (library_item_id, position)
     ) STRICT
   `);
+}
+
+function createRichMetadataTables(database: Database): void {
+  database.run(`
+    CREATE TABLE library_item_authors (
+      library_item_id TEXT NOT NULL REFERENCES library_items(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      sort_name TEXT,
+      position INTEGER NOT NULL CHECK (position >= 0),
+      PRIMARY KEY (library_item_id, position)
+    ) STRICT
+  `);
+  database.run(`
+    CREATE TABLE library_item_languages (
+      library_item_id TEXT NOT NULL REFERENCES library_items(id) ON DELETE CASCADE,
+      language TEXT NOT NULL,
+      position INTEGER NOT NULL CHECK (position >= 0),
+      PRIMARY KEY (library_item_id, position)
+    ) STRICT
+  `);
+  database.run(`
+    CREATE TABLE library_item_identifiers (
+      library_item_id TEXT NOT NULL REFERENCES library_items(id) ON DELETE CASCADE,
+      scheme TEXT NOT NULL,
+      value TEXT NOT NULL,
+      PRIMARY KEY (library_item_id, scheme)
+    ) STRICT
+  `);
+}
+
+function createSavedLibraryViewsTable(database: Database): void {
+  database.run(`
+    CREATE TABLE saved_library_views (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      definition_json TEXT NOT NULL CHECK (json_valid(definition_json)),
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    ) STRICT
+  `);
+}
+
+function createLibraryQueryIndexes(database: Database): void {
+  database.run(
+    "CREATE INDEX library_items_by_title ON library_items(title COLLATE NOCASE, id)",
+  );
+  database.run(
+    "CREATE INDEX library_items_by_author ON library_items(author COLLATE NOCASE, id)",
+  );
+  database.run(
+    `CREATE INDEX library_items_by_series
+      ON library_items(series COLLATE NOCASE, series_index, id)`,
+  );
+  database.run(
+    "CREATE INDEX library_items_by_published_date ON library_items(published_date, id)",
+  );
+  database.run("CREATE INDEX library_items_by_rating ON library_items(rating, id)");
+  database.run("CREATE INDEX library_items_by_added_at ON library_items(added_at, id)");
+  database.run("CREATE INDEX library_items_by_updated_at ON library_items(updated_at, id)");
+  database.run(
+    `CREATE INDEX library_item_tags_by_tag
+      ON library_item_tags(tag_normalized_name, library_item_id)`,
+  );
+  database.run(
+    `CREATE INDEX library_item_formats_by_format
+      ON library_item_formats(format, library_item_id)`,
+  );
+  database.run(
+    `CREATE INDEX library_item_authors_by_name
+      ON library_item_authors(name COLLATE NOCASE, library_item_id)`,
+  );
+  database.run(
+    `CREATE INDEX library_item_languages_by_language
+      ON library_item_languages(language COLLATE NOCASE, library_item_id)`,
+  );
+  database.run(
+    `CREATE INDEX saved_library_views_by_name
+      ON saved_library_views(name COLLATE NOCASE, id)`,
+  );
 }
 
 function createV3FormatTable(database: Database): void {
@@ -881,6 +1057,18 @@ function migrateV3ToV4(database: Database): void {
   initializationTestSeam.duringV3ToV4Migration?.();
 }
 
+function migrateV4ToV5(database: Database): void {
+  database.run("ALTER TABLE library_items ADD COLUMN series TEXT");
+  database.run("ALTER TABLE library_items ADD COLUMN series_index REAL");
+  database.run("ALTER TABLE library_items ADD COLUMN publisher TEXT");
+  database.run("ALTER TABLE library_items ADD COLUMN published_date TEXT");
+  database.run("ALTER TABLE library_items ADD COLUMN rating REAL CHECK (rating >= 0 AND rating <= 10)");
+  createRichMetadataTables(database);
+  createSavedLibraryViewsTable(database);
+  createLibraryQueryIndexes(database);
+  initializationTestSeam.duringV4ToV5Migration?.();
+}
+
 function verifyV4Database(
   database: Database,
   coversDirectory: string,
@@ -915,6 +1103,75 @@ function verifyV4Database(
     integrity !== "ok" ||
     foreignKeyViolations.length > 0 ||
     itemWithoutFormat ||
+    rows.some((row) => !readItem(database, coversDirectory, itemsDirectory, row, false).ok)
+  ) {
+    throw new Error("The migrated database could not be verified.");
+  }
+}
+
+function verifyV4Backup(
+  path: string,
+  coversDirectory: string,
+  itemsDirectory: string,
+): void {
+  using backup = new Database(path, { strict: true });
+  backup.run("PRAGMA foreign_keys = ON");
+  const version = backup.query<{ user_version: number }, []>("PRAGMA user_version").get()
+    ?.user_version;
+
+  if (version !== 4) {
+    throw new Error("The pre-migration backup could not be verified.");
+  }
+  verifyV4Database(backup, coversDirectory, itemsDirectory);
+}
+
+function retainVerifiedV4Backup(
+  database: Database,
+  databasePath: string,
+  coversDirectory: string,
+  itemsDirectory: string,
+): void {
+  retainVerifiedBackup(database, `${databasePath}.v4.backup`, (path) =>
+    verifyV4Backup(path, coversDirectory, itemsDirectory),
+  );
+}
+
+function verifyV5Database(
+  database: Database,
+  coversDirectory: string,
+  itemsDirectory: string,
+): void {
+  const integrity = database.query<{ integrity_check: string }, []>("PRAGMA integrity_check").get()
+    ?.integrity_check;
+  const foreignKeyViolations = database.query("PRAGMA foreign_key_check").all();
+  const itemWithoutFormat = database
+    .query<{ id: string }, []>(`
+      SELECT library_items.id
+      FROM library_items
+      WHERE NOT EXISTS (
+        SELECT 1
+        FROM library_item_formats
+        WHERE library_item_formats.library_item_id = library_items.id
+          AND library_item_formats.position = 0
+      )
+      LIMIT 1
+    `)
+    .get();
+  const rows = database
+    .query<StoredLibraryItem, []>(`
+      SELECT id, title, added_at AS addedAt, author,
+        series, series_index AS seriesIndex, publisher,
+        published_date AS publishedDate, rating,
+        description, cover_path AS coverPath, updated_at AS updatedAt
+      FROM library_items
+      ORDER BY rowid
+    `)
+    .all();
+
+  if (
+    integrity !== "ok" ||
+    foreignKeyViolations.length > 0 ||
+    itemWithoutFormat ||
     rows.some((row) => !readItem(database, coversDirectory, itemsDirectory, row).ok)
   ) {
     throw new Error("The migrated database could not be verified.");
@@ -936,6 +1193,30 @@ function writeTags(database: Database, itemId: string, tags: readonly string[]):
   }
 }
 
+function writeRichMetadata(database: Database, item: LibraryItem): void {
+  for (const [position, author] of (item.authors ?? []).entries()) {
+    database.run(
+      `INSERT INTO library_item_authors
+        (library_item_id, name, sort_name, position) VALUES (?, ?, ?, ?)`,
+      [item.id, author.name, author.sortName ?? null, position],
+    );
+  }
+  for (const [position, language] of (item.languages ?? []).entries()) {
+    database.run(
+      `INSERT INTO library_item_languages
+        (library_item_id, language, position) VALUES (?, ?, ?)`,
+      [item.id, language, position],
+    );
+  }
+  for (const [scheme, value] of Object.entries(item.identifiers ?? {})) {
+    database.run(
+      `INSERT INTO library_item_identifiers
+        (library_item_id, scheme, value) VALUES (?, ?, ?)`,
+      [item.id, scheme, value],
+    );
+  }
+}
+
 function readStoredItem(
   database: Database,
   coversDirectory: string,
@@ -945,7 +1226,9 @@ function readStoredItem(
   const row = database
     .query<StoredLibraryItem, [string]>(`
       SELECT id, title, added_at AS addedAt,
-        author, description, cover_path AS coverPath, updated_at AS updatedAt
+        author, series, series_index AS seriesIndex, publisher,
+        published_date AS publishedDate, rating,
+        description, cover_path AS coverPath, updated_at AS updatedAt
       FROM library_items
       WHERE id = ?
     `)
@@ -1006,6 +1289,11 @@ export class BunSqliteLibraryStore implements LibraryStore {
               title TEXT NOT NULL,
               added_at TEXT NOT NULL,
               author TEXT,
+              series TEXT,
+              series_index REAL,
+              publisher TEXT,
+              published_date TEXT,
+              rating REAL CHECK (rating >= 0 AND rating <= 10),
               description TEXT,
               cover_path TEXT,
               updated_at TEXT
@@ -1013,7 +1301,10 @@ export class BunSqliteLibraryStore implements LibraryStore {
           `);
           createMetadataTables(database!);
           createFormatTable(database!);
-          verifyV4Database(database!, this.#coversDirectory, this.#itemsDirectory);
+          createRichMetadataTables(database!);
+          createSavedLibraryViewsTable(database!);
+          createLibraryQueryIndexes(database!);
+          verifyV5Database(database!, this.#coversDirectory, this.#itemsDirectory);
           database!.run(`PRAGMA user_version = ${SCHEMA_VERSION}`);
         } else if (version === 1) {
           retainVerifiedV1Backup(database!, this.#databasePath);
@@ -1025,18 +1316,31 @@ export class BunSqliteLibraryStore implements LibraryStore {
           initializationTestSeam.duringV1ToV2Migration?.();
           migrateV2ToV3(database!);
           migrateV3ToV4(database!);
-          verifyV4Database(database!, this.#coversDirectory, this.#itemsDirectory);
+          migrateV4ToV5(database!);
+          verifyV5Database(database!, this.#coversDirectory, this.#itemsDirectory);
           database!.run(`PRAGMA user_version = ${SCHEMA_VERSION}`);
         } else if (version === 2) {
           retainVerifiedV2Backup(database!, this.#databasePath, this.#coversDirectory);
           migrateV2ToV3(database!);
           migrateV3ToV4(database!);
-          verifyV4Database(database!, this.#coversDirectory, this.#itemsDirectory);
+          migrateV4ToV5(database!);
+          verifyV5Database(database!, this.#coversDirectory, this.#itemsDirectory);
           database!.run(`PRAGMA user_version = ${SCHEMA_VERSION}`);
         } else if (version === 3) {
           retainVerifiedV3Backup(database!, this.#databasePath, this.#coversDirectory);
           migrateV3ToV4(database!);
-          verifyV4Database(database!, this.#coversDirectory, this.#itemsDirectory);
+          migrateV4ToV5(database!);
+          verifyV5Database(database!, this.#coversDirectory, this.#itemsDirectory);
+          database!.run(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+        } else if (version === 4) {
+          retainVerifiedV4Backup(
+            database!,
+            this.#databasePath,
+            this.#coversDirectory,
+            this.#itemsDirectory,
+          );
+          migrateV4ToV5(database!);
+          verifyV5Database(database!, this.#coversDirectory, this.#itemsDirectory);
           database!.run(`PRAGMA user_version = ${SCHEMA_VERSION}`);
         } else if (version !== SCHEMA_VERSION) {
           throw incompatibleSchema;
@@ -1062,7 +1366,9 @@ export class BunSqliteLibraryStore implements LibraryStore {
       const rows = this.#database
         .query<StoredLibraryItem, []>(`
           SELECT id, title, added_at AS addedAt,
-            author, description, cover_path AS coverPath, updated_at AS updatedAt
+            author, series, series_index AS seriesIndex, publisher,
+            published_date AS publishedDate, rating,
+            description, cover_path AS coverPath, updated_at AS updatedAt
           FROM library_items
           ORDER BY title COLLATE NOCASE, id
         `)
@@ -1144,13 +1450,19 @@ export class BunSqliteLibraryStore implements LibraryStore {
         }
         this.#database!.run(
           `INSERT INTO library_items
-            (id, title, added_at, author, description, cover_path, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)`,
+            (id, title, added_at, author, series, series_index, publisher,
+              published_date, rating, description, cover_path, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
             parsed.data.id,
             parsed.data.title,
             parsed.data.addedAt,
             parsed.data.author ?? null,
+            parsed.data.series ?? null,
+            parsed.data.seriesIndex ?? null,
+            parsed.data.publisher ?? null,
+            parsed.data.publishedDate ?? null,
+            parsed.data.rating ?? null,
             parsed.data.description ?? null,
             parsed.data.coverPath ?? null,
             parsed.data.updatedAt ?? null,
@@ -1168,6 +1480,7 @@ export class BunSqliteLibraryStore implements LibraryStore {
           ],
         );
         writeTags(this.#database!, parsed.data.id, parsed.data.tags);
+        writeRichMetadata(this.#database!, parsed.data);
       }).immediate();
       const stored = readStoredItem(
         this.#database,
@@ -1762,7 +2075,9 @@ export class BunSqliteLibraryStore implements LibraryStore {
       const rows = this.#database
         .query<StoredLibraryItem, [string, string, string, string]>(`
           SELECT id, title, added_at AS addedAt,
-            author, description, cover_path AS coverPath, updated_at AS updatedAt
+            author, series, series_index AS seriesIndex, publisher,
+            published_date AS publishedDate, rating,
+            description, cover_path AS coverPath, updated_at AS updatedAt
           FROM library_items
           WHERE title LIKE ? ESCAPE '\\' COLLATE NOCASE
             OR author LIKE ? ESCAPE '\\' COLLATE NOCASE
@@ -1806,7 +2121,9 @@ export class BunSqliteLibraryStore implements LibraryStore {
         const row = this.#database!
           .query<StoredLibraryItem, [string]>(`
             SELECT id, title, added_at AS addedAt,
-              author, description, cover_path AS coverPath, updated_at AS updatedAt
+              author, series, series_index AS seriesIndex, publisher,
+              published_date AS publishedDate, rating,
+              description, cover_path AS coverPath, updated_at AS updatedAt
             FROM library_items
             WHERE id = ?
           `)
