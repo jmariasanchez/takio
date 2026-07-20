@@ -65,6 +65,7 @@ import {
   readActiveSavedViewId,
   writeActiveSavedViewId,
 } from "./lib/active-saved-view";
+import { reportLibraryUsable } from "./lib/startup";
 import {
   applyBulkTagOperation,
   hydrateSelectedLibraryItems,
@@ -245,6 +246,7 @@ export default function App() {
   const itemsRef = useRef(items);
   const libraryQueryRef = useRef(libraryQuery);
   const currentSavedViewIdRef = useRef<string | null>(null);
+  const libraryUsableReported = useRef(false);
   const postRemoveFocusItemId = useRef<string | null | undefined>(undefined);
   const postFormatFocusControlId = useRef<string | undefined>(undefined);
   const postConversionFocusControlId = useRef<string | undefined>(undefined);
@@ -620,7 +622,13 @@ export default function App() {
       } else if (views !== null && persistedId !== null) {
         commitCurrentSavedViewId(null);
       }
-      await loadLibrary();
+      const libraryLoaded = await loadLibrary();
+      if (!disposed && libraryLoaded && !libraryUsableReported.current) {
+        libraryUsableReported.current = true;
+        void reportLibraryUsable().catch(() => {
+          // Startup reporting is benchmark-only and must not block the library.
+        });
+      }
     })();
     void loadDestinations();
     void loadJobs();
