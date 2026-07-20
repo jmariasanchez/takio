@@ -1,34 +1,19 @@
 import { expect, test } from "bun:test";
-import {
-  Children,
-  isValidElement,
-  type ReactElement,
-  type ReactNode,
-} from "react";
 import type { BookFormat, LibraryItem } from "@takio/core";
+import type {
+  LibraryFacetCounts,
+  LibraryQueryFilters,
+  LibraryQuerySort,
+  SavedLibraryView,
+} from "@takio/library-contract";
+import { renderToStaticMarkup } from "react-dom/server";
 
+import { draftFor } from "../lib/metadata-draft";
 import {
   LibraryWorkspace,
   resolveGeneralSend,
-  type ConversionDraft,
+  type LibraryWorkspaceProps,
 } from "./LibraryWorkspace";
-
-type ButtonElement = ReactElement<{
-  readonly "aria-label"?: string;
-  readonly children?: ReactNode;
-  readonly disabled?: boolean;
-  readonly onClick?: (event: { stopPropagation: () => void }) => void;
-}>;
-
-function buttonElements(node: ReactNode): ButtonElement[] {
-  if (!isValidElement(node)) {
-    return [];
-  }
-
-  const element = node as ButtonElement;
-  const descendants = Children.toArray(element.props.children).flatMap(buttonElements);
-  return element.type === "button" ? [element, ...descendants] : descendants;
-}
 
 const epub = {
   format: "epub",
@@ -40,83 +25,172 @@ const epub = {
 const pdf = {
   format: "pdf",
   sourcePath: "/Books/Title.pdf",
-  provenance: "managed",
+  provenance: "referenced",
   addedAt: "2026-07-20T12:01:00.000Z",
 } as const satisfies BookFormat;
 
-const destination = {
-  id: "reader",
-  name: "Reader",
-  path: "/Volumes/Reader",
-  kind: "generic",
-} as const;
+const item = {
+  id: "item-1",
+  title: "Title",
+  sourcePath: epub.sourcePath,
+  format: epub.format,
+  formats: [epub, pdf],
+  addedAt: "2026-07-20T12:00:00.000Z",
+  author: "Author",
+  tags: ["Classic"],
+} as const satisfies LibraryItem;
 
-function workspace(
-  formats: readonly BookFormat[],
-  preferredDeviceFormat: BookFormat["format"] | null,
-  onSendItem: (item: LibraryItem, format: BookFormat) => Promise<void>,
-  onSetConversionDraft: (draft: ConversionDraft | null) => void,
-): ReactNode {
-  const item: LibraryItem = {
-    id: "item-1",
-    title: "Title",
-    sourcePath: formats[0].sourcePath,
-    format: formats[0].format,
-    formats,
-    addedAt: "2026-07-20T12:00:00.000Z",
-    tags: [],
-  };
+const filters: LibraryQueryFilters = {
+  authors: ["Author"],
+  tags: [],
+  series: [],
+  languages: [],
+  formats: [],
+};
 
-  return LibraryWorkspace({
+const facets: LibraryFacetCounts = {
+  authors: [{ value: "Author", count: 17 }],
+  tags: [{ value: "Classic", count: 8 }],
+  series: [],
+  languages: [],
+  formats: [{ value: "epub", count: 12 }],
+};
+
+const sort = {
+  field: "rating",
+  direction: "descending",
+} as const satisfies LibraryQuerySort;
+
+const savedViews: readonly SavedLibraryView[] = [
+  {
+    id: "favourites",
+    name: "Favourites",
+    definition: {
+      version: 1,
+      query: "Dune",
+      filters,
+      sort,
+    },
+    createdAt: "2026-07-20T12:00:00.000Z",
+    updatedAt: "2026-07-20T12:00:00.000Z",
+  },
+];
+
+function props(overrides: Partial<LibraryWorkspaceProps> = {}): LibraryWorkspaceProps {
+  return {
     actionsPending: false,
     conversionDraft: null,
+    currentSavedViewId: "favourites",
     draft: null,
+    facets,
+    filters,
     items: [item],
     libraryState: "ready",
+    pageLimit: 25,
+    pageOffset: 25,
     pendingAction: null,
-    preferredDeviceFormat,
-    query: "",
+    preferredDeviceFormat: "pdf",
+    query: "Dune",
+    savedViews,
+    saveViewDialogBusy: false,
+    saveViewDialogError: null,
+    saveViewDialogOpen: false,
+    saveViewSuggestedName: "Dune favourites",
     searchInput: { current: null },
     searchPending: false,
-    selectedDestination: destination,
+    selectedDestination: {
+      id: "reader",
+      name: "Reader",
+      path: "/Volumes/Reader",
+      kind: "generic",
+    },
     selectedItemId: item.id,
+    sort,
+    total: 42,
+    onApplySavedView: () => undefined,
     onAttachFormat: async () => undefined,
+    onCancelSaveView: () => undefined,
+    onChangeFilters: () => undefined,
+    onChangePage: () => undefined,
     onChangeSearch: () => undefined,
+    onChangeSort: () => undefined,
     onChooseCover: async () => undefined,
+    onClearAll: () => undefined,
     onClearCover: async () => undefined,
     onEnqueueConversion: async () => undefined,
     onOpenItem: async () => undefined,
+    onOpenSaveView: () => undefined,
     onRemoveFormat: async () => undefined,
     onRemoveItem: async () => undefined,
+    onRemoveSavedView: () => undefined,
     onRetry: async () => true,
     onSaveMetadata: async () => undefined,
+    onSaveView: () => undefined,
     onSelectItem: () => undefined,
-    onSendItem,
-    onSetConversionDraft,
+    onSendItem: async () => undefined,
+    onSetConversionDraft: () => undefined,
     onSetDraft: () => undefined,
-  });
+    ...overrides,
+  };
 }
 
-test("general Send uses the exact preferred attachment rather than the primary format", () => {
-  const sentFormats: BookFormat[] = [];
-  const tree = workspace(
-    [epub, pdf],
-    "pdf",
-    async (_item, format) => {
-      sentFormats.push(format);
-    },
-    () => undefined,
-  );
-  const send = buttonElements(tree).find(
-    (button) => button.props["aria-label"] === "Send PDF for “Title” to Reader",
-  );
+function renderWorkspace(overrides: Partial<LibraryWorkspaceProps> = {}): string {
+  return renderToStaticMarkup(<LibraryWorkspace {...props(overrides)} />);
+}
 
-  expect(send?.props.disabled).toBe(false);
-  send?.props.onClick?.({ stopPropagation: () => undefined });
-  expect(sentFormats).toEqual([pdf]);
+test("composes authoritative facets, table query state, selection, and inspector", () => {
+  const markup = renderWorkspace();
+
+  expect(markup).toContain('aria-label="Library workspace"');
+  expect(markup).toContain('aria-label="Library filters and saved views"');
+  expect(markup).toContain('aria-label="Author, 17 books"');
+  expect(markup).toContain('aria-pressed="true"');
+  expect(markup).toContain('value="Dune"');
+  expect(markup).toContain('<option value="rating" selected="">Rating</option>');
+  expect(markup).toContain('aria-label="Change sort direction to ascending"');
+  expect(markup).toContain(">Descending</button>");
+  expect(markup).toContain("26–26 of 42");
+  expect(markup).toContain('aria-selected="true"');
+  expect(markup).toContain("Selected book");
+  expect(markup).toContain("Title");
 });
 
-test("shared row and menu resolution requires a preference and never falls back", () => {
+test("preserves selected-book open, send, convert, format, cover, and removal actions", () => {
+  const markup = renderWorkspace({
+    items: [{ ...item, formats: [epub], sourcePath: epub.sourcePath, format: epub.format }],
+    preferredDeviceFormat: "pdf",
+  });
+
+  expect(markup).toContain('aria-label="Open EPUB for Title"');
+  expect(markup).toContain('aria-label="Send EPUB for Title"');
+  expect(markup).toContain('aria-label="Convert EPUB to PDF for Title"');
+  expect(markup).toContain("Import a copy…");
+  expect(markup).toContain("Attach a reference…");
+  expect(markup).toContain("Choose cover…");
+  expect(markup).toContain("Add another format before removing the last one.");
+  expect(markup).toContain("Remove from library");
+  expect(markup).toContain(
+    'aria-label="Convert EPUB to PDF for “Title” before sending to Reader"',
+  );
+});
+
+test("renders App-controlled metadata draft and save-view dialog state", () => {
+  const markup = renderWorkspace({
+    draft: { id: item.id, ...draftFor(item) },
+    saveViewDialogOpen: true,
+    saveViewDialogBusy: true,
+    saveViewDialogError: "Name already exists.",
+  });
+
+  expect(markup).toContain("Edit metadata");
+  expect(markup).toContain('id="metadata-item-1-title"');
+  expect(markup).toContain('role="dialog"');
+  expect(markup).toContain("Dune favourites");
+  expect(markup).toContain("Name already exists.");
+  expect(markup).toContain("Saving…");
+});
+
+test("general send resolution never silently falls back from the session preference", () => {
   expect(resolveGeneralSend([epub, pdf], null)).toEqual({ kind: "no-preference" });
   expect(resolveGeneralSend([epub, pdf], "pdf")).toEqual({
     kind: "attached",
@@ -131,60 +205,4 @@ test("shared row and menu resolution requires a preference and never falls back"
     kind: "unavailable",
     preferred: "azw3",
   });
-});
-
-test("general Send opens the exact conversion draft without sending", () => {
-  const sentFormats: BookFormat[] = [];
-  const drafts: Array<ConversionDraft | null> = [];
-  const tree = workspace(
-    [epub],
-    "pdf",
-    async (_item, format) => {
-      sentFormats.push(format);
-    },
-    (draft) => drafts.push(draft),
-  );
-  const convert = buttonElements(tree).find((button) =>
-    button.props["aria-label"]?.startsWith("Convert EPUB to PDF for “Title” before sending"),
-  );
-
-  expect(convert?.props.disabled).toBe(false);
-  convert?.props.onClick?.({ stopPropagation: () => undefined });
-  expect(sentFormats).toEqual([]);
-  expect(drafts).toEqual([{ id: "item-1", source: epub, target: "pdf" }]);
-});
-
-test("general Send is disabled instead of falling back when preference is unavailable", () => {
-  const tree = workspace([epub], "azw3", async () => undefined, () => undefined);
-  const unavailable = buttonElements(tree).find(
-    (button) => button.props["aria-label"] === "AZW3 is unavailable for “Title”",
-  );
-
-  expect(unavailable?.props.disabled).toBe(true);
-  expect(unavailable?.props.children).toBe("AZW3 unavailable");
-});
-
-test("no preference disables general Send while exact per-format Send remains available", () => {
-  const sentFormats: BookFormat[] = [];
-  const tree = workspace(
-    [epub],
-    null,
-    async (_item, format) => {
-      sentFormats.push(format);
-    },
-    () => undefined,
-  );
-  const buttons = buttonElements(tree);
-  const generalSend = buttons.find(
-    (button) => button.props["aria-label"] === "Choose a session send format for “Title”",
-  );
-  const exactSend = buttons.find(
-    (button) => button.props["aria-label"] === "Send EPUB for “Title” to Reader",
-  );
-
-  expect(generalSend?.props.disabled).toBe(true);
-  expect(generalSend?.props.children).toBe("Choose format");
-  expect(exactSend?.props.disabled).toBe(false);
-  exactSend?.props.onClick?.({ stopPropagation: () => undefined });
-  expect(sentFormats).toEqual([epub]);
 });

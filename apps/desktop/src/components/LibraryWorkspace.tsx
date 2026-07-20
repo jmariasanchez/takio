@@ -1,5 +1,3 @@
-import type { FormEvent, RefObject } from "react";
-import { convertFileSrc } from "@tauri-apps/api/core";
 import {
   FORMAT_CATALOG,
   type BookFormat,
@@ -7,21 +5,35 @@ import {
   type FormatId,
   type LibraryItem,
 } from "@takio/core";
+import type {
+  LibraryFacetCounts,
+  LibraryMetadataPatch,
+  LibraryQueryFilters,
+  LibraryQuerySort,
+  SavedLibraryView,
+} from "@takio/library-contract";
+import { useState, type FormEvent, type RefObject } from "react";
 
-import { conversionChoices } from "../lib/conversion-choices";
+import type { ConversionChoice } from "../lib/conversion-choices";
 import {
   resolveDeviceFormatPreference,
   type DeviceFormatPreference,
 } from "../lib/device-format-preference";
+import {
+  draftFor as metadataDraftFor,
+  type MetadataDraft as EditorMetadataDraft,
+} from "../lib/metadata-draft";
+import { LibraryFacetSidebar } from "./LibraryFacetSidebar";
+import { LibraryInspector } from "./LibraryInspector";
+import { LibraryTable } from "./LibraryTable";
+import { LibraryWorkspaceLayout } from "./LibraryWorkspaceLayout";
+import { MetadataEditor } from "./MetadataEditor";
+import { SaveLibraryViewDialog } from "./SaveLibraryViewDialog";
+import type { CompactPane } from "./CompactPaneDrawer";
+import "./LibraryWorkspace.css";
 
 export type LibraryState = "loading" | "ready" | "error";
-export type MetadataDraft = {
-  readonly id: string;
-  readonly title: string;
-  readonly author: string;
-  readonly description: string;
-  readonly tags: string;
-};
+export type MetadataDraft = EditorMetadataDraft & { readonly id: string };
 export type ConversionDraft = {
   readonly id: string;
   readonly source: BookFormat;
@@ -40,26 +52,44 @@ export function resolveGeneralSend(
     : resolveDeviceFormatPreference(formats, preferredFormat);
 }
 
-type LibraryWorkspaceProps = {
+export type LibraryWorkspaceProps = {
   readonly actionsPending: boolean;
   readonly conversionDraft: ConversionDraft | null;
+  readonly currentSavedViewId: string | null;
   readonly draft: MetadataDraft | null;
+  readonly facets: LibraryFacetCounts;
+  readonly filters: LibraryQueryFilters;
   readonly items: readonly LibraryItem[];
   readonly libraryState: LibraryState;
+  readonly pageLimit: number;
+  readonly pageOffset: number;
   readonly pendingAction: string | null;
   readonly preferredDeviceFormat: FormatId | null;
   readonly query: string;
+  readonly savedViews: readonly SavedLibraryView[];
+  readonly saveViewDialogBusy: boolean;
+  readonly saveViewDialogError: string | null;
+  readonly saveViewDialogOpen: boolean;
+  readonly saveViewSuggestedName: string;
   readonly searchInput: RefObject<HTMLInputElement | null>;
   readonly searchPending: boolean;
   readonly selectedDestination: Destination | null;
   readonly selectedItemId: string | null;
+  readonly sort: LibraryQuerySort;
+  readonly total: number;
+  readonly onApplySavedView: (id: string) => void;
   readonly onAttachFormat: (
     item: LibraryItem,
     mode: "copy" | "reference",
     focusControlId: string,
   ) => Promise<void>;
+  readonly onCancelSaveView: () => void;
+  readonly onChangeFilters: (filters: LibraryQueryFilters) => void;
+  readonly onChangePage: (offset: number) => void;
   readonly onChangeSearch: (query: string) => void;
+  readonly onChangeSort: (sort: LibraryQuerySort) => void;
   readonly onChooseCover: (item: LibraryItem) => Promise<void>;
+  readonly onClearAll: () => void;
   readonly onClearCover: (item: LibraryItem) => Promise<void>;
   readonly onEnqueueConversion: (event: FormEvent, item: LibraryItem) => Promise<void>;
   readonly onOpenItem: (
@@ -67,32 +97,32 @@ type LibraryWorkspaceProps = {
     bookFormat: BookFormat,
     focusControlId: string,
   ) => Promise<void>;
+  readonly onOpenSaveView: () => void;
   readonly onRemoveFormat: (
     item: LibraryItem,
     bookFormat: BookFormat,
     focusControlId: string,
   ) => Promise<void>;
   readonly onRemoveItem: (item: LibraryItem) => Promise<void>;
+  readonly onRemoveSavedView: (id: string) => void;
   readonly onRetry: () => Promise<boolean>;
-  readonly onSaveMetadata: (event: FormEvent, item: LibraryItem) => Promise<void>;
+  readonly onSaveMetadata: (
+    item: LibraryItem,
+    patch: LibraryMetadataPatch,
+  ) => Promise<void>;
+  readonly onSaveView: (name: string) => void;
   readonly onSelectItem: (id: string) => void;
   readonly onSendItem: (item: LibraryItem, bookFormat: BookFormat) => Promise<void>;
   readonly onSetConversionDraft: (draft: ConversionDraft | null) => void;
   readonly onSetDraft: (draft: MetadataDraft | null) => void;
 };
 
-function addedDate(value: string): string {
-  return new Intl.DateTimeFormat(undefined, { dateStyle: "medium" }).format(new Date(value));
+function formatLabel(format: FormatId): string {
+  return FORMAT_CATALOG.find(({ id }) => id === format)?.label ?? format.toUpperCase();
 }
 
-function draftFor(item: LibraryItem): MetadataDraft {
-  return {
-    id: item.id,
-    title: item.title,
-    author: item.author ?? "",
-    description: item.description ?? "",
-    tags: item.tags.join(", "),
-  };
+function metadataDraft(item: LibraryItem): MetadataDraft {
+  return { id: item.id, ...metadataDraftFor(item) };
 }
 
 export function conversionControlId(
@@ -103,559 +133,478 @@ export function conversionControlId(
   return `library-convert-${itemId}-${source.format}-to-${target}`;
 }
 
-export function LibraryWorkspace({
+function InspectorManagement({
   actionsPending,
   conversionDraft,
   draft,
-  items,
-  libraryState,
+  item,
   pendingAction,
   preferredDeviceFormat,
-  query,
-  searchInput,
-  searchPending,
   selectedDestination,
-  selectedItemId,
   onAttachFormat,
-  onChangeSearch,
   onChooseCover,
   onClearCover,
   onEnqueueConversion,
   onOpenItem,
   onRemoveFormat,
   onRemoveItem,
+  onSaveMetadata,
+  onSendItem,
+  onSetConversionDraft,
+  onSetDraft,
+}: Readonly<{
+  actionsPending: boolean;
+  conversionDraft: ConversionDraft | null;
+  draft: MetadataDraft | null;
+  item: LibraryItem | null;
+  pendingAction: string | null;
+  preferredDeviceFormat: FormatId | null;
+  selectedDestination: Destination | null;
+  onAttachFormat: LibraryWorkspaceProps["onAttachFormat"];
+  onChooseCover: LibraryWorkspaceProps["onChooseCover"];
+  onClearCover: LibraryWorkspaceProps["onClearCover"];
+  onEnqueueConversion: LibraryWorkspaceProps["onEnqueueConversion"];
+  onOpenItem: LibraryWorkspaceProps["onOpenItem"];
+  onRemoveFormat: LibraryWorkspaceProps["onRemoveFormat"];
+  onRemoveItem: LibraryWorkspaceProps["onRemoveItem"];
+  onSaveMetadata: LibraryWorkspaceProps["onSaveMetadata"];
+  onSendItem: LibraryWorkspaceProps["onSendItem"];
+  onSetConversionDraft: LibraryWorkspaceProps["onSetConversionDraft"];
+  onSetDraft: LibraryWorkspaceProps["onSetDraft"];
+}>) {
+  if (!item) {
+    return (
+      <LibraryInspector
+        actionsDisabled={actionsPending}
+        item={null}
+        onConvertFormat={() => undefined}
+        onOpenFormat={() => undefined}
+        onSendFormat={() => undefined}
+      />
+    );
+  }
+
+  const editing = draft?.id === item.id;
+  const activeConversion = conversionDraft?.id === item.id ? conversionDraft : null;
+  const preferredResolution = resolveGeneralSend(item.formats, preferredDeviceFormat);
+  const preferredLabel =
+    preferredDeviceFormat === null ? null : formatLabel(preferredDeviceFormat);
+
+  function chooseConversion(selectedItem: LibraryItem, choice: ConversionChoice): void {
+    onSetDraft(null);
+    onSetConversionDraft({
+      id: selectedItem.id,
+      source: choice.source,
+      target: choice.target,
+    });
+  }
+
+  function openFormat(selectedItem: LibraryItem, bookFormat: BookFormat): void {
+    void onOpenItem(selectedItem, bookFormat, "library-search");
+  }
+
+  function sendFormat(selectedItem: LibraryItem, bookFormat: BookFormat): void {
+    if (selectedDestination) void onSendItem(selectedItem, bookFormat);
+  }
+
+  return (
+    <div className="library-workspace__inspector-stack">
+      {editing && draft ? (
+        <MetadataEditor
+          busy={pendingAction === `edit:${item.id}`}
+          disabled={actionsPending}
+          draft={draft}
+          idPrefix={`metadata-${item.id}`}
+          onCancel={() => onSetDraft(null)}
+          onChange={(nextDraft) => onSetDraft({ id: item.id, ...nextDraft })}
+          onSave={(patch) => void onSaveMetadata(item, patch)}
+        />
+      ) : (
+        <>
+          <LibraryInspector
+            actionsDisabled={actionsPending}
+            item={item}
+            onConvertFormat={chooseConversion}
+            onOpenFormat={openFormat}
+            onSendFormat={sendFormat}
+          />
+
+          <section
+            className="library-workspace__management"
+            aria-labelledby={`library-management-${item.id}`}
+          >
+            <div className="library-workspace__management-heading">
+              <h3 id={`library-management-${item.id}`}>Manage</h3>
+              <button
+                type="button"
+                disabled={actionsPending}
+                onClick={() => {
+                  onSetConversionDraft(null);
+                  onSetDraft(metadataDraft(item));
+                }}
+              >
+                Edit metadata
+              </button>
+            </div>
+
+            <div className="library-workspace__action-grid">
+              <button
+                type="button"
+                id={`format-import-copy-${item.id}`}
+                disabled={actionsPending}
+                onClick={(event) =>
+                  void onAttachFormat(item, "copy", event.currentTarget.id)
+                }
+              >
+                {pendingAction === `format-attach:${item.id}:copy`
+                  ? "Importing…"
+                  : "Import a copy…"}
+              </button>
+              <button
+                type="button"
+                id={`format-attach-reference-${item.id}`}
+                disabled={actionsPending}
+                onClick={(event) =>
+                  void onAttachFormat(item, "reference", event.currentTarget.id)
+                }
+              >
+                {pendingAction === `format-attach:${item.id}:reference`
+                  ? "Attaching…"
+                  : "Attach a reference…"}
+              </button>
+              <button
+                type="button"
+                disabled={actionsPending}
+                onClick={() => void onChooseCover(item)}
+              >
+                {pendingAction === `cover:${item.id}` ? "Updating…" : "Choose cover…"}
+              </button>
+              {item.coverPath ? (
+                <button
+                  type="button"
+                  disabled={actionsPending}
+                  onClick={() => void onClearCover(item)}
+                >
+                  Remove cover
+                </button>
+              ) : null}
+            </div>
+
+            <div className="library-workspace__preferred-send">
+              <span>Reader format</span>
+              <button
+                type="button"
+                aria-label={
+                  !selectedDestination
+                    ? `Choose a reader before sending “${item.title}”`
+                    : preferredResolution.kind === "no-preference"
+                      ? `Choose a session send format for “${item.title}”`
+                      : preferredResolution.kind === "attached"
+                        ? `Send ${preferredLabel} for “${item.title}” to ${selectedDestination.name}`
+                        : preferredResolution.kind === "convertible"
+                          ? `Convert ${preferredResolution.source.format.toUpperCase()} to ${preferredLabel} for “${item.title}” before sending to ${selectedDestination.name}`
+                          : `${preferredLabel} is unavailable for “${item.title}”`
+                }
+                disabled={
+                  actionsPending ||
+                  !selectedDestination ||
+                  preferredResolution.kind === "no-preference" ||
+                  preferredResolution.kind === "unavailable"
+                }
+                onClick={() => {
+                  if (preferredResolution.kind === "attached") {
+                    void onSendItem(item, preferredResolution.bookFormat);
+                  } else if (preferredResolution.kind === "convertible") {
+                    onSetDraft(null);
+                    onSetConversionDraft({
+                      id: item.id,
+                      source: preferredResolution.source,
+                      target: preferredResolution.target,
+                    });
+                  }
+                }}
+              >
+                {preferredResolution.kind === "attached" &&
+                pendingAction ===
+                  `send:${item.id}:${preferredResolution.bookFormat.format}`
+                  ? "Sending…"
+                  : !selectedDestination
+                    ? "Send"
+                    : preferredResolution.kind === "no-preference"
+                      ? "Choose format"
+                      : preferredResolution.kind === "attached"
+                        ? `Send ${preferredLabel}`
+                        : preferredResolution.kind === "convertible"
+                          ? `Convert to ${preferredLabel}`
+                          : `${preferredLabel} unavailable`}
+              </button>
+            </div>
+
+            <div className="library-workspace__format-removal">
+              <span>Attached formats</span>
+              <ul>
+                {item.formats.map((bookFormat) => {
+                  const label = formatLabel(bookFormat.format);
+                  const lastFormat = item.formats.length === 1;
+                  const removeId = `format-remove-${item.id}-${bookFormat.format}`;
+                  return (
+                    <li key={bookFormat.format}>
+                      <span>{label}</span>
+                      <button
+                        type="button"
+                        id={removeId}
+                        aria-label={`${
+                          bookFormat.provenance === "managed"
+                            ? "Delete managed copy"
+                            : "Detach reference"
+                        } for ${label} from “${item.title}”`}
+                        disabled={actionsPending || lastFormat}
+                        onClick={() => void onRemoveFormat(item, bookFormat, removeId)}
+                      >
+                        {pendingAction ===
+                        `format-remove:${item.id}:${bookFormat.format}`
+                          ? bookFormat.provenance === "managed"
+                            ? "Deleting…"
+                            : "Detaching…"
+                          : bookFormat.provenance === "managed"
+                            ? "Delete copy"
+                            : "Detach"}
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+              {item.formats.length === 1 ? (
+                <small>Add another format before removing the last one.</small>
+              ) : null}
+            </div>
+
+            <button
+              type="button"
+              className="library-workspace__remove-item"
+              disabled={actionsPending}
+              onClick={() => void onRemoveItem(item)}
+            >
+              {pendingAction === `remove:${item.id}` ? "Removing…" : "Remove from library"}
+            </button>
+          </section>
+
+          {activeConversion ? (
+            <form
+              className="library-workspace__conversion"
+              id={`conversion-${item.id}`}
+              aria-labelledby={`conversion-heading-${item.id}`}
+              onSubmit={(event) => void onEnqueueConversion(event, item)}
+            >
+              <div>
+                <strong id={`conversion-heading-${item.id}`}>
+                  Convert {formatLabel(activeConversion.source.format)} to{" "}
+                  {formatLabel(activeConversion.target)}
+                </strong>
+                <span>Choose where to save the converted file, then run it from the queue.</span>
+              </div>
+              <div className="library-workspace__conversion-actions">
+                <button
+                  type="button"
+                  disabled={actionsPending}
+                  onClick={() => onSetConversionDraft(null)}
+                >
+                  Cancel
+                </button>
+                <button type="submit" disabled={actionsPending}>
+                  {pendingAction === `job-enqueue:${item.id}` ? "Queueing…" : "Choose output…"}
+                </button>
+              </div>
+            </form>
+          ) : null}
+        </>
+      )}
+    </div>
+  );
+}
+
+export function LibraryWorkspace({
+  actionsPending,
+  conversionDraft,
+  currentSavedViewId,
+  draft,
+  facets,
+  filters,
+  items,
+  libraryState,
+  pageLimit,
+  pageOffset,
+  pendingAction,
+  preferredDeviceFormat,
+  query,
+  savedViews,
+  saveViewDialogBusy,
+  saveViewDialogError,
+  saveViewDialogOpen,
+  saveViewSuggestedName,
+  searchInput,
+  searchPending,
+  selectedDestination,
+  selectedItemId,
+  sort,
+  total,
+  onApplySavedView,
+  onAttachFormat,
+  onCancelSaveView,
+  onChangeFilters,
+  onChangePage,
+  onChangeSearch,
+  onChangeSort,
+  onChooseCover,
+  onClearAll,
+  onClearCover,
+  onEnqueueConversion,
+  onOpenItem,
+  onOpenSaveView,
+  onRemoveFormat,
+  onRemoveItem,
+  onRemoveSavedView,
   onRetry,
   onSaveMetadata,
+  onSaveView,
   onSelectItem,
   onSendItem,
   onSetConversionDraft,
   onSetDraft,
 }: LibraryWorkspaceProps) {
-  function cancelConversion(controlId: string): void {
-    onSetConversionDraft(null);
-    window.requestAnimationFrame(() => document.getElementById(controlId)?.focus());
-  }
+  const [openPane, setOpenPane] = useState<CompactPane | null>(null);
+  const selectedItem = items.find(({ id }) => id === selectedItemId) ?? null;
+  const busy = libraryState === "loading" || searchPending;
+
+  const facetSidebar = (
+    <LibraryFacetSidebar
+      currentSavedViewId={currentSavedViewId}
+      facets={facets}
+      filters={filters}
+      savedViews={savedViews}
+      onApplySavedView={onApplySavedView}
+      onChangeFilters={onChangeFilters}
+      onClearAll={onClearAll}
+      onRemoveSavedView={onRemoveSavedView}
+      onSaveSavedView={onOpenSaveView}
+    />
+  );
+  const inspector = (
+    <InspectorManagement
+      actionsPending={actionsPending}
+      conversionDraft={conversionDraft}
+      draft={draft}
+      item={selectedItem}
+      pendingAction={pendingAction}
+      preferredDeviceFormat={preferredDeviceFormat}
+      selectedDestination={selectedDestination}
+      onAttachFormat={onAttachFormat}
+      onChooseCover={onChooseCover}
+      onClearCover={onClearCover}
+      onEnqueueConversion={onEnqueueConversion}
+      onOpenItem={onOpenItem}
+      onRemoveFormat={onRemoveFormat}
+      onRemoveItem={onRemoveItem}
+      onSaveMetadata={onSaveMetadata}
+      onSendItem={onSendItem}
+      onSetConversionDraft={onSetConversionDraft}
+      onSetDraft={onSetDraft}
+    />
+  );
 
   return (
-    <section
-      className="library-section"
-      aria-busy={libraryState === "loading" || searchPending}
-    >
-      <div className="section-heading">
-        <div>
-          <p className="eyebrow">FILES</p>
-          <h2>Your library</h2>
-        </div>
-        {libraryState === "ready" && (
-          <span className="item-count">
-            {items.length} {items.length === 1 ? "item" : "items"}
-          </span>
-        )}
+    <>
+      <div className="library-workspace" aria-busy={busy}>
+        <LibraryWorkspaceLayout
+          facets={facetSidebar}
+          inspector={inspector}
+          openPane={openPane}
+          toolbar={
+            <div className="library-workspace__toolbar">
+              <div className="library-workspace__title">
+                <div>
+                  <span>Library</span>
+                  <h2>Your books</h2>
+                </div>
+                <span className="library-workspace__count">
+                  {total.toLocaleString()} {total === 1 ? "book" : "books"}
+                </span>
+              </div>
+              <label className="library-workspace__search" htmlFor="library-search">
+                <span>Search library</span>
+                <input
+                  ref={searchInput}
+                  id="library-search"
+                  type="search"
+                  value={query}
+                  placeholder="Title, author, description, or tag"
+                  onChange={(event) => onChangeSearch(event.currentTarget.value)}
+                />
+              </label>
+            </div>
+          }
+          table={
+            <div className="library-workspace__results">
+              {libraryState === "loading" && items.length === 0 ? (
+                <div className="library-workspace__state" role="status">
+                  Loading your library…
+                </div>
+              ) : null}
+              {libraryState === "error" && items.length === 0 ? (
+                <div className="library-workspace__state library-workspace__state--error">
+                  <strong>Library unavailable</strong>
+                  <span>Takio could not load the files stored on this device.</span>
+                  <button
+                    type="button"
+                    disabled={actionsPending}
+                    onClick={() => void onRetry()}
+                  >
+                    Try again
+                  </button>
+                </div>
+              ) : null}
+              {libraryState === "ready" && items.length === 0 ? (
+                <div className="library-workspace__state">
+                  <strong>{query === "" ? "No books yet" : "No matches"}</strong>
+                  <span>
+                    {query === ""
+                      ? "Import a supported book or document to begin."
+                      : "Try a different search or clear the active filters."}
+                  </span>
+                </div>
+              ) : null}
+              <LibraryTable
+                busy={busy}
+                items={items}
+                pageLimit={pageLimit}
+                pageOffset={pageOffset}
+                selectedItemId={selectedItemId}
+                sort={sort}
+                total={total}
+                onChangePage={onChangePage}
+                onChangeSort={onChangeSort}
+                onOpenItem={(item) => {
+                  const primaryFormat = item.formats[0];
+                  if (primaryFormat) {
+                    void onOpenItem(item, primaryFormat, "library-search");
+                  }
+                }}
+                onSelectItem={onSelectItem}
+              />
+            </div>
+          }
+          onOpenPaneChange={setOpenPane}
+        />
       </div>
 
-      <label className="search-field" htmlFor="library-search">
-        <span>Search your library</span>
-        <input
-          ref={searchInput}
-          id="library-search"
-          type="search"
-          value={query}
-          onChange={(event) => onChangeSearch(event.currentTarget.value)}
-          placeholder="Title, author, description, or tag"
-        />
-      </label>
-
-      {libraryState === "loading" && <div className="state-panel">Loading your library…</div>}
-
-      {libraryState === "error" && items.length === 0 && (
-        <div className="state-panel error-panel">
-          <strong>Library unavailable</strong>
-          <span>Takio could not load the files stored on this device.</span>
-          <button
-            className="quiet-button"
-            disabled={actionsPending}
-            onClick={() => void onRetry()}
-          >
-            Try again
-          </button>
-        </div>
-      )}
-
-      {libraryState === "ready" && items.length === 0 && (
-        <div className="state-panel">
-          <strong>{query === "" ? "No files yet" : "No matches"}</strong>
-          <span>
-            {query === ""
-              ? "Choose a supported book or document to start your local library."
-              : "Try a different title, author, description, or tag."}
-          </span>
-        </div>
-      )}
-
-      {items.length > 0 && (
-        <div className="book-list">
-          {items.map((item) => {
-            const editing = draft?.id === item.id;
-            const conversionChoice = conversionChoices(item.formats)[0];
-            const preferredFormatResolution = resolveGeneralSend(
-              item.formats,
-              preferredDeviceFormat,
-            );
-            const preferredFormatLabel =
-              preferredDeviceFormat === null
-                ? null
-                : FORMAT_CATALOG.find(
-                    (definition) => definition.id === preferredDeviceFormat,
-                  )!.label;
-            const converting =
-              conversionChoice !== undefined &&
-              conversionDraft?.id === item.id &&
-              conversionDraft.source.format === conversionChoice.source.format &&
-              conversionDraft.source.sourcePath === conversionChoice.source.sourcePath &&
-              conversionDraft.target === conversionChoice.target;
-            const convertControlId = conversionChoice
-              ? conversionControlId(item.id, conversionChoice.source, conversionChoice.target)
-              : undefined;
-            const selected = selectedItemId === item.id;
-            return (
-              <article
-                className={`book-card${selected ? " selected" : ""}`}
-                id={`library-item-${item.id}`}
-                key={item.id}
-                tabIndex={0}
-                aria-current={selected ? "true" : undefined}
-                onClick={() => onSelectItem(item.id)}
-                onFocus={() => onSelectItem(item.id)}
-              >
-                <div className="book-row">
-                  {item.coverPath ? (
-                    <img
-                      className="cover cover-image"
-                      src={convertFileSrc(item.coverPath)}
-                      alt={`Cover for ${item.title}`}
-                    />
-                  ) : (
-                    <div className="cover" aria-hidden="true">
-                      {item.title.slice(0, 1).toUpperCase()}
-                    </div>
-                  )}
-                  <div className="book-title">
-                    <strong>{item.title}</strong>
-                    <span>
-                      {item.author ? `${item.author} · ` : ""}
-                      {item.formats
-                        .map(
-                          ({ format, provenance }) =>
-                            `${
-                              FORMAT_CATALOG.find(
-                                (definition) => definition.id === format,
-                              )!.label
-                            } (${provenance === "managed" ? "Managed copy" : "External reference"})`,
-                        )
-                        .join(", ")} · Added {addedDate(item.addedAt)}
-                    </span>
-                    {item.tags.length > 0 && (
-                      <span className="tag-summary">{item.tags.join(" · ")}</span>
-                    )}
-                    {selected && <span className="selection-label">Selected</span>}
-                  </div>
-                  <div className="row-actions">
-                    <button
-                      className="row-button"
-                      id={`library-primary-open-${item.id}`}
-                      aria-label={`Open ${
-                        FORMAT_CATALOG.find(
-                          (definition) => definition.id === item.formats[0].format,
-                        )!.label
-                      } for “${item.title}” in your default app`}
-                      disabled={actionsPending}
-                      onClick={(event) =>
-                        void onOpenItem(item, item.formats[0], event.currentTarget.id)
-                      }
-                    >
-                      {pendingAction === `open:${item.id}:${item.formats[0].format}`
-                        ? "Opening…"
-                        : "Open"}
-                    </button>
-                    <button
-                      className="row-button send-button"
-                      aria-label={
-                        !selectedDestination
-                          ? `Choose a reader before sending “${item.title}”`
-                          : preferredFormatResolution.kind === "no-preference"
-                            ? `Choose a session send format for “${item.title}”`
-                            : preferredFormatResolution.kind === "attached"
-                              ? `Send ${preferredFormatLabel} for “${item.title}” to ${selectedDestination.name}`
-                              : preferredFormatResolution.kind === "convertible"
-                                ? `Convert ${preferredFormatResolution.source.format.toUpperCase()} to ${preferredFormatLabel} for “${item.title}” before sending to ${selectedDestination.name}`
-                                : `${preferredFormatLabel} is unavailable for “${item.title}”`
-                      }
-                      disabled={
-                        actionsPending ||
-                        !selectedDestination ||
-                        preferredFormatResolution.kind === "no-preference" ||
-                        preferredFormatResolution.kind === "unavailable"
-                      }
-                      onClick={() => {
-                        if (preferredFormatResolution.kind === "attached") {
-                          void onSendItem(item, preferredFormatResolution.bookFormat);
-                        } else if (preferredFormatResolution.kind === "convertible") {
-                          onSetDraft(null);
-                          onSetConversionDraft({
-                            id: item.id,
-                            source: preferredFormatResolution.source,
-                            target: preferredFormatResolution.target,
-                          });
-                        }
-                      }}
-                    >
-                      {preferredFormatResolution.kind === "attached" &&
-                      pendingAction ===
-                        `send:${item.id}:${preferredFormatResolution.bookFormat.format}`
-                        ? "Sending…"
-                        : !selectedDestination
-                          ? "Send"
-                          : preferredFormatResolution.kind === "no-preference"
-                            ? "Choose format"
-                            : preferredFormatResolution.kind === "attached"
-                              ? `Send ${preferredFormatLabel}`
-                              : preferredFormatResolution.kind === "convertible"
-                                ? `Convert to ${preferredFormatLabel}`
-                                : `${preferredFormatLabel} unavailable`}
-                    </button>
-                    {conversionChoice && convertControlId && (
-                      <button
-                        className="row-button"
-                        id={convertControlId}
-                        aria-label={
-                          converting
-                            ? `Cancel EPUB to PDF setup for “${item.title}”`
-                            : `Convert EPUB for “${item.title}” to PDF`
-                        }
-                        aria-expanded={converting}
-                        aria-controls={`conversion-${item.id}`}
-                        disabled={actionsPending}
-                        onClick={() => {
-                          onSetDraft(null);
-                          if (converting) {
-                            cancelConversion(convertControlId);
-                          } else {
-                            onSetConversionDraft({
-                              id: item.id,
-                              source: conversionChoice.source,
-                              target: conversionChoice.target,
-                            });
-                          }
-                        }}
-                      >
-                        {converting ? "Cancel convert" : "Convert"}
-                      </button>
-                    )}
-                    <button
-                      className="row-button"
-                      aria-expanded={editing}
-                      aria-controls={`edit-${item.id}`}
-                      disabled={actionsPending}
-                      onClick={() => {
-                        onSetConversionDraft(null);
-                        onSetDraft(editing ? null : draftFor(item));
-                      }}
-                    >
-                      {editing ? "Cancel edit" : "Edit"}
-                    </button>
-                    <button
-                      className="row-button danger-button"
-                      aria-label={`Remove ${item.title}`}
-                      disabled={actionsPending}
-                      onClick={() => void onRemoveItem(item)}
-                    >
-                      {pendingAction === `remove:${item.id}` ? "Removing…" : "Remove"}
-                    </button>
-                  </div>
-                </div>
-
-                {selected && (
-                  <section
-                    className="format-panel"
-                    aria-labelledby={`formats-heading-${item.id}`}
-                    aria-busy={
-                      pendingAction?.startsWith(`open:${item.id}:`) ||
-                      pendingAction?.startsWith(`send:${item.id}:`) ||
-                      pendingAction?.startsWith(`format-attach:${item.id}:`) ||
-                      pendingAction?.startsWith(`format-remove:${item.id}:`)
-                    }
-                  >
-                    <div className="format-panel-heading">
-                      <div className="format-panel-title">
-                        <h3 id={`formats-heading-${item.id}`}>Formats</h3>
-                        <span>
-                          {item.formats.length} {item.formats.length === 1 ? "format" : "formats"}
-                        </span>
-                      </div>
-                      <div className="format-panel-actions">
-                        <button
-                          type="button"
-                          className="quiet-button"
-                          id={`format-import-copy-${item.id}`}
-                          aria-label={`Import a managed format copy for “${item.title}”`}
-                          disabled={actionsPending}
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            void onAttachFormat(item, "copy", event.currentTarget.id);
-                          }}
-                        >
-                          {pendingAction === `format-attach:${item.id}:copy`
-                            ? "Importing…"
-                            : "Import a copy…"}
-                        </button>
-                        <button
-                          type="button"
-                          className="quiet-button"
-                          id={`format-attach-reference-${item.id}`}
-                          aria-label={`Attach an external format reference for “${item.title}”`}
-                          disabled={actionsPending}
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            void onAttachFormat(item, "reference", event.currentTarget.id);
-                          }}
-                        >
-                          {pendingAction === `format-attach:${item.id}:reference`
-                            ? "Attaching…"
-                            : "Attach a reference…"}
-                        </button>
-                      </div>
-                    </div>
-                    <ol className="format-list" role="list">
-                      {item.formats.map((bookFormat, index) => {
-                        const label = FORMAT_CATALOG.find(
-                          (definition) => definition.id === bookFormat.format,
-                        )!.label;
-                        return (
-                          <li className="format-row" key={bookFormat.format}>
-                            <div className="format-name">
-                              <strong>{label}</strong>
-                              {index === 0 && <span className="format-default">Primary format</span>}
-                            </div>
-                            <span>
-                              {bookFormat.provenance === "managed"
-                                ? "Managed copy"
-                                : "External reference"}
-                              {` · Added ${addedDate(bookFormat.addedAt)}`}
-                            </span>
-                            <code>
-                              {bookFormat.provenance === "managed"
-                                ? "Stored in Takio library"
-                                : bookFormat.sourcePath}
-                            </code>
-                            <div className="format-row-actions">
-                              <button
-                                type="button"
-                                className="quiet-button"
-                                id={`format-open-${item.id}-${bookFormat.format}`}
-                                aria-label={`Open ${label} for “${item.title}” in your default app`}
-                                disabled={actionsPending}
-                                onClick={(event) => {
-                                  event.stopPropagation();
-                                  void onOpenItem(item, bookFormat, event.currentTarget.id);
-                                }}
-                              >
-                                {pendingAction === `open:${item.id}:${bookFormat.format}`
-                                  ? "Opening…"
-                                  : "Open"}
-                              </button>
-                              <button
-                                type="button"
-                                className="quiet-button"
-                                aria-label={`Send ${label} for “${item.title}” to ${
-                                  selectedDestination?.name ?? "the selected reader"
-                                }`}
-                                disabled={actionsPending || !selectedDestination}
-                                onClick={(event) => {
-                                  event.stopPropagation();
-                                  void onSendItem(item, bookFormat);
-                                }}
-                              >
-                                {pendingAction === `send:${item.id}:${bookFormat.format}`
-                                  ? "Sending…"
-                                  : "Send"}
-                              </button>
-                              <button
-                                type="button"
-                                className={`quiet-button format-remove-button${
-                                  item.formats.length === 1 ? " format-last-button" : ""
-                                }`}
-                                id={`format-remove-${item.id}-${bookFormat.format}`}
-                                aria-label={`${
-                                  bookFormat.provenance === "managed"
-                                    ? "Delete managed copy"
-                                    : "Detach reference"
-                                } for ${label} from “${item.title}”`}
-                                aria-describedby={
-                                  item.formats.length === 1
-                                    ? `last-format-help-${item.id}-${bookFormat.format}`
-                                    : undefined
-                                }
-                                disabled={actionsPending || item.formats.length === 1}
-                                onClick={(event) => {
-                                  event.stopPropagation();
-                                  void onRemoveFormat(item, bookFormat, event.currentTarget.id);
-                                }}
-                              >
-                                {pendingAction ===
-                                `format-remove:${item.id}:${bookFormat.format}`
-                                  ? bookFormat.provenance === "managed"
-                                    ? "Deleting…"
-                                    : "Detaching…"
-                                  : bookFormat.provenance === "managed"
-                                    ? "Delete managed copy"
-                                    : "Detach reference"}
-                              </button>
-                              {item.formats.length === 1 && (
-                                <small
-                                  className="format-last-help"
-                                  id={`last-format-help-${item.id}-${bookFormat.format}`}
-                                >
-                                  Add another format before removing this one.
-                                </small>
-                              )}
-                            </div>
-                          </li>
-                        );
-                      })}
-                    </ol>
-                  </section>
-                )}
-
-                {converting && conversionDraft && convertControlId && (
-                  <form
-                    className="conversion-panel"
-                    id={`conversion-${item.id}`}
-                    aria-labelledby={`conversion-heading-${item.id}`}
-                    onSubmit={(event) => void onEnqueueConversion(event, item)}
-                  >
-                    <div className="conversion-copy">
-                      <strong id={`conversion-heading-${item.id}`}>Convert EPUB to PDF</strong>
-                      <span id={`conversion-help-${item.id}`}>
-                        Choose where to save the PDF, then run it from the queue.
-                      </span>
-                    </div>
-                    <label htmlFor={`conversion-format-${item.id}`}>
-                      <span>Output format</span>
-                      <select
-                        id={`conversion-format-${item.id}`}
-                        defaultValue="pdf"
-                        aria-describedby={`conversion-help-${item.id}`}
-                      >
-                        <option value="pdf">PDF</option>
-                      </select>
-                    </label>
-                    <div className="conversion-actions">
-                      <button
-                        type="button"
-                        className="quiet-button"
-                        aria-label={`Cancel EPUB to PDF setup for “${item.title}”`}
-                        disabled={actionsPending}
-                        onClick={() => cancelConversion(convertControlId)}
-                      >
-                        Cancel
-                      </button>
-                      <button className="primary-button" disabled={actionsPending} type="submit">
-                        {pendingAction === `job-enqueue:${item.id}`
-                          ? "Queueing…"
-                          : "Choose output…"}
-                      </button>
-                    </div>
-                  </form>
-                )}
-
-                {editing && draft && (
-                  <form
-                    className="edit-panel"
-                    id={`edit-${item.id}`}
-                    aria-label={`Edit ${item.title}`}
-                    onSubmit={(event) => void onSaveMetadata(event, item)}
-                  >
-                    <label>
-                      <span>Title</span>
-                      <input
-                        required
-                        value={draft.title}
-                        onChange={(event) =>
-                          onSetDraft({ ...draft, title: event.currentTarget.value })
-                        }
-                      />
-                    </label>
-                    <label>
-                      <span>Author</span>
-                      <input
-                        value={draft.author}
-                        onChange={(event) =>
-                          onSetDraft({ ...draft, author: event.currentTarget.value })
-                        }
-                      />
-                    </label>
-                    <label className="full-field">
-                      <span>Description</span>
-                      <textarea
-                        rows={3}
-                        value={draft.description}
-                        onChange={(event) =>
-                          onSetDraft({ ...draft, description: event.currentTarget.value })
-                        }
-                      />
-                    </label>
-                    <label className="full-field">
-                      <span>Tags</span>
-                      <input
-                        value={draft.tags}
-                        aria-describedby={`tag-help-${item.id}`}
-                        onChange={(event) =>
-                          onSetDraft({ ...draft, tags: event.currentTarget.value })
-                        }
-                      />
-                      <small id={`tag-help-${item.id}`}>Separate tags with commas.</small>
-                    </label>
-                    <div className="cover-actions full-field">
-                      <span>Cover</span>
-                      <button
-                        type="button"
-                        className="quiet-button"
-                        disabled={actionsPending}
-                        onClick={() => void onChooseCover(item)}
-                      >
-                        {pendingAction === `cover:${item.id}` ? "Updating…" : "Choose image"}
-                      </button>
-                      {item.coverPath && (
-                        <button
-                          type="button"
-                          className="quiet-button"
-                          disabled={actionsPending}
-                          onClick={() => void onClearCover(item)}
-                        >
-                          Remove cover
-                        </button>
-                      )}
-                    </div>
-                    <div className="edit-actions full-field">
-                      <button
-                        type="button"
-                        className="quiet-button"
-                        disabled={actionsPending}
-                        onClick={() => onSetDraft(null)}
-                      >
-                        Cancel
-                      </button>
-                      <button className="primary-button" disabled={actionsPending} type="submit">
-                        {pendingAction === `edit:${item.id}` ? "Saving…" : "Save changes"}
-                      </button>
-                    </div>
-                  </form>
-                )}
-              </article>
-            );
-          })}
-        </div>
-      )}
-    </section>
+      <SaveLibraryViewDialog
+        busy={saveViewDialogBusy}
+        error={saveViewDialogError}
+        open={saveViewDialogOpen}
+        suggestedName={saveViewSuggestedName}
+        onCancel={onCancelSaveView}
+        onSave={onSaveView}
+      />
+    </>
   );
 }
