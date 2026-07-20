@@ -19,11 +19,13 @@ import {
 } from "@takio/core";
 import type {
   LibraryFacetCounts,
+  LibraryImportReport,
   LibraryMetadataPatch,
   LibraryQueryFilters,
   LibraryQuerySort,
   SavedLibraryView,
 } from "@takio/library-contract";
+import { MAX_LIBRARY_IMPORT_ROOTS } from "@takio/library-contract";
 
 import {
   DeviceControls,
@@ -32,6 +34,7 @@ import {
   type SessionDeviceFormatPreferences,
 } from "./components/DeviceControls";
 import { JobsPanel } from "./components/JobsPanel";
+import { LibraryImportDialog } from "./components/LibraryImportDialog";
 import {
   LibraryTrashDialog,
   type LibraryTrashPendingAction,
@@ -64,7 +67,7 @@ import {
   attachLibraryFormat,
   describeLibraryError,
   describeUnexpectedLibraryError,
-  importLibraryItem,
+  importLibraryItems,
   listLibraryTrash,
   listSavedLibraryViews,
   openLibraryItem,
@@ -111,13 +114,22 @@ const trashPageLimit = 25;
 type JobsState = "loading" | "ready" | "error";
 type Notice = { readonly kind: "status" | "error"; readonly text: string } | null;
 type MenuActionHandlers = {
-  readonly importFiles: () => Promise<void>;
+  readonly openImport: () => void;
   readonly importPaths: (paths: readonly string[]) => Promise<void>;
   readonly openSelected: () => Promise<void>;
   readonly sendSelected: () => Promise<void>;
   readonly ejectSelected: () => Promise<void>;
   readonly find: () => void;
 };
+
+function uniqueImportPaths(paths: readonly string[]): readonly string[] {
+  return [...new Set(paths)];
+}
+
+function importSummary(report: LibraryImportReport): string {
+  const { imported, skipped, duplicates, failed } = report.counts;
+  return `${imported} imported; ${skipped} skipped; ${duplicates} duplicates; ${failed} failed.`;
+}
 
 export default function App() {
   const [items, setItems] = useState<readonly LibraryItem[]>([]);
@@ -132,6 +144,10 @@ export default function App() {
   const [currentSavedViewId, setCurrentSavedViewId] = useState<string | null>(null);
   const [saveViewDialogOpen, setSaveViewDialogOpen] = useState(false);
   const [saveViewDialogError, setSaveViewDialogError] = useState<string | null>(null);
+  const [importDialogOpen, setImportDialogOpen] = useState(false);
+  const [importRootPaths, setImportRootPaths] = useState<readonly string[]>([]);
+  const [importReport, setImportReport] = useState<LibraryImportReport | null>(null);
+  const [importDialogError, setImportDialogError] = useState<string | null>(null);
   const [trashDialogOpen, setTrashDialogOpen] = useState(false);
   const [trashItems, setTrashItems] = useState<readonly LibraryItem[]>([]);
   const [trashTotal, setTrashTotal] = useState(0);
@@ -780,48 +796,39 @@ export default function App() {
     return libraryLoaded;
   }
 
-  const importPaths = useCallback(
-    async (paths: readonly string[]): Promise<void> => {
-      if (paths.length === 0 || importPending.current) {
-        return;
-      }
+  function openImportDialog(): void {
+    if (pendingAction !== null || importPending.current) {
+      return;
+    }
+    setImportRootPaths([]);
+    setImportReport(null);
+    setImportDialogError(null);
+    setImportDialogOpen(true);
+  }
 
-      importPending.current = true;
-      setPendingAction("import");
-      setNotice(null);
+  function closeImportDialog(): void {
+    if (!importPending.current) {
+      setImportDialogOpen(false);
+    }
+  }
 
-      let imported = 0;
-      const rejected: string[] = [];
-      for (const path of paths) {
-        try {
-          const result = await importLibraryItem(path);
-          if (result.ok) {
-            imported += 1;
-          } else {
-            rejected.push(`${path}: ${describeLibraryError(result.error.code)}`);
-          }
-        } catch (error) {
-          rejected.push(`${path}: ${describeUnexpectedLibraryError(error)}`);
-        }
-      }
+  function addImportRoots(paths: readonly string[]): void {
+    const combinedPaths = uniqueImportPaths([...importRootPaths, ...paths]);
+    setImportReport(null);
+    if (combinedPaths.length > MAX_LIBRARY_IMPORT_ROOTS) {
+      setImportDialogError(
+        `Choose no more than ${MAX_LIBRARY_IMPORT_ROOTS} files or folders in one import.`,
+      );
+      return;
+    }
+    setImportRootPaths(combinedPaths);
+    setImportDialogError(null);
+  }
 
-      const refreshed = await loadLibrary(false);
-      const summary = `${imported} ${imported === 1 ? "item" : "items"} imported; ${rejected.length} rejected.`;
-      const details = rejected.map((error) => `• ${error}`);
-      if (!refreshed) {
-        details.push("• The library could not be refreshed.");
-      }
-      setNotice({
-        kind: rejected.length > 0 || !refreshed ? "error" : "status",
-        text: [summary, ...details].join("\n"),
-      });
-      importPending.current = false;
-      setPendingAction(null);
-    },
-    [loadLibrary],
-  );
-
-  async function importFile(): Promise<void> {
+  async function chooseImportFiles(): Promise<void> {
+    if (pendingAction !== null || importPending.current) {
+      return;
+    }
     let selection: string | string[] | null;
     try {
       selection = await open({
@@ -829,15 +836,102 @@ export default function App() {
         filters: [{ name: "Supported books and documents", extensions: supportedExtensions }],
       });
     } catch (error) {
-      setNotice({ kind: "error", text: describeUnexpectedLibraryError(error) });
+      setImportDialogError(describeUnexpectedLibraryError(error));
       return;
     }
 
-    if (selection === null) {
+    if (selection !== null) {
+      addImportRoots(typeof selection === "string" ? [selection] : selection);
+    }
+  }
+
+  async function chooseImportFolders(): Promise<void> {
+    if (pendingAction !== null || importPending.current) {
+      return;
+    }
+    let selection: string | string[] | null;
+    try {
+      selection = await open({ directory: true, multiple: true });
+    } catch (error) {
+      setImportDialogError(describeUnexpectedLibraryError(error));
       return;
     }
 
-    await importPaths(typeof selection === "string" ? [selection] : selection);
+    if (selection !== null) {
+      addImportRoots(typeof selection === "string" ? [selection] : selection);
+    }
+  }
+
+  const importPaths = useCallback(
+    async (paths: readonly string[]): Promise<void> => {
+      const roots = uniqueImportPaths(paths);
+      if (pendingAction !== null || importPending.current) {
+        return;
+      }
+      if (roots.length < 1 || roots.length > MAX_LIBRARY_IMPORT_ROOTS) {
+        setImportDialogError(
+          `Choose between 1 and ${MAX_LIBRARY_IMPORT_ROOTS} files or folders.`,
+        );
+        return;
+      }
+
+      importPending.current = true;
+      setPendingAction("import");
+      setImportReport(null);
+      setImportDialogError(null);
+      setNotice(null);
+      try {
+        const result = await importLibraryItems(roots);
+        if (!result.ok) {
+          const error = describeLibraryError(result.error.code);
+          setImportDialogError(error);
+          setNotice({ kind: "error", text: error });
+          return;
+        }
+
+        setImportReport(result.value);
+        const refreshed = await loadLibrary(false);
+        const failed = result.value.counts.failed;
+        const details = [importSummary(result.value)];
+        if (!refreshed) {
+          details.push("The import completed, but the library could not be refreshed.");
+        }
+        setImportDialogError(
+          [
+            failed > 0
+              ? `${failed} ${failed === 1 ? "file" : "files"} failed to import. Review the report for exact paths and error codes.`
+              : null,
+            !refreshed ? "The library could not be refreshed." : null,
+          ]
+            .filter((detail): detail is string => detail !== null)
+            .join(" ") || null,
+        );
+        setNotice({
+          kind: failed > 0 || !refreshed ? "error" : "status",
+          text: details.join(" "),
+        });
+      } catch (error) {
+        const message = describeUnexpectedLibraryError(error);
+        setImportDialogError(message);
+        setNotice({ kind: "error", text: message });
+      } finally {
+        importPending.current = false;
+        setPendingAction(null);
+      }
+    },
+    [loadLibrary, pendingAction],
+  );
+
+  async function importDroppedPaths(paths: readonly string[]): Promise<void> {
+    if (pendingAction !== null || importPending.current) {
+      return;
+    }
+    const roots = uniqueImportPaths(paths);
+    setImportRootPaths(roots.length <= MAX_LIBRARY_IMPORT_ROOTS ? roots : []);
+    setImportReport(null);
+    setImportDialogError(null);
+    setImportDialogOpen(true);
+    await importPaths(roots);
   }
 
   async function saveMetadata(item: LibraryItem, patch: LibraryMetadataPatch) {
@@ -1566,8 +1660,8 @@ export default function App() {
   }
 
   menuActionHandlers.current = {
-    importFiles: importFile,
-    importPaths,
+    openImport: openImportDialog,
+    importPaths: importDroppedPaths,
     openSelected: openSelectedItem,
     sendSelected: sendSelectedItem,
     ejectSelected: ejectSelectedDestination,
@@ -1588,7 +1682,7 @@ export default function App() {
 
         switch (payload) {
           case "import":
-            void handlers.importFiles();
+            handlers.openImport();
             break;
           case "open-selected":
             void handlers.openSelected();
@@ -1696,9 +1790,11 @@ export default function App() {
             ref={importButton}
             className="primary-button"
             disabled={actionsPending}
-            onClick={importFile}
+            aria-haspopup="dialog"
+            aria-expanded={importDialogOpen}
+            onClick={openImportDialog}
           >
-            {pendingAction === "import" ? "Importing…" : "Choose file"}
+            {pendingAction === "import" ? "Importing…" : "Import books…"}
           </button>
         </section>
 
@@ -1805,6 +1901,18 @@ export default function App() {
           onChangePage={changeTrashPage}
           onRestore={restoreTrashItem}
           onPurge={purgeTrashItem}
+        />
+
+        <LibraryImportDialog
+          open={importDialogOpen}
+          selectedRootPaths={importRootPaths}
+          pending={pendingAction === "import"}
+          report={importReport}
+          error={importDialogError}
+          onClose={closeImportDialog}
+          onChooseFiles={chooseImportFiles}
+          onChooseFolders={chooseImportFolders}
+          onImport={() => void importPaths(importRootPaths)}
         />
       </section>
     </main>
