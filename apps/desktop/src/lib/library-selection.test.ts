@@ -185,4 +185,37 @@ describe("library selection", () => {
       rangeAnchorItemId: null,
     });
   });
+
+  test("removes only completed bulk targets while retaining failures and the active inspector item", () => {
+    const state = selectedState(
+      ["completed", "failed", "missing", "other-page"],
+      "completed",
+      "completed",
+    );
+
+    expect(
+      librarySelectionReducer(state, {
+        type: "remove-items",
+        ids: ["completed", "missing", "missing", "not-selected"],
+      }),
+    ).toEqual({
+      activeItemId: "completed",
+      selectedItemIds: ["failed", "other-page"],
+      rangeAnchorItemId: null,
+    });
+  });
+
+  test("preserves selection identity when a selective removal has no selected targets", () => {
+    const state = selectedState(["failed"]);
+
+    expect(
+      librarySelectionReducer(state, { type: "remove-items", ids: [] }),
+    ).toBe(state);
+    expect(
+      librarySelectionReducer(state, {
+        type: "remove-items",
+        ids: ["not-selected"],
+      }),
+    ).toBe(state);
+  });
 });

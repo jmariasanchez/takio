@@ -224,6 +224,65 @@ test("threads controlled multi-selection state into the library table", () => {
   expect(markup).toContain('aria-label="Select Title" checked=""');
 });
 
+test("renders controlled bulk actions and tag-dialog state for the exact selection", () => {
+  const bulkActions = {
+    pendingAction: "tags",
+    canConvert: true,
+    canSend: false,
+    tagsDialogOpen: true,
+    tagsDialogError: "One update failed.",
+    onEditTags: () => undefined,
+    onConvert: () => undefined,
+    onSend: () => undefined,
+    onMoveToTrash: () => undefined,
+    onClearSelection: () => undefined,
+    onCloseTagsDialog: () => undefined,
+    onApplyTags: () => undefined,
+  } as const satisfies NonNullable<LibraryWorkspaceProps["bulkActions"]>;
+
+  const markup = renderWorkspace({
+    selectedItemIds: [item.id, "off-page"],
+    bulkActions,
+  });
+
+  expect(markup).toContain('aria-label="Bulk actions" aria-busy="true"');
+  expect(markup).toContain("2 books selected");
+  expect(markup).toContain("Updating tags…");
+  expect(markup).toContain('title="Sending is not available for this selection"');
+  expect(markup).toContain('role="dialog"');
+  expect(markup).toContain("Update tags for <strong>2 books</strong>");
+  expect(markup).toContain("One update failed.");
+});
+
+test("omits bulk controls without the controlled integration and disables library input globally", () => {
+  expect(renderWorkspace({ bulkActions: undefined })).not.toContain(
+    'aria-label="Bulk actions"',
+  );
+
+  const markup = renderWorkspace({
+    actionsPending: true,
+    bulkActions: {
+      pendingAction: null,
+      canConvert: true,
+      canSend: true,
+      tagsDialogOpen: false,
+      tagsDialogError: null,
+      onEditTags: () => undefined,
+      onConvert: () => undefined,
+      onSend: () => undefined,
+      onMoveToTrash: () => undefined,
+      onClearSelection: () => undefined,
+      onCloseTagsDialog: () => undefined,
+      onApplyTags: () => undefined,
+    },
+  });
+  const search = markup.match(/<input[^>]*id="library-search"[^>]*>/)?.[0];
+
+  expect(search).toContain('disabled=""');
+  expect(markup).toContain('aria-label="Bulk actions" aria-busy="false"');
+  expect(markup.match(/<button[^>]*disabled=""/g)?.length).toBeGreaterThanOrEqual(5);
+});
+
 test("preserves selected-book open, send, convert, format, cover, and removal actions", () => {
   const markup = renderWorkspace({
     items: [{ ...item, formats: [epub], sourcePath: epub.sourcePath, format: epub.format }],

@@ -8,6 +8,7 @@ export type LibraryBulkPendingAction =
 
 export type LibraryBulkActionBarProps = {
   readonly selectedCount: number;
+  readonly disabled: boolean;
   readonly pendingAction: LibraryBulkPendingAction | null;
   readonly canConvert: boolean;
   readonly canSend: boolean;
@@ -27,6 +28,7 @@ const pendingLabels: Readonly<Record<LibraryBulkPendingAction, string>> = {
 
 export function LibraryBulkActionBar({
   selectedCount,
+  disabled,
   pendingAction,
   canConvert,
   canSend,
@@ -41,6 +43,7 @@ export function LibraryBulkActionBar({
   }
 
   const pending = pendingAction !== null;
+  const controlsDisabled = disabled || pending;
   const selectionLabel = `${selectedCount} ${selectedCount === 1 ? "book" : "books"} selected`;
 
   return (
@@ -60,12 +63,12 @@ export function LibraryBulkActionBar({
       </div>
 
       <div className="library-bulk-action-bar__actions">
-        <button type="button" disabled={pending} onClick={onEditTags}>
+        <button type="button" disabled={controlsDisabled} onClick={onEditTags}>
           Edit tags
         </button>
         <button
           type="button"
-          disabled={pending || !canConvert}
+          disabled={controlsDisabled || !canConvert}
           title={canConvert ? undefined : "Conversion is not available for this selection"}
           onClick={onConvert}
         >
@@ -73,7 +76,7 @@ export function LibraryBulkActionBar({
         </button>
         <button
           type="button"
-          disabled={pending || !canSend}
+          disabled={controlsDisabled || !canSend}
           title={canSend ? undefined : "Sending is not available for this selection"}
           onClick={onSend}
         >
@@ -82,12 +85,12 @@ export function LibraryBulkActionBar({
         <button
           className="library-bulk-action-bar__trash"
           type="button"
-          disabled={pending}
+          disabled={controlsDisabled}
           onClick={onMoveToTrash}
         >
           Move to Trash
         </button>
-        <button type="button" disabled={pending} onClick={onClear}>
+        <button type="button" disabled={controlsDisabled} onClick={onClear}>
           Clear selection
         </button>
       </div>

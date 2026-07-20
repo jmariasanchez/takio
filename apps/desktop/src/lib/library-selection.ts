@@ -15,6 +15,7 @@ export type LibrarySelectionAction =
       readonly pageItemIds: readonly string[];
     }
   | { readonly type: "toggle-page"; readonly pageItemIds: readonly string[] }
+  | { readonly type: "remove-items"; readonly ids: readonly string[] }
   | { readonly type: "clear-selection" }
   | { readonly type: "page-changed" }
   | { readonly type: "sort-changed" }
@@ -138,6 +139,24 @@ export function librarySelectionReducer(
         ...state,
         selectedItemIds: addSelectedIds(state.selectedItemIds, pageItemIds),
         rangeAnchorItemId: null,
+      };
+    }
+    case "remove-items": {
+      const removedIds = new Set(action.ids);
+      if (
+        removedIds.size === 0 ||
+        !state.selectedItemIds.some((id) => removedIds.has(id))
+      ) {
+        return state;
+      }
+
+      return {
+        ...state,
+        selectedItemIds: state.selectedItemIds.filter((id) => !removedIds.has(id)),
+        rangeAnchorItemId:
+          state.rangeAnchorItemId !== null && removedIds.has(state.rangeAnchorItemId)
+            ? null
+            : state.rangeAnchorItemId,
       };
     }
     case "clear-selection":

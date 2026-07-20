@@ -27,6 +27,7 @@ function props(
 ): LibraryBulkActionBarProps {
   return {
     selectedCount: 3,
+    disabled: false,
     pendingAction: null,
     canConvert: true,
     canSend: true,
@@ -111,6 +112,17 @@ test("announces pending work and disables every control so the target cannot cha
 
   expect(markup).toContain('aria-busy="true"');
   expect(markup).toContain("Moving to Trash…");
+  expect(buttons).toHaveLength(5);
+  expect(buttons.every(({ props }) => props.disabled)).toBe(true);
+});
+
+test("globally disables every control while unrelated library work is pending", () => {
+  const tree = LibraryBulkActionBar(props({ disabled: true }));
+  const buttons = elements(tree).filter((element) => element.type === "button");
+  const markup = renderToStaticMarkup(tree);
+
+  expect(markup).toContain('aria-busy="false"');
+  expect(markup).not.toContain("Updating tags…");
   expect(buttons).toHaveLength(5);
   expect(buttons.every(({ props }) => props.disabled)).toBe(true);
 });

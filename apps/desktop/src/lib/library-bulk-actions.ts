@@ -31,7 +31,7 @@ type LibrarySelectionHydration = {
   };
 };
 
-type BulkConversionPlanEntry =
+export type BulkConversionPlanEntry =
   | {
       readonly status: "eligible";
       readonly item: LibraryItem;
@@ -44,7 +44,7 @@ type BulkConversionPlanEntry =
       readonly reason: "pdf-already-attached" | "epub-source-unavailable";
     };
 
-type BulkDeviceSendPlanEntry =
+export type BulkDeviceSendPlanEntry =
   | {
       readonly status: "eligible";
       readonly item: LibraryItem;
@@ -61,6 +61,86 @@ type BulkDeviceSendPlanEntry =
       readonly item: LibraryItem;
       readonly preferred: FormatId;
     };
+
+export type BulkPdfOutputName = {
+  readonly item: LibraryItem;
+  readonly fileName: string;
+};
+
+export type BulkPdfConversionPlanCounts = {
+  readonly total: number;
+  readonly eligible: number;
+  readonly skipped: number;
+  readonly pdfAlreadyAttached: number;
+  readonly epubSourceUnavailable: number;
+};
+
+export type BulkDeviceSendPlanCounts = {
+  readonly total: number;
+  readonly eligible: number;
+  readonly convertible: number;
+  readonly unavailable: number;
+};
+
+function sanitizedPdfBaseName(title: string): string {
+  const sanitized = title
+    .replace(/[\u0000-\u001f\u007f<>:"/\\|?*]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/[. ]+$/g, "");
+  return sanitized.length > 0 ? sanitized : "Book";
+}
+
+function comparableFileName(fileName: string): string {
+  return fileName.normalize("NFKC").toLowerCase();
+}
+
+export function allocateBulkPdfOutputNames(
+  items: readonly LibraryItem[],
+): readonly BulkPdfOutputName[] {
+  const usedNames = new Set<string>();
+
+  return items.map((item) => {
+    const baseName = sanitizedPdfBaseName(item.title);
+    let suffix = 1;
+    let fileName = `${baseName}.pdf`;
+
+    while (usedNames.has(comparableFileName(fileName))) {
+      suffix += 1;
+      fileName = `${baseName} (${suffix}).pdf`;
+    }
+
+    usedNames.add(comparableFileName(fileName));
+    return { item, fileName };
+  });
+}
+
+export function summarizeBulkPdfConversionPlan(
+  plan: readonly BulkConversionPlanEntry[],
+): BulkPdfConversionPlanCounts {
+  return {
+    total: plan.length,
+    eligible: plan.filter(({ status }) => status === "eligible").length,
+    skipped: plan.filter(({ status }) => status === "skipped").length,
+    pdfAlreadyAttached: plan.filter(
+      (entry) => entry.status === "skipped" && entry.reason === "pdf-already-attached",
+    ).length,
+    epubSourceUnavailable: plan.filter(
+      (entry) => entry.status === "skipped" && entry.reason === "epub-source-unavailable",
+    ).length,
+  };
+}
+
+export function summarizeBulkDeviceSendPlan(
+  plan: readonly BulkDeviceSendPlanEntry[],
+): BulkDeviceSendPlanCounts {
+  return {
+    total: plan.length,
+    eligible: plan.filter(({ status }) => status === "eligible").length,
+    convertible: plan.filter(({ status }) => status === "convertible").length,
+    unavailable: plan.filter(({ status }) => status === "unavailable").length,
+  };
+}
 
 function normalizedTags(tags: readonly string[]): readonly string[] {
   const normalized: string[] = [];

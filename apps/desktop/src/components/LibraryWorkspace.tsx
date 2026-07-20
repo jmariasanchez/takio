@@ -25,6 +25,14 @@ import {
 } from "../lib/metadata-draft";
 import { LibraryFacetSidebar } from "./LibraryFacetSidebar";
 import {
+  LibraryBulkActionBar,
+  type LibraryBulkPendingAction,
+} from "./LibraryBulkActionBar";
+import {
+  LibraryBulkTagsDialog,
+  type LibraryBulkTagsOperation,
+} from "./LibraryBulkTagsDialog";
+import {
   LibraryInspector,
   conversionControlId,
   libraryOpenControlId,
@@ -59,8 +67,27 @@ export function resolveGeneralSend(
     : resolveDeviceFormatPreference(formats, preferredFormat);
 }
 
+export type LibraryWorkspaceBulkActions = {
+  readonly pendingAction: LibraryBulkPendingAction | null;
+  readonly canConvert: boolean;
+  readonly canSend: boolean;
+  readonly tagsDialogOpen: boolean;
+  readonly tagsDialogError: string | null;
+  readonly onEditTags: () => void;
+  readonly onConvert: () => void;
+  readonly onSend: () => void;
+  readonly onMoveToTrash: () => void;
+  readonly onClearSelection: () => void;
+  readonly onCloseTagsDialog: () => void;
+  readonly onApplyTags: (
+    operation: LibraryBulkTagsOperation,
+    tags: readonly string[],
+  ) => void;
+};
+
 export type LibraryWorkspaceProps = {
   readonly actionsPending: boolean;
+  readonly bulkActions?: LibraryWorkspaceBulkActions;
   readonly conversionDraft: ConversionDraft | null;
   readonly currentSavedViewId: string | null;
   readonly draft: MetadataDraft | null;
@@ -467,6 +494,7 @@ function InspectorManagement({
 
 export function LibraryWorkspace({
   actionsPending,
+  bulkActions,
   conversionDraft,
   currentSavedViewId,
   draft,
@@ -523,6 +551,7 @@ export function LibraryWorkspace({
   const previousSaveViewDialogOpen = useRef(saveViewDialogOpen);
   const selectedItem = items.find(({ id }) => id === selectedItemId) ?? null;
   const busy = libraryState === "loading" || searchPending;
+  const interactionsDisabled = busy || actionsPending;
 
   useEffect(() => {
     if (conversionDraft !== null) {
@@ -624,6 +653,7 @@ export function LibraryWorkspace({
                     id="library-search"
                     type="search"
                     value={query}
+                    disabled={actionsPending}
                     placeholder="Title, author, description, or tag"
                     onChange={(event) => onChangeSearch(event.currentTarget.value)}
                   />
@@ -632,7 +662,22 @@ export function LibraryWorkspace({
             </div>
           }
           table={
-            <div className="library-workspace__results">
+            <>
+              {bulkActions ? (
+                <LibraryBulkActionBar
+                  selectedCount={selectedItemIds.length}
+                  disabled={actionsPending}
+                  pendingAction={bulkActions.pendingAction}
+                  canConvert={bulkActions.canConvert}
+                  canSend={bulkActions.canSend}
+                  onEditTags={bulkActions.onEditTags}
+                  onConvert={bulkActions.onConvert}
+                  onSend={bulkActions.onSend}
+                  onMoveToTrash={bulkActions.onMoveToTrash}
+                  onClear={bulkActions.onClearSelection}
+                />
+              ) : null}
+              <div className="library-workspace__results">
               {busy && libraryState !== "error" && items.length === 0 ? (
                 <div className="library-workspace__state" role="status">
                   Loading your library…
@@ -663,7 +708,7 @@ export function LibraryWorkspace({
               ) : null}
               {libraryState !== "error" ? (
                 <LibraryTable
-                  busy={busy}
+                  busy={interactionsDisabled}
                   items={items}
                   pageLimit={pageLimit}
                   pageOffset={pageOffset}
@@ -689,7 +734,8 @@ export function LibraryWorkspace({
                   onTogglePage={onTogglePageSelection}
                 />
               ) : null}
-            </div>
+              </div>
+            </>
           }
           onOpenPaneChange={setOpenPane}
         />
@@ -703,6 +749,17 @@ export function LibraryWorkspace({
         onCancel={onCancelSaveView}
         onSave={onSaveView}
       />
+
+      {bulkActions ? (
+        <LibraryBulkTagsDialog
+          open={bulkActions.tagsDialogOpen}
+          selectedCount={selectedItemIds.length}
+          pending={bulkActions.pendingAction === "tags"}
+          error={bulkActions.tagsDialogError}
+          onClose={bulkActions.onCloseTagsDialog}
+          onApply={bulkActions.onApplyTags}
+        />
+      ) : null}
     </>
   );
 }
