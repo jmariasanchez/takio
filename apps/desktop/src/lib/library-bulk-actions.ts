@@ -62,11 +62,6 @@ export type BulkDeviceSendPlanEntry =
       readonly preferred: FormatId;
     };
 
-export type BulkPdfOutputName = {
-  readonly item: LibraryItem;
-  readonly fileName: string;
-};
-
 export type BulkPdfConversionPlanCounts = {
   readonly total: number;
   readonly eligible: number;
@@ -81,39 +76,6 @@ export type BulkDeviceSendPlanCounts = {
   readonly convertible: number;
   readonly unavailable: number;
 };
-
-function sanitizedPdfBaseName(title: string): string {
-  const sanitized = title
-    .replace(/[\u0000-\u001f\u007f<>:"/\\|?*]+/g, " ")
-    .replace(/\s+/g, " ")
-    .trim()
-    .replace(/[. ]+$/g, "");
-  return sanitized.length > 0 ? sanitized : "Book";
-}
-
-function comparableFileName(fileName: string): string {
-  return fileName.normalize("NFKC").toLowerCase();
-}
-
-export function allocateBulkPdfOutputNames(
-  items: readonly LibraryItem[],
-): readonly BulkPdfOutputName[] {
-  const usedNames = new Set<string>();
-
-  return items.map((item) => {
-    const baseName = sanitizedPdfBaseName(item.title);
-    let suffix = 1;
-    let fileName = `${baseName}.pdf`;
-
-    while (usedNames.has(comparableFileName(fileName))) {
-      suffix += 1;
-      fileName = `${baseName} (${suffix}).pdf`;
-    }
-
-    usedNames.add(comparableFileName(fileName));
-    return { item, fileName };
-  });
-}
 
 export function summarizeBulkPdfConversionPlan(
   plan: readonly BulkConversionPlanEntry[],

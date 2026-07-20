@@ -2,7 +2,6 @@ import { describe, expect, test } from "bun:test";
 import type { BookFormat, LibraryItem } from "@takio/core";
 
 import {
-  allocateBulkPdfOutputNames,
   applyBulkTagOperation,
   hydrateSelectedLibraryItems,
   planBulkDeviceSend,
@@ -150,29 +149,6 @@ describe("bulk conversion planning", () => {
     ]);
     expect(plan.map(({ item }) => item.id)).toEqual(items.map(({ id }) => id));
     expect(items[0]?.formats.map(({ format }) => format)).toEqual(["epub", "pdf"]);
-  });
-
-  test("allocates sanitized deterministic PDF names with case-insensitive collision suffixes", () => {
-    const items = [
-      { ...libraryItem("first", [bookFormat("epub", "/Books/first.epub")]), title: " A/B: C? " },
-      { ...libraryItem("second", [bookFormat("epub", "/Books/second.epub")]), title: "a\\b c" },
-      { ...libraryItem("third", [bookFormat("epub", "/Books/third.epub")]), title: "..." },
-      { ...libraryItem("fourth", [bookFormat("epub", "/Books/fourth.epub")]), title: "<>" },
-      { ...libraryItem("fifth", [bookFormat("epub", "/Books/fifth.epub")]), title: "Caf\u00e9" },
-      { ...libraryItem("sixth", [bookFormat("epub", "/Books/sixth.epub")]), title: "Cafe\u0301" },
-    ] as const;
-
-    const names = allocateBulkPdfOutputNames(items);
-
-    expect(names).toEqual([
-      { item: items[0], fileName: "A B C.pdf" },
-      { item: items[1], fileName: "a b c (2).pdf" },
-      { item: items[2], fileName: "Book.pdf" },
-      { item: items[3], fileName: "Book (2).pdf" },
-      { item: items[4], fileName: "Caf\u00e9.pdf" },
-      { item: items[5], fileName: "Cafe\u0301 (2).pdf" },
-    ]);
-    expect(names.map(({ item }) => item.id)).toEqual(items.map(({ id }) => id));
   });
 
   test("summarizes conversion eligibility and every skip reason exactly", () => {

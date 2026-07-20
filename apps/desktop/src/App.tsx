@@ -8,12 +8,10 @@ import {
 } from "react";
 import { isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { join } from "@tauri-apps/api/path";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { confirm, open, save } from "@tauri-apps/plugin-dialog";
+import { confirm, open } from "@tauri-apps/plugin-dialog";
 import {
   FORMAT_CATALOG,
-  sanitizeDestinationFileName,
   type BookFormat,
   type Destination,
   type FormatId,
@@ -68,7 +66,6 @@ import {
   writeActiveSavedViewId,
 } from "./lib/active-saved-view";
 import {
-  allocateBulkPdfOutputNames,
   applyBulkTagOperation,
   hydrateSelectedLibraryItems,
   planBulkDeviceSend,
@@ -76,6 +73,7 @@ import {
   summarizeBulkDeviceSendPlan,
   summarizeBulkPdfConversionPlan,
 } from "./lib/library-bulk-actions";
+import { createConversionOutputPath } from "./lib/conversion-output";
 import {
   describeDestinationError,
   describeUnexpectedDestinationError,
@@ -1763,24 +1761,10 @@ export default function App() {
       return;
     }
 
-    let output: string | null;
-    try {
-      output = await save({
-        title: `Convert “${item.title}” to PDF`,
-        defaultPath: sanitizeDestinationFileName(`${item.title}.pdf`) ?? "converted.pdf",
-        filters: [{ name: "PDF document", extensions: ["pdf"] }],
-      });
-    } catch (error) {
-      setNotice({ kind: "error", text: describeUnexpectedJobError(error) });
-      return;
-    }
-    if (output === null) {
-      return;
-    }
-
     setPendingAction(`job-enqueue:${item.id}`);
     setNotice(null);
     try {
+      const output = await createConversionOutputPath();
       const result = await enqueueConversionJob({
         libraryItemId: item.id,
         inputFormat: requested.source.format,
@@ -2411,30 +2395,10 @@ export default function App() {
       const eligible = plan.flatMap((entry) =>
         entry.status === "eligible" ? [entry] : [],
       );
-      let outputDirectory: string | null = null;
-      if (eligible.length > 0) {
-        let selection: string | string[] | null;
-        try {
-          selection = await open({
-            directory: true,
-            multiple: false,
-            title: "Choose a folder for converted PDFs",
-          });
-        } catch (error) {
-          setNotice({ kind: "error", text: describeUnexpectedJobError(error) });
-          return;
-        }
-        if (typeof selection !== "string") {
-          return;
-        }
-        outputDirectory = selection;
-      }
-
-      const outputNames = allocateBulkPdfOutputNames(eligible.map(({ item }) => item));
       const outputPaths: string[] = [];
       try {
-        for (const { fileName } of outputNames) {
-          outputPaths.push(await join(outputDirectory!, fileName));
+        for (const _entry of eligible) {
+          outputPaths.push(await createConversionOutputPath());
         }
       } catch (error) {
         setNotice({ kind: "error", text: describeUnexpectedJobError(error) });
