@@ -28,6 +28,26 @@ function sha256(value: string): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
+async function completeLinkedJob(store: JobStore, number: number, root: string, ownerPid: number) {
+  const enqueued = store.enqueue({
+    ...queuedInput(number, root),
+    libraryItemId: `book-${number}`,
+  });
+  if (!enqueued.ok) throw new Error("enqueue failed");
+  expect(store.claimNext(ownerPid)).toMatchObject({ ok: true, value: { id: enqueued.value.id } });
+  const artifact = `artifact-${number}`;
+  await writeFile(enqueued.value.outputPath, artifact);
+  expect(await store.complete(enqueued.value.id, {
+    path: enqueued.value.outputPath,
+    bytes: Buffer.byteLength(artifact),
+    sha256: sha256(artifact),
+  })).toMatchObject({
+    ok: true,
+    value: { id: enqueued.value.id, attachment: { status: "pending" } },
+  });
+  return enqueued.value;
+}
+
 afterEach(async () => {
   await Promise.all(temporaryDirectories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
 });
@@ -104,9 +124,11 @@ describe("JobStore", () => {
     store.close();
 
     using migrated = new Database(path, { strict: true });
-    expect(migrated.query<{ user_version: number }, []>("PRAGMA user_version").get()?.user_version).toBe(3);
-    expect(migrated.query<{ name: string }, []>("PRAGMA table_info(jobs)").all().map(({ name }) => name)).toContain("library_item_id");
-    expect(migrated.query<{ name: string }, []>("PRAGMA table_info(jobs)").all().map(({ name }) => name)).toContain("attachment_status");
+    expect(migrated.query<{ user_version: number }, []>("PRAGMA user_version").get()?.user_version).toBe(4);
+    const columns = migrated.query<{ name: string }, []>("PRAGMA table_info(jobs)").all().map(({ name }) => name);
+    expect(columns).toContain("library_item_id");
+    expect(columns).toContain("attachment_status");
+    expect(columns).toContain("attachment_owner_pid");
     expect(migrated.query("PRAGMA foreign_key_list(jobs)").all()).toEqual([]);
   });
 
@@ -164,11 +186,84 @@ describe("JobStore", () => {
     expect(unlinked).toMatchObject({ ok: true, value: { status: "completed" } });
     if (!unlinked.ok || !unlinked.value) throw new Error("missing migrated job");
     expect("attachment" in unlinked.value).toBe(false);
-    expect(store.nextPendingAttachment()).toMatchObject({ ok: true, value: { id: "job_v2_linked" } });
+    expect(store.claimNextPendingAttachment(501)).toMatchObject({ ok: true, value: { id: "job_v2_linked" } });
     store.close();
 
     using migrated = new Database(path, { strict: true });
-    expect(migrated.query<{ user_version: number }, []>("PRAGMA user_version").get()?.user_version).toBe(3);
+    expect(migrated.query<{ user_version: number }, []>("PRAGMA user_version").get()?.user_version).toBe(4);
+  });
+
+  it("migrates v3 attachment state and preserves a live lease across reopen", async () => {
+    const path = await databasePath();
+    const root = dirname(path);
+    const database = new Database(path, { create: true, strict: true });
+    database.run(`
+      CREATE TABLE jobs (
+        enqueue_sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+        id TEXT NOT NULL UNIQUE,
+        status TEXT NOT NULL CHECK(status IN ('queued','running','completed','failed','canceled')),
+        library_item_id TEXT,
+        input_path TEXT NOT NULL,
+        input_format TEXT NOT NULL,
+        output_format TEXT NOT NULL,
+        output_path TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        started_at TEXT,
+        finished_at TEXT,
+        owner_pid INTEGER,
+        error_code TEXT,
+        artifact_bytes INTEGER,
+        artifact_sha256 TEXT,
+        attachment_status TEXT CHECK(attachment_status IN ('pending','attached','failed')),
+        attachment_finished_at TEXT,
+        attachment_error_code TEXT
+      ) STRICT
+    `);
+    database.run("CREATE INDEX jobs_status_order ON jobs(status, enqueue_sequence)");
+    database.run(`
+      INSERT INTO jobs
+        (id, status, library_item_id, input_path, input_format, output_format, output_path,
+          created_at, started_at, finished_at, artifact_bytes, artifact_sha256, attachment_status)
+      VALUES ('job_v3_pending', 'completed', 'book-v3', ?, 'epub', 'pdf', ?,
+        '2026-07-19T12:00:00.000Z', '2026-07-19T12:01:00.000Z',
+        '2026-07-19T12:02:00.000Z', 10, ?, 'pending')
+    `, [join(root, "v3.epub"), join(root, "v3.pdf"), "d".repeat(64)]);
+    database.run("PRAGMA user_version = 3");
+    database.close();
+
+    const store = new JobStore(path, () => true);
+    expect(store.open()).toEqual({ ok: true, value: null });
+    expect(store.claimNextPendingAttachment(601)).toMatchObject({
+      ok: true,
+      value: { id: "job_v3_pending", attachment: { status: "pending" } },
+    });
+    store.close();
+
+    const reopened = new JobStore(path, () => true);
+    expect(reopened.open()).toEqual({ ok: true, value: null });
+    const pending = reopened.get("job_v3_pending");
+    expect(pending).toMatchObject({ ok: true, value: { attachment: { status: "pending" } } });
+    if (!pending.ok || !pending.value) throw new Error("missing migrated job");
+    expect("attachmentOwnerPid" in pending.value).toBe(false);
+    expect(reopened.claimNextPendingAttachment(602)).toEqual({ ok: true, value: null });
+    expect(reopened.markAttached("job_v3_pending", 602)).toEqual({
+      ok: false,
+      error: { code: "invalid-transition" },
+    });
+    expect(reopened.markAttachmentFailed("job_v3_pending", "wrong-owner", 602)).toEqual({
+      ok: false,
+      error: { code: "invalid-transition" },
+    });
+    expect(reopened.markAttached("job_v3_pending", 601)).toMatchObject({
+      ok: true,
+      value: { attachment: { status: "attached" } },
+    });
+    reopened.close();
+
+    using migrated = new Database(path, { strict: true });
+    expect(migrated.query<{ user_version: number }, []>("PRAGMA user_version").get()?.user_version).toBe(4);
+    expect(migrated.query<{ name: string }, []>("PRAGMA table_info(jobs)").all().map(({ name }) => name))
+      .toContain("attachment_owner_pid");
   });
 
   it("round-trips optional library item linkage while legacy enqueues remain unlinked", async () => {
@@ -224,7 +319,7 @@ describe("JobStore", () => {
     expect(completedUnlinked).toMatchObject({ ok: true, value: { status: "completed" } });
     if (!completedUnlinked.ok) throw new Error("completion failed");
     expect("attachment" in completedUnlinked.value).toBe(false);
-    expect(store.nextPendingAttachment()).toEqual({ ok: true, value: null });
+    expect(store.claimNextPendingAttachment(401)).toEqual({ ok: true, value: null });
 
     expect(store.claimNext(102)).toMatchObject({ ok: true, value: { id: linked.value.id } });
     await writeFile(linked.value.outputPath, "linked artifact");
@@ -236,16 +331,16 @@ describe("JobStore", () => {
       ok: true,
       value: { status: "completed", attachment: { status: "pending" } },
     });
-    expect(store.nextPendingAttachment()).toMatchObject({ ok: true, value: { id: linked.value.id } });
+    expect(store.claimNextPendingAttachment(402)).toMatchObject({ ok: true, value: { id: linked.value.id } });
 
-    const attached = store.markAttached(linked.value.id);
+    const attached = store.markAttached(linked.value.id, 402);
     expect(attached).toMatchObject({
       ok: true,
       value: { status: "completed", attachment: { status: "attached" } },
     });
     if (!attached.ok || attached.value.attachment?.status !== "attached") throw new Error("attachment failed");
     expect(Date.parse(attached.value.attachment.finishedAt)).not.toBeNaN();
-    expect(store.nextPendingAttachment()).toEqual({ ok: true, value: null });
+    expect(store.claimNextPendingAttachment(403)).toEqual({ ok: true, value: null });
     store.close();
 
     const reopened = new JobStore(path);
@@ -262,6 +357,10 @@ describe("JobStore", () => {
     const root = dirname(path);
     const store = new JobStore(path);
     expect(store.open()).toEqual({ ok: true, value: null });
+    expect(store.claimNextPendingAttachment(0)).toEqual({
+      ok: false,
+      error: { code: "invalid-stored-data" },
+    });
 
     const linked = store.enqueue({ ...queuedInput(1, root), libraryItemId: "book-1" });
     const queued = store.enqueue({ ...queuedInput(2, root), libraryItemId: "book-2" });
@@ -274,7 +373,8 @@ describe("JobStore", () => {
       sha256: sha256("artifact"),
     })).ok).toBe(true);
 
-    const failed = store.markAttachmentFailed(linked.value.id, "library-unavailable");
+    expect(store.claimNextPendingAttachment(301)).toMatchObject({ ok: true, value: { id: linked.value.id } });
+    const failed = store.markAttachmentFailed(linked.value.id, "library-unavailable", 301);
     expect(failed).toMatchObject({
       ok: true,
       value: {
@@ -284,14 +384,22 @@ describe("JobStore", () => {
     });
     if (!failed.ok || failed.value.attachment?.status !== "failed") throw new Error("failure not stored");
     expect(Date.parse(failed.value.attachment.finishedAt)).not.toBeNaN();
-    expect(store.markAttached(linked.value.id)).toEqual({ ok: false, error: { code: "invalid-transition" } });
-    expect(store.markAttached(queued.value.id)).toEqual({ ok: false, error: { code: "invalid-transition" } });
-    expect(store.markAttachmentFailed(queued.value.id, "nope")).toEqual({
+    expect(store.markAttached(linked.value.id, 301)).toEqual({ ok: false, error: { code: "invalid-transition" } });
+    expect(store.markAttached(queued.value.id, 301)).toEqual({ ok: false, error: { code: "invalid-transition" } });
+    expect(store.markAttachmentFailed(queued.value.id, "nope", 301)).toEqual({
       ok: false,
       error: { code: "invalid-transition" },
     });
     expect(store.retryAttachment(queued.value.id)).toEqual({ ok: false, error: { code: "invalid-transition" } });
-    expect(store.markAttached("job_missing")).toEqual({ ok: false, error: { code: "unknown-job" } });
+    expect(store.markAttached("job_missing", 301)).toEqual({ ok: false, error: { code: "unknown-job" } });
+    expect(store.markAttached(linked.value.id, 0)).toEqual({
+      ok: false,
+      error: { code: "invalid-stored-data" },
+    });
+    expect(store.markAttachmentFailed(linked.value.id, "nope", 0)).toEqual({
+      ok: false,
+      error: { code: "invalid-stored-data" },
+    });
     store.close();
 
     const reopened = new JobStore(path);
@@ -302,11 +410,12 @@ describe("JobStore", () => {
       value: { status: "completed", attachment: { status: "pending" } },
     });
     expect(reopened.retryAttachment(linked.value.id)).toEqual({ ok: false, error: { code: "invalid-transition" } });
-    expect(reopened.markAttached(linked.value.id)).toMatchObject({
+    expect(reopened.claimNextPendingAttachment(302)).toMatchObject({ ok: true, value: { id: linked.value.id } });
+    expect(reopened.markAttached(linked.value.id, 302)).toMatchObject({
       ok: true,
       value: { status: "completed", attachment: { status: "attached" } },
     });
-    expect(reopened.markAttachmentFailed(linked.value.id, "late-error")).toEqual({
+    expect(reopened.markAttachmentFailed(linked.value.id, "late-error", 302)).toEqual({
       ok: false,
       error: { code: "invalid-transition" },
     });
@@ -423,6 +532,81 @@ describe("JobStore", () => {
     expect(claims.filter((claim) => claim.ok && claim.value === null)).toHaveLength(1);
     firstStore.close();
     secondStore.close();
+  });
+
+  it("atomically leases a pending attachment to only one claimant", async () => {
+    const path = await databasePath();
+    const root = dirname(path);
+    const firstStore = new JobStore(path, () => true);
+    const secondStore = new JobStore(path, () => true);
+    expect(firstStore.open()).toEqual({ ok: true, value: null });
+    const job = await completeLinkedJob(firstStore, 40, root, 640);
+    expect(secondStore.open()).toEqual({ ok: true, value: null });
+
+    const claims = await Promise.all([
+      Promise.resolve().then(() => firstStore.claimNextPendingAttachment(641)),
+      Promise.resolve().then(() => secondStore.claimNextPendingAttachment(642)),
+    ]);
+    expect(claims.filter((claim) => claim.ok && claim.value?.id === job.id)).toHaveLength(1);
+    expect(claims.filter((claim) => claim.ok && claim.value === null)).toHaveLength(1);
+    firstStore.close();
+    secondStore.close();
+  });
+
+  it("releases only the matching attachment claim and permits a new claimant", async () => {
+    const path = await databasePath();
+    const root = dirname(path);
+    const store = new JobStore(path, () => true);
+    expect(store.open()).toEqual({ ok: true, value: null });
+    const job = await completeLinkedJob(store, 45, root, 645);
+    expect(store.claimNextPendingAttachment(646)).toMatchObject({
+      ok: true,
+      value: { id: job.id, attachment: { status: "pending" } },
+    });
+
+    expect(store.releaseAttachmentClaim(job.id, 647)).toEqual({
+      ok: false,
+      error: { code: "invalid-transition" },
+    });
+    expect(store.claimNextPendingAttachment(647)).toEqual({ ok: true, value: null });
+    expect(store.releaseAttachmentClaim(job.id, 646)).toMatchObject({
+      ok: true,
+      value: { id: job.id, attachment: { status: "pending" } },
+    });
+    expect(store.claimNextPendingAttachment(647)).toMatchObject({
+      ok: true,
+      value: { id: job.id, attachment: { status: "pending" } },
+    });
+    store.close();
+  });
+
+  it("reclaims a dead attachment lease and requires the new owner to settle it", async () => {
+    const path = await databasePath();
+    const root = dirname(path);
+    const firstStore = new JobStore(path, () => true);
+    expect(firstStore.open()).toEqual({ ok: true, value: null });
+    const job = await completeLinkedJob(firstStore, 50, root, 750);
+    expect(firstStore.claimNextPendingAttachment(751)).toMatchObject({
+      ok: true,
+      value: { id: job.id },
+    });
+    firstStore.close();
+
+    const recovered = new JobStore(path, (pid) => pid !== 751);
+    expect(recovered.open()).toEqual({ ok: true, value: null });
+    expect(recovered.claimNextPendingAttachment(752)).toMatchObject({
+      ok: true,
+      value: { id: job.id, attachment: { status: "pending" } },
+    });
+    expect(recovered.markAttachmentFailed(job.id, "stale-owner", 751)).toEqual({
+      ok: false,
+      error: { code: "invalid-transition" },
+    });
+    expect(recovered.markAttachmentFailed(job.id, "library-unavailable", 752)).toMatchObject({
+      ok: true,
+      value: { attachment: { status: "failed", errorCode: "library-unavailable" } },
+    });
+    recovered.close();
   });
 
   it("marks only dead running owners as interrupted when reopening", async () => {
