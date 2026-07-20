@@ -65,6 +65,15 @@ paging, filtering, and sorting stay database-backed; warm query-plus-facet-plus-
 sort p95 is at most 150 ms for the first 100 results, launch-to-usable is at most
 two seconds, and a saved view restores its query, facets, and sort after relaunch.
 
+Verified baseline: the 10,000-book/15,000-format fixture measured 110.1 ms p95
+for the database-backed query gate. The production-optimized macOS app measured
+1,142.0 ms from executable spawn through saved-view resolution and the first
+successful catalogue query. Browser acceptance at 1280x800 fit nine complete
+rows; saved-view restoration, contiguous multi-selection, keyboard row
+navigation, modal focus return, bulk metadata fields, and external-only Open
+actions passed without console errors. At the supported 900x620 minimum, five
+complete rows remain visible while secondary panels stay reachable.
+
 ### 3. Conversion and device daily driver
 
 - Advertise only conversion pairs proven against a real Calibre backend.
