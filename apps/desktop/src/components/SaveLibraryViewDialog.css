@@ -1,0 +1,108 @@
+.save-library-view-dialog__overlay {
+  position: fixed;
+  z-index: 30;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgb(15 23 42 / 42%);
+}
+
+.save-library-view-dialog {
+  width: min(400px, 100%);
+  overflow: hidden;
+  background: #ffffff;
+  border: 1px solid #d7dce5;
+  border-radius: 8px;
+  box-shadow: 0 18px 48px rgb(15 23 42 / 24%);
+  color: #20242c;
+}
+
+.save-library-view-dialog__header,
+.save-library-view-dialog__body,
+.save-library-view-dialog__actions {
+  padding-inline: 20px;
+}
+
+.save-library-view-dialog__header {
+  padding-block: 18px 12px;
+}
+
+.save-library-view-dialog__header h2 {
+  margin: 0;
+  font-size: 1rem;
+  letter-spacing: -0.015em;
+}
+
+.save-library-view-dialog__body {
+  display: grid;
+  gap: 7px;
+  padding-block: 6px 20px;
+}
+
+.save-library-view-dialog__body label {
+  color: #475467;
+  font-size: 0.75rem;
+  font-weight: 650;
+}
+
+.save-library-view-dialog__body input {
+  width: 100%;
+  min-height: 38px;
+  box-sizing: border-box;
+  padding: 7px 10px;
+  background: #ffffff;
+  border: 1px solid #cdd3dd;
+  border-radius: 5px;
+  color: #20242c;
+  font: inherit;
+}
+
+.save-library-view-dialog__body input[aria-invalid="true"] {
+  border-color: #b42318;
+}
+
+.save-library-view-dialog__error {
+  margin: 0;
+  color: #b42318;
+  font-size: 0.6875rem;
+}
+
+.save-library-view-dialog__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding-block: 12px;
+  background: #f8f9fb;
+  border-top: 1px solid #e4e7ec;
+}
+
+.save-library-view-dialog__actions button {
+  min-height: 34px;
+  padding: 6px 12px;
+  background: #ffffff;
+  border: 1px solid #cdd3dd;
+  border-radius: 5px;
+  color: #344054;
+  font: inherit;
+  font-size: 0.75rem;
+  font-weight: 650;
+}
+
+.save-library-view-dialog__actions button[type="submit"] {
+  background: #4f46e5;
+  border-color: #4f46e5;
+  color: #ffffff;
+}
+
+.save-library-view-dialog__actions button:disabled,
+.save-library-view-dialog__body input:disabled {
+  cursor: wait;
+  opacity: 0.62;
+}
+
+.save-library-view-dialog__actions button:focus-visible,
+.save-library-view-dialog__body input:focus-visible {
+  outline: 2px solid #4f46e5;
+  outline-offset: 2px;
+}
