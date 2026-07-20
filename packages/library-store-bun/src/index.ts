@@ -11,6 +11,7 @@ import {
   libraryQueryPageSchema,
   listSavedLibraryViewsRequestSchema,
   queryLibraryItemsRequestSchema,
+  replaceLibraryFormatRequestSchema,
   removeSavedLibraryViewRequestSchema,
   savedLibraryViewSchema,
   saveSavedLibraryViewRequestSchema,
@@ -27,6 +28,7 @@ import type {
   LibraryStore,
   LibraryStoreErrorCode,
   LibraryStoreResult,
+  LibraryFormatReplacementStore,
   LibraryQueryStore,
   ListSavedLibraryViewsRequest,
   ListSavedLibraryViewsResult,
@@ -46,6 +48,8 @@ import type {
   SearchLibraryItemsResult,
   QueryLibraryItemsRequest,
   QueryLibraryItemsResult,
+  ReplaceLibraryFormatRequest,
+  ReplaceLibraryFormatResult,
   SavedLibraryView,
   SavedLibraryViewStore,
   SaveSavedLibraryViewRequest,
@@ -1673,7 +1677,7 @@ function parseSavedLibraryView(row: StoredSavedLibraryView): LibraryStoreResult<
 }
 
 export class BunSqliteLibraryStore
-  implements LibraryStore, LibraryQueryStore, SavedLibraryViewStore
+  implements LibraryStore, LibraryFormatReplacementStore, LibraryQueryStore, SavedLibraryViewStore
 {
   readonly #databasePath: string;
   readonly #coversDirectory: string;
@@ -2187,6 +2191,181 @@ export class BunSqliteLibraryStore
     }
 
     return readStoredItem(this.#database, this.#coversDirectory, this.#itemsDirectory, id);
+  }
+
+  async replaceFormat(request: ReplaceLibraryFormatRequest): Promise<ReplaceLibraryFormatResult> {
+    if (!this.#database) {
+      return failure("storage-unavailable");
+    }
+
+    const parsed = replaceLibraryFormatRequestSchema.safeParse(request);
+    if (!parsed.success) {
+      return failure("invalid-arguments");
+    }
+    const { id, format, expectedCurrent, source } = parsed.data;
+    const inspected = readSource(source.path);
+    if (!inspected || inspected.format !== format) {
+      return failure("invalid-arguments");
+    }
+
+    const expectedArtifact = source.kind === "copy" ? source.expectedArtifact : undefined;
+    let installed: { path: string; storedPath: string } | undefined;
+    type Outcome =
+      | { kind: "replaced"; item: LibraryItem; cleanupPath?: string }
+      | { kind: "format-changed" }
+      | { kind: "failure"; code: LibraryStoreErrorCode };
+
+    try {
+      if (source.kind === "copy") {
+        installed = installManagedFile(
+          this.#database,
+          this.#coversDirectory,
+          this.#itemsDirectory,
+          inspected.path,
+          format,
+        );
+        if (expectedArtifact && !managedFileMatchesArtifact(installed.path, expectedArtifact)) {
+          throw installedArtifactMismatch;
+        }
+      }
+
+      const currentTimestamp = new Date().toISOString();
+      const addedAt =
+        currentTimestamp === expectedCurrent.addedAt
+          ? new Date(Date.parse(currentTimestamp) + 1).toISOString()
+          : currentTimestamp;
+      const outcome = this.#database.transaction((): Outcome => {
+        const current = readStoredItem(
+          this.#database!,
+          this.#coversDirectory,
+          this.#itemsDirectory,
+          id,
+        );
+        if (!current.ok) {
+          return { kind: "failure", code: current.error.code };
+        }
+        const currentFormat = current.value?.formats.find(
+          (candidate) => candidate.format === format,
+        );
+        if (
+          !currentFormat ||
+          currentFormat.sourcePath !== expectedCurrent.sourcePath ||
+          currentFormat.addedAt !== expectedCurrent.addedAt ||
+          currentFormat.provenance !== expectedCurrent.provenance
+        ) {
+          return { kind: "format-changed" };
+        }
+
+        const stored = this.#database!
+          .query<StoredPositionedBookFormat, [string, string]>(`
+            SELECT source_path AS sourcePath, format, added_at AS addedAt, provenance, position
+            FROM library_item_formats
+            WHERE library_item_id = ? AND format = ?
+          `)
+          .get(id, format);
+        if (!stored) {
+          return { kind: "format-changed" };
+        }
+
+        let storedSourcePath = installed?.storedPath ?? inspected.path;
+        let adoptedManagedLeaf: string | null = null;
+        if (!installed) {
+          const revalidated = readSource(source.path);
+          if (
+            !revalidated ||
+            revalidated.path !== inspected.path ||
+            revalidated.format !== format
+          ) {
+            throw sourceChanged;
+          }
+          storedSourcePath = revalidated.path;
+          adoptedManagedLeaf = managedLeafForReferencedPath(
+            this.#itemsDirectory,
+            revalidated.path,
+            format,
+          );
+        } else if (
+          expectedArtifact &&
+          !managedFileMatchesArtifact(installed.path, expectedArtifact)
+        ) {
+          throw installedArtifactMismatch;
+        }
+
+        let cleanupPath: string | undefined;
+        if (stored.provenance === "managed") {
+          if (typeof stored.sourcePath !== "string") {
+            return { kind: "failure", code: "invalid-stored-data" };
+          }
+          resolveManagedFormatPath(this.#itemsDirectory, stored.sourcePath, format, true);
+          if (stored.sourcePath !== adoptedManagedLeaf) {
+            cleanupPath = stored.sourcePath;
+            this.#database!.run(
+              "INSERT OR IGNORE INTO managed_file_cleanup (source_path, kind) VALUES (?, 'format')",
+              [cleanupPath],
+            );
+          }
+        }
+
+        this.#database!.run(
+          `UPDATE library_item_formats
+            SET source_path = ?, added_at = ?, provenance = ?
+            WHERE library_item_id = ? AND format = ?`,
+          [storedSourcePath, addedAt, installed ? "managed" : "referenced", id, format],
+        );
+        this.#database!.run("UPDATE library_items SET updated_at = ? WHERE id = ?", [addedAt, id]);
+        if (installed) {
+          this.#database!.run(
+            "DELETE FROM managed_file_cleanup WHERE source_path = ? AND kind = 'format'",
+            [installed.storedPath],
+          );
+        } else if (adoptedManagedLeaf) {
+          this.#database!.run(
+            "DELETE FROM managed_file_cleanup WHERE source_path = ? AND kind = 'format'",
+            [adoptedManagedLeaf],
+          );
+        }
+
+        const replaced = readStoredItem(
+          this.#database!,
+          this.#coversDirectory,
+          this.#itemsDirectory,
+          id,
+        );
+        if (!replaced.ok || !replaced.value) {
+          throw new TypeError("Invalid replaced library item");
+        }
+        return { kind: "replaced", item: replaced.value, cleanupPath };
+      }).immediate();
+
+      if (outcome.kind !== "replaced") {
+        if (installed) {
+          attemptOwnedFileCleanup(this.#database, this.#coversDirectory, this.#itemsDirectory, {
+            sourcePath: installed.storedPath,
+            kind: "format",
+          });
+        }
+        return failure(outcome.kind === "format-changed" ? "format-changed" : outcome.code);
+      }
+
+      const cleanupPending =
+        outcome.cleanupPath === undefined
+          ? false
+          : !attemptOwnedFileCleanup(
+              this.#database,
+              this.#coversDirectory,
+              this.#itemsDirectory,
+              { sourcePath: outcome.cleanupPath, kind: "format" },
+            );
+      return success({ item: outcome.item, cleanupPending });
+    } catch (error) {
+      if (installed) {
+        attemptOwnedFileCleanup(this.#database, this.#coversDirectory, this.#itemsDirectory, {
+          sourcePath: installed.storedPath,
+          kind: "format",
+        });
+      }
+      return failure(error === installedArtifactMismatch ? "invalid-arguments" : "storage-unavailable");
+    }
   }
 
   async removeFormat({ id, format }: RemoveLibraryFormatRequest): Promise<RemoveLibraryFormatResult> {

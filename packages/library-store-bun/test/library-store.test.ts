@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { Database } from "bun:sqlite";
-import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 
@@ -8,6 +8,7 @@ import type { LibraryItem } from "@takio/core";
 
 import { initializationTestSeam } from "../src/initialization-test-seam.js";
 import { BunSqliteLibraryStore } from "../src/index.js";
+import { lifecycleTestSeam } from "../src/lifecycle-test-seam.js";
 
 const item: LibraryItem = {
   id: "book-1",
@@ -95,6 +96,7 @@ afterEach(async () => {
   delete initializationTestSeam.duringV1ToV2Migration;
   delete initializationTestSeam.duringV2ToV3Migration;
   delete initializationTestSeam.duringV4ToV5Migration;
+  delete lifecycleTestSeam.beforeManagedFileCleanup;
 
   const closeErrors: unknown[] = [];
   for (const store of stores) {
@@ -125,6 +127,14 @@ function createStore(): BunSqliteLibraryStore {
 function schemaVersion(): number | undefined {
   using database = new Database(databasePath);
   return database.query<{ user_version: number }, []>("PRAGMA user_version").get()?.user_version;
+}
+
+function formatSnapshot(format: LibraryItem["formats"][number]) {
+  return {
+    sourcePath: format.sourcePath,
+    addedAt: format.addedAt,
+    provenance: format.provenance,
+  };
 }
 
 function createFrozenV1Fixture(): void {
@@ -619,6 +629,265 @@ describe("BunSqliteLibraryStore", () => {
     });
     expect(database.query("SELECT * FROM library_items").all()).toEqual([]);
     expect(database.query("SELECT * FROM library_item_formats").all()).toEqual([]);
+  });
+
+  it("runtime-validates format replacement and treats missing or stale snapshots as changed", async () => {
+    const replacementPath = join(directory, "replacement.epub");
+    const pdfReplacementPath = join(directory, "replacement.pdf");
+    await writeFile(replacementPath, "replacement");
+    await writeFile(pdfReplacementPath, "pdf replacement");
+    const store = createStore();
+    await store.open({ config: {} });
+    await store.add({ item });
+
+    expect(
+      await store.replaceFormat({
+        id: item.id,
+        format: "epub",
+        expectedCurrent: formatSnapshot(item.formats[0]!),
+        source: {
+          kind: "reference",
+          path: replacementPath,
+          expectedArtifact: { bytes: 11, sha256: "a".repeat(64) },
+        },
+      } as never),
+    ).toEqual({ ok: false, error: { code: "invalid-arguments" } });
+    expect(
+      await store.replaceFormat({
+        id: item.id,
+        format: "pdf",
+        expectedCurrent: {
+          sourcePath: "library/missing.pdf",
+          addedAt: item.formats[0]!.addedAt,
+          provenance: "referenced",
+        },
+        source: { kind: "reference", path: pdfReplacementPath },
+      }),
+    ).toEqual({ ok: false, error: { code: "format-changed" } });
+    expect(
+      await store.replaceFormat({
+        id: "missing",
+        format: "epub",
+        expectedCurrent: formatSnapshot(item.formats[0]!),
+        source: { kind: "reference", path: replacementPath },
+      }),
+    ).toEqual({ ok: false, error: { code: "format-changed" } });
+    expect(
+      await store.replaceFormat({
+        id: item.id,
+        format: "epub",
+        expectedCurrent: {
+          ...formatSnapshot(item.formats[0]!),
+          addedAt: "2026-07-18T00:00:00.000Z",
+        },
+        source: { kind: "reference", path: replacementPath },
+      }),
+    ).toEqual({ ok: false, error: { code: "format-changed" } });
+    expect(await store.get({ id: item.id })).toEqual({ ok: true, value: item });
+  });
+
+  it("allows only one copied replacement to win a strict CAS", async () => {
+    const firstPath = join(directory, "first-replacement.epub");
+    const secondPath = join(directory, "second-replacement.epub");
+    await writeFile(firstPath, "first replacement");
+    await writeFile(secondPath, "second replacement");
+    const firstStore = createStore();
+    const secondStore = createStore();
+    await firstStore.open({ config: {} });
+    await secondStore.open({ config: {} });
+    await firstStore.add({ item });
+
+    const [winner, stale] = await Promise.all([
+      firstStore.replaceFormat({
+        id: item.id,
+        format: "epub",
+        expectedCurrent: formatSnapshot(item.formats[0]!),
+        source: { kind: "copy", path: firstPath },
+      }),
+      secondStore.replaceFormat({
+        id: item.id,
+        format: "epub",
+        expectedCurrent: formatSnapshot(item.formats[0]!),
+        source: { kind: "copy", path: secondPath },
+      }),
+    ]);
+    expect(stale).toEqual({ ok: false, error: { code: "format-changed" } });
+    if (!winner.ok || !winner.value.item) {
+      throw new Error("Expected one copied replacement to win");
+    }
+    expect(winner.value.cleanupPending).toBe(false);
+    expect(winner.value.item.id).toBe(item.id);
+    expect(winner.value.item.sourcePath).toEndWith(".epub");
+    expect(winner.value.item.format).toBe("epub");
+    expect(winner.value.item.formats).toMatchObject([
+      { format: "epub", provenance: "managed" },
+    ]);
+    expect(await secondStore.get({ id: item.id })).toEqual({
+      ok: true,
+      value: winner.value.item,
+    });
+    expect(await readdir(join(directory, "items"))).toEqual([
+      basename(winner.value.item.sourcePath),
+    ]);
+    expect(await readFile(winner.value.item.sourcePath)).toEqual(Buffer.from("first replacement"));
+    expect(await readFile(firstPath)).toEqual(Buffer.from("first replacement"));
+    expect(await readFile(secondPath)).toEqual(Buffer.from("second replacement"));
+  });
+
+  it("preserves format positions and primary aliases while deferring safe managed cleanup", async () => {
+    const originalPath = join(directory, "original.epub");
+    const replacementPath = join(directory, "replacement.epub");
+    const pdfPath = join(directory, "companion.pdf");
+    await writeFile(originalPath, "original");
+    await writeFile(replacementPath, "replacement");
+    await writeFile(pdfPath, "pdf");
+    const canonicalReplacementPath = await realpath(replacementPath);
+    const canonicalPdfPath = await realpath(pdfPath);
+    const store = createStore();
+    await store.open({ config: {} });
+    const imported = await store.import({ sourcePath: originalPath });
+    if (!imported.ok) {
+      throw new Error("Expected a managed import");
+    }
+    const attached = await store.attachFormat({
+      id: imported.value.id,
+      source: { kind: "reference", path: pdfPath },
+    });
+    if (!attached.ok || !attached.value) {
+      throw new Error("Expected a secondary format");
+    }
+    const ownedPath = imported.value.sourcePath;
+    lifecycleTestSeam.beforeManagedFileCleanup = (path) => {
+      if (path === ownedPath) {
+        throw new Error("injected cleanup failure");
+      }
+    };
+
+    const replaced = await store.replaceFormat({
+      id: imported.value.id,
+      format: "epub",
+      expectedCurrent: formatSnapshot(attached.value.formats[0]!),
+      source: { kind: "reference", path: replacementPath },
+    });
+    expect(replaced).toMatchObject({
+      ok: true,
+      value: {
+        item: {
+          id: imported.value.id,
+          sourcePath: canonicalReplacementPath,
+          format: "epub",
+          formats: [
+            { sourcePath: canonicalReplacementPath, format: "epub", provenance: "referenced" },
+            { sourcePath: canonicalPdfPath, format: "pdf", provenance: "referenced" },
+          ],
+        },
+        cleanupPending: true,
+      },
+    });
+    if (!replaced.ok || !replaced.value.item) {
+      throw new Error("Expected the managed format replacement");
+    }
+    expect(await Bun.file(ownedPath).exists()).toBe(true);
+    expect(await readFile(replacementPath)).toEqual(Buffer.from("replacement"));
+    using database = new Database(databasePath, { strict: true });
+    expect(
+      database
+        .query<{ format: string; position: number }, []>(
+          "SELECT format, position FROM library_item_formats ORDER BY position",
+        )
+        .all(),
+    ).toEqual([
+      { format: "epub", position: 0 },
+      { format: "pdf", position: 1 },
+    ]);
+
+    delete lifecycleTestSeam.beforeManagedFileCleanup;
+    store.close();
+    const reopened = createStore();
+    expect(await reopened.open({ config: {} })).toEqual({ ok: true, value: null });
+    expect(await Bun.file(ownedPath).exists()).toBe(false);
+    expect(await reopened.get({ id: imported.value.id })).toEqual({
+      ok: true,
+      value: replaced.value.item,
+    });
+  });
+
+  it("preserves a managed file when its replacement references the same path", async () => {
+    const originalPath = join(directory, "original.epub");
+    await writeFile(originalPath, "original");
+    const store = createStore();
+    await store.open({ config: {} });
+    const imported = await store.import({ sourcePath: originalPath });
+    if (!imported.ok) {
+      throw new Error("Expected a managed import");
+    }
+    const ownedPath = imported.value.sourcePath;
+    const canonicalOwnedPath = await realpath(ownedPath);
+
+    const replaced = await store.replaceFormat({
+      id: imported.value.id,
+      format: "epub",
+      expectedCurrent: formatSnapshot(imported.value.formats[0]!),
+      source: { kind: "reference", path: ownedPath },
+    });
+    expect(replaced).toMatchObject({
+      ok: true,
+      value: {
+        item: {
+          id: imported.value.id,
+          sourcePath: canonicalOwnedPath,
+          format: "epub",
+          formats: [
+            { sourcePath: canonicalOwnedPath, format: "epub", provenance: "referenced" },
+          ],
+        },
+        cleanupPending: false,
+      },
+    });
+    if (!replaced.ok || !replaced.value.item) {
+      throw new Error("Expected the same-path replacement");
+    }
+    expect(await readFile(ownedPath)).toEqual(Buffer.from("original"));
+    using database = new Database(databasePath, { strict: true });
+    expect(database.query("SELECT * FROM managed_file_cleanup").all()).toEqual([]);
+
+    store.close();
+    const reopened = createStore();
+    expect(await reopened.open({ config: {} })).toEqual({ ok: true, value: null });
+    expect(await readFile(ownedPath)).toEqual(Buffer.from("original"));
+    expect(await reopened.get({ id: imported.value.id })).toEqual({
+      ok: true,
+      value: replaced.value.item,
+    });
+  });
+
+  it("rolls replacement metadata back and removes an unpublished managed candidate", async () => {
+    const replacementPath = join(directory, "replacement.epub");
+    await writeFile(replacementPath, "replacement");
+    const store = createStore();
+    await store.open({ config: {} });
+    await store.add({ item });
+    using database = new Database(databasePath, { strict: true });
+    database.run(`
+      CREATE TRIGGER reject_format_replacement
+      BEFORE UPDATE OF source_path ON library_item_formats
+      BEGIN
+        SELECT RAISE(ABORT, 'injected replacement failure');
+      END
+    `);
+
+    expect(
+      await store.replaceFormat({
+        id: item.id,
+        format: "epub",
+        expectedCurrent: formatSnapshot(item.formats[0]!),
+        source: { kind: "copy", path: replacementPath },
+      }),
+    ).toEqual({ ok: false, error: { code: "storage-unavailable" } });
+    expect(await store.get({ id: item.id })).toEqual({ ok: true, value: item });
+    expect(await readdir(join(directory, "items"))).toEqual([]);
+    expect(database.query("SELECT * FROM managed_file_cleanup").all()).toEqual([]);
+    expect(await readFile(replacementPath)).toEqual(Buffer.from("replacement"));
   });
 
   it("updates only editable metadata and replaces tags across close and reopen", async () => {
