@@ -379,7 +379,11 @@ describe("LibraryStore", () => {
     };
     const attached: AttachLibraryFormatRequest = {
       id: canonicalItem.id,
-      source: { kind: "reference", path: "/external/left-hand.pdf" },
+      source: {
+        kind: "copy",
+        path: "/external/left-hand.pdf",
+        expectedArtifact: { bytes: 42, sha256: "a".repeat(64) },
+      },
     };
     const removed: RemoveLibraryFormatRequest = { id: canonicalItem.id, format: "pdf" };
 
@@ -394,7 +398,16 @@ describe("LibraryStore", () => {
         id: canonicalItem.id,
         source: { kind: "managed", path: "/external/left-hand.pdf" },
       };
-      expect([invalidImport, invalidAttach]).toBeUndefined();
+      const invalidReferenceIntegrity: AttachLibraryFormatRequest = {
+        id: canonicalItem.id,
+        // @ts-expect-error Integrity-gated publication applies only to managed copies.
+        source: {
+          kind: "reference",
+          path: "/external/left-hand.pdf",
+          expectedArtifact: { bytes: 42, sha256: "a".repeat(64) },
+        },
+      };
+      expect([invalidImport, invalidAttach, invalidReferenceIntegrity]).toBeUndefined();
     }
 
     expect(JSON.parse(JSON.stringify({ imported, attached, removed }))).toEqual({

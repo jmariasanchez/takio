@@ -250,10 +250,18 @@ export type ListLibraryItemsRequest = Readonly<Record<string, never>>;
 export type GetLibraryItemRequest = Readonly<{ id: string }>;
 export type AddLibraryItemRequest = Readonly<{ item: LibraryItem }>;
 export type ImportLibraryItemRequest = Readonly<{ sourcePath: string; title?: string }>;
+export type LibraryFormatArtifact = Readonly<{
+  bytes: number;
+  sha256: string;
+}>;
 export type AttachLibraryFormatRequest = Readonly<{
   id: string;
   source:
-    | Readonly<{ kind: "copy"; path: string }>
+    | Readonly<{
+        kind: "copy";
+        path: string;
+        expectedArtifact?: LibraryFormatArtifact;
+      }>
     | Readonly<{ kind: "reference"; path: string }>;
 }>;
 export type RemoveLibraryFormatRequest = Readonly<{ id: string; format: FormatId }>;
