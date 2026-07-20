@@ -2714,7 +2714,7 @@ function applyDuplicateMetadata(
     rating: patch.rating === null ? undefined : (patch.rating ?? current.rating),
     description:
       patch.description === null ? undefined : (patch.description ?? current.description),
-    tags: patch.tags,
+    tags: patch.tags ?? current.tags,
     updatedAt,
   });
   return updated.success ? success(updated.data) : failure("invalid-stored-data");
@@ -2744,15 +2744,17 @@ function writeDuplicateMetadata(
       item.id,
     ],
   );
-  database.run("DELETE FROM library_item_tags WHERE library_item_id = ?", [item.id]);
-  writeTags(database, item.id, item.tags);
-  database.run(`
-    DELETE FROM tags
-    WHERE NOT EXISTS (
-      SELECT 1 FROM library_item_tags
-      WHERE library_item_tags.tag_normalized_name = tags.normalized_name
-    )
-  `);
+  if (patch.tags !== undefined) {
+    database.run("DELETE FROM library_item_tags WHERE library_item_id = ?", [item.id]);
+    writeTags(database, item.id, item.tags);
+    database.run(`
+      DELETE FROM tags
+      WHERE NOT EXISTS (
+        SELECT 1 FROM library_item_tags
+        WHERE library_item_tags.tag_normalized_name = tags.normalized_name
+      )
+    `);
+  }
   if (patch.authors !== undefined) {
     database.run("DELETE FROM library_item_authors WHERE library_item_id = ?", [item.id]);
     writeAuthors(database, item.id, item.authors ?? []);
@@ -4187,7 +4189,7 @@ export class BunSqliteLibraryStore
             parsedPatch.data.description === null
               ? undefined
               : (parsedPatch.data.description ?? current.value.description),
-          tags: parsedPatch.data.tags,
+          tags: parsedPatch.data.tags ?? current.value.tags,
           updatedAt: new Date().toISOString(),
         });
         if (!updated.success) {
@@ -4213,15 +4215,17 @@ export class BunSqliteLibraryStore
             id,
           ],
         );
-        this.#database!.run("DELETE FROM library_item_tags WHERE library_item_id = ?", [id]);
-        writeTags(this.#database!, id, updated.data.tags);
-        this.#database!.run(`
-          DELETE FROM tags
-          WHERE NOT EXISTS (
-            SELECT 1 FROM library_item_tags
-            WHERE library_item_tags.tag_normalized_name = tags.normalized_name
-          )
-        `);
+        if (parsedPatch.data.tags !== undefined) {
+          this.#database!.run("DELETE FROM library_item_tags WHERE library_item_id = ?", [id]);
+          writeTags(this.#database!, id, updated.data.tags);
+          this.#database!.run(`
+            DELETE FROM tags
+            WHERE NOT EXISTS (
+              SELECT 1 FROM library_item_tags
+              WHERE library_item_tags.tag_normalized_name = tags.normalized_name
+            )
+          `);
+        }
         if (parsedPatch.data.authors !== undefined) {
           this.#database!.run("DELETE FROM library_item_authors WHERE library_item_id = ?", [id]);
           writeAuthors(this.#database!, id, updated.data.authors ?? []);

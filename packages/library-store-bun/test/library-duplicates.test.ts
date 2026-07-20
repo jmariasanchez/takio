@@ -477,6 +477,15 @@ describe("BunSqliteLibraryStore duplicate review", () => {
     const candidate = listed.value.candidates.find(
       ({ left, right }) => left.id === sourceId || right.id === sourceId,
     )!;
+    using database = new Database(databasePath, { strict: true });
+    database.run(`
+      CREATE TRIGGER reject_unrequested_duplicate_tag_rewrite
+      BEFORE DELETE ON library_item_tags
+      WHEN OLD.library_item_id = 'target'
+      BEGIN
+        SELECT RAISE(ABORT, 'duplicate metadata must preserve omitted tags');
+      END
+    `);
     const merged = await store.mergeDuplicatePair({
       targetId: "target",
       sourceId,
@@ -484,8 +493,8 @@ describe("BunSqliteLibraryStore duplicate review", () => {
       metadata: {
         title: "Merged title",
         author: "Merged Author",
+        publisher: "Merged Publisher",
         identifiers: { ISBN: "shared" },
-        tags: ["merged"],
       },
       addSourceFormats: ["pdf"],
       cover: "source",
@@ -497,8 +506,9 @@ describe("BunSqliteLibraryStore duplicate review", () => {
           id: "target",
           title: "Merged title",
           author: "Merged Author",
+          publisher: "Merged Publisher",
           coverPath: donorCover,
-          tags: ["merged"],
+          tags: ["old"],
           formats: [{ format: "epub" }, { format: "pdf", provenance: "managed" }],
         },
         trashedSource: { id: sourceId, coverPath: donorCover },
@@ -521,7 +531,41 @@ describe("BunSqliteLibraryStore duplicate review", () => {
     expect(await Bun.file(donorCover).exists()).toBe(true);
     expect(await store.get({ id: "target" })).toMatchObject({
       ok: true,
-      value: { formats: [{ format: "epub" }, { format: "pdf" }], coverPath: donorCover },
+      value: {
+        formats: [{ format: "epub" }, { format: "pdf" }],
+        coverPath: donorCover,
+        tags: ["old"],
+      },
+    });
+  });
+
+  it("clears duplicate target tags only when explicitly requested", async () => {
+    const store = await openStore();
+    const target = referencedItem("target", "Same", join(directory, "target.epub"), "epub", {
+      author: "Author",
+      tags: ["old"],
+    });
+    const source = referencedItem("source", "Same", join(directory, "source.pdf"), "pdf", {
+      author: "Author",
+    });
+    expect((await store.add({ item: target })).ok).toBe(true);
+    expect((await store.add({ item: source })).ok).toBe(true);
+    const listed = await store.listDuplicateCandidates(firstPage);
+    if (!listed.ok) throw new Error("Expected title-author candidate");
+
+    expect(
+      await store.mergeDuplicatePair({
+        targetId: "target",
+        sourceId: "source",
+        reviewToken: listed.value.candidates[0]!.reviewToken,
+        metadata: { tags: [] },
+        addSourceFormats: [],
+        cover: "target",
+      }),
+    ).toMatchObject({ ok: true, value: { target: { id: "target", tags: [] } } });
+    expect(await store.get({ id: "target" })).toMatchObject({
+      ok: true,
+      value: { tags: [] },
     });
   });
 

@@ -698,6 +698,12 @@ describe("LibraryStore", () => {
     };
 
     expect(mergeDuplicatePairRequestSchema.parse(request)).toEqual(request);
+    expect(
+      mergeDuplicatePairRequestSchema.parse({
+        ...request,
+        metadata: { title: canonicalItem.title },
+      }),
+    ).toEqual({ ...request, metadata: { title: canonicalItem.title } });
     await expect(store.mergeDuplicatePair(request)).resolves.toEqual(result);
     expect(JSON.parse(JSON.stringify({ request, result }))).toEqual({
       request,
@@ -708,7 +714,7 @@ describe("LibraryStore", () => {
       { ...request, targetId: "" },
       { ...request, sourceId: request.targetId },
       { ...request, reviewToken: "stale" },
-      { ...request, metadata: { title: canonicalItem.title } },
+      { ...request, metadata: {} },
       { ...request, metadata: { tags: [], sourcePath: "/external/book.epub" } },
       { ...request, addSourceFormats: ["pdf", "pdf"] },
       { ...request, addSourceFormats: ["lit"] },
@@ -869,6 +875,10 @@ describe("LibraryStore", () => {
       description: null,
       tags: [],
     };
+    const sharedFieldOnly: LibraryMetadataPatch = {
+      series: "Patternist",
+      publisher: "Doubleday",
+    };
 
     if (false) {
       // @ts-expect-error Source identity is immutable through metadata updates.
@@ -877,9 +887,11 @@ describe("LibraryStore", () => {
     }
     expect(libraryMetadataPatchSchema.parse(patch)).toEqual(patch);
     expect(libraryMetadataPatchSchema.parse(clears)).toEqual(clears);
+    expect(libraryMetadataPatchSchema.parse(sharedFieldOnly)).toEqual(sharedFieldOnly);
     expect(JSON.parse(JSON.stringify(patch))).toEqual(patch);
 
     for (const invalid of [
+      {},
       { tags: [], sourcePath: "elsewhere.epub" },
       { tags: [], title: " " },
       { tags: [], authors: [] },
@@ -891,7 +903,6 @@ describe("LibraryStore", () => {
       { tags: [], publishedDate: "1979-13" },
       { tags: [], rating: 10.1 },
       { tags: ["Classic", " classic "] },
-      { title: "Kindred" },
     ]) {
       expect(libraryMetadataPatchSchema.safeParse(invalid).success).toBe(false);
     }

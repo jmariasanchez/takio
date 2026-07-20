@@ -744,9 +744,12 @@ export const libraryMetadataPatchSchema = z
     publishedDate: publishedDateSchema.nullable().optional(),
     rating: z.number().finite().min(0).max(10).nullable().optional(),
     description: nullableLibraryMetadataTextSchema,
-    tags: uniqueTextValuesSchema("Tags must be unique ignoring case."),
+    tags: uniqueTextValuesSchema("Tags must be unique ignoring case.").optional(),
   })
   .strict()
+  .refine((patch) => Object.values(patch).some((value) => value !== undefined), {
+    message: "At least one metadata field is required.",
+  })
   .readonly();
 
 export const mergeDuplicatePairRequestSchema = z

@@ -1010,6 +1010,43 @@ describe("BunSqliteLibraryStore", () => {
     });
   });
 
+  it("preserves tag links when shared metadata omits tags and clears them when requested", async () => {
+    const store = createStore();
+    expect(await store.open({ config: {} })).toEqual({ ok: true, value: null });
+    expect(await store.add({ item: richItem })).toEqual({ ok: true, value: richItem });
+    using database = new Database(databasePath, { strict: true });
+    database.run(`
+      CREATE TRIGGER reject_unrequested_tag_rewrite
+      BEFORE DELETE ON library_item_tags
+      WHEN OLD.library_item_id = '${richItem.id}'
+      BEGIN
+        SELECT RAISE(ABORT, 'metadata-only updates must preserve tag links');
+      END
+    `);
+
+    expect(
+      await store.update({
+        id: richItem.id,
+        patch: { series: "Ekumen", publisher: "Tor Books" },
+      }),
+    ).toMatchObject({
+      ok: true,
+      value: {
+        series: "Ekumen",
+        publisher: "Tor Books",
+        tags: richItem.tags,
+      },
+    });
+
+    database.run("DROP TRIGGER reject_unrequested_tag_rewrite");
+    expect(await store.update({ id: richItem.id, patch: { tags: [] } })).toMatchObject({
+      ok: true,
+      value: { tags: [] },
+    });
+    expect(database.query("SELECT * FROM library_item_tags").all()).toEqual([]);
+    expect(database.query("SELECT * FROM tags").all()).toEqual([]);
+  });
+
   it("atomically replaces rich metadata in order and persists it across every read path", async () => {
     const first = createStore();
     expect(await first.open({ config: {} })).toEqual({ ok: true, value: null });
@@ -1158,6 +1195,10 @@ describe("BunSqliteLibraryStore", () => {
         patch: { rating: 11, tags: [] } as never,
       }),
     ).toEqual({ ok: false, error: { code: "invalid-arguments" } });
+    expect(await store.update({ id: richItem.id, patch: {} })).toEqual({
+      ok: false,
+      error: { code: "invalid-arguments" },
+    });
     expect(await store.get({ id: richItem.id })).toEqual({ ok: true, value: richItem });
   });
 
