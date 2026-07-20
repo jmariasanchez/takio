@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import type {
+  ExportLibraryItemsRequest,
   KeepDuplicatePairRequest,
   ListDuplicateCandidatesRequest,
   ListLibraryTrashRequest,
@@ -13,6 +14,7 @@ import {
   attachLibraryFormat,
   describeLibraryError,
   describeUnexpectedLibraryError,
+  exportLibraryItems,
   getLibraryItem,
   importLibraryItem,
   importLibraryItems,
@@ -223,6 +225,39 @@ const batchImportReport = {
   counts: { total: 4, imported: 1, skipped: 1, duplicates: 1, failed: 1 },
 } as const;
 
+const exportRequest = {
+  ids: [validItem.id, duplicateItem.id],
+  destinationPath: "/Exports",
+} as const satisfies ExportLibraryItemsRequest;
+
+const exportReport = {
+  outcomes: [
+    {
+      status: "exported",
+      itemId: validItem.id,
+      format: "epub",
+      provenance: "managed",
+      destinationPath: "/Exports/A title.epub",
+      bytes: 42,
+      sha256: "c".repeat(64),
+    },
+    {
+      status: "skipped",
+      itemId: validItem.id,
+      format: "pdf",
+      provenance: "referenced",
+      destinationPath: "/Exports/A title.pdf",
+      reason: "destination-exists",
+    },
+    {
+      status: "failed",
+      itemId: duplicateItem.id,
+      code: "item-not-found",
+    },
+  ],
+  counts: { total: 3, exported: 1, skipped: 1, failed: 1 },
+} as const;
+
 test("uses only the fixed desktop library commands and argument names", async () => {
   const calls: Array<{ command: string; args?: Record<string, unknown> }> = [];
   const invokeCommand: LibraryInvoker = async (command, args) => {
@@ -275,6 +310,9 @@ test("uses only the fixed desktop library commands and argument names", async ()
     if (command === "library_import_many") {
       return { ok: true, value: batchImportReport } as never;
     }
+    if (command === "library_export_many") {
+      return { ok: true, value: exportReport } as never;
+    }
     return { ok: true, value: { item: null } } as never;
   };
 
@@ -282,6 +320,7 @@ test("uses only the fixed desktop library commands and argument names", async ()
   await getLibraryItem("item-1", invokeCommand);
   await importLibraryItem("/Books/A title.epub", invokeCommand);
   await importLibraryItems(["/Books", "/Incoming/A title.epub"], invokeCommand);
+  await exportLibraryItems(exportRequest, invokeCommand);
   await attachLibraryFormat(
     "item-1",
     "/Books/A title.pdf",
@@ -318,6 +357,7 @@ test("uses only the fixed desktop library commands and argument names", async ()
       command: "library_import_many",
       args: { sourcePaths: ["/Books", "/Incoming/A title.epub"] },
     },
+    { command: "library_export_many", args: { request: exportRequest } },
     {
       command: "library_attach_format",
       args: {
@@ -692,6 +732,94 @@ test("rejects malformed or inconsistently counted recursive import reports", asy
   for (const report of malformedReports) {
     expect(
       await importLibraryItems(["/Books"], async () => ({
+        ok: true,
+        value: report,
+      }) as never),
+    ).toEqual({ ok: false, error: { code: "protocol-error" } });
+  }
+});
+
+test("passes a strict bulk export report and domain failures through", async () => {
+  const success = { ok: true, value: exportReport } as const;
+  const domainFailure = {
+    ok: false,
+    error: { code: "storage-unavailable" },
+  } as const;
+
+  expect(
+    await exportLibraryItems(exportRequest, async () => success as never),
+  ).toBe(success);
+  expect(
+    await exportLibraryItems(exportRequest, async () => domainFailure as never),
+  ).toBe(domainFailure);
+});
+
+test("rejects invalid bulk export requests before desktop invocation", async () => {
+  let invocations = 0;
+  const invokeCommand: LibraryInvoker = async () => {
+    invocations += 1;
+    return { ok: true, value: exportReport } as never;
+  };
+
+  for (const request of [
+    { ...exportRequest, ids: [] },
+    { ...exportRequest, ids: [validItem.id, validItem.id] },
+    { ...exportRequest, ids: [validItem.id, " \n"] },
+    { ...exportRequest, destinationPath: " \n" },
+    { ...exportRequest, overwrite: false },
+  ]) {
+    expect(
+      await exportLibraryItems(request as ExportLibraryItemsRequest, invokeCommand),
+    ).toEqual({ ok: false, error: { code: "invalid-arguments" } });
+  }
+
+  expect(invocations).toBe(0);
+});
+
+test("rejects malformed, inconsistently counted, or request-mismatched export reports", async () => {
+  const malformedReports = [
+    { ...exportReport, unexpected: true },
+    {
+      ...exportReport,
+      counts: { ...exportReport.counts, total: 2 },
+    },
+    {
+      ...exportReport,
+      counts: { ...exportReport.counts, exported: 2 },
+    },
+    {
+      ...exportReport,
+      outcomes: [
+        { ...exportReport.outcomes[0], format: "mp3" },
+        ...exportReport.outcomes.slice(1),
+      ],
+    },
+    {
+      ...exportReport,
+      outcomes: [
+        { ...exportReport.outcomes[0], bytes: 0 },
+        ...exportReport.outcomes.slice(1),
+      ],
+    },
+    {
+      ...exportReport,
+      outcomes: exportReport.outcomes.map((outcome) => ({
+        ...outcome,
+        itemId: validItem.id,
+      })),
+    },
+    {
+      ...exportReport,
+      outcomes: [
+        ...exportReport.outcomes.slice(0, 2),
+        { ...exportReport.outcomes[2], itemId: "not-requested" },
+      ],
+    },
+  ];
+
+  for (const report of malformedReports) {
+    expect(
+      await exportLibraryItems(exportRequest, async () => ({
         ok: true,
         value: report,
       }) as never),

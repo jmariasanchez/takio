@@ -3,7 +3,9 @@ import { FORMAT_IDS, libraryItemSchema, normalizeTags } from "@takio/core";
 import type { FormatId, LibraryItem } from "@takio/core";
 import {
   duplicateCandidatePageSchema,
+  exportLibraryItemsRequestSchema,
   keepDuplicatePairRequestSchema,
+  libraryExportReportSchema,
   libraryImportReportSchema,
   libraryQueryPageSchema,
   libraryTrashPageSchema,
@@ -21,12 +23,14 @@ import {
   trashLibraryItemRequestSchema,
 } from "@takio/library-contract";
 import type {
+  ExportLibraryItemsRequest,
   KeepDuplicatePairRequest,
   LibraryBatchImportWireResult,
   LibraryCoverWireResult,
   LibraryDuplicateCandidatesWireResult,
   LibraryDuplicateDispositionWireResult,
   LibraryDuplicateMergeWireResult,
+  LibraryExportWireResult,
   LibraryImportWireResult,
   LibraryListWireResult,
   LibraryMetadataPatch,
@@ -72,6 +76,9 @@ export type DesktopLibraryGetResult =
 export type DesktopLibraryImportResult = LibraryImportWireResult | LibraryBridgeFailure;
 export type DesktopLibraryBatchImportResult =
   | LibraryBatchImportWireResult
+  | LibraryBridgeFailure;
+export type DesktopLibraryExportResult =
+  | LibraryExportWireResult
   | LibraryBridgeFailure;
 export type DesktopLibraryAttachFormatResult =
   | LibraryStoreResult<{ readonly item: LibraryItem | null }>
@@ -302,6 +309,30 @@ export async function importLibraryItems(
     result,
     (value) => libraryImportReportSchema.safeParse(value).success,
   );
+}
+
+export async function exportLibraryItems(
+  request: ExportLibraryItemsRequest,
+  invokeCommand: LibraryInvoker = invokeTauri,
+): Promise<DesktopLibraryExportResult> {
+  if (!exportLibraryItemsRequestSchema.safeParse(request).success) {
+    return invalidArguments();
+  }
+
+  const result = await invokeCommand<unknown>("library_export_many", { request });
+  return decodeLibraryResult<LibraryExportWireResult>(result, (value) => {
+    const parsed = libraryExportReportSchema.safeParse(value);
+    if (!parsed.success) {
+      return false;
+    }
+
+    const requestedIds = new Set(request.ids);
+    const reportedIds = new Set(parsed.data.outcomes.map(({ itemId }) => itemId));
+    return (
+      parsed.data.outcomes.every(({ itemId }) => requestedIds.has(itemId)) &&
+      request.ids.every((id) => reportedIds.has(id))
+    );
+  });
 }
 
 export async function attachLibraryFormat(
