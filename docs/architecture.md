@@ -13,9 +13,9 @@ Takio replaces the heavyweight, application-centric Calibre workflow with a focu
 | Package | Responsibility | Status |
 | --- | --- | --- |
 | `@takio/core` | Format catalogue, detection, request validation, device-aware planning | Implemented |
-| `@takio/cli` | Structured commands for tools and agents | Implemented: planning, five proven local conversion pairs, durable foreground jobs, and explicit convert-and-send |
+| `@takio/cli` | Structured commands for tools and agents | Implemented: planning, six proven local conversion pairs, durable foreground jobs, and device-aware convert-and-send |
 | `@takio/desktop` | Tauri v2 native shell and minimalist React interface | Implemented: library, destinations, and conversion queue |
-| Converter adapters | Declare supported pairs and invoke a real engine safely | Implemented: local `ebook-convert`, five synchronous conversion pairs |
+| Converter adapters | Declare supported pairs and invoke a real engine safely | Implemented: local `ebook-convert`, six synchronous conversion pairs and four output profiles |
 | Controller/queue | Persist local jobs and run one foreground job at a time | Implemented: separate `jobs.sqlite` queue |
 | Destination transfer | Detect mounted USB mass-storage recipients and copy verified library files | Implemented: macOS |
 | Device agent | Authenticated worker that advertises adapters and capacity | Planned |
@@ -38,8 +38,8 @@ to an absent caller-owned path; applying either remains an explicit library
 operation.
 Extraction returns normalized metadata and bounded cover facts in one JSON
 envelope. Export and send may write the current catalogue metadata and owned
-cover only into a newly created delivery copy for EPUB, PDF, MOBI, AZW3, and
-DOCX. They report `embedded`, `unsupported`, or `backend-unavailable`; a write
+cover only into a newly created delivery copy for KEPUB, EPUB, PDF, MOBI, AZW3,
+and DOCX. They report `embedded`, `unsupported`, or `backend-unavailable`; a write
 failure removes the copy. Stored and caller-owned sources are never rewritten.
 
 `ebook-convert` is trusted local configuration, not a sandbox; hostile-input resource isolation is not provided.
@@ -50,13 +50,13 @@ The caller owns the requested output path, and enqueue refuses a path that alrea
 
 The desktop exposes the same contract: **Convert** on an EPUB item opens a native save dialog and adds a ledger entry, while **Refresh**, **Run next**, and queued-job **Cancel** list and operate the durable jobs.
 
-`send --format <format> --convert` is a separate synchronous convenience path.
-It uses an already attached exact format when possible. If the format is
-missing, it deterministically selects the first stored source supported by the
-advertised conversion matrix, converts and verifies it, attaches the artifact
-as a managed library format, and then performs the verified destination copy.
-The target format is always explicit: Takio does not infer an unverified
-device-format policy. Delivery uses the logical book filename rather than the
+`send --convert` is a separate synchronous convenience path. It prefers an
+already attached format compatible with the detected destination. If none is
+attached, it deterministically selects the first tested conversion target and
+source, uses the Kobo or Kindle Calibre output profile, verifies and attaches
+the artifact, and then performs the verified destination copy. `--format`
+overrides automatic selection. KEPUB is delivered to Kobo with its canonical
+`.kepub.epub` filename. Delivery uses the logical book filename rather than the
 UUID of an internal managed copy.
 Before transfer, supported formats are copied into a private workspace and
 materialized with the current catalogue metadata. Bulk export materializes its
@@ -125,7 +125,13 @@ This handoff adds no built-in ebook reader or viewer. Opening books continues to
 
 ## Focused v1 boundary
 
-The implemented conversion paths are EPUB-to-PDF, EPUB-to-AZW3, and DOCX, HTML, or TXT to EPUB. They intentionally exclude a daemon or detached worker, live backend percentage progress, automatic retry or backoff, priorities, scheduling, queued-job overwrite, remote execution, and hostile-input process sandboxing. Bounded batch operations and foreground draining are explicit; a signal cancels the active conversion. A failed conversion is terminal; trying again creates a new job.
+The implemented conversion paths are EPUB-to-KEPUB, EPUB-to-PDF,
+EPUB-to-AZW3, and DOCX, HTML, or TXT to EPUB. They intentionally exclude a
+daemon or detached worker, live backend percentage progress, automatic retry
+or backoff, priorities, scheduling, queued-job overwrite, remote execution, and
+hostile-input process sandboxing. Bounded batch operations and foreground
+draining are explicit; a signal cancels the active conversion. A failed
+conversion is terminal; trying again creates a new job.
 
 ## Execution roadmap
 

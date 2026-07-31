@@ -125,6 +125,7 @@ describe("ebook-convert discovery", () => {
 describe("takio convert", () => {
   it("executes every conversion pair advertised by the local target", async () => {
     expect(LOCAL_CONVERSION_CAPABILITIES).toEqual([
+      { from: "epub", to: "kepub" },
       { from: "epub", to: "pdf" },
       { from: "epub", to: "azw3" },
       { from: "docx", to: "epub" },
@@ -164,13 +165,13 @@ describe("takio convert", () => {
   it("converts with literal canonical argv and reports verified bytes and digest", async () => {
     const root = await temporaryRoot();
     const input = join(root, "- input;$(touch nope).epub");
-    const output = join(root, "- output;still-literal.pdf");
+    const output = join(root, "- output;still-literal.kepub.epub");
     const invocation = join(root, "invocation.json");
     const bytes = Buffer.from(fakeInput({ record: invocation }));
     await writeFile(input, bytes);
 
     const result = await runConvert(
-      ["--input", input, "--to", "pdf", "--output", output],
+      ["--input", input, "--to", "kepub", "--output", output, "--profile", "kobo"],
       {
         TAKIO_TEST_SECRET: "must-not-reach-backend",
         CI_SECRET: "must-not-reach-backend",
@@ -192,7 +193,8 @@ describe("takio convert", () => {
 
     const observed = JSON.parse(await readFile(invocation, "utf8"));
     expect(observed.argv[0]).toBe(await realpath(input));
-    expect(basename(observed.argv[1])).toBe("output.pdf");
+    expect(basename(observed.argv[1])).toBe("output.kepub");
+    expect(observed.argv.slice(2)).toEqual(["--output-profile", "kobo"]);
     expect(observed.argv[1]).not.toContain(input);
     expect(observed.tmpdir).toBe(observed.tmp);
     expect(observed.tmpdir).toBe(observed.temp);

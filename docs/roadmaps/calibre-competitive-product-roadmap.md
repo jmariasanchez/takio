@@ -34,7 +34,7 @@ build a second conversion engine.
 
 Keep documentation aligned with executable behavior and add reproducible CI.
 Takio currently has an owned-file SQLite library, basic metadata/covers/tags,
-macOS mounted-volume transfer, five verified conversion pairs through Calibre,
+macOS mounted-volume transfer, six verified conversion pairs through Calibre,
 and a durable foreground conversion ledger. The agent-facing CLI can also run
 a read-only whole-library integrity audit that verifies SQLite, foreign keys,
 stored records, and every managed format fingerprint without creating,
@@ -96,12 +96,14 @@ complete rows remain visible while secondary panels stay reachable.
   attach a new one only when necessary.
 
 Verified conversion baseline: Calibre 9.9.0 produced nonempty artifacts for
-EPUB-to-PDF, EPUB-to-AZW3, and DOCX/HTML/TXT-to-EPUB. Those are the only pairs
-the local target advertises. The CLI's explicit
-`send --format <format> --convert` path reuses an attached exact format or
-converts the first compatible stored format, attaches the verified result, and
-then copies it to the mounted destination under a stable filename. Automatic
-device-format selection remains gated on real hardware acceptance.
+EPUB-to-KEPUB, EPUB-to-PDF, EPUB-to-AZW3, and DOCX/HTML/TXT-to-EPUB. Those are
+the only pairs the local target advertises. The CLI exposes the Calibre
+`default`, `generic_eink`, `kindle`, and `kobo` output profiles. `send --convert`
+prefers an attached compatible format, otherwise selects a tested target for a
+recognized Kobo or Kindle, attaches the verified result, and copies it under a
+stable device filename. Fake mounted-volume tests cover selection, profiles,
+hashes, and Kobo's `.kepub.epub` name; real-device open/remount acceptance is
+still outstanding.
 
 Exit: one Send action chooses or creates the right tested format, and real Kobo
 and mass-storage Kindle acceptance records include hashes and remount results.

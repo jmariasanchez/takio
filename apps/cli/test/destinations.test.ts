@@ -607,8 +607,12 @@ describe("mounted destinations", () => {
     });
   });
 
-  test("requires an explicit target and a supported source for convert-and-send", async () => {
+  test("selects and creates a Kindle-compatible format when convert-and-send omits one", async () => {
     const fixture = await transferFixture();
+    await Promise.all([
+      mkdir(join(fixture.destination, "documents")),
+      mkdir(join(fixture.destination, "system")),
+    ]);
     const baseArgs = [
       "send",
       "--db",
@@ -622,11 +626,15 @@ describe("mounted destinations", () => {
       "--convert",
     ];
 
-    const missingTarget = await invoke([...baseArgs]);
-    expect(missingTarget.exitCode).toBe(1);
-    expect(parseRecord(missingTarget)).toEqual({
-      ok: false,
-      error: { code: "invalid-arguments" },
+    const converted = await invokeProcess(baseArgs, { TAKIO_EBOOK_CONVERT: FAKE_BACKEND });
+    expect(converted.exitCode).toBe(0);
+    expect(JSON.parse(converted.stdout)).toMatchObject({
+      ok: true,
+      value: {
+        path: join(await realpath(fixture.destination), "documents", "book.azw3"),
+        format: "azw3",
+        converted: true,
+      },
     });
 
     const unsupported = await invoke([...baseArgs, "--format", "mobi"]);
@@ -635,7 +643,37 @@ describe("mounted destinations", () => {
       ok: false,
       error: { code: "unsupported-conversion" },
     });
-    expect(await readdir(fixture.destination)).toEqual([".kobo"]);
+    expect(await readFile(join(fixture.destination, "documents", "book.azw3"))).toEqual(
+      fixture.sourceBytes,
+    );
+  });
+
+  test("uses Kobo's canonical compound filename for an explicit KEPUB conversion", async () => {
+    const fixture = await transferFixture();
+    const converted = await invokeProcess([
+      "send",
+      "--db",
+      fixture.databasePath,
+      "--id",
+      "book-1",
+      "--format",
+      "kepub",
+      "--convert",
+      "--dest",
+      fixture.destination,
+      "--volumes-root",
+      fixture.volumesRoot,
+    ], { TAKIO_EBOOK_CONVERT: FAKE_BACKEND });
+
+    expect(converted.exitCode).toBe(0);
+    expect(JSON.parse(converted.stdout)).toMatchObject({
+      ok: true,
+      value: {
+        path: join(await realpath(fixture.destination), "book.kepub.epub"),
+        format: "kepub",
+        converted: true,
+      },
+    });
   });
 
   test("uses the default durable library when send omits --db", async () => {

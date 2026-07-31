@@ -1,3 +1,5 @@
+import type { FormatId } from "./formats.js";
+
 export const DESTINATION_KINDS = ["kindle", "kobo", "generic"] as const;
 
 export type DestinationKind = (typeof DESTINATION_KINDS)[number];
@@ -28,6 +30,14 @@ export function classifyDestinationKind(
 
 export function defaultDestinationSubdir(kind: DestinationKind): string {
   return kind === "kindle" ? "documents" : "";
+}
+
+export function destinationFormatPreferences(
+  kind: DestinationKind,
+): readonly FormatId[] {
+  if (kind === "kobo") return ["kepub", "epub", "pdf", "cbz"];
+  if (kind === "kindle") return ["azw3", "mobi", "pdf", "txt"];
+  return [];
 }
 
 export function sanitizeDestinationFileName(name: string): string | null {

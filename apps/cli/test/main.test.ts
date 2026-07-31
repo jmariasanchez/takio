@@ -138,12 +138,14 @@ describe("takio CLI", () => {
         conversions: {
           available: true,
           pairs: [
+            { from: "epub", to: "kepub" },
             { from: "epub", to: "pdf" },
             { from: "epub", to: "azw3" },
             { from: "docx", to: "epub" },
             { from: "html", to: "epub" },
             { from: "txt", to: "epub" },
           ],
+          profiles: ["default", "generic_eink", "kindle", "kobo"],
         },
         help: {
           root: "takio --help",
@@ -211,7 +213,7 @@ describe("takio CLI", () => {
     ).toEqual({
       output: [
         "ID     STATUS  NAME      CONVERSIONS",
-        "local  online  This Mac  epub→pdf, epub→azw3, docx→epub, html→epub, txt→epub",
+        "local  online  This Mac  epub→kepub, epub→pdf, epub→azw3, docx→epub, html→epub, txt→epub",
       ],
     });
 
@@ -222,6 +224,7 @@ describe("takio CLI", () => {
         devices: [{
           id: "local",
           capabilities: [
+            { from: "epub", to: "kepub" },
             { from: "epub", to: "pdf" },
             { from: "epub", to: "azw3" },
             { from: "docx", to: "epub" },

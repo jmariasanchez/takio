@@ -25,8 +25,8 @@ them after a verified copy. Export and send materialize the current catalogue
 metadata and owned cover into supported delivery formats without changing the
 stored or caller-owned source.
 
-Conversion currently supports EPUB-to-PDF, EPUB-to-AZW3, and DOCX, HTML, or TXT
-to EPUB through a discovered Calibre `ebook-convert` backend. It can run
+Conversion currently supports EPUB-to-KEPUB, EPUB-to-PDF, EPUB-to-AZW3, and
+DOCX, HTML, or TXT to EPUB through a discovered Calibre `ebook-convert` backend. It can run
 immediately or through a durable local queue, but always runs in the foreground.
 Each stored format is recorded as either a Takio-managed copy or a reference to
 a caller-owned file.
@@ -138,7 +138,7 @@ The command surface is grouped by workflow:
 | `takio convert` | Run any advertised conversion pair synchronously. |
 | `takio jobs enqueue`, `list`, `get`, `cancel`, `retry`, `run-next`, `drain` | Manage and boundedly drain the durable foreground conversion queue. |
 | `takio destination list`, `eject` | Discover and safely eject mounted macOS volumes. |
-| `takio send`, `send-many` | Materialize, copy, and verify one format; batch delivery sends an attached exact format for up to 256 distinct items. |
+| `takio send`, `send-many` | Materialize, copy, and verify one format; `send --convert` can select a tested device format, while batch delivery sends an attached exact format for up to 256 distinct items. |
 
 Use `takio --library <name> ...` to keep independent named libraries under the
 Takio data directory. `--db <path>` remains available for an explicit physical
@@ -155,14 +155,15 @@ The caller chooses and owns the output path. Takio refuses to overwrite an exist
 is exclusive and never overwrites an existing path.
 
 This focused version intentionally has no daemon or detached worker, live
-backend percentage stream, automatic retry, priorities, remote
-execution, automatic device-format guessing, or conversion pairs beyond the
-five advertised by `takio capabilities`. `send --format <format> --convert` is the
-explicit convert-and-send path: it prefers an attached exact format, otherwise
-uses the first compatible stored format, verifies the conversion, attaches a
-managed copy, and then performs the verified destination copy. A later send
-reuses that attached format without requiring the conversion backend.
-For EPUB, PDF, MOBI, AZW3, and DOCX delivery copies, a discovered `ebook-meta`
+backend percentage stream, automatic retry, priorities, remote execution, or
+conversion pairs beyond the six advertised by `takio capabilities`.
+`send --convert` prefers an attached device-compatible format, otherwise creates
+the first tested target for a recognized Kobo or Kindle. `--format` overrides
+that choice. Conversions use the corresponding Calibre output profile and KEPUB
+delivery uses Kobo's `.kepub.epub` filename. A later send reuses an attached
+format without requiring the conversion backend. Physical Kobo and Kindle
+open/remount acceptance is still required before claiming hardware support.
+For KEPUB, EPUB, PDF, MOBI, AZW3, and DOCX delivery copies, a discovered `ebook-meta`
 backend writes the current title, authors, structured metadata, identifiers,
 tags, and owned cover before the copy is reported complete. Sources are never
 rewritten. Each export/send result reports metadata as `embedded`, `unsupported`,

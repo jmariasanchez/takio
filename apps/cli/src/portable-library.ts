@@ -100,6 +100,7 @@ function metaContent(entries: readonly unknown[], name: string): string | undefi
 
 function mediaType(format: FormatId): string {
   return {
+    kepub: "application/epub+zip",
     epub: "application/epub+zip",
     pdf: "application/pdf",
     mobi: "application/x-mobipocket-ebook",

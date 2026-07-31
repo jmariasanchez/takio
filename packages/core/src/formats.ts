@@ -1,4 +1,5 @@
 export const FORMAT_IDS = [
+  "kepub",
   "epub",
   "pdf",
   "mobi",
@@ -19,6 +20,12 @@ export interface FormatDefinition {
 }
 
 export const FORMAT_CATALOG: readonly FormatDefinition[] = [
+  {
+    id: "kepub",
+    label: "Kobo EPUB",
+    extensions: [".kepub.epub", ".kepub"],
+    kind: "ebook",
+  },
   { id: "epub", label: "EPUB", extensions: [".epub"], kind: "ebook" },
   { id: "pdf", label: "PDF", extensions: [".pdf"], kind: "document" },
   { id: "mobi", label: "MOBI", extensions: [".mobi"], kind: "ebook" },

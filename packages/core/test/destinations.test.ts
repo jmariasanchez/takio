@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   classifyDestinationKind,
   defaultDestinationSubdir,
+  destinationFormatPreferences,
   sanitizeDestinationFileName,
 } from "../src/index";
 
@@ -17,6 +18,12 @@ describe("destination helpers", () => {
     expect(defaultDestinationSubdir("kindle")).toBe("documents");
     expect(defaultDestinationSubdir("kobo")).toBe("");
     expect(defaultDestinationSubdir("generic")).toBe("");
+  });
+
+  test("prefers formats each recognized device can read", () => {
+    expect(destinationFormatPreferences("kobo")).toEqual(["kepub", "epub", "pdf", "cbz"]);
+    expect(destinationFormatPreferences("kindle")).toEqual(["azw3", "mobi", "pdf", "txt"]);
+    expect(destinationFormatPreferences("generic")).toEqual([]);
   });
 
   test("turns traversal-shaped names into contained FAT-safe basenames", () => {

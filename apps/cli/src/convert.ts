@@ -1,4 +1,12 @@
-import { FORMAT_CATALOG, FORMAT_IDS, PlanningError, planConversion, type ConversionCapability, type FormatId } from "@takio/core";
+import {
+  FORMAT_CATALOG,
+  FORMAT_IDS,
+  PlanningError,
+  planConversion,
+  type ConversionCapability,
+  type ConversionProfileId,
+  type FormatId,
+} from "@takio/core";
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
 import {
@@ -13,12 +21,13 @@ import {
   stat,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, dirname, extname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 
 const MAX_ARTIFACT_BYTES = 4 * 1024 ** 3;
 const MACOS_BUNDLE_BINARY = "/Applications/calibre.app/Contents/MacOS/ebook-convert";
 
 export const LOCAL_CONVERSION_CAPABILITIES: readonly ConversionCapability[] = [
+  { from: "epub", to: "kepub" },
   { from: "epub", to: "pdf" },
   { from: "epub", to: "azw3" },
   { from: "docx", to: "epub" },
@@ -109,6 +118,7 @@ type ConvertLocalOptions = {
   readonly input: string;
   readonly output: string;
   readonly outputFormat: string;
+  readonly profileId?: ConversionProfileId;
   readonly timeoutMs: number;
 };
 
@@ -123,6 +133,7 @@ type CompletedConversionJob = {
   readonly backend: "ebook-convert";
   readonly inputFormat: FormatId;
   readonly outputFormat: FormatId;
+  readonly profileId: ConversionProfileId;
   readonly status: "completed";
   readonly artifact: ConversionArtifact;
 };
@@ -168,7 +179,7 @@ async function outputFile(output: string, outputFormat: FormatId): Promise<strin
   }
   const definition = FORMAT_CATALOG.find((format) => format.id === outputFormat)!;
   const requested = resolve(output);
-  if (!definition.extensions.includes(extname(requested).toLowerCase())) {
+  if (!definition.extensions.some((extension) => requested.toLowerCase().endsWith(extension))) {
     throw new ConversionError("invalid-arguments");
   }
 
@@ -190,7 +201,11 @@ async function outputFile(output: string, outputFormat: FormatId): Promise<strin
   }
 }
 
-function validatedPlan(input: string, outputFormat: string) {
+function validatedPlan(
+  input: string,
+  outputFormat: string,
+  profileId: ConversionProfileId,
+) {
   if (!FORMAT_IDS.includes(outputFormat as FormatId)) {
     throw new ConversionError("invalid-arguments");
   }
@@ -204,6 +219,7 @@ function validatedPlan(input: string, outputFormat: string) {
         capabilities: [...LOCAL_CONVERSION_CAPABILITIES],
         status: "online",
       }],
+      settings: { version: 1, profileId },
     });
   } catch (error) {
     if (error instanceof PlanningError) {
@@ -342,6 +358,7 @@ export async function convertLocal({
   input,
   output,
   outputFormat,
+  profileId = "default",
   timeoutMs,
 }: ConvertLocalOptions): Promise<CompletedConversionJob> {
   if (
@@ -353,7 +370,7 @@ export async function convertLocal({
     throw new ConversionError("invalid-arguments");
   }
 
-  const plan = validatedPlan(input, outputFormat);
+  const plan = validatedPlan(input, outputFormat, profileId);
   const [canonicalBackendPath, canonicalInput] = await Promise.all([
     executable(backendPath),
     sourceFile(input),
@@ -395,7 +412,12 @@ export async function convertLocal({
     }
 
     try {
-      child = Bun.spawn([canonicalBackendPath, canonicalInput, artifactPath], {
+      child = Bun.spawn([
+        canonicalBackendPath,
+        canonicalInput,
+        artifactPath,
+        ...(profileId === "default" ? [] : ["--output-profile", profileId]),
+      ], {
         cwd: workspace,
         env: childEnvironment(workspace),
         stdin: "ignore",
@@ -448,6 +470,7 @@ export async function convertLocal({
         backend: "ebook-convert",
         inputFormat: plan.inputFormat,
         outputFormat: plan.outputFormat,
+        profileId,
         status: "completed",
         artifact: { path: finalPath, ...verified },
       };

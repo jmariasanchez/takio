@@ -52,6 +52,22 @@ describe("planConversion", () => {
     }
   });
 
+  it("preserves a supported output profile in the deterministic plan", () => {
+    const job = planConversion({
+      input: "library/novel.epub",
+      outputFormat: "kepub",
+      targets: [{
+        id: "target-01",
+        name: "Kobo Mac",
+        capabilities: [{ from: "epub", to: "kepub" }],
+        status: "online",
+      }],
+      settings: { version: 1, profileId: "kobo" },
+    });
+
+    expect(job.settings).toEqual({ version: 1, profileId: "kobo" });
+  });
+
   it("does not treat support for one input as support for every input with the same output", () => {
     expect(() =>
       planConversion({

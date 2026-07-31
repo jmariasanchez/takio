@@ -2,14 +2,17 @@ export {
   DESTINATION_KINDS,
   classifyDestinationKind,
   defaultDestinationSubdir,
+  destinationFormatPreferences,
   sanitizeDestinationFileName,
   type Destination,
   type DestinationKind,
 } from "./destinations.js";
 export { FORMAT_CATALOG, FORMAT_IDS, detectFormat, type FormatDefinition, type FormatId } from "./formats.js";
 export {
+  CONVERSION_PROFILE_IDS,
   DEFAULT_CONVERSION_SETTINGS_V1,
   conversionSettingsV1Schema,
+  type ConversionProfileId,
   type ConversionSettingsV1,
 } from "./conversion.js";
 export {

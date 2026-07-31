@@ -5,13 +5,16 @@ import { chmod, copyFile, lstat, mkdir, mkdtemp, realpath, rm, stat } from "node
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import {
+  CONVERSION_PROFILE_IDS,
   FORMAT_CATALOG,
   FORMAT_IDS,
   PlanningError,
   detectFormat,
+  destinationFormatPreferences,
   planConversion,
   type BookFormat,
   type Destination,
+  type ConversionProfileId,
   type FormatId,
   type LibraryItem,
 } from "@takio/core";
@@ -430,6 +433,7 @@ export function createProgram(
           conversions: {
             available: conversionBackend.ok,
             pairs: LOCAL_CONVERSION_CAPABILITIES,
+            profiles: CONVERSION_PROFILE_IDS,
           },
           help: {
             root: "takio --help",
@@ -479,6 +483,11 @@ export function createProgram(
     .requiredOption("--input <path>", "source document path")
     .requiredOption("--to <format>", `target format: ${FORMAT_IDS.join(", ")}`)
     .requiredOption("--output <path>", "output artifact path")
+    .option(
+      "--profile <profile>",
+      `Calibre output profile: ${CONVERSION_PROFILE_IDS.join(", ")}`,
+      "default",
+    )
     .option("--timeout-seconds <seconds>", "conversion timeout", "300");
   program.addCommand(convert);
 
@@ -488,6 +497,7 @@ export function createProgram(
         input: string;
         to: string;
         output: string;
+        profile: string;
         timeoutSeconds: string;
       },
       command: Command,
@@ -496,7 +506,8 @@ export function createProgram(
       if (
         !Number.isSafeInteger(timeoutSeconds) ||
         timeoutSeconds <= 0 ||
-        timeoutSeconds > Math.floor(2_147_483_647 / 1000)
+        timeoutSeconds > Math.floor(2_147_483_647 / 1000) ||
+        !CONVERSION_PROFILE_IDS.includes(options.profile as ConversionProfileId)
       ) {
         command.error("", { exitCode: 1, code: "invalid-arguments" });
       }
@@ -510,6 +521,7 @@ export function createProgram(
           input: options.input,
           output: options.output,
           outputFormat: options.to,
+          profileId: options.profile as ConversionProfileId,
           timeoutMs: timeoutSeconds * 1000,
         });
         write(JSON.stringify({ ok: true, value: { job } }));
@@ -1029,7 +1041,11 @@ export function createProgram(
   ) => {
     const primaryName = basename(item.formats[0]!.sourcePath);
     const primaryExtension = extname(primaryName);
-    const deliveryName = `${primaryName.slice(0, -primaryExtension.length)}.${selectedFormat.format}`;
+    const deliveryExtension =
+      selectedFormat.format === "kepub" && mountedDestination.kind === "kobo"
+        ? "kepub.epub"
+        : selectedFormat.format;
+    const deliveryName = `${primaryName.slice(0, -primaryExtension.length)}.${deliveryExtension}`;
     let metadataWorkspace: string | undefined;
     try {
       let sourcePath = selectedFormat.sourcePath;
@@ -1104,10 +1120,6 @@ export function createProgram(
       if (options.format !== undefined && requestedFormat === undefined) {
         command.error("", { exitCode: 1, code: "invalid-arguments" });
       }
-      if (options.convert && requestedFormat === undefined) {
-        command.error("", { exitCode: 1, code: "invalid-arguments" });
-      }
-
       const destination = await authorizeDestination(options.dest, options.volumesRoot);
       if (!destination) {
         command.error("", { exitCode: 1, code: "unknown-destination" });
@@ -1122,15 +1134,29 @@ export function createProgram(
         if (!item.value) {
           command.error("", { exitCode: 1, code: "unknown-item" });
         }
-        let selectedFormat =
-          requestedFormat === undefined
+        const preferredFormats = destinationFormatPreferences(destination.kind);
+        let targetFormat = requestedFormat;
+        let selectedFormat = requestedFormat === undefined
+          ? preferredFormats.length === 0
             ? item.value.formats[0]
-            : item.value.formats.find(({ format }) => format === requestedFormat);
+            : preferredFormats
+                .map((format) => item.value!.formats.find((candidate) => candidate.format === format))
+                .find((candidate) => candidate !== undefined)
+          : item.value.formats.find(({ format }) => format === requestedFormat);
+        if (!selectedFormat && options.convert && targetFormat === undefined) {
+          targetFormat = preferredFormats.find((format) =>
+            item.value!.formats.some(({ format: source }) =>
+              LOCAL_CONVERSION_CAPABILITIES.some(
+                ({ from, to }) => from === source && to === format,
+              ),
+            ),
+          );
+        }
         let converted = false;
-        if (!selectedFormat && options.convert && requestedFormat) {
+        if (!selectedFormat && options.convert && targetFormat) {
           const sourceFormat = item.value.formats.find(({ format }) =>
             LOCAL_CONVERSION_CAPABILITIES.some(
-              ({ from, to }) => from === format && to === requestedFormat,
+              ({ from, to }) => from === format && to === targetFormat,
             ),
           );
           if (!sourceFormat) {
@@ -1147,8 +1173,14 @@ export function createProgram(
             const conversion = await convertLocal({
               backendPath: conversionBackend.path,
               input: sourceFormat.sourcePath,
-              output: join(workspace, `converted.${requestedFormat}`),
-              outputFormat: requestedFormat,
+              output: join(workspace, `converted.${targetFormat}`),
+              outputFormat: targetFormat,
+              profileId:
+                destination.kind === "kobo"
+                  ? "kobo"
+                  : destination.kind === "kindle"
+                    ? "kindle"
+                    : "default",
               timeoutMs: 300_000,
             });
             const attached = await store.attachFormat({
@@ -1169,7 +1201,7 @@ export function createProgram(
               command.error("", { exitCode: 1, code: "unknown-item" });
             }
             selectedFormat = attached.value.formats.find(
-              ({ format }) => format === requestedFormat,
+              ({ format }) => format === targetFormat,
             );
             if (!selectedFormat) {
               command.error("", { exitCode: 1, code: "format-not-found" });

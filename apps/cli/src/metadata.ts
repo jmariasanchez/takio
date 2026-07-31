@@ -13,6 +13,7 @@ const MAX_OPF_BYTES = 2 * 1024 * 1024;
 const MAX_COVER_BYTES = 32 * 1024 * 1024;
 
 export const EMBEDDABLE_METADATA_FORMATS: readonly FormatId[] = [
+  "kepub",
   "epub",
   "pdf",
   "mobi",
