@@ -377,6 +377,42 @@ describe("takio CLI", () => {
       expect(await Bun.file(join(directory!, "library.sqlite")).exists()).toBe(true);
     });
 
+    it("keeps named libraries isolated and rejects an ambiguous explicit database", async () => {
+      const sourcePath = join(directory!, "named-library.epub");
+      const explicitDatabase = join(directory!, "must-not-open.sqlite");
+      await Bun.write(sourcePath, "named library contents");
+      const env = { TAKIO_DATA_DIR: directory };
+
+      const imported = parseProcessOutput(await invokeProcess([
+        "--library",
+        "fiction",
+        "library",
+        "import",
+        "--source-path",
+        sourcePath,
+      ], env)) as { ok: true; value: { item: { id: string } } };
+      const named = parseProcessOutput(await invokeProcess([
+        "--library",
+        "fiction",
+        "library",
+        "list",
+      ], env)) as { ok: true; value: { items: Array<{ id: string }> } };
+      const unnamed = parseProcessOutput(await invokeProcess(["library", "list"], env));
+
+      expect(named.value.items.map(({ id }) => id)).toEqual([imported.value.item.id]);
+      expect(unnamed).toEqual({ ok: true, value: { items: [] } });
+      expect(await Bun.file(join(directory!, "libraries", "fiction", "library.sqlite")).exists()).toBe(true);
+      expectInvalidArgumentsProcess(await invokeProcess([
+        "--library",
+        "fiction",
+        "library",
+        "list",
+        "--db",
+        explicitDatabase,
+      ], env));
+      expect(await Bun.file(explicitDatabase).exists()).toBe(false);
+    });
+
     it("keeps the filename fallback without a metadata backend across the process protocol", async () => {
       const sourcePath = join(directory!, "process-book.epub");
       await Bun.write(sourcePath, "process owned contents");

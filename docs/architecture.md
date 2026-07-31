@@ -22,6 +22,12 @@ Takio replaces the heavyweight, application-centric Calibre workflow with a focu
 
 A `Destination` is a passive mounted recipient volume, distinct from the planned device agent that will act as an authenticated remote execution worker.
 
+The unnamed library keeps the original data layout. A global validated
+`--library <name>` selector resolves to `libraries/<name>/library.sqlite` under
+that same data root, with its own managed files and foreground job database.
+Explicit `--db` paths remain supported and are mutually exclusive with a named
+library selector.
+
 Local `ebook-convert` discovery checks `TAKIO_EBOOK_CONVERT`, then `PATH`, then `/Applications/calibre.app/Contents/MacOS/ebook-convert` on macOS.
 The `metadata extract` command and delivery paths similarly discover
 `ebook-meta` through `TAKIO_EBOOK_META`, `PATH`, then the Calibre macOS bundle.

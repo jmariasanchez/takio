@@ -175,9 +175,25 @@ function defaultAppCommand(sourcePath: string): readonly string[] {
   ];
 }
 
-function libraryPaths(databasePath?: string): LibraryPaths {
+function selectedLibraryName(command: Command, databasePath?: string): string | undefined {
+  const option = command.optsWithGlobals().library;
+  return typeof option === "string"
+    ? option
+    : databasePath === undefined
+      ? process.env.TAKIO_LIBRARY
+      : undefined;
+}
+
+function libraryPaths(databasePath?: string, libraryName?: string): LibraryPaths {
   if (databasePath === "") {
     throw new TypeError("A database path is required.");
+  }
+  if (
+    libraryName === "" ||
+    (libraryName !== undefined && !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(libraryName)) ||
+    (databasePath !== undefined && libraryName !== undefined)
+  ) {
+    throw new TypeError("A library name must be safe and exclusive with a database path.");
   }
 
   if (databasePath) {
@@ -201,7 +217,7 @@ function libraryPaths(databasePath?: string): LibraryPaths {
         ? join(process.env.LOCALAPPDATA ?? join(homedir(), "AppData", "Local"), "Takio")
         : join(process.env.XDG_DATA_HOME ?? join(homedir(), ".local", "share"), "takio"));
 
-  const resolvedRoot = resolve(root);
+  const resolvedRoot = resolve(root, ...(libraryName ? ["libraries", libraryName] : []));
   return {
     databasePath: join(resolvedRoot, "library.sqlite"),
     itemsDirectory: join(resolvedRoot, "items"),
@@ -214,7 +230,7 @@ async function openLibraryStore(
 ): Promise<{ store: BunSqliteLibraryStore; paths: LibraryPaths }> {
   let paths: LibraryPaths;
   try {
-    paths = libraryPaths(databasePath);
+    paths = libraryPaths(databasePath, selectedLibraryName(command, databasePath));
   } catch {
     command.error("", { exitCode: 1, code: "invalid-arguments" });
   }
@@ -235,19 +251,19 @@ async function openLibraryStore(
   return { store, paths };
 }
 
-function jobsDatabasePath(databasePath?: string): string {
+function jobsDatabasePath(databasePath?: string, libraryName?: string): string {
   if (databasePath === "") {
     throw new TypeError("A database path is required.");
   }
   return databasePath
     ? resolve(databasePath)
-    : join(dirname(libraryPaths().databasePath), "jobs.sqlite");
+    : join(dirname(libraryPaths(undefined, libraryName).databasePath), "jobs.sqlite");
 }
 
 async function openJobStore(databasePath: string | undefined, command: Command): Promise<JobStore> {
   let path: string;
   try {
-    path = jobsDatabasePath(databasePath);
+    path = jobsDatabasePath(databasePath, selectedLibraryName(command));
   } catch {
     command.error("", { exitCode: 1, code: "invalid-arguments" });
   }
@@ -367,6 +383,7 @@ export function createProgram(
   program
     .name("takio")
     .description("Manage, convert, and deliver a local ebook library")
+    .option("--library <name>", "named library under the Takio data directory")
     .version(CLI_VERSION);
 
   program
@@ -1291,7 +1308,7 @@ export function createProgram(
     .action((options: { db?: string }, command: Command) => {
       let paths: LibraryPaths;
       try {
-        paths = libraryPaths(options.db);
+        paths = libraryPaths(options.db, selectedLibraryName(command, options.db));
       } catch {
         command.error("", { exitCode: 1, code: "invalid-arguments" });
       }
@@ -1310,7 +1327,7 @@ export function createProgram(
     .action((options: { db?: string; dest: string }, command: Command) => {
       let paths: LibraryPaths;
       try {
-        paths = libraryPaths(options.db);
+        paths = libraryPaths(options.db, selectedLibraryName(command, options.db));
       } catch {
         command.error("", { exitCode: 1, code: "invalid-arguments" });
       }
@@ -1329,7 +1346,7 @@ export function createProgram(
     .action((options: { db?: string; source: string }, command: Command) => {
       let paths: LibraryPaths;
       try {
-        paths = libraryPaths(options.db);
+        paths = libraryPaths(options.db, selectedLibraryName(command, options.db));
       } catch {
         command.error("", { exitCode: 1, code: "invalid-arguments" });
       }

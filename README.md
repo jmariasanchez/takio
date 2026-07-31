@@ -130,6 +130,10 @@ The command surface is grouped by workflow:
 | `takio destination list`, `eject` | Discover and safely eject mounted macOS volumes. |
 | `takio send`, `send-many` | Materialize, copy, and verify one format; batch delivery sends an attached exact format for up to 256 distinct items. |
 
+Use `takio --library <name> ...` to keep independent named libraries under the
+Takio data directory. `--db <path>` remains available for an explicit physical
+library path; combining both selectors is rejected.
+
 A plan is not execution. `takio convert` bypasses the queue, while `takio jobs enqueue` records work in `jobs.sqlite`, a database separate from `library.sqlite`. Jobs move through `queued`, `running`, `completed`, `failed`, and `canceled`; `jobs cancel` cancels queued work. `jobs retry` clones failed or canceled work into a new queued job while preserving the terminal record. `run-next` claims one oldest job; `drain` runs up to 256 jobs by default, accepts a smaller `--max-jobs`, and reports processed, terminal, and remaining counts. Both run synchronously and record either a failure or a completed artifact whose path, nonzero size, and SHA-256 digest have been verified. SIGINT or SIGTERM cancels the active foreground conversion, records `conversion-cancelled`, and makes `drain` stop before claiming another job.
 
 The caller chooses and owns the output path. Takio refuses to overwrite an existing file, including one that appears after enqueue. In the desktop app, an EPUB item's **Convert** control opens the native save dialog and adds the job to the conversion ledger; **Refresh**, **Run next**, and queued-job **Cancel** expose the same durable queue.
