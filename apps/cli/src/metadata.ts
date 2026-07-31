@@ -305,7 +305,7 @@ function metaContent(entries: readonly unknown[], name: string): string | undefi
   return undefined;
 }
 
-function parseMetadata(opf: string): LibraryMetadataPatch {
+export function parseEbookMetadataOpf(opf: string): LibraryMetadataPatch {
   if (XMLValidator.validate(opf) !== true) {
     throw new MetadataError("metadata-invalid");
   }
@@ -725,7 +725,7 @@ export async function fetchOnlineMetadata({
     if (exitCode !== 0) throw new MetadataError("metadata-fetch-failed");
     if (opfBytes.byteLength === 0) throw new MetadataError("metadata-invalid");
 
-    const metadata = parseMetadata(new TextDecoder().decode(opfBytes));
+    const metadata = parseEbookMetadataOpf(new TextDecoder().decode(opfBytes));
     const coverBytes = coverOutputPath
       ? await boundedFile(coverPath, MAX_COVER_BYTES)
       : null;
@@ -831,7 +831,7 @@ export async function extractEbookMetadata({
     if (!opfBytes) {
       throw new MetadataError("metadata-invalid");
     }
-    const metadata = parseMetadata(new TextDecoder().decode(opfBytes));
+    const metadata = parseEbookMetadataOpf(new TextDecoder().decode(opfBytes));
     const coverBytes = await boundedFile(coverPath, MAX_COVER_BYTES);
     return {
       sourcePath: canonicalSource,

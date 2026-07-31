@@ -83,6 +83,15 @@ and atomically publishes a new library directory. Restore never replaces an
 existing directory. Caller-owned references and the independent conversion-job
 ledger are deliberately outside the snapshot.
 
+The separate portable path is book-centered rather than database-centered.
+`library portable-export` writes one OPF file per active book and copies every
+format and cover, including referenced files, into an absent directory with a
+SHA-256 manifest. `library rebuild` validates all paths, sizes, hashes, and OPF
+records before creating storage, then reconstructs an absent library with only
+managed artifacts and runs the full integrity verifier before atomic publish.
+Trash, saved views, duplicate-review state, and conversion jobs are not portable
+book data and remain outside this format.
+
 ## Durable conversion-to-library handoff
 
 A conversion linked to a library item crosses three separate durability boundaries:
@@ -108,7 +117,7 @@ This handoff adds no built-in ebook reader or viewer. Opening books continues to
 
 - Every command has a narrow, documented contract.
 - Every success and failure has a one-line machine envelope with a stable error code; discovery commands retain readable output unless `--json` is requested.
-- `capabilities` reports the protocol version, structured-input limits, schema and backup versions, exact conversion pairs, and live backend availability without requiring agents to scrape help text.
+- `capabilities` reports the protocol version, structured-input limits, schema, backup, and portable versions, exact conversion pairs, and live backend availability without requiring agents to scrape help text.
 - Structured requests accept bounded inline JSON, stdin with `-`, or a file with `@path`.
 - Commands must return non-zero for invalid requests and never claim a conversion completed before an adapter reports success.
 - Diagnostic commands are read-only: `library verify` never creates, migrates, or repairs a library.
@@ -116,7 +125,7 @@ This handoff adds no built-in ebook reader or viewer. Opening books continues to
 
 ## Focused v1 boundary
 
-The implemented conversion paths are EPUB-to-PDF, EPUB-to-AZW3, and DOCX, HTML, or TXT to EPUB. They intentionally exclude a daemon or detached worker, live progress, automatic retry or backoff, priorities, batching, scheduling, active cancellation of a running queued job, queued-job overwrite, remote execution, and hostile-input process sandboxing. A failed conversion is terminal; trying again creates a new job.
+The implemented conversion paths are EPUB-to-PDF, EPUB-to-AZW3, and DOCX, HTML, or TXT to EPUB. They intentionally exclude a daemon or detached worker, live backend percentage progress, automatic retry or backoff, priorities, scheduling, queued-job overwrite, remote execution, and hostile-input process sandboxing. Bounded batch operations and foreground draining are explicit; a signal cancels the active conversion. A failed conversion is terminal; trying again creates a new job.
 
 ## Execution roadmap
 

@@ -50,6 +50,7 @@ bun run takio formats --json
 bun run takio library import --source-path ~/Books/example.epub
 bun run takio library verify
 bun run takio library backup --dest ~/Backups/takio-library
+bun run takio library portable-export --dest ~/Exports/takio-portable
 bun run takio library search --query "Ursula Le Guin"
 bun run takio plan --input ~/Books/example.epub --to pdf --json
 bun run takio send --id <book-id> --format azw3 --convert --dest /Volumes/Kindle
@@ -97,6 +98,14 @@ cover, and a machine-readable manifest. It never overwrites a destination.
 snapshot and publishes it only into an absent library directory. Referenced
 files and the independent `jobs.sqlite` conversion ledger are not copied.
 
+`takio library portable-export --dest <new-directory>` instead exports every
+active book as OPF plus self-contained format and cover files, including
+caller-owned references. `takio library rebuild --source <export> --db
+<new-directory>/library.sqlite` verifies every manifest hash and reconstructs
+all exported artifacts as managed copies. Rebuild refuses an existing target;
+trash, saved views, duplicate-review state, and the job ledger remain backup-only
+or operational state rather than portable book data.
+
 ## CLI for skills and agents
 
 The CLI is deterministic. Machine-readable successes use a one-line
@@ -116,6 +125,7 @@ The command surface is grouped by workflow:
 | `takio metadata fetch` | Fetch a reviewable online metadata candidate and optionally publish a cover to a new file. |
 | `takio library verify` | Audit database structure and every managed format fingerprint without creating, migrating, or repairing the library. |
 | `takio library backup`, `restore-backup` | Create and restore verified, non-overwriting snapshots of the catalogue and Takio-owned files. |
+| `takio library portable-export`, `rebuild` | Export active books as verified OPF directories and reconstruct them into a new self-contained library. |
 | `takio library import`, `import-many` | Import one file or recursively import files and directories. |
 | `takio library list`, `get`, `open`, `search`, `query` | Read the catalogue through simple or structured queries. |
 | `takio library update`, `update-many` | Update metadata for one item or apply one patch to up to 256 distinct items. |

@@ -83,6 +83,11 @@ import {
   materializeEbookMetadata,
   type EbookMetaDiscovery,
 } from "./metadata.js";
+import {
+  PORTABLE_LIBRARY_VERSION,
+  exportPortableLibrary,
+  rebuildPortableLibrary,
+} from "./portable-library.js";
 
 type LibraryPaths = {
   readonly databasePath: string;
@@ -404,6 +409,7 @@ export function createProgram(
           library: {
             schemaVersion: LIBRARY_SCHEMA_VERSION,
             backupVersion: LIBRARY_BACKUP_VERSION,
+            portableVersion: PORTABLE_LIBRARY_VERSION,
           },
           backends: {
             conversion: conversionBackend.ok
@@ -1356,6 +1362,42 @@ export function createProgram(
         command.error("", { exitCode: 1, code: result.error.code });
       }
       write(JSON.stringify({ ok: true, value: { restore: result.value } }));
+    });
+
+  storageCommand(library.command("portable-export").helpOption(false), writeError)
+    .description("Export active books, formats, covers, and OPF metadata to a portable directory")
+    .option("--db <path>", "database path")
+    .requiredOption("--dest <directory>", "new portable export directory")
+    .action(async (options: { db?: string; dest: string }, command: Command) => {
+      const { store } = await openLibraryStore(options.db, command);
+      try {
+        const result = await exportPortableLibrary(store, options.dest);
+        if (!result.ok) {
+          command.error("", { exitCode: 1, code: result.error.code });
+        }
+        write(JSON.stringify({ ok: true, value: { export: result.value } }));
+      } finally {
+        store.close();
+      }
+    });
+
+  storageCommand(library.command("rebuild").helpOption(false), writeError)
+    .description("Rebuild a new library from a verified Takio portable OPF export")
+    .requiredOption("--db <path>", "database path inside a new, absent directory")
+    .requiredOption("--source <directory>", "Takio portable export directory")
+    .action(async (options: { db: string; source: string }, command: Command) => {
+      let paths: LibraryPaths;
+      try {
+        paths = libraryPaths(options.db, selectedLibraryName(command, options.db));
+      } catch {
+        command.error("", { exitCode: 1, code: "invalid-arguments" });
+      }
+
+      const result = await rebuildPortableLibrary(options.source, paths.databasePath);
+      if (!result.ok) {
+        command.error("", { exitCode: 1, code: result.error.code });
+      }
+      write(JSON.stringify({ ok: true, value: { rebuild: result.value } }));
     });
 
   storageCommand(library.command("add").helpOption(false), writeError)

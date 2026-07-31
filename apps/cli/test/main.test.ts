@@ -1574,6 +1574,93 @@ describe("takio CLI", () => {
       expect(reopened.value.item).toEqual(updated.value.item);
     });
 
+    it("round-trips a portable OPF library and rejects changed artifacts before rebuilding", async () => {
+      const epubPath = join(directory!, "portable.epub");
+      const pdfPath = join(directory!, "portable.pdf");
+      const coverPath = join(directory!, "portable.jpg");
+      await Promise.all([
+        Bun.write(epubPath, "portable epub contents"),
+        Bun.write(pdfPath, "portable pdf contents"),
+        Bun.write(coverPath, "portable cover contents"),
+      ]);
+      await addItem("portable-book", epubPath);
+      const patch = {
+        title: "A Portable Book",
+        authors: [{ name: "Example Author", sortName: "Author, Example" }],
+        series: "Portable Series",
+        seriesIndex: 2,
+        publisher: "Portable Press",
+        languages: ["en-US"],
+        identifiers: { isbn: "9780000000002" },
+        publishedDate: "2026-07-31",
+        rating: 8.5,
+        description: "Metadata that must survive reconstruction.",
+        tags: ["Portable", "Verified"],
+      };
+      expect(parseOutput((await invoke([
+        "library", "update", "--db", databasePath!, "--id", "portable-book",
+        "--patch-json", JSON.stringify(patch),
+      ])).output)).toMatchObject({ ok: true });
+      expect(parseOutput((await invoke([
+        "library", "format", "attach", "--db", databasePath!, "--id", "portable-book",
+        "--source-path", pdfPath,
+      ])).output)).toMatchObject({ ok: true });
+      expect(parseOutput((await invoke([
+        "library", "cover", "set", "--db", databasePath!, "--id", "portable-book",
+        "--source-path", coverPath,
+      ])).output)).toMatchObject({ ok: true });
+
+      const portablePath = join(directory!, "portable-export");
+      expect(parseOutput((await invoke([
+        "library", "portable-export", "--db", databasePath!, "--dest", portablePath,
+      ])).output)).toEqual({
+        ok: true,
+        value: { export: { path: portablePath, items: 1, formats: 2, covers: 1 } },
+      });
+      const rebuiltDatabase = join(directory!, "rebuilt", "library.sqlite");
+      expect(parseOutput((await invoke([
+        "library", "rebuild", "--db", rebuiltDatabase, "--source", portablePath,
+      ])).output)).toEqual({
+        ok: true,
+        value: {
+          rebuild: {
+            path: rebuiltDatabase,
+            report: {
+              schemaVersion: 8,
+              items: { total: 1, active: 1, trashed: 0 },
+              formats: { total: 2, managed: 2, referenced: 0 },
+            },
+          },
+        },
+      });
+      const rebuilt = parseOutput((await invoke([
+        "library", "get", "--db", rebuiltDatabase, "--id", "portable-book",
+      ])).output) as { value: { item: Record<string, unknown> & {
+        formats: Array<{ format: string; sourcePath: string; provenance: string }>;
+        coverPath: string;
+      } } };
+      expect(rebuilt.value.item).toMatchObject({ id: "portable-book", ...patch });
+      expect(rebuilt.value.item.formats.map(({ format, provenance }) => ({ format, provenance }))).toEqual([
+        { format: "epub", provenance: "managed" },
+        { format: "pdf", provenance: "managed" },
+      ]);
+      expect(await Bun.file(rebuilt.value.item.formats[0]!.sourcePath).text()).toBe("portable epub contents");
+      expect(await Bun.file(rebuilt.value.item.formats[1]!.sourcePath).text()).toBe("portable pdf contents");
+      expect(await Bun.file(rebuilt.value.item.coverPath).text()).toBe("portable cover contents");
+
+      const manifest = await Bun.file(join(portablePath, "manifest.json")).json() as {
+        books: Array<{ directory: string }>;
+      };
+      await Bun.write(join(portablePath, "books", manifest.books[0]!.directory, "book.pdf"), "changed");
+      const rejectedDatabase = join(directory!, "rejected", "library.sqlite");
+      const rejected = await invoke([
+        "library", "rebuild", "--db", rejectedDatabase, "--source", portablePath,
+      ]);
+      expect(rejected.exitCode).toBe(1);
+      expect(parseOutput(rejected.output)).toEqual({ ok: false, error: { code: "source-invalid" } });
+      expect(await Bun.file(rejectedDatabase).exists()).toBe(false);
+    });
+
     it("rejects invalid structured patches before opening library storage", async () => {
       const blockedDataDirectory = join(directory!, "not-a-directory");
       await Bun.write(blockedDataDirectory, "opening storage through this path must fail");

@@ -43,7 +43,10 @@ restore also preserve the catalogue and all Takio-owned formats and covers;
 caller-owned references remain external by design. A standalone CLI executable
 ships the same JSON contract without a Bun runtime, and `capabilities` exposes
 the contract version, limits, exact conversion matrix, and live Calibre backend
-availability for agent discovery.
+availability for agent discovery. A separate verified portable export includes
+active-book OPF metadata, all formats (including referenced files), and covers;
+rebuild validates the manifest and reconstructs them as managed copies in a new
+library.
 
 ### 1. Book-centered data foundation
 
