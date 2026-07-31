@@ -171,13 +171,13 @@ async function createSqlFixture(filename: string): Promise<void> {
 }
 
 describe("BunSqliteLibraryStore", () => {
-  it("persists add, get, list, and remove across injected-path reopenings at schema v8", async () => {
+  it("persists add, get, list, and remove across injected-path reopenings at schema v9", async () => {
     const first = createStore();
     expect(await first.open({ config: {} })).toEqual({ ok: true, value: null });
     expect(await first.add({ item })).toEqual({ ok: true, value: item });
     first.close();
 
-    expect(schemaVersion()).toBe(8);
+    expect(schemaVersion()).toBe(9);
     using stored = new Database(databasePath, { strict: true });
     expect(
       stored
@@ -224,7 +224,7 @@ describe("BunSqliteLibraryStore", () => {
     expect(await third.list({})).toEqual({ ok: true, value: [] });
     third.close();
 
-    expect(schemaVersion()).toBe(8);
+    expect(schemaVersion()).toBe(9);
     expect(stored.query("SELECT * FROM library_item_formats").all()).toEqual([]);
   });
 
@@ -277,7 +277,7 @@ describe("BunSqliteLibraryStore", () => {
     });
     store.close();
 
-    expect(schemaVersion()).toBe(8);
+    expect(schemaVersion()).toBe(9);
     expect(await readFile(`${databasePath}.v2.backup`)).toEqual(databaseBefore);
     using migrated = new Database(databasePath, { strict: true });
     expect(migrated.query("PRAGMA foreign_key_check").all()).toEqual([]);
@@ -369,7 +369,7 @@ describe("BunSqliteLibraryStore", () => {
     });
     store.close();
 
-    expect(schemaVersion()).toBe(8);
+    expect(schemaVersion()).toBe(9);
     expect(await readFile(`${databasePath}.v4.backup`)).toEqual(databaseBefore);
     using backup = new Database(`${databasePath}.v4.backup`, { strict: true });
     expect(backup.query<{ user_version: number }, []>("PRAGMA user_version").get()).toEqual({
@@ -424,7 +424,7 @@ describe("BunSqliteLibraryStore", () => {
     });
     store.close();
 
-    expect(schemaVersion()).toBe(8);
+    expect(schemaVersion()).toBe(9);
     expect(await readFile(`${databasePath}.v5.backup`)).toEqual(databaseBefore);
     using migrated = new Database(databasePath, { strict: true });
     expect(
@@ -517,7 +517,7 @@ describe("BunSqliteLibraryStore", () => {
     });
     store.close();
 
-    expect(schemaVersion()).toBe(8);
+    expect(schemaVersion()).toBe(9);
     using migrated = new Database(databasePath, { strict: true });
     expect(
       migrated.query<{ integrity_check: string }, []>("PRAGMA integrity_check").get()
@@ -581,7 +581,7 @@ describe("BunSqliteLibraryStore", () => {
     ]);
   });
 
-  it("treats reopening v8 as a no-op", async () => {
+  it("treats reopening v9 as a no-op", async () => {
     createFrozenV1Fixture();
     const first = createStore();
     expect(await first.open({ config: {} })).toEqual({ ok: true, value: null });
@@ -599,6 +599,28 @@ describe("BunSqliteLibraryStore", () => {
 
     expect(await readFile(`${databasePath}.v1.backup`)).toEqual(backupBefore);
     expect(await readFile(databasePath)).toEqual(databaseBefore);
+  });
+
+  it("backs up and migrates schema v8 before adding custom metadata", async () => {
+    const initializer = createStore();
+    expect(await initializer.open({ config: {} })).toEqual({ ok: true, value: null });
+    expect(await initializer.add({ item })).toEqual({ ok: true, value: item });
+    initializer.close();
+    using downgrade = new Database(databasePath, { strict: true });
+    downgrade.transaction(() => {
+      downgrade.run("DROP TABLE library_item_custom_metadata");
+      downgrade.run("PRAGMA user_version = 8");
+    }).immediate();
+    downgrade.close();
+    const before = await readFile(databasePath);
+
+    const migrated = createStore();
+    expect(await migrated.open({ config: {} })).toEqual({ ok: true, value: null });
+    expect(await migrated.get({ id: item.id })).toEqual({ ok: true, value: item });
+    migrated.close();
+
+    expect(await readFile(`${databasePath}.v8.backup`)).toEqual(before);
+    expect(schemaVersion()).toBe(9);
   });
 
   it("rolls a v1 library back when the v2-to-v3 migration is interrupted", async () => {
@@ -1066,6 +1088,7 @@ describe("BunSqliteLibraryStore", () => {
         publisher: "  Harper & Row  ",
         languages: ["fr", "en-US"],
         identifiers: { isbn: "9780061054884", goodreads: "13651" },
+        customMetadata: { acquisition_source: "  City Books  ", shelf: "Utopias" },
         publishedDate: "1974-05-01",
         rating: 9.25,
         description: "  An anarchist utopia.  ",
@@ -1087,6 +1110,7 @@ describe("BunSqliteLibraryStore", () => {
         publisher: "Harper & Row",
         languages: ["fr", "en-US"],
         identifiers: { goodreads: "13651", isbn: "9780061054884" },
+        customMetadata: { acquisition_source: "  City Books  ", shelf: "Utopias" },
         publishedDate: "1974-05-01",
         rating: 9.25,
         description: "An anarchist utopia.",
@@ -1101,6 +1125,10 @@ describe("BunSqliteLibraryStore", () => {
     expect(await first.get({ id: richItem.id })).toEqual(updated);
     expect(await first.list({})).toEqual({ ok: true, value: [updated.value] });
     expect(await first.search({ query: "Samuel R. Delany" })).toEqual({
+      ok: true,
+      value: [updated.value],
+    });
+    expect(await first.search({ query: "Utopias" })).toEqual({
       ok: true,
       value: [updated.value],
     });
@@ -1127,6 +1155,14 @@ describe("BunSqliteLibraryStore", () => {
     ).toEqual([
       { name: "Octavia E. Butler", sort_name: "Butler, Octavia E.", position: 0 },
       { name: "Samuel R. Delany", sort_name: null, position: 1 },
+    ]);
+    expect(
+      stored
+        .query("SELECT name, value FROM library_item_custom_metadata ORDER BY name")
+        .all(),
+    ).toEqual([
+      { name: "acquisition_source", value: "  City Books  " },
+      { name: "shelf", value: "Utopias" },
     ]);
     expect(
       stored
@@ -1862,7 +1898,7 @@ describe("BunSqliteLibraryStore", () => {
     expect(
       initializedDatabase.query<{ user_version: number }, []>("PRAGMA user_version").get()
         ?.user_version,
-    ).toBe(8);
+    ).toBe(9);
     expect(
       initializedDatabase
         .query<{ name: string; type: string }, []>(
@@ -1874,6 +1910,7 @@ describe("BunSqliteLibraryStore", () => {
     ).toEqual([
       { name: "duplicate_pair_reviews", type: "table" },
       { name: "library_item_authors", type: "table" },
+      { name: "library_item_custom_metadata", type: "table" },
       { name: "library_item_formats", type: "table" },
       { name: "library_item_identifiers", type: "table" },
       { name: "library_item_languages", type: "table" },

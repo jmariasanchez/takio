@@ -203,6 +203,7 @@ describe("BunSqliteLibraryStore schema-v7 fingerprints", () => {
     database.transaction(() => {
       database.run("DROP INDEX library_item_formats_by_fingerprint");
       database.run("DROP INDEX library_item_formats_by_format");
+      database.run("DROP TABLE library_item_custom_metadata");
       database.run("DROP TABLE duplicate_pair_reviews");
       database.run("ALTER TABLE library_item_formats RENAME TO library_item_formats_v7");
       database.run(`
@@ -279,7 +280,7 @@ describe("BunSqliteLibraryStore schema-v7 fingerprints", () => {
     expect(await readFile(`${databasePath}.v6.backup`)).toEqual(before);
     using migrated = new Database(databasePath, { strict: true });
     expect(migrated.query<{ user_version: number }, []>("PRAGMA user_version").get()).toEqual({
-      user_version: 8,
+      user_version: 9,
     });
     expect(
       migrated

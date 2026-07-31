@@ -41,6 +41,18 @@ export const bookIdentifiersSchema = z
 
 export type BookIdentifiers = z.infer<typeof bookIdentifiersSchema>;
 
+export const bookCustomMetadataSchema = z
+  .record(
+    z.string().trim().regex(/^[a-z][a-z0-9_]{0,63}$/),
+    z.string().max(16 * 1024),
+  )
+  .refine((metadata) => Object.keys(metadata).length <= 64, {
+    message: "Books can have at most 64 custom metadata fields.",
+  })
+  .readonly();
+
+export type BookCustomMetadata = z.infer<typeof bookCustomMetadataSchema>;
+
 export const publishedDateSchema = z
   .string()
   .regex(/^\d{4}(?:-(?:0[1-9]|1[0-2])(?:-(?:0[1-9]|[12]\d|3[01]))?)?$/)
@@ -117,6 +129,7 @@ export const libraryItemSchema = z
     publisher: optionalText,
     languages: z.array(languageTagSchema).min(1).readonly().optional(),
     identifiers: bookIdentifiersSchema.optional(),
+    customMetadata: bookCustomMetadataSchema.optional(),
     publishedDate: publishedDateSchema.optional(),
     rating: z.number().finite().min(0).max(10).optional(),
     description: optionalText,

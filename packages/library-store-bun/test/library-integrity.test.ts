@@ -43,7 +43,7 @@ describe("library integrity verification", () => {
     expect(verifyLibraryIntegrity(databasePath)).toEqual({
       ok: true,
       value: {
-        schemaVersion: 8,
+        schemaVersion: 9,
         items: { total: 1, active: 1, trashed: 0 },
         formats: { total: 1, managed: 1, referenced: 0 },
       },
@@ -113,7 +113,7 @@ describe("library integrity verification", () => {
       value: {
         path: backupPath,
         report: {
-          schemaVersion: 8,
+          schemaVersion: 9,
           items: { total: 1, active: 1, trashed: 0 },
           formats: { total: 2, managed: 1, referenced: 1 },
         },
@@ -129,7 +129,7 @@ describe("library integrity verification", () => {
       value: {
         path: restoredDatabasePath,
         report: {
-          schemaVersion: 8,
+          schemaVersion: 9,
           items: { total: 1, active: 1, trashed: 0 },
           formats: { total: 2, managed: 1, referenced: 1 },
         },

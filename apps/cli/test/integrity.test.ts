@@ -85,7 +85,7 @@ describe("takio library verify", () => {
       ok: true,
       value: {
         report: {
-          schemaVersion: 8,
+          schemaVersion: 9,
           items: { total: 1, active: 1, trashed: 0 },
           formats: { total: 1, managed: 1, referenced: 0 },
         },
@@ -136,7 +136,7 @@ describe("takio library verify", () => {
       value: {
         backup: {
           path: backupPath,
-          report: { schemaVersion: 8, formats: { managed: 1, referenced: 0 } },
+          report: { schemaVersion: 9, formats: { managed: 1, referenced: 0 } },
         },
       },
     });
@@ -156,7 +156,7 @@ describe("takio library verify", () => {
       value: {
         restore: {
           path: restoredDatabase,
-          report: { schemaVersion: 8, items: { total: 1 } },
+          report: { schemaVersion: 9, items: { total: 1 } },
         },
       },
     });

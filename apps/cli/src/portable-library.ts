@@ -137,6 +137,11 @@ function portableOpf(item: LibraryItem, coverName?: string): string {
     ...(item.rating !== undefined
       ? [`    <meta name="calibre:rating" content="${item.rating}"/>`]
       : []),
+    ...Object.entries(item.customMetadata ?? {})
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([name, value]) =>
+        `    <meta name="takio:custom:${xml(name)}" content="${xml(value)}"/>`,
+      ),
     `    <meta name="takio:added_at" content="${xml(item.addedAt)}"/>`,
     ...(item.updatedAt
       ? [`    <meta name="takio:updated_at" content="${xml(item.updatedAt)}"/>`]
@@ -204,7 +209,7 @@ function artifactPath(root: string, directory: string, leaf: string): string {
   if (
     directory.length < 1 || directory.length > 128 || directory === "." || directory === ".." ||
     directory.includes("/") || directory.includes("\\") ||
-    !/^(?:metadata\.opf|book\.(?:epub|pdf|mobi|azw3|docx|html|txt)|cover\.(?:jpg|jpeg|png))$/.test(leaf)
+    !/^(?:metadata\.opf|book\.(?:kepub|epub|pdf|mobi|azw3|docx|html|txt|cbz)|cover\.(?:jpg|jpeg|png))$/.test(leaf)
   ) {
     throw new TypeError("Invalid portable path.");
   }
@@ -331,6 +336,17 @@ async function parsePortableBook(root: string, book: PortableBook): Promise<Pars
   const addedAt = metaContent(meta, "takio:added_at");
   const updatedAt = metaContent(meta, "takio:updated_at");
   const formatOrder = metaContent(meta, "takio:format_order")?.split(",") ?? [];
+  const customMetadata: Record<string, string> = {};
+  for (const entry of meta) {
+    const name = attribute(entry, "name");
+    if (!name?.startsWith("takio:custom:")) continue;
+    const key = name.slice("takio:custom:".length);
+    const value = attribute(entry, "content");
+    if (!key || value === undefined || key in customMetadata) {
+      throw new TypeError("Invalid portable custom metadata.");
+    }
+    customMetadata[key] = value;
+  }
   if (!id || !addedAt || formatOrder.length < 1 || new Set(formatOrder).size !== formatOrder.length) {
     throw new TypeError("Incomplete portable metadata.");
   }
@@ -367,6 +383,7 @@ async function parsePortableBook(root: string, book: PortableBook): Promise<Pars
     ...(patch.publisher ? { publisher: patch.publisher } : {}),
     ...(patch.languages ? { languages: patch.languages } : {}),
     ...(Object.keys(portableIdentifiers).length > 0 ? { identifiers: portableIdentifiers } : {}),
+    ...(Object.keys(customMetadata).length > 0 ? { customMetadata } : {}),
     ...(patch.publishedDate ? { publishedDate: patch.publishedDate } : {}),
     ...(patch.rating !== undefined ? { rating: patch.rating } : {}),
     ...(patch.description ? { description: patch.description } : {}),

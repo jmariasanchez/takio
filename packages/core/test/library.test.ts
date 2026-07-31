@@ -4,6 +4,7 @@ import {
   InMemoryLibraryRepository,
   BOOK_FORMAT_PROVENANCES,
   bookAuthorSchema,
+  bookCustomMetadataSchema,
   bookFormatSchema,
   bookFormatsSchema,
   bookIdentifiersSchema,
@@ -12,6 +13,7 @@ import {
   normalizeTags,
   publishedDateSchema,
   type BookAuthor,
+  type BookCustomMetadata,
   type BookFormat,
   type BookIdentifiers,
   type LibraryItem,
@@ -190,6 +192,20 @@ describe("libraryItemSchema", () => {
     expect(() => libraryItemSchema.parse({ ...item, identifiers: { isbn: " " } })).toThrow();
     expect(() => libraryItemSchema.parse({ ...item, rating: -0.1 })).toThrow();
     expect(() => libraryItemSchema.parse({ ...item, rating: 10.1 })).toThrow();
+  });
+
+  it("bounds extensible text metadata without inventing typed columns", () => {
+    const metadata: BookCustomMetadata = { acquisition_source: "Local bookshop" };
+    expect(bookCustomMetadataSchema.parse(metadata)).toEqual(metadata);
+    expect(libraryItemSchema.parse({ ...item, customMetadata: metadata })).toMatchObject({
+      customMetadata: metadata,
+    });
+    expect(bookCustomMetadataSchema.safeParse({ "Bad Key": "value" }).success).toBe(false);
+    expect(
+      bookCustomMetadataSchema.safeParse(
+        Object.fromEntries(Array.from({ length: 65 }, (_, index) => [`field_${index}`, "value"])),
+      ).success,
+    ).toBe(false);
   });
 
   it("preserves language order and publication-date precision", () => {

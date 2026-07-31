@@ -10,7 +10,7 @@ store.close();
 ```
 
 The caller must supply the database path. `open` initializes an empty database
-at schema v8, reopens v8 databases, and atomically migrates v1 through v7 after
+at schema v9, reopens v9 databases, and atomically migrates v1 through v8 after
 retaining a verified `<database>.vN.backup`. Other schema versions return
 `incompatible-schema`; no production database location is selected here.
 
@@ -29,8 +29,8 @@ indexes. Migration does not infer rich metadata from the legacy scalar author,
 so v1 through v4 records retain their exact public shape.
 
 Schema v6 adds recoverable trash, schema v7 fingerprints every managed format
-with its byte count and SHA-256 digest, and schema v8 records explicit duplicate
-review decisions.
+with its byte count and SHA-256 digest, schema v8 records explicit duplicate
+review decisions, and schema v9 adds bounded text custom metadata fields.
 
 ## Managed format lifecycle
 

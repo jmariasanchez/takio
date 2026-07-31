@@ -610,11 +610,12 @@ describe("BunSqliteLibraryStore duplicate review", () => {
     });
   });
 
-  it("backs up and migrates v7 review state and then reopens v8 without mutation", async () => {
+  it("backs up and migrates v7 review state and then reopens v9 without mutation", async () => {
     const initializer = await openStore();
     initializer.close();
     using downgrade = new Database(databasePath, { strict: true });
     downgrade.transaction(() => {
+      downgrade.run("DROP TABLE library_item_custom_metadata");
       downgrade.run("DROP TABLE duplicate_pair_reviews");
       downgrade.run("PRAGMA user_version = 7");
     }).immediate();
@@ -626,7 +627,7 @@ describe("BunSqliteLibraryStore duplicate review", () => {
     expect(await readFile(`${databasePath}.v7.backup`)).toEqual(before);
     using current = new Database(databasePath, { strict: true });
     expect(current.query<{ user_version: number }, []>("PRAGMA user_version").get()).toEqual({
-      user_version: 8,
+      user_version: 9,
     });
     expect(
       current

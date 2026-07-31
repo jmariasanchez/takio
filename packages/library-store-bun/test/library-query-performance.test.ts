@@ -29,6 +29,7 @@ const HYDRATION_RELATIONS = [
   "authors",
   "languages",
   "identifiers",
+  "customMetadata",
 ] as const;
 
 if (

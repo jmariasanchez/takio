@@ -64,7 +64,7 @@ To produce a standalone executable for the current platform, run
 require Bun at runtime. Calibre remains an external runtime dependency for
 metadata extraction and conversion.
 
-## Library storage and schema v8
+## Library storage and schema v9
 
 Importing a library item or attaching a format as a copy leaves the selected
 source in place and creates a Takio-managed copy. Attaching a reference records
@@ -74,7 +74,7 @@ deleted. If immediate managed-file cleanup fails, Takio records the obligation
 and retries it when the library is next opened.
 
 The first time the current storage implementation opens a schema-v1 through
-schema-v7 library, it migrates the database atomically to schema v8 after
+schema-v8 library, it migrates the database atomically to schema v9 after
 retaining a verified backup named `<database>.vN.backup`. Migrated formats from
 schemas that predate ownership tracking are treated as references. There is no
 in-place downgrade: older binaries reject a schema they do not understand, and

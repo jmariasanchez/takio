@@ -148,7 +148,14 @@ describe("BunSqliteLibraryStore catalogue queries", () => {
     if (!result.ok) return;
     expect(result.value.total).toBe(2);
     expect(result.value.items.map(({ id }) => id)).toEqual(["a"]);
-    expect(hydrationQueries).toEqual(["formats", "tags", "authors", "languages", "identifiers"]);
+    expect(hydrationQueries).toEqual([
+      "formats",
+      "tags",
+      "authors",
+      "languages",
+      "identifiers",
+      "customMetadata",
+    ]);
     expect(result.value.facets.authors).toEqual([
       { value: "N. K. Jemisin", count: 1 },
       { value: "Octavia E. Butler", count: 1 },
@@ -176,11 +183,13 @@ describe("BunSqliteLibraryStore catalogue queries", () => {
       "authors",
       "languages",
       "identifiers",
+      "customMetadata",
       "formats",
       "tags",
       "authors",
       "languages",
       "identifiers",
+      "customMetadata",
     ]);
 
     const crossFacet = await store.query(

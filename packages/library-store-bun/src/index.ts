@@ -1,4 +1,5 @@
 import {
+  bookCustomMetadataSchema,
   bookFormatSchema,
   bookFormatsSchema,
   detectFormat,
@@ -133,7 +134,7 @@ import { initializationTestSeam } from "./initialization-test-seam.js";
 import { lifecycleTestSeam } from "./lifecycle-test-seam.js";
 import { queryTestSeam } from "./query-test-seam.js";
 
-export const LIBRARY_SCHEMA_VERSION = 8;
+export const LIBRARY_SCHEMA_VERSION = 9;
 const SCHEMA_VERSION = LIBRARY_SCHEMA_VERSION;
 const incompatibleSchema = Symbol("incompatible-schema");
 const duplicateFormat = Symbol("duplicate-format");
@@ -173,11 +174,13 @@ type StoredTag = { name: unknown };
 type StoredAuthor = { name: unknown; sortName: unknown; position: unknown };
 type StoredLanguage = { language: unknown; position: unknown };
 type StoredIdentifier = { scheme: unknown; value: unknown };
+type StoredCustomMetadata = { name: unknown; value: unknown };
 type StoredItemFormat = StoredPositionedBookFormat & { libraryItemId: string };
 type StoredItemTag = StoredTag & { libraryItemId: string; position: unknown };
 type StoredItemAuthor = StoredAuthor & { libraryItemId: string };
 type StoredItemLanguage = StoredLanguage & { libraryItemId: string };
 type StoredItemIdentifier = StoredIdentifier & { libraryItemId: string };
+type StoredItemCustomMetadata = StoredCustomMetadata & { libraryItemId: string };
 type StoredMigrationFormat = {
   libraryItemId: string;
   sourcePath: string;
@@ -869,11 +872,13 @@ type StoredRichMetadata = {
   authors?: unknown;
   languages?: unknown;
   identifiers?: unknown;
+  customMetadata?: unknown;
 };
 
 function readRichMetadata(
   database: Database,
   itemId: string,
+  includeCustomMetadata = true,
 ): LibraryStoreResult<StoredRichMetadata> {
   const storedAuthors = database
     .query<StoredAuthor, [string]>(`
@@ -921,6 +926,23 @@ function readRichMetadata(
     identifierEntries.push([canonicalScheme, value]);
   }
 
+  const customMetadataEntries: [string, unknown][] = [];
+  if (includeCustomMetadata) {
+    const storedCustomMetadata = database
+      .query<StoredCustomMetadata, [string]>(`
+        SELECT name, value
+        FROM library_item_custom_metadata
+        WHERE library_item_id = ?
+        ORDER BY name
+      `)
+      .all(itemId);
+    customMetadataEntries.push(
+      ...storedCustomMetadata.map(
+        ({ name, value }): [string, unknown] => [name as string, value],
+      ),
+    );
+  }
+
   return success({
     authors:
       storedAuthors.length === 0
@@ -937,6 +959,10 @@ function readRichMetadata(
       identifierEntries.length === 0
         ? undefined
         : Object.fromEntries(identifierEntries),
+    customMetadata:
+      customMetadataEntries.length === 0
+        ? undefined
+        : Object.fromEntries(customMetadataEntries),
   });
 }
 
@@ -1008,6 +1034,7 @@ function readItem(
   itemsDirectory: string,
   row: StoredLibraryItem,
   includeRichMetadata = true,
+  includeCustomMetadata = true,
 ): LibraryStoreResult<LibraryItem> {
   if (typeof row.id !== "string") {
     return failure("invalid-stored-data");
@@ -1038,7 +1065,9 @@ function readItem(
     return failure("invalid-stored-data");
   }
 
-  const richMetadata = includeRichMetadata ? readRichMetadata(database, row.id) : success({});
+  const richMetadata = includeRichMetadata
+    ? readRichMetadata(database, row.id, includeCustomMetadata)
+    : success({});
   if (!richMetadata.ok) {
     return richMetadata;
   }
@@ -1168,6 +1197,17 @@ function createRichMetadataTables(database: Database): void {
       scheme TEXT NOT NULL,
       value TEXT NOT NULL,
       PRIMARY KEY (library_item_id, scheme)
+    ) STRICT
+  `);
+}
+
+function createCustomMetadataTable(database: Database): void {
+  database.run(`
+    CREATE TABLE library_item_custom_metadata (
+      library_item_id TEXT NOT NULL REFERENCES library_items(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      value TEXT NOT NULL,
+      PRIMARY KEY (library_item_id, name)
     ) STRICT
   `);
 }
@@ -1607,6 +1647,10 @@ function migrateV7ToV8(database: Database): void {
   createDuplicatePairReviewsTable(database);
 }
 
+function migrateV8ToV9(database: Database): void {
+  createCustomMetadataTable(database);
+}
+
 function verifyV4Database(
   database: Database,
   coversDirectory: string,
@@ -1710,7 +1754,7 @@ function verifyV5Database(
     integrity !== "ok" ||
     foreignKeyViolations.length > 0 ||
     itemWithoutFormat ||
-    rows.some((row) => !readItem(database, coversDirectory, itemsDirectory, row).ok)
+    rows.some((row) => !readItem(database, coversDirectory, itemsDirectory, row, true, false).ok)
   ) {
     throw new Error("The migrated database could not be verified.");
   }
@@ -1907,6 +1951,59 @@ function verifyV8Database(
   }
 }
 
+function verifyV8Backup(
+  path: string,
+  coversDirectory: string,
+  itemsDirectory: string,
+): void {
+  using backup = new Database(path, { strict: true });
+  backup.run("PRAGMA foreign_keys = ON");
+  const version = backup.query<{ user_version: number }, []>("PRAGMA user_version").get()
+    ?.user_version;
+  if (version !== 8) {
+    throw new Error("The pre-migration backup could not be verified.");
+  }
+  verifyV8Database(backup, coversDirectory, itemsDirectory);
+}
+
+function retainVerifiedV8Backup(
+  database: Database,
+  databasePath: string,
+  coversDirectory: string,
+  itemsDirectory: string,
+): void {
+  retainVerifiedBackup(database, `${databasePath}.v8.backup`, (path) =>
+    verifyV8Backup(path, coversDirectory, itemsDirectory),
+  );
+}
+
+function verifyV9Database(
+  database: Database,
+  coversDirectory: string,
+  itemsDirectory: string,
+): void {
+  verifyV8Database(database, coversDirectory, itemsDirectory);
+  const rows = database
+    .query<StoredItemCustomMetadata, []>(`
+      SELECT library_item_id AS libraryItemId, name, value
+      FROM library_item_custom_metadata
+      ORDER BY library_item_id, name
+    `)
+    .all();
+  const metadataByItem = new Map<string, Record<string, unknown>>();
+  for (const { libraryItemId, name, value } of rows) {
+    if (typeof libraryItemId !== "string" || typeof name !== "string") {
+      throw new Error("The migrated database could not be verified.");
+    }
+    const metadata = metadataByItem.get(libraryItemId) ?? {};
+    metadata[name] = value;
+    metadataByItem.set(libraryItemId, metadata);
+  }
+  if ([...metadataByItem.values()].some((metadata) => !bookCustomMetadataSchema.safeParse(metadata).success)) {
+    throw new Error("The migrated database could not be verified.");
+  }
+}
+
 export type LibraryIntegrityReport = {
   readonly schemaVersion: number;
   readonly items: {
@@ -1956,7 +2053,7 @@ export function verifyLibraryIntegrity(databasePath: string): LibraryIntegrityRe
       return { ok: false, error: { code: "incompatible-schema" } };
     }
 
-    verifyV8Database(database, join(libraryRoot, "covers"), join(libraryRoot, "items"));
+    verifyV9Database(database, join(libraryRoot, "covers"), join(libraryRoot, "items"));
     const itemCounts = database
       .query<{ total: number; active: number; trashed: number }, []>(`
         SELECT COUNT(*) AS total,
@@ -2431,10 +2528,25 @@ function writeIdentifiers(
   }
 }
 
+function writeCustomMetadata(
+  database: Database,
+  itemId: string,
+  metadata: NonNullable<LibraryItem["customMetadata"]>,
+): void {
+  for (const [name, value] of Object.entries(metadata)) {
+    database.run(
+      `INSERT INTO library_item_custom_metadata
+        (library_item_id, name, value) VALUES (?, ?, ?)`,
+      [itemId, name, value],
+    );
+  }
+}
+
 function writeRichMetadata(database: Database, item: LibraryItem): void {
   writeAuthors(database, item.id, item.authors ?? []);
   writeLanguages(database, item.id, item.languages ?? []);
   writeIdentifiers(database, item.id, item.identifiers ?? {});
+  writeCustomMetadata(database, item.id, item.customMetadata ?? {});
 }
 
 function readStoredItem(
@@ -2502,8 +2614,17 @@ function buildLibrarySearch(request: QueryLibraryItemsRequest): SqlFragment {
         WHERE library_item_identifiers.library_item_id = library_items.id
           AND library_item_identifiers.value LIKE ? ESCAPE '\\' COLLATE NOCASE
       )
+      OR EXISTS (
+        SELECT 1 FROM library_item_custom_metadata
+        WHERE library_item_custom_metadata.library_item_id = library_items.id
+          AND (library_item_custom_metadata.name LIKE ? ESCAPE '\\' COLLATE NOCASE
+            OR library_item_custom_metadata.value LIKE ? ESCAPE '\\' COLLATE NOCASE)
+      )
     )`);
-    parameters.push(pattern, pattern, pattern, pattern, pattern, pattern, pattern, pattern, pattern);
+    parameters.push(
+      pattern, pattern, pattern, pattern, pattern, pattern,
+      pattern, pattern, pattern, pattern, pattern,
+    );
   }
 
   return { sql: clauses.length === 0 ? "1" : clauses.join(" AND "), parameters };
@@ -2783,18 +2904,29 @@ function hydrateLibraryPage(
       ORDER BY library_item_id, scheme
     `)
     .all(encodedIds);
+  queryTestSeam.beforeHydrationQuery?.("customMetadata");
+  const customMetadata = database
+    .query<StoredItemCustomMetadata, [string]>(`
+      SELECT library_item_id AS libraryItemId, name, value
+      FROM library_item_custom_metadata
+      WHERE library_item_id IN (SELECT value FROM json_each(?))
+      ORDER BY library_item_id, name
+    `)
+    .all(encodedIds);
 
   const groupedFormats = groupStoredRows(ids, formats);
   const groupedTags = groupStoredRows(ids, tags);
   const groupedAuthors = groupStoredRows(ids, authors);
   const groupedLanguages = groupStoredRows(ids, languages);
   const groupedIdentifiers = groupStoredRows(ids, identifiers);
+  const groupedCustomMetadata = groupStoredRows(ids, customMetadata);
   if (
     !groupedFormats ||
     !groupedTags ||
     !groupedAuthors ||
     !groupedLanguages ||
-    !groupedIdentifiers
+    !groupedIdentifiers ||
+    !groupedCustomMetadata
   ) {
     return failure("invalid-stored-data");
   }
@@ -2848,6 +2980,9 @@ function hydrateLibraryPage(
       schemes.add(scheme);
       identifierEntries.push([scheme, value]);
     }
+    const customMetadataEntries = groupedCustomMetadata
+      .get(id)!
+      .map(({ name, value }) => [name, value]);
 
     const item = parseItem(
       coversDirectory,
@@ -2870,6 +3005,10 @@ function hydrateLibraryPage(
             : storedLanguages.map(({ language }) => language),
         identifiers:
           identifierEntries.length === 0 ? undefined : Object.fromEntries(identifierEntries),
+        customMetadata:
+          customMetadataEntries.length === 0
+            ? undefined
+            : Object.fromEntries(customMetadataEntries),
       },
     );
     if (!item.ok) {
@@ -3178,6 +3317,10 @@ function applyDuplicateMetadata(
     languages: patch.languages === null ? undefined : (patch.languages ?? current.languages),
     identifiers:
       patch.identifiers === null ? undefined : (patch.identifiers ?? current.identifiers),
+    customMetadata:
+      patch.customMetadata === null
+        ? undefined
+        : (patch.customMetadata ?? current.customMetadata),
     publishedDate:
       patch.publishedDate === null ? undefined : (patch.publishedDate ?? current.publishedDate),
     rating: patch.rating === null ? undefined : (patch.rating ?? current.rating),
@@ -3235,6 +3378,10 @@ function writeDuplicateMetadata(
   if (patch.identifiers !== undefined) {
     database.run("DELETE FROM library_item_identifiers WHERE library_item_id = ?", [item.id]);
     writeIdentifiers(database, item.id, item.identifiers ?? {});
+  }
+  if (patch.customMetadata !== undefined) {
+    database.run("DELETE FROM library_item_custom_metadata WHERE library_item_id = ?", [item.id]);
+    writeCustomMetadata(database, item.id, item.customMetadata ?? {});
   }
 }
 
@@ -3329,12 +3476,13 @@ export class BunSqliteLibraryStore
           createMetadataTables(database!);
           createFormatTable(database!);
           createRichMetadataTables(database!);
+          createCustomMetadataTable(database!);
           createSavedLibraryViewsTable(database!);
           createLibraryQueryIndexes(database!);
           createLibraryTrashIndex(database!);
           createManagedFingerprintIndex(database!);
           createDuplicatePairReviewsTable(database!);
-          verifyV8Database(database!, this.#coversDirectory, this.#itemsDirectory);
+          verifyV9Database(database!, this.#coversDirectory, this.#itemsDirectory);
           database!.run(`PRAGMA user_version = ${SCHEMA_VERSION}`);
         } else if (version === 1) {
           retainVerifiedV1Backup(database!, this.#databasePath);
@@ -3350,7 +3498,8 @@ export class BunSqliteLibraryStore
           migrateV5ToV6(database!);
           migrateV6ToV7(database!, this.#itemsDirectory);
           migrateV7ToV8(database!);
-          verifyV8Database(database!, this.#coversDirectory, this.#itemsDirectory);
+          migrateV8ToV9(database!);
+          verifyV9Database(database!, this.#coversDirectory, this.#itemsDirectory);
           database!.run(`PRAGMA user_version = ${SCHEMA_VERSION}`);
         } else if (version === 2) {
           retainVerifiedV2Backup(database!, this.#databasePath, this.#coversDirectory);
@@ -3360,7 +3509,8 @@ export class BunSqliteLibraryStore
           migrateV5ToV6(database!);
           migrateV6ToV7(database!, this.#itemsDirectory);
           migrateV7ToV8(database!);
-          verifyV8Database(database!, this.#coversDirectory, this.#itemsDirectory);
+          migrateV8ToV9(database!);
+          verifyV9Database(database!, this.#coversDirectory, this.#itemsDirectory);
           database!.run(`PRAGMA user_version = ${SCHEMA_VERSION}`);
         } else if (version === 3) {
           retainVerifiedV3Backup(database!, this.#databasePath, this.#coversDirectory);
@@ -3369,7 +3519,8 @@ export class BunSqliteLibraryStore
           migrateV5ToV6(database!);
           migrateV6ToV7(database!, this.#itemsDirectory);
           migrateV7ToV8(database!);
-          verifyV8Database(database!, this.#coversDirectory, this.#itemsDirectory);
+          migrateV8ToV9(database!);
+          verifyV9Database(database!, this.#coversDirectory, this.#itemsDirectory);
           database!.run(`PRAGMA user_version = ${SCHEMA_VERSION}`);
         } else if (version === 4) {
           retainVerifiedV4Backup(
@@ -3382,7 +3533,8 @@ export class BunSqliteLibraryStore
           migrateV5ToV6(database!);
           migrateV6ToV7(database!, this.#itemsDirectory);
           migrateV7ToV8(database!);
-          verifyV8Database(database!, this.#coversDirectory, this.#itemsDirectory);
+          migrateV8ToV9(database!);
+          verifyV9Database(database!, this.#coversDirectory, this.#itemsDirectory);
           database!.run(`PRAGMA user_version = ${SCHEMA_VERSION}`);
         } else if (version === 5) {
           retainVerifiedV5Backup(
@@ -3394,7 +3546,8 @@ export class BunSqliteLibraryStore
           migrateV5ToV6(database!);
           migrateV6ToV7(database!, this.#itemsDirectory);
           migrateV7ToV8(database!);
-          verifyV8Database(database!, this.#coversDirectory, this.#itemsDirectory);
+          migrateV8ToV9(database!);
+          verifyV9Database(database!, this.#coversDirectory, this.#itemsDirectory);
           database!.run(`PRAGMA user_version = ${SCHEMA_VERSION}`);
         } else if (version === 6) {
           retainVerifiedV6Backup(
@@ -3405,7 +3558,8 @@ export class BunSqliteLibraryStore
           );
           migrateV6ToV7(database!, this.#itemsDirectory);
           migrateV7ToV8(database!);
-          verifyV8Database(database!, this.#coversDirectory, this.#itemsDirectory);
+          migrateV8ToV9(database!);
+          verifyV9Database(database!, this.#coversDirectory, this.#itemsDirectory);
           database!.run(`PRAGMA user_version = ${SCHEMA_VERSION}`);
         } else if (version === 7) {
           retainVerifiedV7Backup(
@@ -3415,7 +3569,18 @@ export class BunSqliteLibraryStore
             this.#itemsDirectory,
           );
           migrateV7ToV8(database!);
-          verifyV8Database(database!, this.#coversDirectory, this.#itemsDirectory);
+          migrateV8ToV9(database!);
+          verifyV9Database(database!, this.#coversDirectory, this.#itemsDirectory);
+          database!.run(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+        } else if (version === 8) {
+          retainVerifiedV8Backup(
+            database!,
+            this.#databasePath,
+            this.#coversDirectory,
+            this.#itemsDirectory,
+          );
+          migrateV8ToV9(database!);
+          verifyV9Database(database!, this.#coversDirectory, this.#itemsDirectory);
           database!.run(`PRAGMA user_version = ${SCHEMA_VERSION}`);
         } else if (version !== SCHEMA_VERSION) {
           throw incompatibleSchema;
@@ -4646,6 +4811,10 @@ export class BunSqliteLibraryStore
             parsedPatch.data.identifiers === null
               ? undefined
               : (parsedPatch.data.identifiers ?? current.value.identifiers),
+          customMetadata:
+            parsedPatch.data.customMetadata === null
+              ? undefined
+              : (parsedPatch.data.customMetadata ?? current.value.customMetadata),
           publishedDate:
             parsedPatch.data.publishedDate === null
               ? undefined
@@ -4706,6 +4875,13 @@ export class BunSqliteLibraryStore
         if (parsedPatch.data.identifiers !== undefined) {
           this.#database!.run("DELETE FROM library_item_identifiers WHERE library_item_id = ?", [id]);
           writeIdentifiers(this.#database!, id, updated.data.identifiers ?? {});
+        }
+        if (parsedPatch.data.customMetadata !== undefined) {
+          this.#database!.run(
+            "DELETE FROM library_item_custom_metadata WHERE library_item_id = ?",
+            [id],
+          );
+          writeCustomMetadata(this.#database!, id, updated.data.customMetadata ?? {});
         }
         return readStoredItem(
           this.#database!,
@@ -4840,7 +5016,7 @@ export class BunSqliteLibraryStore
     try {
       const pattern = `%${escapeLike(query)}%`;
       const rows = this.#database
-        .query<StoredLibraryItem, [string, string, string, string]>(`
+        .query<StoredLibraryItem, [string, string, string, string, string, string]>(`
           SELECT id, title, added_at AS addedAt,
             author, series, series_index AS seriesIndex, publisher,
             published_date AS publishedDate, rating,
@@ -4858,10 +5034,17 @@ export class BunSqliteLibraryStore
               WHERE library_item_tags.library_item_id = library_items.id
                 AND tags.name LIKE ? ESCAPE '\\' COLLATE NOCASE
               )
+              OR EXISTS (
+                SELECT 1
+                FROM library_item_custom_metadata
+                WHERE library_item_custom_metadata.library_item_id = library_items.id
+                  AND (library_item_custom_metadata.name LIKE ? ESCAPE '\\' COLLATE NOCASE
+                    OR library_item_custom_metadata.value LIKE ? ESCAPE '\\' COLLATE NOCASE)
+              )
             )
           ORDER BY title COLLATE NOCASE, id
         `)
-        .all(pattern, pattern, pattern, pattern);
+        .all(pattern, pattern, pattern, pattern, pattern, pattern);
       const items: LibraryItem[] = [];
       for (const row of rows) {
         const item = readItem(this.#database, this.#coversDirectory, this.#itemsDirectory, row);

@@ -133,7 +133,7 @@ describe("takio CLI", () => {
           structuredInput: ["inline", "stdin", "file"],
           maxRequestBytes: 16 * 1024,
         },
-        library: { schemaVersion: 8, backupVersion: 1 },
+        library: { schemaVersion: 9, backupVersion: 1 },
         backends: { conversion: { name: "ebook-convert", available: true } },
         conversions: {
           available: true,
@@ -1595,6 +1595,7 @@ describe("takio CLI", () => {
         publisher: "Portable Press",
         languages: ["en-US"],
         identifiers: { isbn: "9780000000002" },
+        customMetadata: { acquisition_source: "Book fair" },
         publishedDate: "2026-07-31",
         rating: 8.5,
         description: "Metadata that must survive reconstruction.",
@@ -1629,7 +1630,7 @@ describe("takio CLI", () => {
           rebuild: {
             path: rebuiltDatabase,
             report: {
-              schemaVersion: 8,
+              schemaVersion: 9,
               items: { total: 1, active: 1, trashed: 0 },
               formats: { total: 2, managed: 2, referenced: 0 },
             },
