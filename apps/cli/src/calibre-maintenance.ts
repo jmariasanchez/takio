@@ -382,9 +382,11 @@ export async function polishEbook(options: {
   try {
     workspace = await mkdtemp(join(tmpdir(), "takio-polish-"));
     await chmod(workspace, 0o700);
+    const stagedInput = join(workspace, `source.${source.format}`);
+    await copyFile(source.path, stagedInput, constants.COPYFILE_EXCL);
     const artifactPath = join(workspace, `polished.${source.format}`);
     await runChild(
-      [backendPath, ...options.operations.map((operation) => polishFlags[operation]), source.path, artifactPath],
+      [backendPath, ...options.operations.map((operation) => polishFlags[operation]), stagedInput, artifactPath],
       workspace,
       options.timeoutMs,
       "polish-failed",

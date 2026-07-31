@@ -66,7 +66,10 @@ describe("Calibre maintenance", () => {
     const record = join(root, "argv.json");
     const input = join(root, "input.epub");
     const output = join(root, "output.epub");
-    await writeFile(input, JSON.stringify({ fakeEbookPolish: { record } }));
+    const inputContents = JSON.stringify({
+      fakeEbookPolish: { record, mutateInput: "backend-mutated staged input" },
+    });
+    await writeFile(input, inputContents);
     const polished = await polishEbook({
       backendPath: configured,
       input,
@@ -79,13 +82,18 @@ describe("Calibre maintenance", () => {
       backend: "ebook-polish",
       inputFormat: "epub",
       operations: ["compress-images", "remove-unused-css"],
-      artifact: { path: join(await realpath(root), "output.epub"), bytes: (await readFile(input)).byteLength },
+      artifact: {
+        path: join(await realpath(root), "output.epub"),
+        bytes: Buffer.byteLength("backend-mutated staged input"),
+      },
     });
+    expect((await readFile(input)).toString()).toBe(inputContents);
+    expect((await readFile(output)).toString()).toBe("backend-mutated staged input");
     expect(JSON.parse((await readFile(record)).toString())).toEqual({
       argv: [
         "--compress-images",
         "--remove-unused-css",
-        await realpath(input),
+        expect.stringContaining("takio-polish-"),
         expect.stringContaining("takio-polish-"),
       ],
     });

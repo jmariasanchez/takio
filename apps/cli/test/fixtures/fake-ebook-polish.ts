@@ -6,7 +6,7 @@ const input = arguments_.at(-2);
 const output = arguments_.at(-1);
 if (!input || !output) process.exit(64);
 
-let control: { mode?: "nonzero"; record?: string } = {};
+let control: { mode?: "nonzero"; record?: string; mutateInput?: string } = {};
 try {
   control = (JSON.parse((await readFile(input)).toString()) as { fakeEbookPolish?: typeof control })
     .fakeEbookPolish ?? {};
@@ -15,4 +15,5 @@ try {
 }
 if (control.record) await writeFile(control.record, JSON.stringify({ argv: arguments_ }));
 if (control.mode === "nonzero") process.exit(7);
+if (control.mutateInput) await writeFile(input, control.mutateInput);
 await copyFile(input, output);
