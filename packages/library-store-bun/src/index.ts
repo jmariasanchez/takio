@@ -5323,8 +5323,6 @@ export class BunSqliteLibraryStore
         }
         const currentTarget =
           candidate.left.id === parsedRequest.data.targetId ? candidate.left : candidate.right;
-        const currentSource =
-          candidate.left.id === parsedRequest.data.sourceId ? candidate.left : candidate.right;
         const updatedAt = new Date().toISOString();
         const updatedTarget = applyDuplicateMetadata(
           currentTarget,

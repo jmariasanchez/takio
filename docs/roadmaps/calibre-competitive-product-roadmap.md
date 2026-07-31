@@ -48,6 +48,11 @@ active-book OPF metadata, all formats (including referenced files), and covers;
 rebuild validates the manifest and reconstructs them as managed copies in a new
 library.
 
+The CLI also ships catalog generation, bounded full-text extraction, Calibre
+validation/polishing workflows, named libraries, extensible metadata, import
+watching, and a foreground authenticated read-only content API. Tagged builds
+publish checksum-bearing macOS and Linux standalone executables.
+
 ### 1. Book-centered data foundation
 
 - One logical book owns multiple format files.
@@ -121,11 +126,13 @@ and mass-storage Kindle acceptance records include hashes and remount results.
 
 ### 5. Demand-gated ecosystem
 
-- Ebook polish and validation using Calibre tools.
+- Ebook polish and bounded validation using Calibre tools. **Implemented.**
 - External Calibre editor handoff through verified copies.
 - Download-only authenticated content server; never browser reading.
-- News/RSS, catalogs, store search, and plugins only after concrete demand
-  proves each extension seam.
+  **Implemented as an explicit foreground process with remote TLS required.**
+- Portable JSON, CSV, and HTML catalogs. **Implemented.**
+- News/RSS, store search, and plugins only after concrete demand proves each
+  extension seam.
 
 ## Permanent exclusions
 

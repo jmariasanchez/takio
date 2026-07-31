@@ -18,6 +18,7 @@ Takio replaces the heavyweight, application-centric Calibre workflow with a focu
 | Converter adapters | Declare supported pairs and invoke a real engine safely | Implemented: local `ebook-convert`, six synchronous conversion pairs and four output profiles |
 | Controller/queue | Persist local jobs and run one foreground job at a time | Implemented: separate `jobs.sqlite` queue |
 | Destination transfer | Detect mounted USB mass-storage recipients and copy verified library files | Implemented: macOS |
+| Content server | Foreground authenticated read-only catalog and attached-format delivery | Implemented: loopback HTTP or explicit remote TLS |
 | Device agent | Authenticated worker that advertises adapters and capacity | Planned |
 
 A `Destination` is a passive mounted recipient volume, distinct from the planned device agent that will act as an authenticated remote execution worker.
@@ -92,6 +93,14 @@ managed artifacts and runs the full integrity verifier before atomic publish.
 Trash, saved views, duplicate-review state, and conversion jobs are not portable
 book data and remain outside this format.
 
+`library catalog` maps those same active book records to JSON, CSV, or HTML and
+omits every local source and cover path. Publication is exclusive and reports
+the byte count and SHA-256 digest. `serve` reuses that path-free record shape in
+a bounded read-only HTTP API. It starts only in the foreground, authenticates
+all requests with a fresh per-run bearer token, and resolves downloads through
+stored item IDs and attached format IDs. Loopback is the default; non-loopback
+binding requires an explicit flag and a supplied TLS certificate/key pair.
+
 ## Durable conversion-to-library handoff
 
 A conversion linked to a library item crosses three separate durability boundaries:
@@ -117,7 +126,7 @@ This handoff adds no built-in ebook reader or viewer. Opening books continues to
 
 - Every command has a narrow, documented contract.
 - Every success and failure has a one-line machine envelope with a stable error code; discovery commands retain readable output unless `--json` is requested.
-- `capabilities` reports the protocol version, structured-input limits, schema, backup, and portable versions, exact conversion pairs, and live backend availability without requiring agents to scrape help text.
+- `capabilities` reports the protocol version, structured-input limits, schema, backup, portable and catalog versions, exact conversion pairs, remote policy, and live backend availability without requiring agents to scrape help text.
 - Structured requests accept bounded inline JSON, stdin with `-`, or a file with `@path`.
 - Commands must return non-zero for invalid requests and never claim a conversion completed before an adapter reports success.
 - Diagnostic commands are read-only: `library verify` never creates, migrates, or repairs a library.
@@ -128,7 +137,7 @@ This handoff adds no built-in ebook reader or viewer. Opening books continues to
 The implemented conversion paths are EPUB-to-KEPUB, EPUB-to-PDF,
 EPUB-to-AZW3, and DOCX, HTML, or TXT to EPUB. They intentionally exclude a
 daemon or detached worker, live backend percentage progress, automatic retry
-or backoff, priorities, scheduling, queued-job overwrite, remote execution, and
+or backoff, priorities, scheduling, queued-job overwrite, remote conversion, and
 hostile-input process sandboxing. Bounded batch operations and foreground
 draining are explicit; a signal cancels the active conversion. A failed
 conversion is terminal; trying again creates a new job.

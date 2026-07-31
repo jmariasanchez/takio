@@ -77,6 +77,7 @@ import {
   type EbookPolishDiscovery,
   type PolishOperation,
 } from "./calibre-maintenance.js";
+import { CATALOG_FORMATS, CatalogError, writeCatalog, type CatalogFormat } from "./catalog.js";
 import {
   DestinationTransferError,
   authorizeDestination,
@@ -102,6 +103,7 @@ import {
   exportPortableLibrary,
   rebuildPortableLibrary,
 } from "./portable-library.js";
+import { ContentServerError, startContentServer } from "./remote-server.js";
 
 type LibraryPaths = {
   readonly databasePath: string;
@@ -181,6 +183,10 @@ async function parseLibraryJsonRequest<T>(
 
 function openWithDefaultApp(argv: readonly string[]): void {
   Bun.spawn({ cmd: [...argv], stdin: "ignore", stdout: "ignore", stderr: "ignore" });
+}
+
+function humanCell(value: string): string {
+  return value.replace(/[\t\r\n]+/g, " ");
 }
 
 function defaultAppCommand(sourcePath: string): readonly string[] {
@@ -454,6 +460,7 @@ export function createProgram(
             schemaVersion: LIBRARY_SCHEMA_VERSION,
             backupVersion: LIBRARY_BACKUP_VERSION,
             portableVersion: PORTABLE_LIBRARY_VERSION,
+            catalogFormats: CATALOG_FORMATS,
           },
           backends: {
             conversion: conversionBackend.ok
@@ -483,8 +490,82 @@ export function createProgram(
             root: "takio --help",
             leaf: "takio <command> --help",
           },
+          remote: {
+            available: true,
+            mode: "foreground-read-only",
+            authentication: "per-run-bearer-token",
+            remoteTransport: "tls-required",
+          },
         },
       }));
+    });
+
+  storageCommand(program.command("serve").helpOption(false), writeError)
+    .description("Serve authenticated read-only library access in the foreground")
+    .option("--db <path>", "database path")
+    .option("--host <host>", "listen host", "127.0.0.1")
+    .option("--port <port>", "listen port", "8787")
+    .option("--allow-remote", "allow a non-loopback host when TLS is configured")
+    .option("--tls-cert <path>", "PEM certificate for HTTPS")
+    .option("--tls-key <path>", "PEM private key for HTTPS")
+    .action(async (
+      options: {
+        db?: string;
+        host: string;
+        port: string;
+        allowRemote?: boolean;
+        tlsCert?: string;
+        tlsKey?: string;
+      },
+      command: Command,
+    ) => {
+      const port = Number(options.port);
+      if (!Number.isSafeInteger(port) || port < 1 || port > 65_535) {
+        command.error("", { exitCode: 1, code: "invalid-arguments" });
+      }
+      const { store } = await openLibraryStore(options.db, command);
+      let running: Awaited<ReturnType<typeof startContentServer>> | undefined;
+      let stop: (() => void) | undefined;
+      try {
+        try {
+          running = await startContentServer({
+            store,
+            hostname: options.host,
+            port,
+            allowRemote: options.allowRemote,
+            certPath: options.tlsCert,
+            keyPath: options.tlsKey,
+          });
+        } catch (error) {
+          command.error("", {
+            exitCode: 1,
+            code: error instanceof ContentServerError ? error.code : "server-unavailable",
+          });
+        }
+        const stopped = new Promise<void>((resolveStopped) => {
+          stop = resolveStopped;
+          process.once("SIGINT", stop);
+          process.once("SIGTERM", stop);
+        });
+        write(JSON.stringify({
+          ok: true,
+          value: {
+            server: {
+              url: running.url,
+              token: running.token,
+              mode: "foreground-read-only",
+            },
+          },
+        }));
+        await stopped;
+      } finally {
+        if (stop) {
+          process.removeListener("SIGINT", stop);
+          process.removeListener("SIGTERM", stop);
+        }
+        await running?.server.stop(true);
+        store.close();
+      }
     });
 
   program
@@ -1577,7 +1658,8 @@ export function createProgram(
 
   storageCommand(library.command("list").helpOption(false), writeError)
     .option("--db <path>", "database path")
-    .action(async (options: { db?: string }, command: Command) => {
+    .option("--human", "emit a readable table instead of JSON")
+    .action(async (options: { db?: string; human?: boolean }, command: Command) => {
       const { store } = await openLibraryStore(options.db, command);
       try {
         const result = await store.list({});
@@ -1585,7 +1667,48 @@ export function createProgram(
           command.error("", { exitCode: 1, code: result.error.code });
         }
 
-        write(JSON.stringify({ ok: true, value: { items: result.value } }));
+        if (options.human) {
+          write("ID\tTITLE\tAUTHORS\tFORMATS");
+          for (const item of result.value) {
+            const authors = item.authors?.map(({ name }) => name).join(", ") ?? item.author ?? "";
+            write(`${humanCell(item.id)}\t${humanCell(item.title)}\t${humanCell(authors)}\t${item.formats.map(({ format }) => format).join(",")}`);
+          }
+        } else {
+          write(JSON.stringify({ ok: true, value: { items: result.value } }));
+        }
+      } finally {
+        store.close();
+      }
+    });
+
+  storageCommand(library.command("catalog").helpOption(false), writeError)
+    .description("Write a shareable catalog without exposing local source paths")
+    .option("--db <path>", "database path")
+    .requiredOption("--format <format>", `catalog format: ${CATALOG_FORMATS.join(", ")}`)
+    .requiredOption("--output <path>", "new .json, .csv, or .html output path")
+    .action(async (
+      options: { db?: string; format: string; output: string },
+      command: Command,
+    ) => {
+      const format = CATALOG_FORMATS.find((candidate) => candidate === options.format);
+      if (!format) command.error("", { exitCode: 1, code: "invalid-arguments" });
+      const { store } = await openLibraryStore(options.db, command);
+      try {
+        const listed = await store.list({});
+        if (!listed.ok) command.error("", { exitCode: 1, code: listed.error.code });
+        try {
+          const catalog = await writeCatalog({
+            items: listed.value,
+            format: format as CatalogFormat,
+            outputPath: options.output,
+          });
+          write(JSON.stringify({ ok: true, value: { catalog } }));
+        } catch (error) {
+          command.error("", {
+            exitCode: 1,
+            code: error instanceof CatalogError ? error.code : "write-failed",
+          });
+        }
       } finally {
         store.close();
       }

@@ -14,7 +14,6 @@ import {
   mergeDuplicatePairRequestSchema,
   purgeLibraryItemRequestSchema,
   queryLibraryItemsRequestSchema,
-  replaceLibraryFormatRequestSchema,
   removeSavedLibraryViewRequestSchema,
   reopenDuplicatePairRequestSchema,
   restoreLibraryItemRequestSchema,
@@ -36,7 +35,6 @@ import type {
   LibraryMetadataPatch,
   LibraryQueryWireResult,
   LibraryPurgeWireResult,
-  LibraryReplaceFormatWireResult,
   LibraryRemoveWireResult,
   LibraryRestoreWireResult,
   LibrarySavedViewWireResult,
@@ -51,7 +49,6 @@ import type {
   MergeDuplicatePairRequest,
   PurgeLibraryItemRequest,
   QueryLibraryItemsRequest,
-  ReplaceLibraryFormatRequest,
   RemoveSavedLibraryViewRequest,
   ReopenDuplicatePairRequest,
   RestoreLibraryItemRequest,
@@ -84,9 +81,6 @@ export type DesktopLibraryAttachFormatResult =
   | LibraryStoreResult<{ readonly item: LibraryItem | null }>
   | LibraryBridgeFailure;
 export type DesktopLibraryRemoveFormatResult = LibraryRemoveWireResult | LibraryBridgeFailure;
-export type DesktopLibraryReplaceFormatResult =
-  | LibraryReplaceFormatWireResult
-  | LibraryBridgeFailure;
 export type DesktopLibraryRemoveResult = LibraryRemoveWireResult | LibraryBridgeFailure;
 export type DesktopLibraryUpdateResult = LibraryUpdateWireResult | LibraryBridgeFailure;
 export type DesktopLibraryCoverResult = LibraryCoverWireResult | LibraryBridgeFailure;
@@ -359,18 +353,6 @@ export async function removeLibraryFormat(
 ): Promise<DesktopLibraryRemoveFormatResult> {
   const result = await invokeCommand<unknown>("library_remove_format", { id, format });
   return decodeLibraryResult<LibraryRemoveWireResult>(result, isRemoveValue);
-}
-
-export async function replaceLibraryFormat(
-  request: ReplaceLibraryFormatRequest,
-  invokeCommand: LibraryInvoker = invokeTauri,
-): Promise<DesktopLibraryReplaceFormatResult> {
-  if (!replaceLibraryFormatRequestSchema.safeParse(request).success) {
-    return invalidArguments();
-  }
-
-  const result = await invokeCommand<unknown>("library_replace_format", { request });
-  return decodeLibraryResult<LibraryReplaceFormatWireResult>(result, isRemoveValue);
 }
 
 export async function updateLibraryItem(

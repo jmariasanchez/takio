@@ -5,8 +5,9 @@ provides a predictable interface for managing, converting, and sending books
 while using Calibre's proven command-line tools for conversion.
 
 Takio is intended to replace operating Calibre directly for focused library
-workflows, not to reimplement Calibre's reader, editor, server, or plugin
-ecosystem.
+workflows, not to reimplement Calibre's reader, editor, conversion engine, or
+plugin ecosystem. Its optional content server is a narrow read-only delivery
+surface rather than a browser reader.
 
 It is a Bun monorepo with two deliberate product surfaces:
 
@@ -54,18 +55,21 @@ bun run takio library portable-export --dest ~/Exports/takio-portable
 bun run takio library search --query "Ursula Le Guin"
 bun run takio library content-search --query "the dispossessed"
 bun run takio library validate
+bun run takio library catalog --format html --output ~/Exports/takio-catalog.html
 bun run takio plan --input ~/Books/example.epub --to pdf --json
 bun run takio polish --input ~/Books/example.epub --output ~/Books/example-polished.epub --operation remove-unused-css
 bun run takio send --id <book-id> --format azw3 --convert --dest /Volumes/Kindle
+bun run takio serve
 
 # Native desktop app
 bun run desktop
 ```
 
-To produce a standalone executable for the current platform, run
-`bun run build:cli:binary`; the result is `apps/cli/dist/takio` and does not
-require Bun at runtime. Calibre remains an external runtime dependency for
-metadata extraction and conversion.
+To produce a checksummed standalone executable for the current macOS or Linux
+platform, run `bun run release:cli`; outputs are written to `dist/releases` and
+do not require Bun at runtime. A pushed `v<package-version>` tag publishes the
+macOS and Linux artifacts through the release workflow. Calibre remains an
+external runtime dependency for metadata extraction, polishing, and conversion.
 
 ## Library storage and schema v9
 
@@ -131,6 +135,7 @@ The command surface is grouped by workflow:
 | `takio library portable-export`, `rebuild` | Export active books as verified OPF directories and reconstruct them into a new self-contained library. |
 | `takio library import`, `import-many`, `import-watch` | Import once, recursively import roots, or rescan roots in a bounded/stoppable foreground loop. |
 | `takio library list`, `get`, `open`, `search`, `query` | Read the catalogue through simple or structured queries. |
+| `takio library catalog` | Publish a non-overwriting JSON, CSV, or HTML catalog without local source paths. |
 | `takio library content-search` | Search literal text by extracting bounded temporary TXT through Calibre; no persistent index is created. |
 | `takio library validate` | Check Calibre metadata parsing and bounded text extraction for selected formats; this is not EPUBCheck conformance. |
 | `takio library update`, `update-many` | Update metadata for one item or apply one patch to up to 256 distinct items. |
@@ -145,10 +150,14 @@ The command surface is grouped by workflow:
 | `takio jobs enqueue`, `list`, `get`, `cancel`, `retry`, `run-next`, `drain` | Manage and boundedly drain the durable foreground conversion queue. |
 | `takio destination list`, `eject` | Discover and safely eject mounted macOS volumes. |
 | `takio send`, `send-many` | Materialize, copy, and verify one format; `send --convert` can select a tested device format, while batch delivery sends an attached exact format for up to 256 distinct items. |
+| `takio serve` | Run a foreground authenticated, read-only catalog and format-download API. |
 
 Use `takio --library <name> ...` to keep independent named libraries under the
 Takio data directory. `--db <path>` remains available for an explicit physical
 library path; combining both selectors is rejected.
+
+`takio library list --human` emits a tabular view; the default remains the
+stable one-line JSON envelope for scripts.
 
 A plan is not execution. `takio convert` bypasses the queue, while `takio jobs enqueue` records work in `jobs.sqlite`, a database separate from `library.sqlite`. Jobs move through `queued`, `running`, `completed`, `failed`, and `canceled`; `jobs cancel` cancels queued work. `jobs retry` clones failed or canceled work into a new queued job while preserving the terminal record. `run-next` claims one oldest job; `drain` runs up to 256 jobs by default, accepts a smaller `--max-jobs`, and reports processed, terminal, and remaining counts. Both run synchronously and record either a failure or a completed artifact whose path, nonzero size, and SHA-256 digest have been verified. SIGINT or SIGTERM cancels the active foreground conversion, records `conversion-cancelled`, and makes `drain` stop before claiming another job.
 
@@ -165,8 +174,8 @@ and reuses the normal import and best-effort metadata-enrichment path. Stop it
 with SIGINT/SIGTERM or use `--max-cycles`; it emits one aggregate JSON result.
 
 This focused version intentionally has no daemon or detached worker, live
-backend percentage stream, automatic retry, priorities, remote execution, or
-conversion pairs beyond the six advertised by `takio capabilities`.
+backend percentage stream, automatic retry, priorities, remote conversion
+worker, or conversion pairs beyond the six advertised by `takio capabilities`.
 `send --convert` prefers an attached device-compatible format, otherwise creates
 the first tested target for a recognized Kobo or Kindle. `--format` overrides
 that choice. Conversions use the corresponding Calibre output profile and KEPUB
@@ -182,6 +191,15 @@ returns a stable failure instead of reporting stale bytes.
 Viewing and editing remain delegated to installed applications. The discovered
 Calibre executables are trusted local configuration and run without a hostile-input
 sandbox.
+
+`takio serve` runs only until its foreground process exits. It prints one
+startup JSON object containing a fresh 256-bit bearer token and URL, requires
+that token on every `/v1` request, and exposes only health, bounded catalog/item
+metadata, and attached-format download routes. It binds to `127.0.0.1` by
+default. A non-loopback host requires `--allow-remote` plus both `--tls-cert`
+and `--tls-key`; request URLs never contain filesystem paths, and responses
+never disclose them. There is no static root, mutation API, persisted token,
+daemon, or browser reader.
 
 ## Workspace
 

@@ -47,8 +47,14 @@ jobs:
       - name: Build
         run: bun run build
 
-      - name: Build and smoke-test standalone CLI
-        run: bun run build:cli:binary && env -i PATH=/usr/bin:/bin ./apps/cli/dist/takio capabilities
+      - name: Package and smoke-test standalone CLI
+        shell: bash
+        run: |
+          bun run release:cli
+          artifact="$(find dist/releases -maxdepth 1 -type f ! -name '*.sha256' -print -quit)"
+          test -n "$artifact"
+          env -i PATH=/usr/bin:/bin "$artifact" capabilities
+          (cd dist/releases && sha256sum --check ./*.sha256)
 
       - name: Check whitespace
         run: git diff --check
