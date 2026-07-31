@@ -52,7 +52,10 @@ bun run takio library verify
 bun run takio library backup --dest ~/Backups/takio-library
 bun run takio library portable-export --dest ~/Exports/takio-portable
 bun run takio library search --query "Ursula Le Guin"
+bun run takio library content-search --query "the dispossessed"
+bun run takio library validate
 bun run takio plan --input ~/Books/example.epub --to pdf --json
+bun run takio polish --input ~/Books/example.epub --output ~/Books/example-polished.epub --operation remove-unused-css
 bun run takio send --id <book-id> --format azw3 --convert --dest /Volumes/Kindle
 
 # Native desktop app
@@ -126,8 +129,10 @@ The command surface is grouped by workflow:
 | `takio library verify` | Audit database structure and every managed format fingerprint without creating, migrating, or repairing the library. |
 | `takio library backup`, `restore-backup` | Create and restore verified, non-overwriting snapshots of the catalogue and Takio-owned files. |
 | `takio library portable-export`, `rebuild` | Export active books as verified OPF directories and reconstruct them into a new self-contained library. |
-| `takio library import`, `import-many` | Import one file or recursively import files and directories. |
+| `takio library import`, `import-many`, `import-watch` | Import once, recursively import roots, or rescan roots in a bounded/stoppable foreground loop. |
 | `takio library list`, `get`, `open`, `search`, `query` | Read the catalogue through simple or structured queries. |
+| `takio library content-search` | Search literal text by extracting bounded temporary TXT through Calibre; no persistent index is created. |
+| `takio library validate` | Check Calibre metadata parsing and bounded text extraction for selected formats; this is not EPUBCheck conformance. |
 | `takio library update`, `update-many` | Update metadata for one item or apply one patch to up to 256 distinct items. |
 | `takio library format import`, `attach`, `replace`, `remove` | Manage owned copies and caller-owned format references. |
 | `takio library duplicates list`, `keep`, `reopen`, `merge` | Review and resolve duplicate candidates. |
@@ -136,6 +141,7 @@ The command surface is grouped by workflow:
 | `takio library trash list`, `move`, `restore`, `purge` | Remove items recoverably or purge them permanently. |
 | `takio library export-many` | Export selected formats without overwriting existing files, materializing current metadata when supported. |
 | `takio convert` | Run any advertised conversion pair synchronously. |
+| `takio polish` | Publish a new same-format EPUB, KEPUB, or AZW3 artifact with explicitly selected Calibre `ebook-polish` operations. |
 | `takio jobs enqueue`, `list`, `get`, `cancel`, `retry`, `run-next`, `drain` | Manage and boundedly drain the durable foreground conversion queue. |
 | `takio destination list`, `eject` | Discover and safely eject mounted macOS volumes. |
 | `takio send`, `send-many` | Materialize, copy, and verify one format; `send --convert` can select a tested device format, while batch delivery sends an attached exact format for up to 256 distinct items. |
@@ -153,6 +159,10 @@ The caller chooses and owns the output path. Takio refuses to overwrite an exist
 `value.metadata`, apply it with `library update --patch-json`, then use
 `library cover set` if a requested `--cover-output` was returned. Cover output
 is exclusive and never overwrites an existing path.
+
+`library import-watch` is foreground-only, rescans the same validated roots,
+and reuses the normal import and best-effort metadata-enrichment path. Stop it
+with SIGINT/SIGTERM or use `--max-cycles`; it emits one aggregate JSON result.
 
 This focused version intentionally has no daemon or detached worker, live
 backend percentage stream, automatic retry, priorities, remote execution, or

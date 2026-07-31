@@ -67,6 +67,17 @@ import {
   type EbookConvertDiscovery,
 } from "./convert.js";
 import {
+  MaintenanceError,
+  POLISH_OPERATIONS,
+  TEXT_EXTRACTABLE_FORMATS,
+  discoverEbookPolish,
+  extractEbookText,
+  findLiteralText,
+  polishEbook,
+  type EbookPolishDiscovery,
+  type PolishOperation,
+} from "./calibre-maintenance.js";
+import {
   DestinationTransferError,
   authorizeDestination,
   ejectDestination,
@@ -362,6 +373,32 @@ function storageCommand(command: Command, write: (message: string) => void): Com
     });
 }
 
+async function selectLibraryItems(
+  store: BunSqliteLibraryStore,
+  ids: readonly string[],
+  limit: number,
+  command: Command,
+): Promise<{
+  readonly entries: readonly { readonly itemId: string; readonly item?: LibraryItem }[];
+  readonly available: number;
+}> {
+  if (ids.length) {
+    const entries: { itemId: string; item?: LibraryItem }[] = [];
+    for (const id of ids) {
+      const result = await store.get({ id });
+      if (!result.ok) command.error("", { exitCode: 1, code: result.error.code });
+      entries.push({ itemId: id, ...(result.value ? { item: result.value } : {}) });
+    }
+    return { entries, available: entries.length };
+  }
+  const result = await store.list({});
+  if (!result.ok) command.error("", { exitCode: 1, code: result.error.code });
+  return {
+    entries: result.value.slice(0, limit).map((item) => ({ itemId: item.id, item })),
+    available: result.value.length,
+  };
+}
+
 export function createProgram(
   write: (message: string) => void = console.log,
   writeError: (message: string) => void = write,
@@ -373,6 +410,10 @@ export function createProgram(
     code: "backend-unavailable",
   },
   metadataBackend: EbookMetaDiscovery = {
+    ok: false,
+    code: "backend-unavailable",
+  },
+  polishBackend: EbookPolishDiscovery = {
     ok: false,
     code: "backend-unavailable",
   },
@@ -428,6 +469,9 @@ export function createProgram(
                   available: false,
                   code: onlineMetadataBackend.code,
                 },
+            polish: polishBackend.ok
+              ? { name: "ebook-polish", available: true }
+              : { name: "ebook-polish", available: false, code: polishBackend.code },
           },
           formats: FORMAT_CATALOG,
           conversions: {
@@ -533,6 +577,56 @@ export function createProgram(
       }
     },
   );
+
+  const polish = storageCommand(new Command("polish"), writeError)
+    .description("Polish a new EPUB, KEPUB, or AZW3 artifact with Calibre ebook-polish")
+    .requiredOption("--input <path>", "source ebook path")
+    .requiredOption("--output <path>", "new polished artifact path")
+    .requiredOption(
+      "--operation <operation>",
+      `operation (repeatable): ${POLISH_OPERATIONS.join(", ")}`,
+      (operation: string, operations: string[]) => [...operations, operation],
+      [],
+    )
+    .option("--timeout-seconds <seconds>", "polish timeout", "300");
+  program.addCommand(polish);
+
+  polish.action(async (
+    options: {
+      input: string;
+      output: string;
+      operation: string[];
+      timeoutSeconds: string;
+    },
+    command: Command,
+  ) => {
+    const timeoutSeconds = Number(options.timeoutSeconds);
+    if (
+      !Number.isSafeInteger(timeoutSeconds) || timeoutSeconds <= 0 ||
+      timeoutSeconds > Math.floor(2_147_483_647 / 1000) ||
+      options.operation.some((operation) => !POLISH_OPERATIONS.includes(operation as PolishOperation))
+    ) {
+      command.error("", { exitCode: 1, code: "invalid-arguments" });
+    }
+    if (!polishBackend.ok) {
+      command.error("", { exitCode: 1, code: polishBackend.code });
+    }
+    try {
+      const job = await polishEbook({
+        backendPath: polishBackend.path,
+        input: options.input,
+        output: options.output,
+        operations: options.operation as PolishOperation[],
+        timeoutMs: timeoutSeconds * 1000,
+      });
+      write(JSON.stringify({ ok: true, value: { job } }));
+    } catch (error) {
+      if (error instanceof MaintenanceError) {
+        command.error("", { exitCode: 1, code: error.code });
+      }
+      throw error;
+    }
+  });
 
   const metadata = storageCommand(new Command("metadata"), writeError)
     .description("Inspect embedded ebook metadata through Calibre ebook-meta");
@@ -1564,6 +1658,79 @@ export function createProgram(
       },
     );
 
+  storageCommand(library.command("import-watch").helpOption(false), writeError)
+    .description("Rescan import roots in the foreground until stopped or cycle-bounded")
+    .option("--db <path>", "database path")
+    .requiredOption(
+      "--source-path <path>",
+      "file or directory to import recursively (repeatable)",
+      (sourcePath: string, sourcePaths: string[] | undefined) => [
+        ...(sourcePaths ?? []),
+        sourcePath,
+      ],
+    )
+    .option("--interval-seconds <seconds>", "seconds between scans", "30")
+    .option("--max-cycles <count>", "stop after this many scans")
+    .action(async (
+      options: {
+        db?: string;
+        sourcePath: string[];
+        intervalSeconds: string;
+        maxCycles?: string;
+      },
+      command: Command,
+    ) => {
+      const parsedRequest = importLibraryItemsRequestSchema.safeParse({ roots: options.sourcePath });
+      const intervalSeconds = Number(options.intervalSeconds);
+      const maxCycles = options.maxCycles === undefined ? undefined : Number(options.maxCycles);
+      if (
+        !parsedRequest.success || !Number.isSafeInteger(intervalSeconds) ||
+        intervalSeconds < 1 || intervalSeconds > 86_400 ||
+        (maxCycles !== undefined && (
+          !Number.isSafeInteger(maxCycles) || maxCycles < 1 || maxCycles > 10_000
+        ))
+      ) {
+        command.error("", { exitCode: 1, code: "invalid-arguments" });
+      }
+
+      const { store } = await openLibraryStore(options.db, command);
+      let stopped = false;
+      let wake = () => {};
+      const stop = () => {
+        stopped = true;
+        wake();
+      };
+      process.once("SIGINT", stop);
+      process.once("SIGTERM", stop);
+      try {
+        const counts = { total: 0, imported: 0, skipped: 0, duplicates: 0, failed: 0 };
+        let cycles = 0;
+        while (!stopped && (maxCycles === undefined || cycles < maxCycles)) {
+          const result = await store.importMany(parsedRequest.data);
+          if (!result.ok) command.error("", { exitCode: 1, code: result.error.code });
+          await enrichImportedLibraryOutcomes(store, result.value.outcomes);
+          cycles += 1;
+          for (const key of Object.keys(counts) as (keyof typeof counts)[]) {
+            counts[key] += result.value.counts[key];
+          }
+          if (stopped || (maxCycles !== undefined && cycles >= maxCycles)) break;
+          await new Promise<void>((resolveWait) => {
+            const timer = setTimeout(resolveWait, intervalSeconds * 1000);
+            wake = () => {
+              clearTimeout(timer);
+              resolveWait();
+            };
+          });
+          wake = () => {};
+        }
+        write(JSON.stringify({ ok: true, value: { cycles, stopped, counts } }));
+      } finally {
+        process.off("SIGINT", stop);
+        process.off("SIGTERM", stop);
+        store.close();
+      }
+    });
+
   storageCommand(library.command("export-many").helpOption(false), writeError)
     .option("--db <path>", "database path")
     .requiredOption("--request-json <json>", `export request as ${JSON_INPUT_HINT}`)
@@ -2027,6 +2194,203 @@ export function createProgram(
       }
     });
 
+  storageCommand(library.command("content-search").helpOption(false), writeError)
+    .description("Search literal text through bounded temporary Calibre extraction")
+    .option("--db <path>", "database path")
+    .requiredOption("--query <query>", "case-insensitive literal text")
+    .option(
+      "--id <id>",
+      "library item ID (repeatable; all selected when omitted)",
+      (id: string, ids: string[]) => [...ids, id],
+      [],
+    )
+    .option("--limit <count>", "maximum selected items", "256")
+    .option("--timeout-seconds <seconds>", "text extraction timeout per item", "60")
+    .action(async (
+      options: {
+        db?: string;
+        query: string;
+        id: string[];
+        limit: string;
+        timeoutSeconds: string;
+      },
+      command: Command,
+    ) => {
+      const limit = Number(options.limit);
+      const timeoutSeconds = Number(options.timeoutSeconds);
+      if (
+        options.query.trim() === "" || options.id.length > MAX_BATCH_ITEMS ||
+        options.id.some((id) => id.trim() === "") || new Set(options.id).size !== options.id.length ||
+        !Number.isSafeInteger(limit) || limit < 1 || limit > MAX_BATCH_ITEMS ||
+        options.id.length > limit || !Number.isSafeInteger(timeoutSeconds) ||
+        timeoutSeconds < 1 || timeoutSeconds > Math.floor(2_147_483_647 / 1000)
+      ) {
+        command.error("", { exitCode: 1, code: "invalid-arguments" });
+      }
+      if (!conversionBackend.ok) {
+        command.error("", { exitCode: 1, code: conversionBackend.code });
+      }
+
+      const { store } = await openLibraryStore(options.db, command);
+      try {
+        const selected = await selectLibraryItems(store, options.id, limit, command);
+        const outcomes: Array<Record<string, unknown> & { status: string }> = [];
+        let canceled = false;
+        for (const entry of selected.entries) {
+          if (!entry.item) {
+            outcomes.push({ status: "missing", itemId: entry.itemId });
+            continue;
+          }
+          const format = entry.item.formats.find((candidate) =>
+            TEXT_EXTRACTABLE_FORMATS.includes(candidate.format)
+          );
+          if (!format) {
+            outcomes.push({
+              status: "skipped",
+              itemId: entry.itemId,
+              code: "unsupported-format",
+            });
+            continue;
+          }
+          try {
+            const extracted = await extractEbookText({
+              backendPath: conversionBackend.path,
+              sourcePath: format.sourcePath,
+              timeoutMs: timeoutSeconds * 1000,
+            });
+            const found = findLiteralText(extracted.text, options.query);
+            outcomes.push(found.matches
+              ? {
+                  status: "matched",
+                  itemId: entry.itemId,
+                  title: entry.item.title,
+                  format: format.format,
+                  ...found,
+                }
+              : { status: "no-match", itemId: entry.itemId, format: format.format });
+          } catch (error) {
+            const code = error instanceof MaintenanceError ? error.code : "extraction-failed";
+            outcomes.push({ status: "failed", itemId: entry.itemId, format: format.format, code });
+            if (code === "maintenance-cancelled") {
+              canceled = true;
+              break;
+            }
+          }
+        }
+        write(JSON.stringify({
+          ok: true,
+          value: {
+            query: options.query,
+            available: selected.available,
+            selected: selected.entries.length,
+            canceled,
+            outcomes,
+            counts: {
+              total: outcomes.length,
+              matched: outcomes.filter(({ status }) => status === "matched").length,
+              noMatch: outcomes.filter(({ status }) => status === "no-match").length,
+              missing: outcomes.filter(({ status }) => status === "missing").length,
+              skipped: outcomes.filter(({ status }) => status === "skipped").length,
+              failed: outcomes.filter(({ status }) => status === "failed").length,
+            },
+          },
+        }));
+      } finally {
+        store.close();
+      }
+    });
+
+  storageCommand(library.command("validate").helpOption(false), writeError)
+    .description("Check Calibre metadata parsing and bounded text extraction, not EPUB conformance")
+    .option("--db <path>", "database path")
+    .option(
+      "--id <id>",
+      "library item ID (repeatable; all selected when omitted)",
+      (id: string, ids: string[]) => [...ids, id],
+      [],
+    )
+    .option("--limit <count>", "maximum selected items", "256")
+    .option("--timeout-seconds <seconds>", "backend timeout per check", "60")
+    .action(async (
+      options: { db?: string; id: string[]; limit: string; timeoutSeconds: string },
+      command: Command,
+    ) => {
+      const limit = Number(options.limit);
+      const timeoutSeconds = Number(options.timeoutSeconds);
+      if (
+        options.id.length > MAX_BATCH_ITEMS || options.id.some((id) => id.trim() === "") ||
+        new Set(options.id).size !== options.id.length || !Number.isSafeInteger(limit) ||
+        limit < 1 || limit > MAX_BATCH_ITEMS || options.id.length > limit ||
+        !Number.isSafeInteger(timeoutSeconds) || timeoutSeconds < 1 ||
+        timeoutSeconds > Math.floor(2_147_483_647 / 1000)
+      ) {
+        command.error("", { exitCode: 1, code: "invalid-arguments" });
+      }
+      if (!metadataBackend.ok) command.error("", { exitCode: 1, code: metadataBackend.code });
+
+      const { store } = await openLibraryStore(options.db, command);
+      try {
+        const selected = await selectLibraryItems(store, options.id, limit, command);
+        const outcomes: Array<Record<string, unknown> & { status: string }> = [];
+        for (const entry of selected.entries) {
+          if (!entry.item) {
+            outcomes.push({ status: "missing", itemId: entry.itemId });
+            continue;
+          }
+          for (const format of entry.item.formats) {
+            try {
+              await extractEbookMetadata({
+                backendPath: metadataBackend.path,
+                sourcePath: format.sourcePath,
+                timeoutMs: timeoutSeconds * 1000,
+              });
+              let content: "checked" | "not-applicable" = "not-applicable";
+              if (TEXT_EXTRACTABLE_FORMATS.includes(format.format)) {
+                if (!conversionBackend.ok) throw new MaintenanceError(conversionBackend.code);
+                await extractEbookText({
+                  backendPath: conversionBackend.path,
+                  sourcePath: format.sourcePath,
+                  timeoutMs: timeoutSeconds * 1000,
+                });
+                content = "checked";
+              }
+              outcomes.push({
+                status: "valid",
+                itemId: entry.itemId,
+                format: format.format,
+                content,
+              });
+            } catch (error) {
+              outcomes.push({
+                status: "failed",
+                itemId: entry.itemId,
+                format: format.format,
+                code: error instanceof MetadataError || error instanceof MaintenanceError
+                  ? error.code
+                  : "validation-failed",
+              });
+            }
+          }
+        }
+        write(JSON.stringify({
+          ok: true,
+          value: {
+            available: selected.available,
+            selected: selected.entries.length,
+            outcomes,
+            counts: {
+              total: outcomes.length,
+              valid: outcomes.filter(({ status }) => status === "valid").length,
+              missing: outcomes.filter(({ status }) => status === "missing").length,
+              failed: outcomes.filter(({ status }) => status === "failed").length,
+            },
+          },
+        }));
+      } finally {
+        store.close();
+      }
+    });
+
   storageCommand(library.command("query").helpOption(false), writeError)
     .option("--db <path>", "database path")
     .requiredOption("--request-json <json>", `structured catalogue query as ${JSON_INPUT_HINT}`)
@@ -2463,9 +2827,10 @@ export function createProgram(
 
 export async function run(argv: string[]): Promise<void> {
   try {
-    const [conversionBackend, metadataBackend] = await Promise.all([
+    const [conversionBackend, metadataBackend, polishBackend] = await Promise.all([
       discoverEbookConvert(),
       discoverEbookMeta(),
+      discoverEbookPolish(),
     ]);
     await createProgram(
       console.log,
@@ -2475,6 +2840,7 @@ export async function run(argv: string[]): Promise<void> {
       process.platform,
       conversionBackend,
       metadataBackend,
+      polishBackend,
     ).parseAsync(argv);
   } catch (error) {
     if (error instanceof CommanderError) {
