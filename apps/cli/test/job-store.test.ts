@@ -455,6 +455,34 @@ describe("JobStore", () => {
       value: { status: "failed", errorCode: "conversion-failed" },
     });
     expect(store.cancel(third.value.id)).toMatchObject({ ok: true, value: { status: "canceled" } });
+
+    const retriedFailure = store.retry(second.value.id);
+    const retriedCancellation = store.retry(third.value.id);
+    expect(retriedFailure).toMatchObject({
+      ok: true,
+      value: {
+        status: "queued",
+        inputPath: second.value.inputPath,
+        outputPath: second.value.outputPath,
+      },
+    });
+    expect(retriedCancellation).toMatchObject({
+      ok: true,
+      value: {
+        status: "queued",
+        inputPath: third.value.inputPath,
+        outputPath: third.value.outputPath,
+      },
+    });
+    if (!retriedFailure.ok || !retriedCancellation.ok) throw new Error("retry failed");
+    expect(retriedFailure.value.id).not.toBe(second.value.id);
+    expect(retriedCancellation.value.id).not.toBe(third.value.id);
+    expect(store.retry(first.value.id)).toEqual({ ok: false, error: { code: "invalid-transition" } });
+    expect(store.retry(retriedFailure.value.id)).toEqual({
+      ok: false,
+      error: { code: "invalid-transition" },
+    });
+    expect(store.retry("job_missing")).toEqual({ ok: false, error: { code: "unknown-job" } });
     store.close();
 
     const reopened = new JobStore(path);
@@ -465,6 +493,8 @@ describe("JobStore", () => {
         { id: first.value.id, status: "completed" },
         { id: second.value.id, status: "failed" },
         { id: third.value.id, status: "canceled" },
+        { id: retriedFailure.value.id, status: "queued" },
+        { id: retriedCancellation.value.id, status: "queued" },
       ],
     });
     reopened.close();

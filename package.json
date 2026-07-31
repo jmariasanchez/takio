@@ -10,6 +10,7 @@
   "workspaces": ["apps/*", "packages/*"],
   "scripts": {
     "build": "bun run --filter '@takio/core' build && bun run --filter '@takio/library-contract' build && bun run --filter '@takio/library-store-bun' build && bun run --filter '@takio/cli' build && bun run --filter '@takio/desktop' build",
+    "build:cli:binary": "bun run --filter '@takio/cli' build:binary",
     "check": "bun run --filter '@takio/core' check && bun run --filter '@takio/library-contract' check && bun run --filter '@takio/library-store-bun' check && bun run --filter '@takio/cli' check && bun run --filter '@takio/desktop' check",
     "check:native:macos": "bash scripts/check-native-macos.sh",
     "verify:bundle:macos": "bash scripts/verify-macos-bundle.sh",

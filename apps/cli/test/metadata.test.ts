@@ -10,6 +10,7 @@ import {
 } from "../src/metadata.js";
 
 const FAKE_BACKEND = join(import.meta.dir, "fixtures/fake-ebook-meta.ts");
+const CLI = join(import.meta.dir, "../src/main.ts");
 const roots: string[] = [];
 
 async function temporaryRoot(): Promise<string> {
@@ -44,6 +45,23 @@ async function expectMetadataError(
     expect(error).toBeInstanceOf(MetadataError);
     expect((error as MetadataError).code).toBe(code);
   }
+}
+
+async function invokeMetadata(
+  args: readonly string[],
+  environment: Record<string, string> = {},
+): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+  const child = Bun.spawn([process.execPath, CLI, "metadata", "extract", ...args], {
+    env: { ...process.env, TAKIO_EBOOK_META: FAKE_BACKEND, ...environment },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const [exitCode, stdout, stderr] = await Promise.all([
+    child.exited,
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
+  ]);
+  return { exitCode, stdout, stderr };
 }
 
 afterEach(async () => {
@@ -102,6 +120,65 @@ describe("ebook-meta discovery", () => {
 });
 
 describe("ebook-meta extraction", () => {
+  it("exposes normalized metadata through one machine-safe CLI record", async () => {
+    const root = await temporaryRoot();
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1]);
+    const input = await source(root, "inspect.epub", {
+      opf: `<package><metadata>
+        <dc:title>Inspectable Book</dc:title>
+        <dc:creator opf:role="aut">Agent Author</dc:creator>
+        <dc:identifier opf:scheme="ISBN">9780000000001</dc:identifier>
+      </metadata></package>`,
+      coverBase64: png.toString("base64"),
+    });
+
+    const result = await invokeMetadata(["--source-path", input]);
+    expect(result.exitCode).toBe(0);
+    expect(result.stderr).toBe("");
+    const line = result.stdout.trim();
+    expect(line).not.toContain("\n");
+    expect(line).not.toContain("\r");
+    expect(JSON.parse(line)).toEqual({
+      ok: true,
+      value: {
+        sourcePath: await realpath(input),
+        metadata: {
+          title: "Inspectable Book",
+          authors: [{ name: "Agent Author" }],
+          identifiers: { isbn: "9780000000001" },
+          tags: [],
+        },
+        cover: { mediaType: "image/png", extension: ".png", bytes: png.byteLength },
+      },
+    });
+  });
+
+  it("reports metadata CLI discovery and argument failures without prose", async () => {
+    const root = await temporaryRoot();
+    const input = await source(root, "inspect.epub", {});
+    const cases = [
+      await invokeMetadata(["--source-path", input, "--timeout-seconds", "0"]),
+      await invokeMetadata(
+        ["--source-path", input],
+        { TAKIO_EBOOK_META: join(root, "missing-backend") },
+      ),
+    ];
+
+    expect(JSON.parse(cases[0]!.stdout)).toEqual({
+      ok: false,
+      error: { code: "invalid-arguments" },
+    });
+    expect(JSON.parse(cases[1]!.stdout)).toEqual({
+      ok: false,
+      error: { code: "backend-unavailable" },
+    });
+    for (const result of cases) {
+      expect(result.exitCode).toBe(1);
+      expect(result.stderr).toBe("");
+      expect(result.stdout).not.toMatch(/Usage:|Options:|Commands:/);
+    }
+  });
+
   it("maps Calibre OPF metadata, verifies the cover, and uses literal canonical argv", async () => {
     const root = await temporaryRoot();
     const record = join(root, "invocation.json");

@@ -34,8 +34,16 @@ build a second conversion engine.
 
 Keep documentation aligned with executable behavior and add reproducible CI.
 Takio currently has an owned-file SQLite library, basic metadata/covers/tags,
-macOS mounted-volume transfer, EPUB-to-PDF conversion through Calibre, and a
-durable foreground conversion ledger.
+macOS mounted-volume transfer, five verified conversion pairs through Calibre,
+and a durable foreground conversion ledger. The agent-facing CLI can also run
+a read-only whole-library integrity audit that verifies SQLite, foreign keys,
+stored records, and every managed format fingerprint without creating,
+migrating, or repairing the library. Verified, non-overwriting backup and
+restore also preserve the catalogue and all Takio-owned formats and covers;
+caller-owned references remain external by design. A standalone CLI executable
+ships the same JSON contract without a Bun runtime, and `capabilities` exposes
+the contract version, limits, exact conversion matrix, and live Calibre backend
+availability for agent discovery.
 
 ### 1. Book-centered data foundation
 
@@ -84,6 +92,14 @@ complete rows remain visible while secondary panels stay reachable.
 - Prefer an existing compatible format for a connected device; convert and
   attach a new one only when necessary.
 
+Verified conversion baseline: Calibre 9.9.0 produced nonempty artifacts for
+EPUB-to-PDF, EPUB-to-AZW3, and DOCX/HTML/TXT-to-EPUB. Those are the only pairs
+the local target advertises. The CLI's explicit
+`send --format <format> --convert` path reuses an attached exact format or
+converts the first compatible stored format, attaches the verified result, and
+then copies it to the mounted destination under a stable filename. Automatic
+device-format selection remains gated on real hardware acceptance.
+
 Exit: one Send action chooses or creates the right tested format, and real Kobo
 and mass-storage Kindle acceptance records include hashes and remount results.
 
@@ -91,9 +107,10 @@ and mass-storage Kindle acceptance records include hashes and remount results.
 
 - Structured and saved searches, virtual libraries, multiple physical
   libraries, save-to-disk templates, and discovery indexing.
-- Trash/restore, integrity checks, complete export/import, and database rebuild.
-- Signed/notarized macOS packages, signed updates, exercised rollback, and
-  whole-library backup/restore.
+- Complete export/import and database rebuild; keep the shipped read-only
+  integrity audit as their acceptance gate.
+- Signed/notarized macOS packages, signed updates, and exercised rollback; keep
+  the shipped whole-library backup/restore path in release acceptance.
 - Windows, Linux, MTP, wireless, and email delivery only after their independent
   release and hardware gates pass.
 

@@ -10,10 +10,8 @@ store.close();
 ```
 
 The caller must supply the database path. `open` initializes an empty database
-at schema v5, reopens v5 databases, and atomically migrates v1 through v4 after
-retaining a verified backup named for the source schema:
-`<database>.v1.backup`, `<database>.v2.backup`,
-`<database>.v3.backup`, or `<database>.v4.backup`. Other schema versions return
+at schema v8, reopens v8 databases, and atomically migrates v1 through v7 after
+retaining a verified `<database>.vN.backup`. Other schema versions return
 `incompatible-schema`; no production database location is selected here.
 
 Schema v4 records provenance for each stored book format. `managed` means Takio
@@ -25,10 +23,14 @@ ownership could authorize deletion of a caller-owned file. Consequently,
 managed-looking legacy files are intentionally not deleted automatically and
 may require manual cleanup.
 
-Schema v5 adds ordered authors and languages, identifiers, series and
+Schema v5 added ordered authors and languages, identifiers, series and
 publication fields, ratings, saved-library-view storage, and catalogue query
 indexes. Migration does not infer rich metadata from the legacy scalar author,
 so v1 through v4 records retain their exact public shape.
+
+Schema v6 adds recoverable trash, schema v7 fingerprints every managed format
+with its byte count and SHA-256 digest, and schema v8 records explicit duplicate
+review decisions.
 
 ## Managed format lifecycle
 
@@ -74,17 +76,24 @@ the file.
 
 A migration backup contains database metadata, not referenced files or
 Takio-owned book and cover files. The database and its sibling `items` and
-`covers` directories must therefore be preserved together to recover a v5
+`covers` directories must therefore be preserved together to recover a v8
 library's owned files. To recover a migration backup, close every process using
 the library, preserve the current database and both owned-file roots, copy the
 matching versioned backup to a separate recovery path, and open that copy with
 the current application so it can migrate again. Restoring a backup discards
 database changes made after it was created and can leave newer owned files
 orphaned. Legacy migration backups do not contain cleanup tombstones, while
-opening a v5 database retries the format and cover tombstones that database
+opening a v8 database retries the format and cover tombstones that database
 already records.
 
-There is no in-place downgrade from v5. Older binaries reject a v5 database
+There is no in-place downgrade from v8. Older binaries reject a v8 database
 rather than dropping rich metadata or changing ownership semantics. Downgrading
 requires explicitly restoring a compatible versioned backup, with the loss of
 database changes made since that backup.
+
+`verifyLibraryIntegrity` opens the current schema read-only and checks SQLite,
+foreign keys, stored records, and managed-file fingerprints.
+`createLibraryBackup` creates a verified snapshot of the database and all
+Takio-owned formats and covers. `restoreLibraryBackup` re-verifies that snapshot
+and restores it only into a new library directory. Neither operation includes
+caller-owned referenced files or overwrites an existing destination.

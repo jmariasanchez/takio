@@ -41,13 +41,19 @@ async function invoke(
 async function invokeProcess(
   args: string[],
   env: Record<string, string | undefined> = {},
+  stdin?: string,
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
   const child = Bun.spawn({
     cmd: [process.execPath, join(import.meta.dir, "../src/main.ts"), ...args],
     env: { ...process.env, ...env },
+    stdin: stdin === undefined ? "ignore" : "pipe",
     stdout: "pipe",
     stderr: "pipe",
   });
+  if (stdin !== undefined) {
+    child.stdin.write(stdin);
+    child.stdin.end();
+  }
   const [stdout, stderr, exitCode] = await Promise.all([
     new Response(child.stdout).text(),
     new Response(child.stderr).text(),
@@ -102,6 +108,51 @@ describe("takio CLI", () => {
     expect(output.some((line) => line.startsWith("epub"))).toBe(true);
   });
 
+  it("lists formats through the standard JSON envelope", async () => {
+    const result = parseProcessOutput(await invokeProcess(["formats", "--json"])) as {
+      value: { formats: { id: string }[] };
+    };
+
+    expect(result.value.formats.some(({ id }) => id === "epub")).toBe(true);
+  });
+
+  it("describes its machine contract and runtime capabilities in one request", async () => {
+    const result = await invoke(
+      ["capabilities"],
+      undefined,
+      AVAILABLE_BACKEND,
+    );
+
+    expect(parseOutput(result.output)).toMatchObject({
+      ok: true,
+      value: {
+        cli: { name: "takio", version: "0.1.0" },
+        protocol: {
+          version: 1,
+          output: "one-json-object",
+          structuredInput: ["inline", "stdin", "file"],
+          maxRequestBytes: 16 * 1024,
+        },
+        library: { schemaVersion: 8, backupVersion: 1 },
+        backends: { conversion: { name: "ebook-convert", available: true } },
+        conversions: {
+          available: true,
+          pairs: [
+            { from: "epub", to: "pdf" },
+            { from: "epub", to: "azw3" },
+            { from: "docx", to: "epub" },
+            { from: "html", to: "epub" },
+            { from: "txt", to: "epub" },
+          ],
+        },
+        help: {
+          root: "takio --help",
+          leaf: "takio <command> --help",
+        },
+      },
+    });
+  });
+
   it("does not fabricate a plan when no local conversion capability is configured", async () => {
     const result = await invokeProcess(
       ["plan", "--input", "book.epub", "--to", "pdf"],
@@ -109,8 +160,11 @@ describe("takio CLI", () => {
     );
 
     expect(result.exitCode).toBe(2);
-    expect(result.stdout).toBe("");
-    expect(result.stderr).toBe("No online execution target can convert EPUB → PDF.\n");
+    expect(result.stderr).toBe("");
+    expect(JSON.parse(result.stdout)).toEqual({
+      ok: false,
+      error: { code: "planning-failed" },
+    });
   });
 
   it("plans when the local target declares the exact conversion capability", async () => {
@@ -135,7 +189,11 @@ describe("takio CLI", () => {
 
     expect(result.exitCode).toBeUndefined();
     expect(result.output).toHaveLength(1);
-    const job = JSON.parse(result.output[0]!) as Record<string, unknown>;
+    const response = JSON.parse(result.output[0]!) as {
+      ok: true;
+      value: { job: Record<string, unknown> };
+    };
+    const job = response.value.job;
     expect(job.assignedTarget).toEqual({ id: "local", name: "This Mac" });
     expect("assignedDevice" in job).toBe(false);
   });
@@ -153,8 +211,25 @@ describe("takio CLI", () => {
     ).toEqual({
       output: [
         "ID     STATUS  NAME      CONVERSIONS",
-        "local  online  This Mac  epub→pdf",
+        "local  online  This Mac  epub→pdf, epub→azw3, docx→epub, html→epub, txt→epub",
       ],
+    });
+
+    const response = await invoke(["devices", "--json"], undefined, AVAILABLE_BACKEND);
+    expect(JSON.parse(response.output[0]!)).toMatchObject({
+      ok: true,
+      value: {
+        devices: [{
+          id: "local",
+          capabilities: [
+            { from: "epub", to: "pdf" },
+            { from: "epub", to: "azw3" },
+            { from: "docx", to: "epub" },
+            { from: "html", to: "epub" },
+            { from: "txt", to: "epub" },
+          ],
+        }],
+      },
     });
   });
 
@@ -167,10 +242,7 @@ describe("takio CLI", () => {
       "nonsense",
     ]);
 
-    expect(result.exitCode).toBe(2);
-    expect(result.stdout).toBe("");
-    expect(result.stderr).toBe("Unsupported output format 'nonsense'.\n");
-    expect(result.stderr).not.toContain("ZodError");
+    expectInvalidArgumentsProcess(result);
   });
 
   it("reports an empty --input as a stable planning error without a schema stack", async () => {
@@ -180,88 +252,41 @@ describe("takio CLI", () => {
     );
 
     expect(result.exitCode).toBe(2);
-    expect(result.stdout).toBe("");
-    expect(result.stderr).toBe("Invalid conversion request.\n");
-    expect(result.stderr).not.toContain("ZodError");
+    expect(result.stderr).toBe("");
+    expect(JSON.parse(result.stdout)).toEqual({
+      ok: false,
+      error: { code: "planning-failed" },
+    });
   });
 
-  for (const args of [
-    ["library", "--help"],
-    ["library", "add", "--help"],
-    ["library", "import", "--help"],
-    ["library", "import-many", "--help"],
-    ["library", "export-many", "--help"],
-    ["library", "get", "--help"],
-    ["library", "open", "--help"],
-    ["library", "update", "--help"],
-    ["library", "search", "--help"],
-    ["library", "cover", "--help"],
-    ["library", "cover", "set", "--help"],
-    ["library", "cover", "remove", "--help"],
-    ["library", "trash", "--help"],
-    ["library", "trash", "list", "--help"],
-    ["library", "trash", "move", "--help"],
-    ["library", "trash", "restore", "--help"],
-    ["library", "trash", "purge", "--help"],
-    ["library", "remove", "--help"],
-    ["library", "help", "add"],
-    ["library", "help", "import"],
-    ["library", "help", "import-many"],
-    ["library", "help", "export-many"],
-    ["library", "help", "get"],
-    ["library", "help", "open"],
-    ["library", "help", "list"],
-    ["library", "help", "update"],
-    ["library", "help", "search"],
-    ["library", "help", "cover"],
-    ["library", "help", "trash"],
-    ["library", "help", "remove"],
-  ]) {
-    it(`reports ${args.join(" ")} as one JSON failure record`, async () => {
-      expectInvalidArgumentsProcess(await invokeProcess(args));
-    });
-  }
+  it("shows stateful command-group help", async () => {
+    const result = await invokeProcess(["library", "--help"]);
 
-  for (const args of [
-    ["help", "library"],
-    ["help", "library", "add"],
-    ["help", "library", "import"],
-    ["help", "library", "import-many"],
-    ["help", "library", "export-many"],
-    ["help", "library", "get"],
-    ["help", "library", "open"],
-    ["help", "library", "list"],
-    ["help", "library", "update"],
-    ["help", "library", "search"],
-    ["help", "library", "format"],
-    ["help", "library", "format", "import"],
-    ["help", "library", "format", "attach"],
-    ["help", "library", "format", "replace"],
-    ["help", "library", "format", "remove"],
-    ["help", "library", "cover"],
-    ["help", "library", "cover", "set"],
-    ["help", "library", "cover", "remove"],
-    ["help", "library", "trash"],
-    ["help", "library", "trash", "list"],
-    ["help", "library", "trash", "move"],
-    ["help", "library", "trash", "restore"],
-    ["help", "library", "trash", "purge"],
-    ["help", "library", "remove"],
-  ]) {
-    it(`preserves root-owned ${args.join(" ")} help`, async () => {
-      const result = await invokeProcess(args);
+    expect(result.exitCode).toBe(0);
+    expect(result.stderr).toBe("");
+    expect(result.stdout).toContain("Usage: takio library [options] [command]");
+    expect(result.stdout).toContain("Manage a durable local library");
+    expect(result.stdout).toContain("query");
+    expect(result.stdout).not.toContain('"ok":false');
+  });
 
-      expect(result.exitCode).toBe(0);
-      expect(result.stderr).toBe("");
-      expect(result.stdout).toContain("Usage: takio library [command]");
-      expect(result.stdout).toContain("Manage a durable local library");
-      expect(result.stdout).toContain("Commands:");
-      expect(result.stdout).not.toContain('"ok":false');
-    });
-  }
+  it("shows actionable leaf help without a JSON failure", async () => {
+    const result = await invokeProcess(["library", "query", "--help"]);
 
-  it("reports nested library help as JSON without Commander prose", async () => {
-    expectInvalidArgumentsProcess(await invokeProcess(["library", "list", "--help"]));
+    expect(result.exitCode).toBe(0);
+    expect(result.stderr).toBe("");
+    expect(result.stdout).toContain("Usage: takio library query [options]");
+    expect(result.stdout).toContain("--request-json <json>");
+    expect(result.stdout).not.toContain('"ok":false');
+  });
+
+  it("supports nested help commands", async () => {
+    const result = await invokeProcess(["library", "help", "query"]);
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stderr).toBe("");
+    expect(result.stdout).toContain("Usage: takio library query [options]");
+    expect(result.stdout).toContain("--request-json <json>");
   });
 
   it("reports an unknown library command as JSON without Commander prose", async () => {
@@ -278,22 +303,16 @@ describe("takio CLI", () => {
     expect(result.stdout).toContain("Commands:");
   });
 
-  it("preserves invalid top-level plan diagnostics", async () => {
+  it("reports invalid top-level arguments through the standard JSON envelope", async () => {
     const result = await invokeProcess(["plan"]);
 
-    expect(result.exitCode).not.toBe(0);
-    expect(result.stdout).toBe("");
-    expect(result.stderr).toContain("error: required option '--input <path>' not specified");
-    expect(result.stderr).not.toContain('"ok":false');
+    expectInvalidArgumentsProcess(result);
   });
 
-  it("preserves unknown top-level command diagnostics", async () => {
+  it("reports unknown top-level commands through the standard JSON envelope", async () => {
     const result = await invokeProcess(["nope"]);
 
-    expect(result.exitCode).not.toBe(0);
-    expect(result.stdout).toBe("");
-    expect(result.stderr).toContain("error: unknown command 'nope'");
-    expect(result.stderr).not.toContain('"ok":false');
+    expectInvalidArgumentsProcess(result);
   });
 
   describe("library storage", () => {
@@ -1627,6 +1646,36 @@ describe("takio CLI", () => {
           formats: [{ value: "epub", count: 2 }],
         },
       });
+    });
+
+    it("accepts structured requests from stdin and files without shell escaping", async () => {
+      const request = JSON.stringify({
+        query: "",
+        filters: { authors: [], tags: [], series: [], languages: [], formats: [] },
+        sort: { field: "title", direction: "ascending" },
+        page: { offset: 0, limit: 1 },
+      });
+      const requestPath = join(directory!, "query.json");
+      await Bun.write(requestPath, request);
+
+      for (const [source, stdin] of [[`@${requestPath}`, undefined], ["-", request]] as const) {
+        const result = parseProcessOutput(
+          await invokeProcess(
+            [
+              "library",
+              "query",
+              "--db",
+              databasePath!,
+              "--request-json",
+              source,
+            ],
+            {},
+            stdin,
+          ),
+        ) as { value: { items: unknown[]; total: number } };
+
+        expect(result.value).toMatchObject({ items: [], total: 0 });
+      }
     });
 
     it("saves, lists, and removes a catalogue view durably across processes", async () => {

@@ -116,6 +116,7 @@ import {
   lstatSync,
   mkdirSync,
   openSync,
+  readFileSync,
   readSync,
   realpathSync,
   readdirSync,
@@ -132,7 +133,8 @@ import { initializationTestSeam } from "./initialization-test-seam.js";
 import { lifecycleTestSeam } from "./lifecycle-test-seam.js";
 import { queryTestSeam } from "./query-test-seam.js";
 
-const SCHEMA_VERSION = 8;
+export const LIBRARY_SCHEMA_VERSION = 8;
+const SCHEMA_VERSION = LIBRARY_SCHEMA_VERSION;
 const incompatibleSchema = Symbol("incompatible-schema");
 const duplicateFormat = Symbol("duplicate-format");
 const sourceChanged = Symbol("source-changed");
@@ -1902,6 +1904,473 @@ function verifyV8Database(
     )
   ) {
     throw new Error("The migrated database could not be verified.");
+  }
+}
+
+export type LibraryIntegrityReport = {
+  readonly schemaVersion: number;
+  readonly items: {
+    readonly total: number;
+    readonly active: number;
+    readonly trashed: number;
+  };
+  readonly formats: {
+    readonly total: number;
+    readonly managed: number;
+    readonly referenced: number;
+  };
+};
+
+export type LibraryIntegrityResult =
+  | { readonly ok: true; readonly value: LibraryIntegrityReport }
+  | {
+      readonly ok: false;
+      readonly error: {
+        readonly code: "storage-unavailable" | "incompatible-schema" | "integrity-failed";
+      };
+    };
+
+/** Verifies the current library schema and owned artifacts without migrating or repairing it. */
+export function verifyLibraryIntegrity(databasePath: string): LibraryIntegrityResult {
+  if (databasePath.length === 0) {
+    return { ok: false, error: { code: "storage-unavailable" } };
+  }
+
+  const resolvedDatabasePath = resolve(databasePath);
+  const libraryRoot = dirname(resolvedDatabasePath);
+  let database: Database | null = null;
+  try {
+    database = new Database(resolvedDatabasePath, { readonly: true, strict: true });
+    database.run("PRAGMA query_only = ON");
+    database.run("PRAGMA foreign_keys = ON");
+  } catch {
+    database?.close();
+    return { ok: false, error: { code: "storage-unavailable" } };
+  }
+
+  try {
+    const schemaVersion = database
+      .query<{ user_version: number }, []>("PRAGMA user_version")
+      .get()?.user_version;
+    if (schemaVersion !== SCHEMA_VERSION) {
+      return { ok: false, error: { code: "incompatible-schema" } };
+    }
+
+    verifyV8Database(database, join(libraryRoot, "covers"), join(libraryRoot, "items"));
+    const itemCounts = database
+      .query<{ total: number; active: number; trashed: number }, []>(`
+        SELECT COUNT(*) AS total,
+          COALESCE(SUM(CASE WHEN trashed_at IS NULL THEN 1 ELSE 0 END), 0) AS active,
+          COALESCE(SUM(CASE WHEN trashed_at IS NOT NULL THEN 1 ELSE 0 END), 0) AS trashed
+        FROM library_items
+      `)
+      .get();
+    const formatCounts = database
+      .query<{ total: number; managed: number; referenced: number }, []>(`
+        SELECT COUNT(*) AS total,
+          COALESCE(SUM(CASE WHEN provenance = 'managed' THEN 1 ELSE 0 END), 0) AS managed,
+          COALESCE(SUM(CASE WHEN provenance = 'referenced' THEN 1 ELSE 0 END), 0) AS referenced
+        FROM library_item_formats
+      `)
+      .get();
+    if (!itemCounts || !formatCounts) {
+      return { ok: false, error: { code: "integrity-failed" } };
+    }
+
+    return {
+      ok: true,
+      value: {
+        schemaVersion,
+        items: {
+          total: itemCounts.total,
+          active: itemCounts.active,
+          trashed: itemCounts.trashed,
+        },
+        formats: {
+          total: formatCounts.total,
+          managed: formatCounts.managed,
+          referenced: formatCounts.referenced,
+        },
+      },
+    };
+  } catch {
+    return { ok: false, error: { code: "integrity-failed" } };
+  } finally {
+    database.close();
+  }
+}
+
+const LIBRARY_BACKUP_FORMAT = "takio-library-backup";
+export const LIBRARY_BACKUP_VERSION = 1;
+
+type LibraryBackupManifest = {
+  readonly format: typeof LIBRARY_BACKUP_FORMAT;
+  readonly version: typeof LIBRARY_BACKUP_VERSION;
+  readonly schemaVersion: number;
+  readonly report: LibraryIntegrityReport;
+  readonly artifacts: readonly LibraryBackupArtifact[];
+};
+
+type LibraryBackupArtifact = {
+  readonly path: string;
+  readonly bytes: number;
+  readonly sha256: string;
+};
+
+export type LibraryBackupResult =
+  | {
+      readonly ok: true;
+      readonly value: { readonly path: string; readonly report: LibraryIntegrityReport };
+    }
+  | {
+      readonly ok: false;
+      readonly error: {
+        readonly code:
+          | "invalid-arguments"
+          | "storage-unavailable"
+          | "incompatible-schema"
+          | "integrity-failed"
+          | "destination-exists"
+          | "backup-failed";
+      };
+    };
+
+export type LibraryRestoreResult =
+  | {
+      readonly ok: true;
+      readonly value: { readonly path: string; readonly report: LibraryIntegrityReport };
+    }
+  | {
+      readonly ok: false;
+      readonly error: {
+        readonly code:
+          | "invalid-arguments"
+          | "invalid-backup"
+          | "destination-exists"
+          | "restore-failed";
+      };
+    };
+
+function pathExists(path: string): boolean {
+  try {
+    lstatSync(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function isLibraryIntegrityReport(value: unknown): value is LibraryIntegrityReport {
+  if (typeof value !== "object" || value === null) return false;
+  const candidate = value as Partial<LibraryIntegrityReport>;
+  const counts = [
+    candidate.items?.total,
+    candidate.items?.active,
+    candidate.items?.trashed,
+    candidate.formats?.total,
+    candidate.formats?.managed,
+    candidate.formats?.referenced,
+  ];
+  return (
+    candidate.schemaVersion === SCHEMA_VERSION &&
+    counts.every((count) => Number.isSafeInteger(count) && (count ?? -1) >= 0) &&
+    candidate.items!.active + candidate.items!.trashed === candidate.items!.total &&
+    candidate.formats!.managed + candidate.formats!.referenced === candidate.formats!.total
+  );
+}
+
+function readBackupManifest(backupRoot: string): LibraryBackupManifest | null {
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(join(backupRoot, "manifest.json"), "utf8"));
+    if (typeof parsed !== "object" || parsed === null) return null;
+    const manifest = parsed as Partial<LibraryBackupManifest>;
+    const artifacts = manifest.artifacts;
+    return manifest.format === LIBRARY_BACKUP_FORMAT &&
+      manifest.version === LIBRARY_BACKUP_VERSION &&
+      manifest.schemaVersion === SCHEMA_VERSION &&
+      isLibraryIntegrityReport(manifest.report) &&
+      Array.isArray(artifacts) &&
+      artifacts.length > 0 &&
+      artifacts.every(
+        (artifact) =>
+          typeof artifact === "object" &&
+          artifact !== null &&
+          typeof artifact.path === "string" &&
+          Number.isSafeInteger(artifact.bytes) &&
+          artifact.bytes >= 0 &&
+          typeof artifact.sha256 === "string" &&
+          /^[0-9a-f]{64}$/.test(artifact.sha256),
+      ) &&
+      new Set(artifacts.map(({ path }) => path)).size === artifacts.length &&
+      artifacts.some(({ path }) => path === "library.sqlite")
+      ? (manifest as LibraryBackupManifest)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function requireRegularDirectory(path: string): void {
+  const entry = lstatSync(path);
+  if (!entry.isDirectory() || entry.isSymbolicLink()) {
+    throw new TypeError("Expected a regular directory");
+  }
+}
+
+function copyOwnedLibraryArtifacts(
+  database: Database,
+  sourceRoot: string,
+  destinationRoot: string,
+): string[] {
+  const copiedPaths: string[] = [];
+  const sourceItems = join(sourceRoot, "items");
+  const destinationItems = join(destinationRoot, "items");
+  const managedFormats = database
+    .query<{ sourcePath: unknown; format: unknown }, []>(`
+      SELECT source_path AS sourcePath, format
+      FROM library_item_formats
+      WHERE provenance = 'managed'
+      ORDER BY library_item_id, position
+    `)
+    .all();
+  for (const row of managedFormats) {
+    const parsedFormat = bookFormatSchema.safeParse({
+      sourcePath: row.sourcePath,
+      format: row.format,
+      addedAt: "2000-01-01T00:00:00.000Z",
+      provenance: "managed",
+    });
+    if (!parsedFormat.success) throw new TypeError("Invalid managed format");
+    const sourcePath = resolveManagedFormatPath(
+      sourceItems,
+      row.sourcePath,
+      parsedFormat.data.format,
+      true,
+    );
+    mkdirSync(destinationItems, { recursive: true, mode: 0o700 });
+    copyFileSync(sourcePath, join(destinationItems, basename(sourcePath)));
+    copiedPaths.push(`items/${basename(sourcePath)}`);
+  }
+
+  const sourceCovers = join(sourceRoot, "covers");
+  const destinationCovers = join(destinationRoot, "covers");
+  const covers = database
+    .query<{ coverPath: unknown }, []>(`
+      SELECT DISTINCT cover_path AS coverPath
+      FROM library_items
+      WHERE cover_path IS NOT NULL
+      ORDER BY cover_path
+    `)
+    .all();
+  for (const row of covers) {
+    const sourcePath = resolveOwnedCover(sourceCovers, row.coverPath);
+    const source = lstatSync(sourcePath);
+    if (!source.isFile() || source.isSymbolicLink()) {
+      throw new TypeError("Invalid managed cover");
+    }
+    const relativePath = relative(resolve(sourceCovers), sourcePath);
+    const destinationPath = join(destinationCovers, relativePath);
+    mkdirSync(dirname(destinationPath), { recursive: true, mode: 0o700 });
+    copyFileSync(sourcePath, destinationPath);
+    copiedPaths.push(`covers/${relativePath.split(sep).join("/")}`);
+  }
+  return copiedPaths;
+}
+
+function resolveBackupArtifact(backupRoot: string, storedPath: string): string {
+  const segments = storedPath.split("/");
+  if (
+    segments.some((segment) => segment.length === 0 || segment === "." || segment === ".." || segment.includes("\\")) ||
+    (storedPath !== "library.sqlite" && segments[0] !== "items" && segments[0] !== "covers")
+  ) {
+    throw new TypeError("Invalid backup artifact path");
+  }
+  const root = resolve(backupRoot);
+  const path = resolve(root, ...segments);
+  if (path !== join(root, "library.sqlite") && !isInside(root, path)) {
+    throw new TypeError("Invalid backup artifact path");
+  }
+  return path;
+}
+
+function fingerprintBackupArtifacts(
+  backupRoot: string,
+  paths: readonly string[],
+): LibraryBackupArtifact[] {
+  return [...new Set(paths)]
+    .sort()
+    .map((path) => {
+      const fingerprint = fingerprintFile(resolveBackupArtifact(backupRoot, path));
+      if (!fingerprint.ok) throw new TypeError("Invalid backup artifact");
+      return { path, ...fingerprint.value };
+    });
+}
+
+function verifyBackupArtifacts(backupRoot: string, artifacts: readonly LibraryBackupArtifact[]): boolean {
+  try {
+    return artifacts.every((artifact) => {
+      const fingerprint = fingerprintFile(resolveBackupArtifact(backupRoot, artifact.path));
+      return (
+        fingerprint.ok &&
+        fingerprint.value.bytes === artifact.bytes &&
+        fingerprint.value.sha256 === artifact.sha256
+      );
+    });
+  } catch {
+    return false;
+  }
+}
+
+/** Creates a verified snapshot containing the database and every Takio-owned file. */
+export function createLibraryBackup(
+  databasePath: string,
+  destinationPath: string,
+): LibraryBackupResult {
+  if (databasePath.length === 0 || destinationPath.length === 0) {
+    return { ok: false, error: { code: "invalid-arguments" } };
+  }
+  const resolvedDatabasePath = resolve(databasePath);
+  const sourceRoot = dirname(resolvedDatabasePath);
+  const destinationRoot = resolve(destinationPath);
+  if (destinationRoot === sourceRoot || isInside(sourceRoot, destinationRoot)) {
+    return { ok: false, error: { code: "invalid-arguments" } };
+  }
+  if (pathExists(destinationRoot)) {
+    return { ok: false, error: { code: "destination-exists" } };
+  }
+
+  const sourceIntegrity = verifyLibraryIntegrity(resolvedDatabasePath);
+  if (!sourceIntegrity.ok) return sourceIntegrity;
+
+  const destinationParent = dirname(destinationRoot);
+  const temporaryRoot = join(
+    destinationParent,
+    `.${basename(destinationRoot)}.${randomUUID()}.tmp`,
+  );
+  let database: Database | null = null;
+  try {
+    mkdirSync(destinationParent, { recursive: true });
+    mkdirSync(temporaryRoot, { mode: 0o700 });
+    database = new Database(resolvedDatabasePath, { readonly: true, strict: true });
+    database.run("PRAGMA query_only = ON");
+    database.run("PRAGMA foreign_keys = ON");
+    database.run("BEGIN");
+    verifyV8Database(database, join(sourceRoot, "covers"), join(sourceRoot, "items"));
+    writeFileSync(join(temporaryRoot, "library.sqlite"), database.serialize(), { mode: 0o600 });
+    const ownedPaths = copyOwnedLibraryArtifacts(database, sourceRoot, temporaryRoot);
+    database.run("ROLLBACK");
+    database.close();
+    database = null;
+
+    const backupIntegrity = verifyLibraryIntegrity(join(temporaryRoot, "library.sqlite"));
+    if (!backupIntegrity.ok) throw new TypeError("Invalid backup snapshot");
+    const manifest: LibraryBackupManifest = {
+      format: LIBRARY_BACKUP_FORMAT,
+      version: LIBRARY_BACKUP_VERSION,
+      schemaVersion: SCHEMA_VERSION,
+      report: backupIntegrity.value,
+      artifacts: fingerprintBackupArtifacts(temporaryRoot, ["library.sqlite", ...ownedPaths]),
+    };
+    writeFileSync(join(temporaryRoot, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`, {
+      mode: 0o600,
+    });
+    if (pathExists(destinationRoot)) {
+      return { ok: false, error: { code: "destination-exists" } };
+    }
+    renameSync(temporaryRoot, destinationRoot);
+    return {
+      ok: true,
+      value: { path: destinationRoot, report: backupIntegrity.value },
+    };
+  } catch {
+    return { ok: false, error: { code: "backup-failed" } };
+  } finally {
+    try {
+      database?.run("ROLLBACK");
+    } catch {
+      // Best-effort cleanup of the read transaction.
+    }
+    database?.close();
+    rmSync(temporaryRoot, { recursive: true, force: true });
+  }
+}
+
+/** Restores a verified snapshot into a new library directory without overwriting data. */
+export function restoreLibraryBackup(
+  sourcePath: string,
+  databasePath: string,
+): LibraryRestoreResult {
+  if (sourcePath.length === 0 || databasePath.length === 0) {
+    return { ok: false, error: { code: "invalid-arguments" } };
+  }
+  const sourceRoot = resolve(sourcePath);
+  const resolvedDatabasePath = resolve(databasePath);
+  const destinationRoot = dirname(resolvedDatabasePath);
+  if (sourceRoot === destinationRoot || isInside(sourceRoot, destinationRoot)) {
+    return { ok: false, error: { code: "invalid-arguments" } };
+  }
+  if (pathExists(destinationRoot)) {
+    return { ok: false, error: { code: "destination-exists" } };
+  }
+
+  try {
+    requireRegularDirectory(sourceRoot);
+  } catch {
+    return { ok: false, error: { code: "invalid-backup" } };
+  }
+  const manifest = readBackupManifest(sourceRoot);
+  const sourceIntegrity = verifyLibraryIntegrity(join(sourceRoot, "library.sqlite"));
+  if (
+    !manifest ||
+    !sourceIntegrity.ok ||
+    JSON.stringify(manifest.report) !== JSON.stringify(sourceIntegrity.value) ||
+    !verifyBackupArtifacts(sourceRoot, manifest.artifacts)
+  ) {
+    return { ok: false, error: { code: "invalid-backup" } };
+  }
+
+  const destinationParent = dirname(destinationRoot);
+  const temporaryRoot = join(
+    destinationParent,
+    `.${basename(destinationRoot)}.${randomUUID()}.tmp`,
+  );
+  try {
+    mkdirSync(destinationParent, { recursive: true });
+    mkdirSync(temporaryRoot, { mode: 0o700 });
+    for (const artifact of manifest.artifacts) {
+      const sourceArtifactPath = resolveBackupArtifact(sourceRoot, artifact.path);
+      const destinationArtifactPath =
+        artifact.path === "library.sqlite"
+          ? join(temporaryRoot, basename(resolvedDatabasePath))
+          : resolveBackupArtifact(temporaryRoot, artifact.path);
+      mkdirSync(dirname(destinationArtifactPath), { recursive: true, mode: 0o700 });
+      copyFileSync(sourceArtifactPath, destinationArtifactPath);
+      const copied = fingerprintFile(destinationArtifactPath);
+      if (
+        !copied.ok ||
+        copied.value.bytes !== artifact.bytes ||
+        copied.value.sha256 !== artifact.sha256
+      ) {
+        throw new TypeError("Changed restored artifact");
+      }
+    }
+
+    const restoredIntegrity = verifyLibraryIntegrity(
+      join(temporaryRoot, basename(resolvedDatabasePath)),
+    );
+    if (!restoredIntegrity.ok) throw new TypeError("Invalid restored snapshot");
+    if (pathExists(destinationRoot)) {
+      return { ok: false, error: { code: "destination-exists" } };
+    }
+    renameSync(temporaryRoot, destinationRoot);
+    return {
+      ok: true,
+      value: { path: resolvedDatabasePath, report: restoredIntegrity.value },
+    };
+  } catch {
+    return { ok: false, error: { code: "restore-failed" } };
+  } finally {
+    rmSync(temporaryRoot, { recursive: true, force: true });
   }
 }
 

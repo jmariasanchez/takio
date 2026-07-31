@@ -593,6 +593,22 @@ export class JobStore {
     }
   }
 
+  retry(id: string): JobStoreResult<ConversionJob> {
+    const current = this.get(id);
+    if (!current.ok) return current;
+    if (!current.value) return failure("unknown-job");
+    if (current.value.status !== "failed" && current.value.status !== "canceled") {
+      return failure("invalid-transition");
+    }
+    return this.enqueue({
+      ...(current.value.libraryItemId ? { libraryItemId: current.value.libraryItemId } : {}),
+      inputPath: current.value.inputPath,
+      inputFormat: current.value.inputFormat,
+      outputFormat: current.value.outputFormat,
+      outputPath: current.value.outputPath,
+    });
+  }
+
   fail(id: string, errorCode: string): JobStoreResult<ConversionJob> {
     if (errorCode.length === 0) return failure("invalid-stored-data");
     return this.#finish(id, "failed", errorCode, null);

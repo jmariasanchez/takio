@@ -5,7 +5,7 @@
 Takio replaces the heavyweight, application-centric Calibre workflow with a focused local-first product:
 
 1. A **minimal Tauri desktop UI** for browsing a small library, choosing a document, and following conversions.
-2. A **Bun CLI** designed as a dependable interface for humans, AI agents, skills, and automations.
+2. A **TypeScript CLI**, runnable from Bun during development or as a standalone compiled executable, designed as a dependable interface for humans, AI agents, skills, and automations.
 3. A **shared TypeScript domain package** so both interfaces produce identical, validated conversion jobs.
 
 ## Monorepo boundaries
@@ -13,9 +13,9 @@ Takio replaces the heavyweight, application-centric Calibre workflow with a focu
 | Package | Responsibility | Status |
 | --- | --- | --- |
 | `@takio/core` | Format catalogue, detection, request validation, device-aware planning | Implemented |
-| `@takio/cli` | Structured commands for tools and agents | Implemented: planning, synchronous EPUB-to-PDF conversion, and durable foreground jobs |
+| `@takio/cli` | Structured commands for tools and agents | Implemented: planning, five proven local conversion pairs, durable foreground jobs, and explicit convert-and-send |
 | `@takio/desktop` | Tauri v2 native shell and minimalist React interface | Implemented: library, destinations, and conversion queue |
-| Converter adapters | Declare supported pairs and invoke a real engine safely | Implemented: local `ebook-convert`, synchronous EPUB-to-PDF |
+| Converter adapters | Declare supported pairs and invoke a real engine safely | Implemented: local `ebook-convert`, five synchronous conversion pairs |
 | Controller/queue | Persist local jobs and run one foreground job at a time | Implemented: separate `jobs.sqlite` queue |
 | Destination transfer | Detect mounted USB mass-storage recipients and copy verified library files | Implemented: macOS |
 | Device agent | Authenticated worker that advertises adapters and capacity | Planned |
@@ -23,14 +23,44 @@ Takio replaces the heavyweight, application-centric Calibre workflow with a focu
 A `Destination` is a passive mounted recipient volume, distinct from the planned device agent that will act as an authenticated remote execution worker.
 
 Local `ebook-convert` discovery checks `TAKIO_EBOOK_CONVERT`, then `PATH`, then `/Applications/calibre.app/Contents/MacOS/ebook-convert` on macOS.
+The read-only `metadata extract` command similarly discovers `ebook-meta`
+through `TAKIO_EBOOK_META`, `PATH`, then the Calibre macOS bundle. It returns
+normalized metadata and bounded cover facts in one JSON envelope; it never
+writes metadata back to the source or library.
 
 `ebook-convert` is trusted local configuration, not a sandbox; hostile-input resource isolation is not provided.
 
-The conversion queue uses `jobs.sqlite` beside, but independent from, `library.sqlite`. Its CLI is deliberately exact: `jobs enqueue`, `jobs list`, `jobs get`, queued-only `jobs cancel`, and one-shot `jobs run-next`. The state machine is `queued` → `running` → `completed` or `failed`, plus `queued` → `canceled`. `run-next` claims the oldest queued job and runs it in the caller's foreground process; no daemon claims work in the background.
+The conversion queue uses `jobs.sqlite` beside, but independent from, `library.sqlite`. Its CLI is deliberately exact: `jobs enqueue`, `jobs list`, `jobs get`, queued-only `jobs cancel`, history-preserving `jobs retry`, and one-shot `jobs run-next`. The state machine is `queued` → `running` → `completed` or `failed`, plus `queued` → `canceled`. Retrying a failed or canceled job creates a new queued record at the end of the queue and leaves the terminal record intact. `run-next` claims the oldest queued job and runs it in the caller's foreground process; no daemon claims work in the background.
 
 The caller owns the requested output path, and enqueue refuses a path that already exists. Execution also refuses to overwrite a file that appeared later. A job becomes `completed` only after the output path, nonzero size, and SHA-256 digest are verified and recorded.
 
 The desktop exposes the same contract: **Convert** on an EPUB item opens a native save dialog and adds a ledger entry, while **Refresh**, **Run next**, and queued-job **Cancel** list and operate the durable jobs.
+
+`send --format <format> --convert` is a separate synchronous convenience path.
+It uses an already attached exact format when possible. If the format is
+missing, it deterministically selects the first stored source supported by the
+advertised conversion matrix, converts and verifies it, attaches the artifact
+as a managed library format, and then performs the verified destination copy.
+The target format is always explicit: Takio does not infer an unverified
+device-format policy. Delivery uses the logical book filename rather than the
+UUID of an internal managed copy.
+
+`library verify` opens `library.sqlite` read-only with SQLite query-only mode.
+It refuses unsupported schemas rather than migrating them, then reuses the
+same full verifier that gates schema migration: SQLite integrity, foreign keys,
+stored record parsing and path containment, duplicate-review records, and the
+stored byte count and SHA-256 fingerprint of each managed format. Referenced
+files remain caller-owned and are counted but not required to be online. The
+command reports facts or fails; it never repairs state.
+
+`library backup` serializes a consistent database snapshot through SQLite,
+copies the managed formats named by that snapshot plus all managed covers, and
+reruns the full verifier before publishing a versioned manifest. It refuses an
+existing destination. `library restore-backup` validates the manifest and
+snapshot again, stages the database and owned files beside the destination,
+and atomically publishes a new library directory. Restore never replaces an
+existing directory. Caller-owned references and the independent conversion-job
+ledger are deliberately outside the snapshot.
 
 ## Durable conversion-to-library handoff
 
@@ -56,13 +86,16 @@ This handoff adds no built-in ebook reader or viewer. Opening books continues to
 ## Agent-first CLI principles
 
 - Every command has a narrow, documented contract.
-- `--json` returns data without prose where provided.
+- Every success and failure has a one-line machine envelope with a stable error code; discovery commands retain readable output unless `--json` is requested.
+- `capabilities` reports the protocol version, structured-input limits, schema and backup versions, exact conversion pairs, and live backend availability without requiring agents to scrape help text.
+- Structured requests accept bounded inline JSON, stdin with `-`, or a file with `@path`.
 - Commands must return non-zero for invalid requests and never claim a conversion completed before an adapter reports success.
-- `convert` is the synchronous queue-bypassing primitive; `jobs enqueue|list|get|cancel|run-next` are the durable foreground primitives. Remote-device commands remain planned.
+- Diagnostic commands are read-only: `library verify` never creates, migrates, or repairs a library.
+- `convert` is the synchronous queue-bypassing primitive; `send --format ... --convert` composes conversion, attachment, and verified delivery; `jobs enqueue|list|get|cancel|retry|run-next` are the durable foreground primitives. Remote-device commands remain planned.
 
 ## Focused v1 boundary
 
-The implemented conversion path is EPUB-to-PDF only. It intentionally excludes a daemon or detached worker, live progress, automatic retry or backoff, priorities, batching, scheduling, active cancellation of a running queued job, queued-job overwrite, remote execution, and hostile-input process sandboxing. A failed conversion is terminal; trying again creates a new job.
+The implemented conversion paths are EPUB-to-PDF, EPUB-to-AZW3, and DOCX, HTML, or TXT to EPUB. They intentionally exclude a daemon or detached worker, live progress, automatic retry or backoff, priorities, batching, scheduling, active cancellation of a running queued job, queued-job overwrite, remote execution, and hostile-input process sandboxing. A failed conversion is terminal; trying again creates a new job.
 
 ## Execution roadmap
 

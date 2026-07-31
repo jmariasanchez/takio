@@ -179,6 +179,40 @@ describe("takio jobs", () => {
     expect(record(empty)).toEqual({ ok: true, value: { job: null } });
   });
 
+  it("retries a failed job as new queued work while preserving the failed record", async () => {
+    const root = await temporaryRoot();
+    const database = join(root, "jobs.sqlite");
+    const input = join(root, "book.epub");
+    const output = join(root, "book.pdf");
+    await writeFile(input, "source");
+    const original = record(await runJobs([
+      "enqueue", "--db", database, "--input", input, "--to", "pdf", "--output", output,
+    ])).value.job;
+    await writeFile(output, "caller data");
+    const failed = record(await runJobs(["run-next", "--db", database])).value.job;
+    expect(failed).toMatchObject({ id: original.id, status: "failed", errorCode: "output-file-exists" });
+
+    const retried = await runJobs(["retry", "--db", database, "--id", original.id]);
+    expect(retried.exitCode).toBe(0);
+    expect(record(retried)).toMatchObject({
+      ok: true,
+      value: {
+        retriedFrom: original.id,
+        job: { status: "queued", inputPath: input, outputPath: output },
+      },
+    });
+    const retryJob = record(retried).value.job;
+    expect(retryJob.id).not.toBe(original.id);
+    expect(record(await runJobs(["get", "--db", database, "--id", original.id])).value.job)
+      .toMatchObject({ status: "failed", errorCode: "output-file-exists" });
+
+    await rm(output);
+    expect(record(await runJobs(["run-next", "--db", database])).value.job).toMatchObject({
+      id: retryJob.id,
+      status: "completed",
+    });
+  });
+
   it("enqueues the exact requested library format instead of the primary alias", async () => {
     const root = await temporaryRoot();
     const { mobi, epub } = await createMultiFormatItem(root);

@@ -20,6 +20,10 @@ const MACOS_BUNDLE_BINARY = "/Applications/calibre.app/Contents/MacOS/ebook-conv
 
 export const LOCAL_CONVERSION_CAPABILITIES: readonly ConversionCapability[] = [
   { from: "epub", to: "pdf" },
+  { from: "epub", to: "azw3" },
+  { from: "docx", to: "epub" },
+  { from: "html", to: "epub" },
+  { from: "txt", to: "epub" },
 ];
 
 const CONVERSION_ERROR_CODES = [

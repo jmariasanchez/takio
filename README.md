@@ -1,6 +1,12 @@
 # Takio
 
-**Takio** is a lightweight, modern, minimalist alternative to Calibre.
+**Takio** is a local-first ebook library and agent-native control plane. It
+provides a predictable interface for managing, converting, and sending books
+while using Calibre's proven command-line tools for conversion.
+
+Takio is intended to replace operating Calibre directly for focused library
+workflows, not to reimplement Calibre's reader, editor, server, or plugin
+ecosystem.
 
 It is a Bun monorepo with two deliberate product surfaces:
 
@@ -11,18 +17,23 @@ The domain package (`@takio/core`) is shared by both surfaces, so a conversion r
 
 ## Current milestone
 
-The workspace currently includes a polished Tauri/React desktop app, a durable
-local library, a capability-aware CLI conversion planner, and verified
-EPUB-to-PDF conversion through a discovered Calibre `ebook-convert` backend.
-Library items can hold multiple formats, with each format recorded explicitly as
-either a Takio-managed copy or a reference to a caller-owned file. Conversion
-can run immediately or through a durable local queue, but always runs in the
-foreground.
+The workspace currently includes a polished Tauri/React desktop app and a
+durable local library with multi-format books, rich metadata, recursive import,
+search and facets, saved views, duplicate review, covers, trash/restore, and
+bulk export. The CLI can also transfer books to mounted macOS volumes and eject
+them after a verified copy.
+
+Conversion currently supports EPUB-to-PDF, EPUB-to-AZW3, and DOCX, HTML, or TXT
+to EPUB through a discovered Calibre `ebook-convert` backend. It can run
+immediately or through a durable local queue, but always runs in the foreground.
+Each stored format is recorded as either a Takio-managed copy or a reference to
+a caller-owned file.
 
 ## Requirements
 
-- [Bun](https://bun.sh/) 1.3+
+- [Bun](https://bun.sh/) 1.3+ for development and source execution
 - Rust/Cargo plus Xcode Command Line Tools for Tauri desktop builds
+- [Calibre](https://calibre-ebook.com/download_osx) for metadata extraction and ebook conversion
 
 ## Quick start
 
@@ -32,15 +43,25 @@ bun run build
 bun run test
 
 # Agent-friendly CLI commands
+bun run takio capabilities
 bun run takio formats --json
-bun run takio devices
+bun run takio library import --source-path ~/Books/example.epub
+bun run takio library verify
+bun run takio library backup --dest ~/Backups/takio-library
+bun run takio library search --query "Ursula Le Guin"
 bun run takio plan --input ~/Books/example.epub --to pdf --json
+bun run takio send --id <book-id> --format azw3 --convert --dest /Volumes/Kindle
 
 # Native desktop app
 bun run desktop
 ```
 
-## Library storage and schema v4
+To produce a standalone executable for the current platform, run
+`bun run build:cli:binary`; the result is `apps/cli/dist/takio` and does not
+require Bun at runtime. Calibre remains an external runtime dependency for
+metadata extraction and conversion.
+
+## Library storage and schema v8
 
 Importing a library item or attaching a format as a copy leaves the selected
 source in place and creates a Takio-managed copy. Attaching a reference records
@@ -49,39 +70,78 @@ Takio-managed copies; referenced files remain caller-owned and are never
 deleted. If immediate managed-file cleanup fails, Takio records the obligation
 and retries it when the library is next opened.
 
-The first time the current storage implementation opens a schema-v1, v2, or v3
-library, it migrates the database atomically to schema v4 after retaining a
-verified backup named `<database>.v1.backup`, `<database>.v2.backup`, or
-`<database>.v3.backup`. Migrated legacy formats are treated as references
-because the older schemas did not record ownership. There is no in-place
-downgrade: older binaries reject a v4 database, and restoring a pre-v4 backup
-loses database changes made after that backup.
+The first time the current storage implementation opens a schema-v1 through
+schema-v7 library, it migrates the database atomically to schema v8 after
+retaining a verified backup named `<database>.vN.backup`. Migrated formats from
+schemas that predate ownership tracking are treated as references. There is no
+in-place downgrade: older binaries reject a schema they do not understand, and
+restoring a migration backup loses database changes made after that backup.
 
 Migration backups contain database metadata only. Preserve and move
 `library.sqlite` together with its sibling `items` and `covers` directories so
 Takio-managed books and covers remain recoverable.
 
-## CLI contract for skills and agents
+`takio library verify [--db <path>]` is a read-only audit. It does not create,
+migrate, or repair a library. It checks the current schema, SQLite integrity,
+foreign keys, stored catalogue data, duplicate-review records, and the byte
+count and SHA-256 fingerprint of every managed format. A successful report
+includes active/trashed item and managed/referenced format counts; a missing,
+incompatible, or damaged library fails with a stable machine-readable code.
 
-The CLI is deliberately deterministic and supports JSON responses for consumption by tools:
+`takio library backup --dest <new-directory>` creates a SQLite-consistent,
+verified snapshot containing `library.sqlite`, every Takio-managed format and
+cover, and a machine-readable manifest. It never overwrites a destination.
+`takio library restore-backup --source <backup> --db <new-path>` re-verifies the
+snapshot and publishes it only into an absent library directory. Referenced
+files and the independent `jobs.sqlite` conversion ledger are not copied.
 
-| Command | Purpose |
+## CLI for skills and agents
+
+The CLI is deterministic. Machine-readable successes use a one-line
+`{"ok":true,"value":...}` envelope, and every failure uses
+`{"ok":false,"error":{"code":"..."}}` with a nonzero exit status. Discovery
+commands retain readable tables unless `--json` is requested.
+
+Structured `--request-json` and `--patch-json` values can be passed inline, as
+`-` to read stdin, or as `@path` to read a file. Inputs are capped at 16 KiB.
+The command surface is grouped by workflow:
+
+| Command family | Purpose |
 | --- | --- |
-| `takio formats --json` | Reads the built-in format catalogue. |
-| `takio devices` | Lists known conversion devices. |
-| `takio plan --input <path> --to <format> --json` | Validates a request and creates a machine-readable conversion plan. |
-| `takio convert --input <epub> --to pdf --output <path>` | Executes one EPUB-to-PDF conversion synchronously and reports a verified artifact. |
-| `takio jobs enqueue --input <epub> --to pdf --output <path>` | Adds a conversion to the durable local queue. |
-| `takio jobs list [--status <status>]` | Lists all jobs or filters by status. |
-| `takio jobs get --id <id>` | Reads one durable job record. |
-| `takio jobs cancel --id <id>` | Cancels a queued job. |
-| `takio jobs run-next` | Runs at most one queued job in the foreground. |
+| `takio capabilities` | Return the protocol version, limits, schemas, formats, conversion pairs, and current backend availability in one JSON object. |
+| `takio formats`, `devices`, `plan` | Inspect known formats and execution targets, or validate a conversion request. |
+| `takio metadata extract` | Read normalized embedded metadata and cover facts without mutating the source or library. |
+| `takio library verify` | Audit database structure and every managed format fingerprint without creating, migrating, or repairing the library. |
+| `takio library backup`, `restore-backup` | Create and restore verified, non-overwriting snapshots of the catalogue and Takio-owned files. |
+| `takio library import`, `import-many` | Import one file or recursively import files and directories. |
+| `takio library list`, `get`, `open`, `search`, `query` | Read the catalogue through simple or structured queries. |
+| `takio library update` | Update title, authors, series, publisher, identifiers, languages, rating, description, or tags. |
+| `takio library format import`, `attach`, `replace`, `remove` | Manage owned copies and caller-owned format references. |
+| `takio library duplicates list`, `keep`, `reopen`, `merge` | Review and resolve duplicate candidates. |
+| `takio library saved-views list`, `save`, `remove` | Persist reusable catalogue queries, facets, and sorts. |
+| `takio library cover set`, `remove` | Manage owned cover images. |
+| `takio library trash list`, `move`, `restore`, `purge` | Remove items recoverably or purge them permanently. |
+| `takio library export-many` | Export selected formats without overwriting existing files. |
+| `takio convert` | Run any advertised conversion pair synchronously. |
+| `takio jobs enqueue`, `list`, `get`, `cancel`, `retry`, `run-next` | Manage the durable foreground conversion queue. |
+| `takio destination list`, `eject` | Discover and safely eject mounted macOS volumes. |
+| `takio send` | Copy and verify a library format, optionally converting and attaching an explicitly requested missing format. |
 
-A plan is not execution. `takio convert` bypasses the queue, while `takio jobs enqueue` records work in `jobs.sqlite`, a database separate from `library.sqlite`. Jobs move through `queued`, `running`, `completed`, `failed`, and `canceled`; cancellation is queued-only. `run-next` claims the oldest queued job, runs it synchronously, and records either a failure or a completed artifact whose path, nonzero size, and SHA-256 digest have been verified.
+A plan is not execution. `takio convert` bypasses the queue, while `takio jobs enqueue` records work in `jobs.sqlite`, a database separate from `library.sqlite`. Jobs move through `queued`, `running`, `completed`, `failed`, and `canceled`; cancellation is queued-only. `jobs retry` clones failed or canceled work into a new queued job while preserving the terminal record. `run-next` claims the oldest queued job, runs it synchronously, and records either a failure or a completed artifact whose path, nonzero size, and SHA-256 digest have been verified.
 
 The caller chooses and owns the output path. Takio refuses to overwrite an existing file, including one that appears after enqueue. In the desktop app, an EPUB item's **Convert** control opens the native save dialog and adds the job to the conversion ledger; **Refresh**, **Run next**, and queued-job **Cancel** expose the same durable queue.
 
-This focused v1 intentionally has no daemon or detached worker, live progress stream, automatic retry, priorities, batching, active cancellation, overwrite mode for queued jobs, remote execution, or conversion pairs beyond EPUB-to-PDF. The discovered `ebook-convert` executable is trusted local configuration and runs without a hostile-input sandbox.
+This focused version intentionally has no daemon or detached worker, live
+progress stream, automatic retry, priorities, active cancellation, remote
+execution, automatic device-format guessing, or conversion pairs beyond the
+five advertised by `takio capabilities`. `send --format <format> --convert` is the
+explicit convert-and-send path: it prefers an attached exact format, otherwise
+uses the first compatible stored format, verifies the conversion, attaches a
+managed copy, and then performs the verified destination copy. A later send
+reuses that attached format without requiring the conversion backend.
+Viewing and editing remain delegated to installed applications. The discovered
+`ebook-convert` executable is trusted local configuration and runs without a
+hostile-input sandbox.
 
 ## Workspace
 
@@ -100,4 +160,6 @@ bun run test
 bun run build
 ```
 
-Read [the architecture](docs/architecture.md) for the execution, multi-device, and security roadmap.
+Read [the architecture](docs/architecture.md) for the system design and the
+[Calibre-competitive roadmap](docs/roadmaps/calibre-competitive-product-roadmap.md)
+for the deliberately scoped path ahead.

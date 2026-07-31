@@ -19,6 +19,7 @@ import { destinationTestSeam } from "../src/destination-test-seam.js";
 import { ejectDestination, listDestinations } from "../src/destinations.js";
 import { createProgram } from "../src/main.js";
 
+const FAKE_BACKEND = join(import.meta.dir, "fixtures/fake-ebook-convert.ts");
 const temporaryRoots = new Set<string>();
 
 async function temporaryRoot(): Promise<string> {
@@ -214,17 +215,16 @@ describe("mounted destinations", () => {
     }
   });
 
-  test("isolates send parser failures as one JSON record", async () => {
+  test("documents send arguments without reporting a JSON failure", async () => {
     const result = await invokeProcess(["send", "--help"]);
-    const expected = JSON.stringify({
-      ok: false,
-      error: { code: "invalid-arguments" },
-    });
 
-    expect(result.exitCode).not.toBe(0);
+    expect(result.exitCode).toBe(0);
     expect(result.stderr).toBe("");
-    expect(result.stdout).toBe(expected);
-    expect(result.stdout).not.toMatch(/Usage:|Options:|Commands:/);
+    expect(result.stdout).toContain("Usage: takio send [options]");
+    expect(result.stdout).toContain("--id <id>");
+    expect(result.stdout).toContain("--convert");
+    expect(result.stdout).toContain("--dest <volume-path>");
+    expect(result.stdout).not.toContain('"ok":false');
   });
 
   test("ejects an authorized destination with an exact argv array", async () => {
@@ -360,6 +360,8 @@ describe("mounted destinations", () => {
         path: finalPath,
         bytes: destinationBytes.byteLength,
         sha256,
+        format: "epub",
+        converted: false,
       },
     });
   });
@@ -412,6 +414,8 @@ describe("mounted destinations", () => {
         path: finalPath,
         bytes: pdfBytes.byteLength,
         sha256,
+        format: "pdf",
+        converted: false,
       },
     });
   });
@@ -444,6 +448,99 @@ describe("mounted destinations", () => {
       error: { code: "invalid-arguments" },
     });
 
+    expect(await readdir(fixture.destination)).toEqual([".kobo"]);
+  });
+
+  test("converts, verifies, attaches, and reuses a requested device format", async () => {
+    const fixture = await transferFixture();
+    const args = [
+      "send",
+      "--db",
+      fixture.databasePath,
+      "--id",
+      "book-1",
+      "--format",
+      "azw3",
+      "--convert",
+      "--dest",
+      fixture.destination,
+      "--volumes-root",
+      fixture.volumesRoot,
+    ];
+
+    const converted = await invokeProcess(args, { TAKIO_EBOOK_CONVERT: FAKE_BACKEND });
+    expect(converted.exitCode).toBe(0);
+    expect(converted.stderr).toBe("");
+    const convertedRecord = JSON.parse(converted.stdout);
+    const destinationPath = join(await realpath(fixture.destination), "book.azw3");
+    expect(convertedRecord).toMatchObject({
+      ok: true,
+      value: {
+        itemId: "book-1",
+        destinationId: "Reader",
+        path: destinationPath,
+        format: "azw3",
+        converted: true,
+      },
+    });
+    expect(await readFile(destinationPath)).toEqual(fixture.sourceBytes);
+
+    const stored = await invokeProcess([
+      "library",
+      "get",
+      "--db",
+      fixture.databasePath,
+      "--id",
+      "book-1",
+    ]);
+    expect(stored.exitCode).toBe(0);
+    expect(JSON.parse(stored.stdout).value.item.formats).toMatchObject([
+      { format: "epub", provenance: "referenced" },
+      { format: "azw3", provenance: "managed" },
+    ]);
+
+    const reused = await invokeProcess([...args, "--overwrite"], {
+      TAKIO_EBOOK_CONVERT: join(fixture.root, "missing-backend"),
+    });
+    expect(reused.exitCode).toBe(0);
+    expect(JSON.parse(reused.stdout)).toMatchObject({
+      ok: true,
+      value: {
+        path: destinationPath,
+        format: "azw3",
+        converted: false,
+      },
+    });
+  });
+
+  test("requires an explicit target and a supported source for convert-and-send", async () => {
+    const fixture = await transferFixture();
+    const baseArgs = [
+      "send",
+      "--db",
+      fixture.databasePath,
+      "--id",
+      "book-1",
+      "--dest",
+      fixture.destination,
+      "--volumes-root",
+      fixture.volumesRoot,
+      "--convert",
+    ];
+
+    const missingTarget = await invoke([...baseArgs]);
+    expect(missingTarget.exitCode).toBe(1);
+    expect(parseRecord(missingTarget)).toEqual({
+      ok: false,
+      error: { code: "invalid-arguments" },
+    });
+
+    const unsupported = await invoke([...baseArgs, "--format", "mobi"]);
+    expect(unsupported.exitCode).toBe(1);
+    expect(parseRecord(unsupported)).toEqual({
+      ok: false,
+      error: { code: "unsupported-conversion" },
+    });
     expect(await readdir(fixture.destination)).toEqual([".kobo"]);
   });
 

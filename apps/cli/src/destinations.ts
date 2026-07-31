@@ -52,6 +52,7 @@ export class DestinationTransferError extends Error {
 export interface SendToDestinationOptions {
   readonly itemId: string;
   readonly sourcePath: string;
+  readonly fileName?: string;
   readonly destination: Destination;
   readonly subdir?: string;
   readonly overwrite?: boolean;
@@ -207,6 +208,7 @@ async function syncDirectory(path: string): Promise<void> {
 export async function sendToDestination({
   itemId,
   sourcePath,
+  fileName: requestedFileName,
   destination,
   subdir,
   overwrite = false,
@@ -232,7 +234,7 @@ export async function sendToDestination({
     throw new DestinationTransferError("invalid-arguments");
   }
 
-  const sourceName = basename(canonicalSourcePath);
+  const sourceName = requestedFileName ?? basename(canonicalSourcePath);
   const extension = extname(sourceName).slice(1);
   const fileName =
     sanitizeDestinationFileName(sourceName) ??

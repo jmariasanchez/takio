@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "bun:test";
 import { chmod, mkdtemp, readFile, readdir, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
-import { discoverEbookConvert } from "../src/convert.js";
+import { discoverEbookConvert, LOCAL_CONVERSION_CAPABILITIES } from "../src/convert.js";
 
 const CLI = join(import.meta.dir, "../src/main.ts");
 const FAKE_BACKEND = join(import.meta.dir, "fixtures/fake-ebook-convert.ts");
@@ -123,6 +123,44 @@ describe("ebook-convert discovery", () => {
 });
 
 describe("takio convert", () => {
+  it("executes every conversion pair advertised by the local target", async () => {
+    expect(LOCAL_CONVERSION_CAPABILITIES).toEqual([
+      { from: "epub", to: "pdf" },
+      { from: "epub", to: "azw3" },
+      { from: "docx", to: "epub" },
+      { from: "html", to: "epub" },
+      { from: "txt", to: "epub" },
+    ]);
+
+    for (const capability of LOCAL_CONVERSION_CAPABILITIES) {
+      const root = await temporaryRoot();
+      const input = join(root, `book.${capability.from}`);
+      const output = join(root, `book.${capability.to}`);
+      await writeFile(input, fakeInput());
+
+      const result = await runConvert([
+        "--input", input,
+        "--to", capability.to,
+        "--output", output,
+      ]);
+
+      expect(result.exitCode, `${capability.from}→${capability.to}`).toBe(0);
+      expect(record(result), `${capability.from}→${capability.to}`).toMatchObject({
+        ok: true,
+        value: {
+          job: {
+            inputFormat: capability.from,
+            outputFormat: capability.to,
+            status: "completed",
+          },
+        },
+      });
+      expect(await readFile(output), `${capability.from}→${capability.to}`).toEqual(
+        Buffer.from(fakeInput()),
+      );
+    }
+  });
+
   it("converts with literal canonical argv and reports verified bytes and digest", async () => {
     const root = await temporaryRoot();
     const input = join(root, "- input;$(touch nope).epub");

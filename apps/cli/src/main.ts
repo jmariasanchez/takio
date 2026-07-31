@@ -1,7 +1,8 @@
 #!/usr/bin/env bun
 import { Command, CommanderError } from "commander";
-import { lstat, mkdir, realpath, stat } from "node:fs/promises";
-import { homedir } from "node:os";
+import { createReadStream } from "node:fs";
+import { chmod, lstat, mkdir, mkdtemp, realpath, rm, stat } from "node:fs/promises";
+import { homedir, tmpdir } from "node:os";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import {
   FORMAT_CATALOG,
@@ -43,7 +44,14 @@ import {
   type SaveSavedLibraryViewRequest,
   type TrashLibraryItemRequest,
 } from "@takio/library-contract";
-import { BunSqliteLibraryStore } from "@takio/library-store-bun";
+import {
+  BunSqliteLibraryStore,
+  LIBRARY_BACKUP_VERSION,
+  LIBRARY_SCHEMA_VERSION,
+  createLibraryBackup,
+  restoreLibraryBackup,
+  verifyLibraryIntegrity,
+} from "@takio/library-store-bun";
 import {
   ConversionError,
   LOCAL_CONVERSION_CAPABILITIES,
@@ -61,6 +69,11 @@ import {
 import { reconcileJobAttachment } from "./job-attachment.js";
 import { JOB_STATUSES, JobStore, type ConversionJob, type JobStatus } from "./job-store.js";
 import { enrichImportedLibraryOutcomes } from "./library-import.js";
+import {
+  MetadataError,
+  discoverEbookMeta,
+  extractEbookMetadata,
+} from "./metadata.js";
 
 type LibraryPaths = {
   readonly databasePath: string;
@@ -71,23 +84,61 @@ type Launcher = (argv: readonly string[]) => void | Promise<void>;
 type Ejector = (destinationPath: string) => Promise<number>;
 
 const MAX_LIBRARY_JSON_REQUEST_BYTES = 16 * 1024;
+const JSON_INPUT_HINT = "JSON, '-' for stdin, or '@path' for a file";
+const CLI_VERSION = "0.1.0";
+const MACHINE_CONTRACT_VERSION = 1;
 
 type JsonRequestSchema<T> = {
   safeParse(value: unknown): { success: true; data: T } | { success: false };
 };
 
-function parseLibraryJsonRequest<T>(
+async function readBoundedJsonInput(
+  source: AsyncIterable<string | Uint8Array>,
+  command: Command,
+): Promise<string> {
+  const chunks: Buffer[] = [];
+  let bytes = 0;
+  for await (const chunk of source) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    bytes += buffer.length;
+    if (bytes > MAX_LIBRARY_JSON_REQUEST_BYTES) {
+      command.error("", { exitCode: 1, code: "invalid-arguments" });
+    }
+    chunks.push(buffer);
+  }
+  return Buffer.concat(chunks, bytes).toString("utf8");
+}
+
+async function resolveJsonInput(value: string, command: Command): Promise<string> {
+  if (value !== "-" && !value.startsWith("@")) return value;
+  if (value === "@") {
+    command.error("", { exitCode: 1, code: "invalid-arguments" });
+  }
+
+  try {
+    return await readBoundedJsonInput(
+      value === "-" ? process.stdin : createReadStream(resolve(value.slice(1))),
+      command,
+    );
+  } catch (error) {
+    if (error instanceof CommanderError) throw error;
+    command.error("", { exitCode: 1, code: "invalid-arguments" });
+  }
+}
+
+async function parseLibraryJsonRequest<T>(
   value: string,
   schema: JsonRequestSchema<T>,
   command: Command,
-): T {
-  if (Buffer.byteLength(value, "utf8") > MAX_LIBRARY_JSON_REQUEST_BYTES) {
+): Promise<T> {
+  const input = await resolveJsonInput(value, command);
+  if (Buffer.byteLength(input, "utf8") > MAX_LIBRARY_JSON_REQUEST_BYTES) {
     command.error("", { exitCode: 1, code: "invalid-arguments" });
   }
 
   let candidate: unknown;
   try {
-    candidate = JSON.parse(value);
+    candidate = JSON.parse(input);
   } catch {
     command.error("", { exitCode: 1, code: "invalid-arguments" });
   }
@@ -266,10 +317,11 @@ async function queuedConversionPaths(input: string, output: string, outputFormat
 
 function storageCommand(command: Command, write: (message: string) => void): Command {
   return command
+    .helpOption("-h, --help", "display help for command")
     .configureOutput({ writeErr: () => {} })
     .exitOverride((error) => {
       const code = error.code.startsWith("commander.") ? "invalid-arguments" : error.code;
-      if (error.code !== "commander.help" || command.parent?.args[0] !== "help") {
+      if (!error.code.startsWith("commander.help") && error.code !== "commander.version") {
         write(JSON.stringify({ ok: false, error: { code } }));
       }
       throw error;
@@ -287,7 +339,7 @@ export function createProgram(
     code: "backend-unavailable",
   },
 ): Command {
-  const program = new Command();
+  const program = storageCommand(new Command(), writeError);
   const localCapabilities = conversionBackend.ok
     ? LOCAL_CONVERSION_CAPABILITIES
     : [];
@@ -300,8 +352,48 @@ export function createProgram(
 
   program
     .name("takio")
-    .description("Plan document conversions across connected Takio devices")
-    .version("0.1.0");
+    .description("Manage, convert, and deliver a local ebook library")
+    .version(CLI_VERSION);
+
+  program
+    .command("capabilities")
+    .description("Describe the machine contract and currently available backends")
+    .action(async () => {
+      const metadataBackend = await discoverEbookMeta();
+      write(JSON.stringify({
+        ok: true,
+        value: {
+          cli: { name: "takio", version: CLI_VERSION },
+          protocol: {
+            version: MACHINE_CONTRACT_VERSION,
+            output: "one-json-object",
+            structuredInput: ["inline", "stdin", "file"],
+            maxRequestBytes: MAX_LIBRARY_JSON_REQUEST_BYTES,
+          },
+          library: {
+            schemaVersion: LIBRARY_SCHEMA_VERSION,
+            backupVersion: LIBRARY_BACKUP_VERSION,
+          },
+          backends: {
+            conversion: conversionBackend.ok
+              ? { name: "ebook-convert", available: true }
+              : { name: "ebook-convert", available: false, code: conversionBackend.code },
+            metadata: metadataBackend.ok
+              ? { name: "ebook-meta", available: true }
+              : { name: "ebook-meta", available: false, code: metadataBackend.code },
+          },
+          formats: FORMAT_CATALOG,
+          conversions: {
+            available: conversionBackend.ok,
+            pairs: LOCAL_CONVERSION_CAPABILITIES,
+          },
+          help: {
+            root: "takio --help",
+            leaf: "takio <command> --help",
+          },
+        },
+      }));
+    });
 
   program
     .command("formats")
@@ -309,7 +401,7 @@ export function createProgram(
     .option("--json", "emit JSON instead of a table")
     .action((options: { json?: boolean }) => {
       if (options.json) {
-        write(JSON.stringify(FORMAT_CATALOG, null, 2));
+        write(JSON.stringify({ ok: true, value: { formats: FORMAT_CATALOG } }));
         return;
       }
       write("FORMAT  KIND      EXTENSIONS");
@@ -321,7 +413,12 @@ export function createProgram(
   program
     .command("devices")
     .description("List devices known to this Takio controller")
-    .action(() => {
+    .option("--json", "emit JSON instead of a table")
+    .action((options: { json?: boolean }) => {
+      if (options.json) {
+        write(JSON.stringify({ ok: true, value: { devices: [localTarget] } }));
+        return;
+      }
       const conversions = localTarget.capabilities.length
         ? localTarget.capabilities
             .map((capability) => `${capability.from}→${capability.to}`)
@@ -334,7 +431,6 @@ export function createProgram(
     });
 
   const convert = storageCommand(new Command("convert"), writeError)
-    .helpOption(false)
     .description("Convert a local document with Calibre ebook-convert")
     .requiredOption("--input <path>", "source document path")
     .requiredOption("--to <format>", `target format: ${FORMAT_IDS.join(", ")}`)
@@ -382,9 +478,64 @@ export function createProgram(
     },
   );
 
+  const metadata = storageCommand(new Command("metadata"), writeError)
+    .description("Inspect embedded ebook metadata through Calibre ebook-meta");
+  program.addCommand(metadata);
+
+  storageCommand(metadata.command("extract").helpOption(false), writeError)
+    .description("Extract normalized metadata without changing the source or library")
+    .requiredOption("--source-path <path>", "source ebook path")
+    .option("--timeout-seconds <seconds>", "metadata extraction timeout", "15")
+    .action(
+      async (
+        options: { sourcePath: string; timeoutSeconds: string },
+        command: Command,
+      ) => {
+        const timeoutSeconds = Number(options.timeoutSeconds);
+        if (
+          !Number.isSafeInteger(timeoutSeconds) ||
+          timeoutSeconds <= 0 ||
+          timeoutSeconds > Math.floor(2_147_483_647 / 1000)
+        ) {
+          command.error("", { exitCode: 1, code: "invalid-arguments" });
+        }
+
+        const backend = await discoverEbookMeta();
+        if (!backend.ok) {
+          command.error("", { exitCode: 1, code: backend.code });
+        }
+        try {
+          const extracted = await extractEbookMetadata({
+            backendPath: backend.path,
+            sourcePath: options.sourcePath,
+            timeoutMs: timeoutSeconds * 1000,
+          });
+          write(
+            JSON.stringify({
+              ok: true,
+              value: {
+                sourcePath: extracted.sourcePath,
+                metadata: extracted.metadata,
+                cover: extracted.cover
+                  ? {
+                      mediaType: extracted.cover.mediaType,
+                      extension: extracted.cover.extension,
+                      bytes: extracted.cover.bytes.byteLength,
+                    }
+                  : null,
+              },
+            }),
+          );
+        } catch (error) {
+          if (error instanceof MetadataError) {
+            command.error("", { exitCode: 1, code: error.code });
+          }
+          throw error;
+        }
+      },
+    );
+
   const jobs = storageCommand(new Command("jobs"), writeError)
-    .helpOption(false)
-    .addHelpCommand(false)
     .description("Manage durable foreground conversion jobs");
   program.addCommand(jobs);
 
@@ -531,6 +682,22 @@ export function createProgram(
       }
     });
 
+  storageCommand(jobs.command("retry").helpOption(false), writeError)
+    .description("Re-enqueue a failed or canceled job without erasing its history")
+    .option("--db <path>", "jobs database path")
+    .requiredOption("--id <id>", "job ID")
+    .action(async (options: { db?: string; id: string }, command: Command) => {
+      if (options.id === "") command.error("", { exitCode: 1, code: "invalid-arguments" });
+      const store = await openJobStore(options.db, command);
+      try {
+        const result = store.retry(options.id);
+        if (!result.ok) command.error("", { exitCode: 1, code: result.error.code });
+        write(JSON.stringify({ ok: true, value: { job: result.value, retriedFrom: options.id } }));
+      } finally {
+        store.close();
+      }
+    });
+
   storageCommand(jobs.command("run-next").helpOption(false), writeError)
     .option("--db <path>", "jobs database path")
     .action(async (options: { db?: string }, command: Command) => {
@@ -633,8 +800,6 @@ export function createProgram(
     });
 
   const destination = storageCommand(new Command("destination"), writeError)
-    .helpOption(false)
-    .addHelpCommand(false)
     .description("Manage mounted document destinations");
   program.addCommand(destination);
 
@@ -687,11 +852,11 @@ export function createProgram(
     );
 
   const send = storageCommand(new Command("send"), writeError)
-    .helpOption(false)
     .description("Send a library item to a mounted destination")
     .option("--db <path>", "database path")
     .requiredOption("--id <id>", "library item ID")
     .option("--format <format>", `document format: ${FORMAT_IDS.join(", ")}`)
+    .option("--convert", "create and attach the requested format when missing")
     .requiredOption("--dest <volume-path>", "mounted destination path")
     .option("--subdir <dir>", "destination subdirectory")
     .option("--overwrite", "replace an existing destination file")
@@ -704,6 +869,7 @@ export function createProgram(
         db?: string;
         id: string;
         format?: string;
+        convert?: boolean;
         dest: string;
         subdir?: string;
         overwrite?: boolean;
@@ -716,6 +882,9 @@ export function createProgram(
           ? undefined
           : FORMAT_IDS.find((candidate) => candidate === options.format);
       if (options.format !== undefined && requestedFormat === undefined) {
+        command.error("", { exitCode: 1, code: "invalid-arguments" });
+      }
+      if (options.convert && requestedFormat === undefined) {
         command.error("", { exitCode: 1, code: "invalid-arguments" });
       }
 
@@ -733,23 +902,94 @@ export function createProgram(
         if (!item.value) {
           command.error("", { exitCode: 1, code: "unknown-item" });
         }
-        const selectedFormat =
+        let selectedFormat =
           requestedFormat === undefined
             ? item.value.formats[0]
             : item.value.formats.find(({ format }) => format === requestedFormat);
+        let converted = false;
+        if (!selectedFormat && options.convert && requestedFormat) {
+          const sourceFormat = item.value.formats.find(({ format }) =>
+            LOCAL_CONVERSION_CAPABILITIES.some(
+              ({ from, to }) => from === format && to === requestedFormat,
+            ),
+          );
+          if (!sourceFormat) {
+            command.error("", { exitCode: 1, code: "unsupported-conversion" });
+          }
+          if (!conversionBackend.ok) {
+            command.error("", { exitCode: 1, code: conversionBackend.code });
+          }
+
+          let workspace: string | undefined;
+          try {
+            workspace = await mkdtemp(join(tmpdir(), "takio-send-"));
+            await chmod(workspace, 0o700);
+            const conversion = await convertLocal({
+              backendPath: conversionBackend.path,
+              input: sourceFormat.sourcePath,
+              output: join(workspace, `converted.${requestedFormat}`),
+              outputFormat: requestedFormat,
+              timeoutMs: 300_000,
+            });
+            const attached = await store.attachFormat({
+              id: item.value.id,
+              source: {
+                kind: "copy",
+                path: conversion.artifact.path,
+                expectedArtifact: {
+                  bytes: conversion.artifact.bytes,
+                  sha256: conversion.artifact.sha256,
+                },
+              },
+            });
+            if (!attached.ok) {
+              command.error("", { exitCode: 1, code: attached.error.code });
+            }
+            if (!attached.value) {
+              command.error("", { exitCode: 1, code: "unknown-item" });
+            }
+            selectedFormat = attached.value.formats.find(
+              ({ format }) => format === requestedFormat,
+            );
+            if (!selectedFormat) {
+              command.error("", { exitCode: 1, code: "format-not-found" });
+            }
+            converted = true;
+          } catch (error) {
+            if (error instanceof CommanderError) throw error;
+            if (error instanceof ConversionError) {
+              command.error("", { exitCode: 1, code: error.code });
+            }
+            command.error("", { exitCode: 1, code: "conversion-failed" });
+          } finally {
+            if (workspace) {
+              await rm(workspace, { recursive: true, force: true }).catch(() => {});
+            }
+          }
+        }
         if (!selectedFormat) {
           command.error("", { exitCode: 1, code: "format-not-found" });
         }
+
+        const primaryName = basename(item.value.formats[0]!.sourcePath);
+        const primaryExtension = extname(primaryName);
+        const deliveryName = `${primaryName.slice(0, -primaryExtension.length)}.${selectedFormat.format}`;
 
         try {
           const result = await sendToDestination({
             itemId: item.value.id,
             sourcePath: selectedFormat.sourcePath,
+            fileName: deliveryName,
             destination,
             subdir: options.subdir,
             overwrite: options.overwrite,
           });
-          write(JSON.stringify({ ok: true, value: result }));
+          write(
+            JSON.stringify({
+              ok: true,
+              value: { ...result, format: selectedFormat.format, converted },
+            }),
+          );
         } catch (error) {
           if (error instanceof DestinationTransferError) {
             command.error("", { exitCode: 1, code: error.code });
@@ -763,10 +1003,64 @@ export function createProgram(
   );
 
   const library = storageCommand(new Command("library"), writeError)
-    .helpOption(false)
-    .addHelpCommand(false)
     .description("Manage a durable local library");
   program.addCommand(library);
+
+  storageCommand(library.command("verify").helpOption(false), writeError)
+    .description("Verify the database and managed library files without changing them")
+    .option("--db <path>", "database path")
+    .action((options: { db?: string }, command: Command) => {
+      let paths: LibraryPaths;
+      try {
+        paths = libraryPaths(options.db);
+      } catch {
+        command.error("", { exitCode: 1, code: "invalid-arguments" });
+      }
+
+      const result = verifyLibraryIntegrity(paths.databasePath);
+      if (!result.ok) {
+        command.error("", { exitCode: 1, code: result.error.code });
+      }
+      write(JSON.stringify({ ok: true, value: { report: result.value } }));
+    });
+
+  storageCommand(library.command("backup").helpOption(false), writeError)
+    .description("Create a verified backup of the database and Takio-owned files")
+    .option("--db <path>", "database path")
+    .requiredOption("--dest <directory>", "new backup directory")
+    .action((options: { db?: string; dest: string }, command: Command) => {
+      let paths: LibraryPaths;
+      try {
+        paths = libraryPaths(options.db);
+      } catch {
+        command.error("", { exitCode: 1, code: "invalid-arguments" });
+      }
+
+      const result = createLibraryBackup(paths.databasePath, options.dest);
+      if (!result.ok) {
+        command.error("", { exitCode: 1, code: result.error.code });
+      }
+      write(JSON.stringify({ ok: true, value: { backup: result.value } }));
+    });
+
+  storageCommand(library.command("restore-backup").helpOption(false), writeError)
+    .description("Restore a verified backup into a new, absent library directory")
+    .option("--db <path>", "new database path")
+    .requiredOption("--source <directory>", "Takio backup directory")
+    .action((options: { db?: string; source: string }, command: Command) => {
+      let paths: LibraryPaths;
+      try {
+        paths = libraryPaths(options.db);
+      } catch {
+        command.error("", { exitCode: 1, code: "invalid-arguments" });
+      }
+
+      const result = restoreLibraryBackup(options.source, paths.databasePath);
+      if (!result.ok) {
+        command.error("", { exitCode: 1, code: result.error.code });
+      }
+      write(JSON.stringify({ ok: true, value: { restore: result.value } }));
+    });
 
   storageCommand(library.command("add").helpOption(false), writeError)
     .option("--db <path>", "database path")
@@ -902,13 +1196,13 @@ export function createProgram(
 
   storageCommand(library.command("export-many").helpOption(false), writeError)
     .option("--db <path>", "database path")
-    .requiredOption("--request-json <json>", "export request as JSON")
+    .requiredOption("--request-json <json>", `export request as ${JSON_INPUT_HINT}`)
     .action(
       async (
         options: { db?: string; requestJson: string },
         command: Command,
       ) => {
-        const request: ExportLibraryItemsRequest = parseLibraryJsonRequest(
+        const request: ExportLibraryItemsRequest = await parseLibraryJsonRequest(
           options.requestJson,
           exportLibraryItemsRequestSchema,
           command,
@@ -927,8 +1221,6 @@ export function createProgram(
     );
 
   const format = storageCommand(library.command("format"), writeError)
-    .helpOption(false)
-    .addHelpCommand(false)
     .description("Manage an item's document formats");
 
   storageCommand(format.command("import").helpOption(false), writeError)
@@ -991,13 +1283,16 @@ export function createProgram(
 
   storageCommand(format.command("replace").helpOption(false), writeError)
     .option("--db <path>", "database path")
-    .requiredOption("--request-json <json>", "atomic format replacement request as JSON")
+    .requiredOption(
+      "--request-json <json>",
+      `atomic format replacement request as ${JSON_INPUT_HINT}`,
+    )
     .action(
       async (
         options: { db?: string; requestJson: string },
         command: Command,
       ) => {
-        const request = parseLibraryJsonRequest<ReplaceLibraryFormatRequest>(
+        const request = await parseLibraryJsonRequest<ReplaceLibraryFormatRequest>(
           options.requestJson,
           replaceLibraryFormatRequestSchema,
           command,
@@ -1150,7 +1445,7 @@ export function createProgram(
   storageCommand(library.command("update").helpOption(false), writeError)
     .option("--db <path>", "database path")
     .requiredOption("--id <id>", "library item ID")
-    .option("--patch-json <json>", "structured metadata patch as JSON")
+    .option("--patch-json <json>", `structured metadata patch as ${JSON_INPUT_HINT}`)
     .option("--title <title>", "replacement title")
     .option("--author <author>", "replacement author; empty clears it")
     .option("--description <description>", "replacement description; empty clears it")
@@ -1185,7 +1480,7 @@ export function createProgram(
           if (mixesLegacyMetadata) {
             command.error("", { exitCode: 1, code: "invalid-arguments" });
           }
-          patch = parseLibraryJsonRequest<LibraryMetadataPatch>(
+          patch = await parseLibraryJsonRequest<LibraryMetadataPatch>(
             options.patchJson,
             libraryMetadataPatchSchema,
             command,
@@ -1243,13 +1538,13 @@ export function createProgram(
 
   storageCommand(library.command("query").helpOption(false), writeError)
     .option("--db <path>", "database path")
-    .requiredOption("--request-json <json>", "structured catalogue query as JSON")
+    .requiredOption("--request-json <json>", `structured catalogue query as ${JSON_INPUT_HINT}`)
     .action(
       async (
         options: { db?: string; requestJson: string },
         command: Command,
       ) => {
-        const request = parseLibraryJsonRequest<QueryLibraryItemsRequest>(
+        const request = await parseLibraryJsonRequest<QueryLibraryItemsRequest>(
           options.requestJson,
           queryLibraryItemsRequestSchema,
           command,
@@ -1268,19 +1563,20 @@ export function createProgram(
     );
 
   const duplicates = storageCommand(library.command("duplicates"), writeError)
-    .helpOption(false)
-    .addHelpCommand(false)
     .description("Review duplicate library items");
 
   storageCommand(duplicates.command("list").helpOption(false), writeError)
     .option("--db <path>", "database path")
-    .requiredOption("--request-json <json>", "duplicate candidate page request as JSON")
+    .requiredOption(
+      "--request-json <json>",
+      `duplicate candidate page request as ${JSON_INPUT_HINT}`,
+    )
     .action(
       async (
         options: { db?: string; requestJson: string },
         command: Command,
       ) => {
-        const request = parseLibraryJsonRequest<ListDuplicateCandidatesRequest>(
+        const request = await parseLibraryJsonRequest<ListDuplicateCandidatesRequest>(
           options.requestJson,
           listDuplicateCandidatesRequestSchema,
           command,
@@ -1300,13 +1596,13 @@ export function createProgram(
 
   storageCommand(duplicates.command("keep").helpOption(false), writeError)
     .option("--db <path>", "database path")
-    .requiredOption("--request-json <json>", "duplicate pair keep request as JSON")
+    .requiredOption("--request-json <json>", `duplicate pair keep request as ${JSON_INPUT_HINT}`)
     .action(
       async (
         options: { db?: string; requestJson: string },
         command: Command,
       ) => {
-        const request = parseLibraryJsonRequest<KeepDuplicatePairRequest>(
+        const request = await parseLibraryJsonRequest<KeepDuplicatePairRequest>(
           options.requestJson,
           keepDuplicatePairRequestSchema,
           command,
@@ -1326,13 +1622,13 @@ export function createProgram(
 
   storageCommand(duplicates.command("reopen").helpOption(false), writeError)
     .option("--db <path>", "database path")
-    .requiredOption("--request-json <json>", "duplicate pair reopen request as JSON")
+    .requiredOption("--request-json <json>", `duplicate pair reopen request as ${JSON_INPUT_HINT}`)
     .action(
       async (
         options: { db?: string; requestJson: string },
         command: Command,
       ) => {
-        const request = parseLibraryJsonRequest<ReopenDuplicatePairRequest>(
+        const request = await parseLibraryJsonRequest<ReopenDuplicatePairRequest>(
           options.requestJson,
           reopenDuplicatePairRequestSchema,
           command,
@@ -1352,13 +1648,13 @@ export function createProgram(
 
   storageCommand(duplicates.command("merge").helpOption(false), writeError)
     .option("--db <path>", "database path")
-    .requiredOption("--request-json <json>", "duplicate pair merge request as JSON")
+    .requiredOption("--request-json <json>", `duplicate pair merge request as ${JSON_INPUT_HINT}`)
     .action(
       async (
         options: { db?: string; requestJson: string },
         command: Command,
       ) => {
-        const request = parseLibraryJsonRequest<MergeDuplicatePairRequest>(
+        const request = await parseLibraryJsonRequest<MergeDuplicatePairRequest>(
           options.requestJson,
           mergeDuplicatePairRequestSchema,
           command,
@@ -1377,8 +1673,6 @@ export function createProgram(
     );
 
   const savedViews = storageCommand(library.command("saved-views"), writeError)
-    .helpOption(false)
-    .addHelpCommand(false)
     .description("Manage saved catalogue views");
 
   storageCommand(savedViews.command("list").helpOption(false), writeError)
@@ -1398,13 +1692,13 @@ export function createProgram(
 
   storageCommand(savedViews.command("save").helpOption(false), writeError)
     .option("--db <path>", "database path")
-    .requiredOption("--request-json <json>", "saved-view definition as JSON")
+    .requiredOption("--request-json <json>", `saved-view definition as ${JSON_INPUT_HINT}`)
     .action(
       async (
         options: { db?: string; requestJson: string },
         command: Command,
       ) => {
-        const request = parseLibraryJsonRequest<SaveSavedLibraryViewRequest>(
+        const request = await parseLibraryJsonRequest<SaveSavedLibraryViewRequest>(
           options.requestJson,
           saveSavedLibraryViewRequestSchema,
           command,
@@ -1424,13 +1718,13 @@ export function createProgram(
 
   storageCommand(savedViews.command("remove").helpOption(false), writeError)
     .option("--db <path>", "database path")
-    .requiredOption("--request-json <json>", "saved-view removal request as JSON")
+    .requiredOption("--request-json <json>", `saved-view removal request as ${JSON_INPUT_HINT}`)
     .action(
       async (
         options: { db?: string; requestJson: string },
         command: Command,
       ) => {
-        const request = parseLibraryJsonRequest<RemoveSavedLibraryViewRequest>(
+        const request = await parseLibraryJsonRequest<RemoveSavedLibraryViewRequest>(
           options.requestJson,
           removeSavedLibraryViewRequestSchema,
           command,
@@ -1449,8 +1743,6 @@ export function createProgram(
     );
 
   const cover = storageCommand(library.command("cover"), writeError)
-    .helpOption(false)
-    .addHelpCommand(false)
     .description("Manage an item's owned cover image");
 
   storageCommand(cover.command("set").helpOption(false), writeError)
@@ -1514,19 +1806,17 @@ export function createProgram(
     });
 
   const trash = storageCommand(library.command("trash"), writeError)
-    .helpOption(false)
-    .addHelpCommand(false)
     .description("Manage trashed library items");
 
   storageCommand(trash.command("list").helpOption(false), writeError)
     .option("--db <path>", "database path")
-    .requiredOption("--request-json <json>", "trash page request as JSON")
+    .requiredOption("--request-json <json>", `trash page request as ${JSON_INPUT_HINT}`)
     .action(
       async (
         options: { db?: string; requestJson: string },
         command: Command,
       ) => {
-        const request = parseLibraryJsonRequest<ListLibraryTrashRequest>(
+        const request = await parseLibraryJsonRequest<ListLibraryTrashRequest>(
           options.requestJson,
           listLibraryTrashRequestSchema,
           command,
@@ -1546,13 +1836,13 @@ export function createProgram(
 
   storageCommand(trash.command("move").helpOption(false), writeError)
     .option("--db <path>", "database path")
-    .requiredOption("--request-json <json>", "trash request as JSON")
+    .requiredOption("--request-json <json>", `trash request as ${JSON_INPUT_HINT}`)
     .action(
       async (
         options: { db?: string; requestJson: string },
         command: Command,
       ) => {
-        const request = parseLibraryJsonRequest<TrashLibraryItemRequest>(
+        const request = await parseLibraryJsonRequest<TrashLibraryItemRequest>(
           options.requestJson,
           trashLibraryItemRequestSchema,
           command,
@@ -1572,13 +1862,13 @@ export function createProgram(
 
   storageCommand(trash.command("restore").helpOption(false), writeError)
     .option("--db <path>", "database path")
-    .requiredOption("--request-json <json>", "restore request as JSON")
+    .requiredOption("--request-json <json>", `restore request as ${JSON_INPUT_HINT}`)
     .action(
       async (
         options: { db?: string; requestJson: string },
         command: Command,
       ) => {
-        const request = parseLibraryJsonRequest<RestoreLibraryItemRequest>(
+        const request = await parseLibraryJsonRequest<RestoreLibraryItemRequest>(
           options.requestJson,
           restoreLibraryItemRequestSchema,
           command,
@@ -1598,13 +1888,13 @@ export function createProgram(
 
   storageCommand(trash.command("purge").helpOption(false), writeError)
     .option("--db <path>", "database path")
-    .requiredOption("--request-json <json>", "purge request as JSON")
+    .requiredOption("--request-json <json>", `purge request as ${JSON_INPUT_HINT}`)
     .action(
       async (
         options: { db?: string; requestJson: string },
         command: Command,
       ) => {
-        const request = parseLibraryJsonRequest<PurgeLibraryItemRequest>(
+        const request = await parseLibraryJsonRequest<PurgeLibraryItemRequest>(
           options.requestJson,
           purgeLibraryItemRequestSchema,
           command,
@@ -1653,7 +1943,7 @@ export function createProgram(
       try {
         const outputFormat = FORMAT_IDS.find((format) => format === options.to);
         if (!outputFormat) {
-          program.error(`Unsupported output format '${options.to}'.`, { exitCode: 2 });
+          program.error("", { exitCode: 2, code: "invalid-arguments" });
           return;
         }
         const job = planConversion({
@@ -1662,7 +1952,7 @@ export function createProgram(
           targets: [localTarget],
         });
         if (options.json) {
-          write(JSON.stringify(job, null, 2));
+          write(JSON.stringify({ ok: true, value: { job } }));
           return;
         }
         write(`Planned ${job.id}`);
@@ -1671,7 +1961,7 @@ export function createProgram(
         write("  status: planned (run takio convert to execute locally)");
       } catch (error) {
         if (error instanceof PlanningError) {
-          program.error(error.message, { exitCode: 2 });
+          program.error("", { exitCode: 2, code: "planning-failed" });
         }
         throw error;
       }
