@@ -1,13 +1,24 @@
+import type { FormatId, LibraryItem } from "@takio/core";
 import { libraryMetadataPatchSchema, type LibraryMetadataPatch } from "@takio/library-contract";
 import { XMLParser, XMLValidator } from "fast-xml-parser";
+import { createHash } from "node:crypto";
 import { constants } from "node:fs";
-import { access, chmod, lstat, mkdtemp, readFile, realpath, rm, stat } from "node:fs/promises";
+import { access, chmod, lstat, mkdtemp, open, readFile, realpath, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 
 const MACOS_BUNDLE_BINARY = "/Applications/calibre.app/Contents/MacOS/ebook-meta";
+const FETCH_MACOS_BUNDLE_BINARY = "/Applications/calibre.app/Contents/MacOS/fetch-ebook-metadata";
 const MAX_OPF_BYTES = 2 * 1024 * 1024;
 const MAX_COVER_BYTES = 32 * 1024 * 1024;
+
+export const EMBEDDABLE_METADATA_FORMATS: readonly FormatId[] = [
+  "epub",
+  "pdf",
+  "mobi",
+  "azw3",
+  "docx",
+];
 
 const METADATA_ERROR_CODES = [
   "invalid-arguments",
@@ -16,6 +27,11 @@ const METADATA_ERROR_CODES = [
   "metadata-extraction-failed",
   "metadata-timeout",
   "metadata-invalid",
+  "metadata-write-unsupported",
+  "metadata-write-failed",
+  "metadata-fetch-failed",
+  "cover-output-exists",
+  "cover-write-failed",
 ] as const;
 
 export type MetadataErrorCode = (typeof METADATA_ERROR_CODES)[number];
@@ -49,6 +65,40 @@ type ExtractEbookMetadataOptions = Readonly<{
   timeoutMs: number;
 }>;
 
+type MaterializeEbookMetadataOptions = Readonly<{
+  backendPath: string;
+  artifactPath: string;
+  format: FormatId;
+  item: LibraryItem;
+  timeoutMs: number;
+}>;
+
+type FetchOnlineMetadataOptions = Readonly<{
+  backendPath: string;
+  title?: string;
+  authors?: readonly string[];
+  identifiers?: Readonly<Record<string, string>>;
+  coverOutputPath?: string;
+  timeoutMs: number;
+}>;
+
+export type MaterializedEbookArtifact = Readonly<{
+  path: string;
+  bytes: number;
+  sha256: string;
+}>;
+
+export type FetchedOnlineMetadata = Readonly<{
+  metadata: LibraryMetadataPatch;
+  cover: null | Readonly<{
+    path: string;
+    bytes: number;
+    sha256: string;
+    extension: ExtractedCover["extension"];
+    mediaType: ExtractedCover["mediaType"];
+  }>;
+}>;
+
 async function executable(path: string): Promise<string | null> {
   try {
     const canonicalPath = await realpath(resolve(path));
@@ -62,13 +112,15 @@ async function executable(path: string): Promise<string | null> {
   }
 }
 
-export async function discoverEbookMeta(
-  env: NodeJS.ProcessEnv = process.env,
-  platform: NodeJS.Platform = process.platform,
-  macosBundleBinary: string = MACOS_BUNDLE_BINARY,
+async function discoverCalibreExecutable(
+  overrideName: "TAKIO_EBOOK_META" | "TAKIO_FETCH_EBOOK_METADATA",
+  binaryName: "ebook-meta" | "fetch-ebook-metadata",
+  env: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform,
+  macosBundleBinary: string,
 ): Promise<EbookMetaDiscovery> {
-  if (Object.hasOwn(env, "TAKIO_EBOOK_META")) {
-    const override = env.TAKIO_EBOOK_META;
+  if (Object.hasOwn(env, overrideName)) {
+    const override = env[overrideName];
     if (override === "" || override === undefined) {
       return { ok: false, code: "invalid-arguments" };
     }
@@ -80,7 +132,7 @@ export async function discoverEbookMeta(
 
   let fromPath: string | null = null;
   try {
-    fromPath = Bun.which("ebook-meta", { PATH: env.PATH });
+    fromPath = Bun.which(binaryName, { PATH: env.PATH });
   } catch {
     // An unusable search path is the same as a backend discovery miss.
   }
@@ -99,6 +151,34 @@ export async function discoverEbookMeta(
   }
 
   return { ok: false, code: "backend-unavailable" };
+}
+
+export function discoverEbookMeta(
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+  macosBundleBinary: string = MACOS_BUNDLE_BINARY,
+): Promise<EbookMetaDiscovery> {
+  return discoverCalibreExecutable(
+    "TAKIO_EBOOK_META",
+    "ebook-meta",
+    env,
+    platform,
+    macosBundleBinary,
+  );
+}
+
+export function discoverFetchEbookMetadata(
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+  macosBundleBinary: string = FETCH_MACOS_BUNDLE_BINARY,
+): Promise<EbookMetaDiscovery> {
+  return discoverCalibreExecutable(
+    "TAKIO_FETCH_EBOOK_METADATA",
+    "fetch-ebook-metadata",
+    env,
+    platform,
+    macosBundleBinary,
+  );
 }
 
 function childEnvironment(workspace: string): Record<string, string> {
@@ -128,6 +208,47 @@ function childEnvironment(workspace: string): Record<string, string> {
   environment.TMP = workspace;
   environment.TEMP = workspace;
   return environment;
+}
+
+async function hashFile(path: string): Promise<{ bytes: number; sha256: string }> {
+  const file = await open(path, "r");
+  const hash = createHash("sha256");
+  let bytes = 0;
+  try {
+    for await (const chunk of file.readableWebStream()) {
+      bytes += chunk.byteLength;
+      hash.update(chunk);
+    }
+  } finally {
+    await file.close();
+  }
+  return { bytes, sha256: hash.digest("hex") };
+}
+
+function metadataArguments(item: LibraryItem): string[] {
+  const authors = item.authors?.map(({ name }) => name) ?? (item.author ? [item.author] : []);
+  const arguments_ = [`--title=${item.title}`];
+  if (authors.length > 0) arguments_.push(`--authors=${authors.join(" & ")}`);
+  if (item.authors?.some(({ sortName }) => sortName)) {
+    arguments_.push(
+      `--author-sort=${item.authors.map(({ name, sortName }) => sortName ?? name).join(" & ")}`,
+    );
+  }
+  if (item.description) arguments_.push(`--comments=${item.description}`);
+  if (item.publisher) arguments_.push(`--publisher=${item.publisher}`);
+  if (item.series) arguments_.push(`--series=${item.series}`);
+  if (item.seriesIndex !== undefined) arguments_.push(`--index=${item.seriesIndex}`);
+  if (item.rating !== undefined && item.rating > 0) arguments_.push(`--rating=${item.rating / 2}`);
+  if (item.languages?.[0]) arguments_.push(`--language=${item.languages[0]}`);
+  if (item.publishedDate) arguments_.push(`--date=${item.publishedDate}`);
+  if (item.tags.length > 0) arguments_.push(`--tags=${item.tags.join(", ")}`);
+  for (const [kind, value] of Object.entries(item.identifiers ?? {}).sort(([a], [b]) =>
+    a.localeCompare(b),
+  )) {
+    arguments_.push(`--identifier=${kind}:${value}`);
+  }
+  if (item.coverPath) arguments_.push(`--cover=${item.coverPath}`);
+  return arguments_;
 }
 
 function text(value: unknown): string | undefined {
@@ -334,6 +455,301 @@ async function boundedFile(path: string, maximumBytes: number): Promise<Uint8Arr
       return null;
     }
     throw error;
+  }
+}
+
+async function boundedStream(
+  stream: ReadableStream<Uint8Array>,
+  maximumBytes: number,
+  child: Bun.Subprocess,
+): Promise<Uint8Array> {
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for await (const chunk of stream) {
+    size += chunk.byteLength;
+    if (size > maximumBytes) {
+      try {
+        child.kill("SIGKILL");
+      } catch {
+        // The bounded-output failure remains authoritative.
+      }
+      throw new MetadataError("metadata-invalid");
+    }
+    chunks.push(chunk);
+  }
+  const result = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) {
+    result.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return result;
+}
+
+async function publishCover(
+  requestedPath: string,
+  cover: ExtractedCover,
+): Promise<NonNullable<FetchedOnlineMetadata["cover"]>> {
+  if (requestedPath.trim() === "") throw new MetadataError("invalid-arguments");
+
+  let destinationPath: string;
+  try {
+    const parent = await realpath(dirname(resolve(requestedPath)));
+    if (!(await stat(parent)).isDirectory()) throw new Error("not a directory");
+    await access(parent, constants.W_OK);
+    destinationPath = join(parent, basename(resolve(requestedPath)));
+  } catch {
+    throw new MetadataError("invalid-arguments");
+  }
+
+  let file: Awaited<ReturnType<typeof open>> | undefined;
+  let created = false;
+  try {
+    file = await open(destinationPath, "wx", 0o600);
+    created = true;
+    await file.writeFile(cover.bytes);
+    await file.sync();
+    await file.close();
+    file = undefined;
+
+    const expectedSha256 = createHash("sha256").update(cover.bytes).digest("hex");
+    const artifact = await hashFile(destinationPath);
+    if (artifact.bytes !== cover.bytes.byteLength || artifact.sha256 !== expectedSha256) {
+      throw new MetadataError("cover-write-failed");
+    }
+    return {
+      path: await realpath(destinationPath),
+      ...artifact,
+      extension: cover.extension,
+      mediaType: cover.mediaType,
+    };
+  } catch (error) {
+    await file?.close().catch(() => {});
+    if (created) await rm(destinationPath, { force: true }).catch(() => {});
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+      throw new MetadataError("cover-output-exists");
+    }
+    if (error instanceof MetadataError) throw error;
+    throw new MetadataError("cover-write-failed");
+  }
+}
+
+export async function materializeEbookMetadata({
+  backendPath,
+  artifactPath,
+  format,
+  item,
+  timeoutMs,
+}: MaterializeEbookMetadataOptions): Promise<MaterializedEbookArtifact> {
+  if (
+    !Number.isSafeInteger(timeoutMs) ||
+    timeoutMs <= 0 ||
+    timeoutMs > 2_147_483_647
+  ) {
+    throw new MetadataError("invalid-arguments");
+  }
+  if (!EMBEDDABLE_METADATA_FORMATS.includes(format)) {
+    throw new MetadataError("metadata-write-unsupported");
+  }
+
+  const canonicalBackend = await executable(backendPath);
+  if (!canonicalBackend) {
+    throw new MetadataError("backend-unavailable");
+  }
+
+  let canonicalArtifact: string;
+  try {
+    const requested = resolve(artifactPath);
+    const requestedMetadata = await lstat(requested);
+    if (!requestedMetadata.isFile() || requestedMetadata.isSymbolicLink() || requestedMetadata.size === 0) {
+      throw new Error("artifact is not a nonempty regular file");
+    }
+    canonicalArtifact = await realpath(requested);
+    await access(canonicalArtifact, constants.R_OK | constants.W_OK);
+    if (item.coverPath) {
+      const cover = await lstat(item.coverPath);
+      if (!cover.isFile() || cover.isSymbolicLink() || cover.size === 0) {
+        throw new Error("cover is not a nonempty regular file");
+      }
+      await access(item.coverPath, constants.R_OK);
+    }
+  } catch {
+    throw new MetadataError("source-unavailable");
+  }
+
+  let workspace: string | undefined;
+  let child: Bun.Subprocess | undefined;
+  let timedOut = false;
+  try {
+    workspace = await mkdtemp(join(tmpdir(), "takio-metadata-write-"));
+    await chmod(workspace, 0o700);
+    try {
+      child = Bun.spawn(
+        [canonicalBackend, canonicalArtifact, ...metadataArguments(item)],
+        {
+          cwd: workspace,
+          env: childEnvironment(workspace),
+          stdin: "ignore",
+          stdout: "ignore",
+          stderr: "ignore",
+        },
+      );
+    } catch {
+      throw new MetadataError("backend-unavailable");
+    }
+
+    const timer = setTimeout(() => {
+      timedOut = true;
+      try {
+        child?.kill("SIGKILL");
+      } catch {
+        // The awaited process status remains authoritative.
+      }
+    }, timeoutMs);
+    timer.unref();
+    const exitCode = await child.exited;
+    clearTimeout(timer);
+    if (timedOut) throw new MetadataError("metadata-timeout");
+    if (exitCode !== 0) throw new MetadataError("metadata-write-failed");
+
+    const artifact = await hashFile(canonicalArtifact);
+    if (artifact.bytes === 0) throw new MetadataError("metadata-write-failed");
+    return { path: canonicalArtifact, ...artifact };
+  } catch (error) {
+    if (error instanceof MetadataError) throw error;
+    throw new MetadataError("metadata-write-failed");
+  } finally {
+    if (child && child.exitCode === null) {
+      try {
+        child.kill("SIGKILL");
+        await child.exited;
+      } catch {
+        // Cleanup remains best-effort after the write result is known.
+      }
+    }
+    if (workspace) {
+      await rm(workspace, { recursive: true, force: true }).catch(() => {});
+    }
+  }
+}
+
+export async function fetchOnlineMetadata({
+  backendPath,
+  title,
+  authors = [],
+  identifiers = {},
+  coverOutputPath,
+  timeoutMs,
+}: FetchOnlineMetadataOptions): Promise<FetchedOnlineMetadata> {
+  if (
+    !Number.isSafeInteger(timeoutMs) ||
+    timeoutMs <= 0 ||
+    timeoutMs > 2_147_483_647
+  ) {
+    throw new MetadataError("invalid-arguments");
+  }
+
+  const normalizedTitle = title?.trim();
+  const normalizedAuthors = authors.map((author) => author.trim());
+  const normalizedIdentifiers: Record<string, string> = {};
+  for (const [rawKind, rawValue] of Object.entries(identifiers)) {
+    const kind = rawKind.trim().toLowerCase();
+    const value = rawValue.trim();
+    if (!kind || kind.includes(":") || !value || normalizedIdentifiers[kind] !== undefined) {
+      throw new MetadataError("invalid-arguments");
+    }
+    normalizedIdentifiers[kind] = value;
+  }
+  if (
+    (title !== undefined && !normalizedTitle) ||
+    normalizedAuthors.some((author) => !author) ||
+    (coverOutputPath !== undefined && coverOutputPath.trim() === "") ||
+    (!normalizedTitle && normalizedAuthors.length === 0 && !normalizedIdentifiers.isbn)
+  ) {
+    throw new MetadataError("invalid-arguments");
+  }
+
+  const canonicalBackend = await executable(backendPath);
+  if (!canonicalBackend) throw new MetadataError("backend-unavailable");
+
+  let workspace: string | undefined;
+  let child: Bun.Subprocess<"ignore", "pipe", "ignore"> | undefined;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let timedOut = false;
+  try {
+    workspace = await mkdtemp(join(tmpdir(), "takio-metadata-fetch-"));
+    await chmod(workspace, 0o700);
+    const coverPath = join(workspace, "cover");
+    const arguments_ = [canonicalBackend, "--opf"];
+    if (normalizedTitle) arguments_.push(`--title=${normalizedTitle}`);
+    if (normalizedAuthors.length > 0) {
+      arguments_.push(`--authors=${normalizedAuthors.join(" & ")}`);
+    }
+    if (normalizedIdentifiers.isbn) {
+      arguments_.push(`--isbn=${normalizedIdentifiers.isbn}`);
+    }
+    for (const [kind, value] of Object.entries(normalizedIdentifiers).sort(([a], [b]) =>
+      a.localeCompare(b),
+    )) {
+      if (kind !== "isbn") arguments_.push(`--identifier=${kind}:${value}`);
+    }
+    if (coverOutputPath !== undefined) arguments_.push(`--cover=${coverPath}`);
+    arguments_.push(`--timeout=${Math.ceil(timeoutMs / 1000)}`);
+
+    try {
+      child = Bun.spawn(arguments_, {
+        cwd: workspace,
+        env: childEnvironment(workspace),
+        stdin: "ignore",
+        stdout: "pipe",
+        stderr: "ignore",
+      });
+    } catch {
+      throw new MetadataError("backend-unavailable");
+    }
+
+    const output = boundedStream(child.stdout, MAX_OPF_BYTES, child);
+    timer = setTimeout(() => {
+      timedOut = true;
+      try {
+        child?.kill("SIGKILL");
+      } catch {
+        // The awaited process status remains authoritative.
+      }
+    }, timeoutMs);
+    timer.unref();
+    const [exitCode, opfBytes] = await Promise.all([child.exited, output]);
+    clearTimeout(timer);
+    timer = undefined;
+    if (timedOut) throw new MetadataError("metadata-timeout");
+    if (exitCode !== 0) throw new MetadataError("metadata-fetch-failed");
+    if (opfBytes.byteLength === 0) throw new MetadataError("metadata-invalid");
+
+    const metadata = parseMetadata(new TextDecoder().decode(opfBytes));
+    const coverBytes = coverOutputPath
+      ? await boundedFile(coverPath, MAX_COVER_BYTES)
+      : null;
+    const cover = coverBytes ? detectedCover(coverBytes) : null;
+    return {
+      metadata,
+      cover: cover && coverOutputPath ? await publishCover(coverOutputPath, cover) : null,
+    };
+  } catch (error) {
+    if (error instanceof MetadataError) throw error;
+    throw new MetadataError("metadata-fetch-failed");
+  } finally {
+    if (timer) clearTimeout(timer);
+    if (child && child.exitCode === null) {
+      try {
+        child.kill("SIGKILL");
+        await child.exited;
+      } catch {
+        // Cleanup remains best-effort after the fetch result is known.
+      }
+    }
+    if (workspace) {
+      await rm(workspace, { recursive: true, force: true }).catch(() => {});
+    }
   }
 }
 

@@ -21,7 +21,9 @@ The workspace currently includes a polished Tauri/React desktop app and a
 durable local library with multi-format books, rich metadata, recursive import,
 search and facets, saved views, duplicate review, covers, trash/restore, and
 bulk export. The CLI can also transfer books to mounted macOS volumes and eject
-them after a verified copy.
+them after a verified copy. Export and send materialize the current catalogue
+metadata and owned cover into supported delivery formats without changing the
+stored or caller-owned source.
 
 Conversion currently supports EPUB-to-PDF, EPUB-to-AZW3, and DOCX, HTML, or TXT
 to EPUB through a discovered Calibre `ebook-convert` backend. It can run
@@ -33,7 +35,7 @@ a caller-owned file.
 
 - [Bun](https://bun.sh/) 1.3+ for development and source execution
 - Rust/Cargo plus Xcode Command Line Tools for Tauri desktop builds
-- [Calibre](https://calibre-ebook.com/download_osx) for metadata extraction and ebook conversion
+- [Calibre](https://calibre-ebook.com/download_osx) for embedded and online metadata, delivery materialization, and ebook conversion
 
 ## Quick start
 
@@ -111,6 +113,7 @@ The command surface is grouped by workflow:
 | `takio capabilities` | Return the protocol version, limits, schemas, formats, conversion pairs, and current backend availability in one JSON object. |
 | `takio formats`, `devices`, `plan` | Inspect known formats and execution targets, or validate a conversion request. |
 | `takio metadata extract` | Read normalized embedded metadata and cover facts without mutating the source or library. |
+| `takio metadata fetch` | Fetch a reviewable online metadata candidate and optionally publish a cover to a new file. |
 | `takio library verify` | Audit database structure and every managed format fingerprint without creating, migrating, or repairing the library. |
 | `takio library backup`, `restore-backup` | Create and restore verified, non-overwriting snapshots of the catalogue and Takio-owned files. |
 | `takio library import`, `import-many` | Import one file or recursively import files and directories. |
@@ -121,15 +124,21 @@ The command surface is grouped by workflow:
 | `takio library saved-views list`, `save`, `remove` | Persist reusable catalogue queries, facets, and sorts. |
 | `takio library cover set`, `remove` | Manage owned cover images. |
 | `takio library trash list`, `move`, `restore`, `purge` | Remove items recoverably or purge them permanently. |
-| `takio library export-many` | Export selected formats without overwriting existing files. |
+| `takio library export-many` | Export selected formats without overwriting existing files, materializing current metadata when supported. |
 | `takio convert` | Run any advertised conversion pair synchronously. |
 | `takio jobs enqueue`, `list`, `get`, `cancel`, `retry`, `run-next` | Manage the durable foreground conversion queue. |
 | `takio destination list`, `eject` | Discover and safely eject mounted macOS volumes. |
-| `takio send` | Copy and verify a library format, optionally converting and attaching an explicitly requested missing format. |
+| `takio send` | Materialize, copy, and verify a library format, optionally converting and attaching an explicitly requested missing format. |
 
 A plan is not execution. `takio convert` bypasses the queue, while `takio jobs enqueue` records work in `jobs.sqlite`, a database separate from `library.sqlite`. Jobs move through `queued`, `running`, `completed`, `failed`, and `canceled`; cancellation is queued-only. `jobs retry` clones failed or canceled work into a new queued job while preserving the terminal record. `run-next` claims the oldest queued job, runs it synchronously, and records either a failure or a completed artifact whose path, nonzero size, and SHA-256 digest have been verified.
 
 The caller chooses and owns the output path. Takio refuses to overwrite an existing file, including one that appears after enqueue. In the desktop app, an EPUB item's **Convert** control opens the native save dialog and adds the job to the conversion ledger; **Refresh**, **Run next**, and queued-job **Cancel** expose the same durable queue.
+
+`metadata fetch` delegates network lookup to Calibre's
+`fetch-ebook-metadata`. It never changes the library: review the returned
+`value.metadata`, apply it with `library update --patch-json`, then use
+`library cover set` if a requested `--cover-output` was returned. Cover output
+is exclusive and never overwrites an existing path.
 
 This focused version intentionally has no daemon or detached worker, live
 progress stream, automatic retry, priorities, active cancellation, remote
@@ -139,9 +148,15 @@ explicit convert-and-send path: it prefers an attached exact format, otherwise
 uses the first compatible stored format, verifies the conversion, attaches a
 managed copy, and then performs the verified destination copy. A later send
 reuses that attached format without requiring the conversion backend.
+For EPUB, PDF, MOBI, AZW3, and DOCX delivery copies, a discovered `ebook-meta`
+backend writes the current title, authors, structured metadata, identifiers,
+tags, and owned cover before the copy is reported complete. Sources are never
+rewritten. Each export/send result reports metadata as `embedded`, `unsupported`,
+or `backend-unavailable`; a Calibre write failure removes the delivery copy and
+returns a stable failure instead of reporting stale bytes.
 Viewing and editing remain delegated to installed applications. The discovered
-`ebook-convert` executable is trusted local configuration and runs without a
-hostile-input sandbox.
+Calibre executables are trusted local configuration and run without a hostile-input
+sandbox.
 
 ## Workspace
 

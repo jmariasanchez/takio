@@ -18,8 +18,13 @@ import { CommanderError } from "commander";
 import { destinationTestSeam } from "../src/destination-test-seam.js";
 import { ejectDestination, listDestinations } from "../src/destinations.js";
 import { createProgram } from "../src/main.js";
+import type { EbookMetaDiscovery } from "../src/metadata.js";
 
 const FAKE_BACKEND = join(import.meta.dir, "fixtures/fake-ebook-convert.ts");
+const FAKE_METADATA_BACKEND = {
+  ok: true,
+  path: join(import.meta.dir, "fixtures/fake-ebook-meta.ts"),
+} as const satisfies EbookMetaDiscovery;
 const temporaryRoots = new Set<string>();
 
 async function temporaryRoot(): Promise<string> {
@@ -50,6 +55,7 @@ async function invoke(
   args: readonly string[],
   eject?: (destinationPath: string) => Promise<number>,
   platform: NodeJS.Platform = process.platform,
+  metadataBackend?: EbookMetaDiscovery,
 ): Promise<{ output: string[]; exitCode?: number }> {
   const output: string[] = [];
   try {
@@ -59,6 +65,8 @@ async function invoke(
       undefined,
       eject,
       platform,
+      undefined,
+      metadataBackend,
     ).parseAsync(["bun", "takio", ...args]);
     return { output };
   } catch (error) {
@@ -334,24 +342,30 @@ describe("mounted destinations", () => {
   test("omits --format to send and independently verify the authoritative primary format", async () => {
     const fixture = await transferFixture();
 
-    const result = await invoke([
-      "send",
-      "--db",
-      fixture.databasePath,
-      "--id",
-      "book-1",
-      "--dest",
-      fixture.destination,
-      "--volumes-root",
-      fixture.volumesRoot,
-    ]);
+    const result = await invoke(
+      [
+        "send",
+        "--db",
+        fixture.databasePath,
+        "--id",
+        "book-1",
+        "--dest",
+        fixture.destination,
+        "--volumes-root",
+        fixture.volumesRoot,
+      ],
+      undefined,
+      process.platform,
+      FAKE_METADATA_BACKEND,
+    );
 
     expect(result.exitCode).toBeUndefined();
     const record = parseRecord(result);
     const finalPath = join(await realpath(fixture.destination), "book.epub");
     const destinationBytes = await readFile(finalPath);
     const sha256 = createHash("sha256").update(destinationBytes).digest("hex");
-    expect(destinationBytes).toEqual(fixture.sourceBytes);
+    expect(destinationBytes).toEqual(Buffer.from(`${fixture.sourceBytes.toString()}\nembedded metadata`));
+    expect(await readFile(fixture.sourcePath)).toEqual(fixture.sourceBytes);
     expect(record).toEqual({
       ok: true,
       value: {
@@ -362,6 +376,7 @@ describe("mounted destinations", () => {
         sha256,
         format: "epub",
         converted: false,
+        metadata: "embedded",
       },
     });
   });
@@ -416,6 +431,7 @@ describe("mounted destinations", () => {
         sha256,
         format: "pdf",
         converted: false,
+        metadata: "backend-unavailable",
       },
     });
   });

@@ -23,10 +23,18 @@ Takio replaces the heavyweight, application-centric Calibre workflow with a focu
 A `Destination` is a passive mounted recipient volume, distinct from the planned device agent that will act as an authenticated remote execution worker.
 
 Local `ebook-convert` discovery checks `TAKIO_EBOOK_CONVERT`, then `PATH`, then `/Applications/calibre.app/Contents/MacOS/ebook-convert` on macOS.
-The read-only `metadata extract` command similarly discovers `ebook-meta`
-through `TAKIO_EBOOK_META`, `PATH`, then the Calibre macOS bundle. It returns
-normalized metadata and bounded cover facts in one JSON envelope; it never
-writes metadata back to the source or library.
+The `metadata extract` command and delivery paths similarly discover
+`ebook-meta` through `TAKIO_EBOOK_META`, `PATH`, then the Calibre macOS bundle.
+Online candidate lookup discovers `fetch-ebook-metadata` through
+`TAKIO_FETCH_EBOOK_METADATA`, `PATH`, then the Calibre macOS bundle. It returns
+normalized metadata for review and can publish a bounded, verified cover only
+to an absent caller-owned path; applying either remains an explicit library
+operation.
+Extraction returns normalized metadata and bounded cover facts in one JSON
+envelope. Export and send may write the current catalogue metadata and owned
+cover only into a newly created delivery copy for EPUB, PDF, MOBI, AZW3, and
+DOCX. They report `embedded`, `unsupported`, or `backend-unavailable`; a write
+failure removes the copy. Stored and caller-owned sources are never rewritten.
 
 `ebook-convert` is trusted local configuration, not a sandbox; hostile-input resource isolation is not provided.
 
@@ -44,6 +52,9 @@ as a managed library format, and then performs the verified destination copy.
 The target format is always explicit: Takio does not infer an unverified
 device-format policy. Delivery uses the logical book filename rather than the
 UUID of an internal managed copy.
+Before transfer, supported formats are copied into a private workspace and
+materialized with the current catalogue metadata. Bulk export materializes its
+new destination files in place and removes any file whose metadata write fails.
 
 `library verify` opens `library.sqlite` read-only with SQLite query-only mode.
 It refuses unsupported schemas rather than migrating them, then reuses the

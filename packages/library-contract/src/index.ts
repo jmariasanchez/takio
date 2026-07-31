@@ -38,6 +38,12 @@ export const LIBRARY_EXPORT_FAILURE_CODES = [
   "source-unavailable",
   "source-changed",
   "destination-unavailable",
+  "metadata-write-failed",
+] as const;
+export const LIBRARY_EXPORT_METADATA_STATES = [
+  "embedded",
+  "unsupported",
+  "backend-unavailable",
 ] as const;
 
 export const LIBRARY_QUERY_SORT_FIELDS = [
@@ -540,6 +546,7 @@ const exportedLibraryEntrySchema = z
     ...libraryExportTargetShape,
     bytes: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
     sha256: z.string().regex(/^[0-9a-f]{64}$/),
+    metadata: z.enum(LIBRARY_EXPORT_METADATA_STATES).optional(),
   })
   .strict();
 
@@ -563,7 +570,12 @@ const failedLibraryExportEntrySchema = z
   .object({
     status: z.literal("failed"),
     ...libraryExportTargetShape,
-    code: z.enum(["source-unavailable", "source-changed", "destination-unavailable"]),
+    code: z.enum([
+      "source-unavailable",
+      "source-changed",
+      "destination-unavailable",
+      "metadata-write-failed",
+    ]),
   })
   .strict();
 

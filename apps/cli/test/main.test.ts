@@ -704,10 +704,11 @@ describe("takio CLI", () => {
               format: "epub",
               provenance: "managed",
               destinationPath: exportedPath,
-              bytes: Buffer.byteLength(sourceContents),
+              bytes: Buffer.byteLength(`${sourceContents}\nembedded metadata`),
               sha256: new Bun.CryptoHasher("sha256")
-                .update(sourceContents)
+                .update(`${sourceContents}\nembedded metadata`)
                 .digest("hex"),
+              metadata: "embedded",
             },
             {
               status: "failed",
@@ -729,11 +730,68 @@ describe("takio CLI", () => {
             destinationPath: destinationDirectory,
           }),
         ],
-        env,
+        { ...env, TAKIO_EBOOK_META: FAKE_EBOOK_META },
       );
 
       expect(parseProcessOutput(result)).toEqual(expected);
-      expect(await Bun.file(exportedPath).text()).toBe(sourceContents);
+      expect(await Bun.file(exportedPath).text()).toBe(`${sourceContents}\nembedded metadata`);
+      expect(await Bun.file(sourcePath).text()).toBe(sourceContents);
+    });
+
+    it("removes an export copy when metadata materialization fails", async () => {
+      const sourcePath = join(directory!, "metadata-failure.epub");
+      const destinationDirectory = join(directory!, "failed export destination");
+      const sourceContents = JSON.stringify({ fakeEbookMeta: { mode: "nonzero" } });
+      await Promise.all([Bun.write(sourcePath, sourceContents), mkdir(destinationDirectory)]);
+      const env = { TAKIO_DATA_DIR: directory };
+      const id = "metadata-failure";
+      const title = "Metadata failure";
+      const added = parseProcessOutput(await invokeProcess([
+        "library",
+        "add",
+        "--id",
+        id,
+        "--title",
+        title,
+        "--source-path",
+        sourcePath,
+        "--format",
+        "epub",
+        "--added-at",
+        "2026-07-31T00:00:00.000Z",
+      ], env));
+      expect(added).toMatchObject({ ok: true });
+
+      const result = parseProcessOutput(await invokeProcess(
+        [
+          "library",
+          "export-many",
+          "--request-json",
+          JSON.stringify({ ids: [id], destinationPath: destinationDirectory }),
+        ],
+        { ...env, TAKIO_EBOOK_META: FAKE_EBOOK_META },
+      ));
+      const destinationPath = join(
+        await realpath(destinationDirectory),
+        `${title} [${new Bun.CryptoHasher("sha256").update(id).digest("hex")}].epub`,
+      );
+
+      expect(result).toEqual({
+        ok: true,
+        value: {
+          outcomes: [{
+            status: "failed",
+            itemId: id,
+            format: "epub",
+            provenance: "referenced",
+            destinationPath,
+            code: "metadata-write-failed",
+          }],
+          counts: { total: 1, exported: 0, skipped: 0, failed: 1 },
+        },
+      });
+      expect(await Bun.file(destinationPath).exists()).toBe(false);
+      expect(await Bun.file(sourcePath).text()).toBe(sourceContents);
     });
 
     it("trashes, lists, restores, and purges through the strict process protocol", async () => {

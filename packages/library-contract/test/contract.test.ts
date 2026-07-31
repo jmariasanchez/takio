@@ -9,6 +9,7 @@ import {
   LIBRARY_IMPORT_FAILURE_CODES,
   LIBRARY_IMPORT_SKIPPED_REASONS,
   LIBRARY_EXPORT_FAILURE_CODES,
+  LIBRARY_EXPORT_METADATA_STATES,
   LIBRARY_EXPORT_SKIPPED_REASONS,
   MAX_LIBRARY_QUERY_PAGE_SIZE,
   MAX_LIBRARY_IMPORT_ROOTS,
@@ -301,6 +302,12 @@ describe("LibraryStore", () => {
       "source-unavailable",
       "source-changed",
       "destination-unavailable",
+      "metadata-write-failed",
+    ]);
+    expect(LIBRARY_EXPORT_METADATA_STATES).toEqual([
+      "embedded",
+      "unsupported",
+      "backend-unavailable",
     ]);
     expect(exportLibraryItemsRequestSchema.parse(request)).toEqual(request);
     expect(outcomes.map((outcome) => libraryExportEntryOutcomeSchema.parse(outcome))).toEqual(

@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 import { Command, CommanderError } from "commander";
 import { createReadStream } from "node:fs";
-import { chmod, lstat, mkdir, mkdtemp, realpath, rm, stat } from "node:fs/promises";
+import { chmod, copyFile, lstat, mkdir, mkdtemp, realpath, rm, stat } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import {
@@ -11,6 +11,7 @@ import {
   detectFormat,
   planConversion,
   type FormatId,
+  type LibraryItem,
 } from "@takio/core";
 import {
   exportLibraryItemsRequestSchema,
@@ -31,6 +32,7 @@ import {
   type ExportLibraryItemsRequest,
   type ImportLibraryItemsRequest,
   type KeepDuplicatePairRequest,
+  type LibraryExportEntryOutcome,
   type LibraryMetadataPatch,
   type ListDuplicateCandidatesRequest,
   type ListLibraryTrashRequest,
@@ -70,9 +72,14 @@ import { reconcileJobAttachment } from "./job-attachment.js";
 import { JOB_STATUSES, JobStore, type ConversionJob, type JobStatus } from "./job-store.js";
 import { enrichImportedLibraryOutcomes } from "./library-import.js";
 import {
+  EMBEDDABLE_METADATA_FORMATS,
   MetadataError,
   discoverEbookMeta,
+  discoverFetchEbookMetadata,
   extractEbookMetadata,
+  fetchOnlineMetadata,
+  materializeEbookMetadata,
+  type EbookMetaDiscovery,
 } from "./metadata.js";
 
 type LibraryPaths = {
@@ -338,6 +345,10 @@ export function createProgram(
     ok: false,
     code: "backend-unavailable",
   },
+  metadataBackend: EbookMetaDiscovery = {
+    ok: false,
+    code: "backend-unavailable",
+  },
 ): Command {
   const program = storageCommand(new Command(), writeError);
   const localCapabilities = conversionBackend.ok
@@ -359,7 +370,7 @@ export function createProgram(
     .command("capabilities")
     .description("Describe the machine contract and currently available backends")
     .action(async () => {
-      const metadataBackend = await discoverEbookMeta();
+      const onlineMetadataBackend = await discoverFetchEbookMetadata();
       write(JSON.stringify({
         ok: true,
         value: {
@@ -381,6 +392,13 @@ export function createProgram(
             metadata: metadataBackend.ok
               ? { name: "ebook-meta", available: true }
               : { name: "ebook-meta", available: false, code: metadataBackend.code },
+            onlineMetadata: onlineMetadataBackend.ok
+              ? { name: "fetch-ebook-metadata", available: true }
+              : {
+                  name: "fetch-ebook-metadata",
+                  available: false,
+                  code: onlineMetadataBackend.code,
+                },
           },
           formats: FORMAT_CATALOG,
           conversions: {
@@ -500,13 +518,12 @@ export function createProgram(
           command.error("", { exitCode: 1, code: "invalid-arguments" });
         }
 
-        const backend = await discoverEbookMeta();
-        if (!backend.ok) {
-          command.error("", { exitCode: 1, code: backend.code });
+        if (!metadataBackend.ok) {
+          command.error("", { exitCode: 1, code: metadataBackend.code });
         }
         try {
           const extracted = await extractEbookMetadata({
-            backendPath: backend.path,
+            backendPath: metadataBackend.path,
             sourcePath: options.sourcePath,
             timeoutMs: timeoutSeconds * 1000,
           });
@@ -526,6 +543,84 @@ export function createProgram(
               },
             }),
           );
+        } catch (error) {
+          if (error instanceof MetadataError) {
+            command.error("", { exitCode: 1, code: error.code });
+          }
+          throw error;
+        }
+      },
+    );
+
+  storageCommand(metadata.command("fetch").helpOption(false), writeError)
+    .description("Fetch a reviewable metadata candidate without changing the library")
+    .option("--title <title>", "book title")
+    .option(
+      "--author <author>",
+      "book author (repeatable)",
+      (author: string, authors: string[]) => [...authors, author],
+      [],
+    )
+    .option(
+      "--identifier <kind:value>",
+      "book identifier (repeatable)",
+      (identifier: string, identifiers: string[]) => [...identifiers, identifier],
+      [],
+    )
+    .option("--cover-output <path>", "publish a fetched cover to a new file")
+    .option("--timeout-seconds <seconds>", "online metadata timeout", "30")
+    .action(
+      async (
+        options: {
+          title?: string;
+          author: string[];
+          identifier: string[];
+          coverOutput?: string;
+          timeoutSeconds: string;
+        },
+        command: Command,
+      ) => {
+        const timeoutSeconds = Number(options.timeoutSeconds);
+        const identifiers: Record<string, string> = {};
+        for (const input of options.identifier) {
+          const separator = input.indexOf(":");
+          const kind = input.slice(0, separator).trim().toLowerCase();
+          const value = input.slice(separator + 1).trim();
+          if (
+            separator <= 0 ||
+            !kind ||
+            !value ||
+            identifiers[kind] !== undefined
+          ) {
+            command.error("", { exitCode: 1, code: "invalid-arguments" });
+          }
+          identifiers[kind] = value;
+        }
+        if (
+          !Number.isSafeInteger(timeoutSeconds) ||
+          timeoutSeconds <= 0 ||
+          timeoutSeconds > Math.floor(2_147_483_647 / 1000) ||
+          (options.title !== undefined && options.title.trim() === "") ||
+          options.author.some((author) => author.trim() === "") ||
+          (!options.title?.trim() && options.author.length === 0 && !identifiers.isbn)
+        ) {
+          command.error("", { exitCode: 1, code: "invalid-arguments" });
+        }
+
+        const backend = await discoverFetchEbookMetadata();
+        if (!backend.ok) {
+          command.error("", { exitCode: 1, code: backend.code });
+        }
+        try {
+          const fetched = await fetchOnlineMetadata({
+            backendPath: backend.path,
+            title: options.title,
+            authors: options.author,
+            identifiers,
+            coverOutputPath: options.coverOutput,
+            timeoutMs: timeoutSeconds * 1000,
+          });
+          write(JSON.stringify({ ok: true, value: fetched }));
         } catch (error) {
           if (error instanceof MetadataError) {
             command.error("", { exitCode: 1, code: error.code });
@@ -975,10 +1070,41 @@ export function createProgram(
         const primaryExtension = extname(primaryName);
         const deliveryName = `${primaryName.slice(0, -primaryExtension.length)}.${selectedFormat.format}`;
 
+        let metadataWorkspace: string | undefined;
         try {
+          let sourcePath = selectedFormat.sourcePath;
+          let metadata: "embedded" | "unsupported" | "backend-unavailable" =
+            EMBEDDABLE_METADATA_FORMATS.includes(selectedFormat.format)
+              ? "backend-unavailable"
+              : "unsupported";
+          if (metadataBackend.ok && metadata !== "unsupported") {
+            metadataWorkspace = await mkdtemp(join(tmpdir(), "takio-send-metadata-"));
+            await chmod(metadataWorkspace, 0o700);
+            sourcePath = join(metadataWorkspace, deliveryName);
+            try {
+              await copyFile(selectedFormat.sourcePath, sourcePath);
+            } catch {
+              command.error("", { exitCode: 1, code: "source-unavailable" });
+            }
+            try {
+              await materializeEbookMetadata({
+                backendPath: metadataBackend.path,
+                artifactPath: sourcePath,
+                format: selectedFormat.format,
+                item: item.value,
+                timeoutMs: 15_000,
+              });
+              metadata = "embedded";
+            } catch (error) {
+              if (error instanceof MetadataError) {
+                command.error("", { exitCode: 1, code: error.code });
+              }
+              command.error("", { exitCode: 1, code: "metadata-write-failed" });
+            }
+          }
           const result = await sendToDestination({
             itemId: item.value.id,
-            sourcePath: selectedFormat.sourcePath,
+            sourcePath,
             fileName: deliveryName,
             destination,
             subdir: options.subdir,
@@ -987,7 +1113,7 @@ export function createProgram(
           write(
             JSON.stringify({
               ok: true,
-              value: { ...result, format: selectedFormat.format, converted },
+              value: { ...result, format: selectedFormat.format, converted, metadata },
             }),
           );
         } catch (error) {
@@ -995,6 +1121,10 @@ export function createProgram(
             command.error("", { exitCode: 1, code: error.code });
           }
           throw error;
+        } finally {
+          if (metadataWorkspace) {
+            await rm(metadataWorkspace, { recursive: true, force: true }).catch(() => {});
+          }
         }
       } finally {
         store.close();
@@ -1209,11 +1339,73 @@ export function createProgram(
         );
         const { store } = await openLibraryStore(options.db, command);
         try {
+          const items = new Map<string, LibraryItem>();
+          for (const id of request.ids) {
+            const item = await store.get({ id });
+            if (!item.ok) {
+              command.error("", { exitCode: 1, code: item.error.code });
+            }
+            if (item.value) items.set(id, item.value);
+          }
           const result = await store.exportMany(request);
           if (!result.ok) {
             command.error("", { exitCode: 1, code: result.error.code });
           }
-          write(JSON.stringify({ ok: true, value: result.value }));
+          const outcomes: LibraryExportEntryOutcome[] = [];
+          for (const outcome of result.value.outcomes) {
+            if (outcome.status !== "exported") {
+              outcomes.push(outcome);
+              continue;
+            }
+            if (!EMBEDDABLE_METADATA_FORMATS.includes(outcome.format)) {
+              outcomes.push({ ...outcome, metadata: "unsupported" });
+              continue;
+            }
+            if (!metadataBackend.ok) {
+              outcomes.push({ ...outcome, metadata: "backend-unavailable" });
+              continue;
+            }
+
+            const item = items.get(outcome.itemId);
+            try {
+              if (!item) throw new MetadataError("metadata-write-failed");
+              const artifact = await materializeEbookMetadata({
+                backendPath: metadataBackend.path,
+                artifactPath: outcome.destinationPath,
+                format: outcome.format,
+                item,
+                timeoutMs: 15_000,
+              });
+              outcomes.push({
+                ...outcome,
+                bytes: artifact.bytes,
+                sha256: artifact.sha256,
+                metadata: "embedded",
+              });
+            } catch {
+              await rm(outcome.destinationPath, { force: true }).catch(() => {});
+              outcomes.push({
+                status: "failed",
+                itemId: outcome.itemId,
+                format: outcome.format,
+                provenance: outcome.provenance,
+                destinationPath: outcome.destinationPath,
+                code: "metadata-write-failed",
+              });
+            }
+          }
+          write(JSON.stringify({
+            ok: true,
+            value: {
+              outcomes,
+              counts: {
+                total: outcomes.length,
+                exported: outcomes.filter(({ status }) => status === "exported").length,
+                skipped: outcomes.filter(({ status }) => status === "skipped").length,
+                failed: outcomes.filter(({ status }) => status === "failed").length,
+              },
+            },
+          }));
         } finally {
           store.close();
         }
@@ -1972,7 +2164,10 @@ export function createProgram(
 
 export async function run(argv: string[]): Promise<void> {
   try {
-    const conversionBackend = await discoverEbookConvert();
+    const [conversionBackend, metadataBackend] = await Promise.all([
+      discoverEbookConvert(),
+      discoverEbookMeta(),
+    ]);
     await createProgram(
       console.log,
       (message) => process.stdout.write(message),
@@ -1980,6 +2175,7 @@ export async function run(argv: string[]): Promise<void> {
       undefined,
       process.platform,
       conversionBackend,
+      metadataBackend,
     ).parseAsync(argv);
   } catch (error) {
     if (error instanceof CommanderError) {

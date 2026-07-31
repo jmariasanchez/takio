@@ -8,6 +8,7 @@ type FakeControl = Readonly<{
   coverBase64?: string;
   coverBytes?: number;
   record?: string;
+  materializedText?: string;
 }>;
 
 const [, , source, ...options] = process.argv;
@@ -27,9 +28,6 @@ try {
 
 const opfPath = options.find((option) => option.startsWith("--to-opf="))?.slice(9);
 const coverPath = options.find((option) => option.startsWith("--get-cover="))?.slice(12);
-if (!opfPath || !coverPath) {
-  process.exit(64);
-}
 
 if (control.record) {
   await writeFile(
@@ -52,6 +50,14 @@ if (control.mode === "sleep") {
 
 if (control.mode === "missing") {
   process.exit(0);
+}
+
+if (!opfPath && !coverPath) {
+  await writeFile(source, `${await readFile(source, "utf8")}\n${control.materializedText ?? "embedded metadata"}`);
+  process.exit(0);
+}
+if (!opfPath || !coverPath) {
+  process.exit(64);
 }
 
 await writeFile(

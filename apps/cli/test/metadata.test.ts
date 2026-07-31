@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { chmod, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
+import type { LibraryItem } from "@takio/core";
+import { chmod, copyFile, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -7,9 +8,11 @@ import {
   MetadataError,
   discoverEbookMeta,
   extractEbookMetadata,
+  materializeEbookMetadata,
 } from "../src/metadata.js";
 
 const FAKE_BACKEND = join(import.meta.dir, "fixtures/fake-ebook-meta.ts");
+const FAKE_FETCH_BACKEND = join(import.meta.dir, "fixtures/fake-fetch-ebook-metadata.ts");
 const CLI = join(import.meta.dir, "../src/main.ts");
 const roots: string[] = [];
 
@@ -50,8 +53,9 @@ async function expectMetadataError(
 async function invokeMetadata(
   args: readonly string[],
   environment: Record<string, string> = {},
+  subcommand: "extract" | "fetch" = "extract",
 ): Promise<{ exitCode: number; stdout: string; stderr: string }> {
-  const child = Bun.spawn([process.execPath, CLI, "metadata", "extract", ...args], {
+  const child = Bun.spawn([process.execPath, CLI, "metadata", subcommand, ...args], {
     env: { ...process.env, TAKIO_EBOOK_META: FAKE_BACKEND, ...environment },
     stdout: "pipe",
     stderr: "pipe",
@@ -66,6 +70,66 @@ async function invokeMetadata(
 
 afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+});
+
+describe("online metadata fetch", () => {
+  it("returns a reviewable candidate and publishes a cover without overwriting", async () => {
+    const root = await temporaryRoot();
+    const coverPath = join(root, "fetched-cover");
+    const args = [
+      "--title", "Literal [title] $HOME",
+      "--author", "First Author",
+      "--author", "Second Author",
+      "--identifier", "isbn:9780000000001",
+      "--identifier", "doi:10.1/example",
+      "--cover-output", coverPath,
+      "--timeout-seconds", "5",
+    ];
+    const environment = { TAKIO_FETCH_EBOOK_METADATA: FAKE_FETCH_BACKEND };
+
+    const result = await invokeMetadata(args, environment, "fetch");
+    expect(result.exitCode).toBe(0);
+    expect(result.stderr).toBe("");
+    const cover = await readFile(coverPath);
+    expect(JSON.parse(result.stdout)).toEqual({
+      ok: true,
+      value: {
+        metadata: {
+          title: "Fetched Title",
+          authors: [{ name: "Fetched Author" }],
+          identifiers: { isbn: "9780000000001" },
+          description: "Review before applying.",
+          tags: [],
+        },
+        cover: {
+          path: await realpath(coverPath),
+          bytes: cover.byteLength,
+          sha256: new Bun.CryptoHasher("sha256").update(cover).digest("hex"),
+          extension: ".png",
+          mediaType: "image/png",
+        },
+      },
+    });
+
+    const second = await invokeMetadata(args, environment, "fetch");
+    expect(second.exitCode).toBe(1);
+    expect(JSON.parse(second.stdout)).toEqual({
+      ok: false,
+      error: { code: "cover-output-exists" },
+    });
+    expect(await readFile(coverPath)).toEqual(cover);
+
+    const invalid = await invokeMetadata(
+      [],
+      { TAKIO_FETCH_EBOOK_METADATA: join(root, "missing-backend") },
+      "fetch",
+    );
+    expect(invalid.exitCode).toBe(1);
+    expect(JSON.parse(invalid.stdout)).toEqual({
+      ok: false,
+      error: { code: "invalid-arguments" },
+    });
+  });
 });
 
 describe("ebook-meta discovery", () => {
@@ -116,6 +180,81 @@ describe("ebook-meta discovery", () => {
         fromPath,
       ),
     ).toEqual({ ok: false, code: "backend-unavailable" });
+  });
+});
+
+describe("ebook-meta materialization", () => {
+  it("writes catalogue metadata and cover to a delivery copy without changing the source", async () => {
+    const root = await temporaryRoot();
+    const record = join(root, "write-invocation.json");
+    const sourcePath = await source(root, "source.epub", {
+      record,
+      materializedText: "current catalogue metadata",
+    });
+    const artifactPath = join(root, "delivery.epub");
+    const coverPath = join(root, "cover.jpg");
+    await Promise.all([
+      copyFile(sourcePath, artifactPath),
+      writeFile(coverPath, Buffer.from([0xff, 0xd8, 0xff, 0xd9])),
+    ]);
+    const sourceBefore = await readFile(sourcePath);
+    const item = {
+      id: "book-1",
+      title: "Current Title",
+      sourcePath,
+      format: "epub",
+      addedAt: "2026-07-31T00:00:00.000Z",
+      formats: [{ sourcePath, format: "epub", addedAt: "2026-07-31T00:00:00.000Z", provenance: "referenced" }],
+      authors: [
+        { name: "First Author", sortName: "Author, First" },
+        { name: "Second Author" },
+      ],
+      series: "A Series",
+      seriesIndex: 2.5,
+      publisher: "A Publisher",
+      languages: ["en", "fr"],
+      identifiers: { isbn: "9780000000001", doi: "10.1/example" },
+      publishedDate: "2026-07-31",
+      rating: 8,
+      description: "Current description",
+      coverPath,
+      tags: ["One", "Two"],
+    } as const satisfies LibraryItem;
+
+    const result = await materializeEbookMetadata({
+      backendPath: FAKE_BACKEND,
+      artifactPath,
+      format: "epub",
+      item,
+      timeoutMs: 5_000,
+    });
+
+    const artifact = await readFile(artifactPath);
+    expect(await readFile(sourcePath)).toEqual(sourceBefore);
+    expect(artifact.toString()).toEndWith("\ncurrent catalogue metadata");
+    expect(result).toEqual({
+      path: await realpath(artifactPath),
+      bytes: artifact.byteLength,
+      sha256: new Bun.CryptoHasher("sha256").update(artifact).digest("hex"),
+    });
+    const invocation = JSON.parse(await readFile(record, "utf8")) as { argv: string[] };
+    expect(invocation.argv).toEqual([
+      await realpath(artifactPath),
+      "--title=Current Title",
+      "--authors=First Author & Second Author",
+      "--author-sort=Author, First & Second Author",
+      "--comments=Current description",
+      "--publisher=A Publisher",
+      "--series=A Series",
+      "--index=2.5",
+      "--rating=4",
+      "--language=en",
+      "--date=2026-07-31",
+      "--tags=One, Two",
+      "--identifier=doi:10.1/example",
+      "--identifier=isbn:9780000000001",
+      `--cover=${coverPath}`,
+    ]);
   });
 });
 
