@@ -38,7 +38,7 @@ failure removes the copy. Stored and caller-owned sources are never rewritten.
 
 `ebook-convert` is trusted local configuration, not a sandbox; hostile-input resource isolation is not provided.
 
-The conversion queue uses `jobs.sqlite` beside, but independent from, `library.sqlite`. Its CLI is deliberately exact: `jobs enqueue`, `jobs list`, `jobs get`, queued-only `jobs cancel`, history-preserving `jobs retry`, and one-shot `jobs run-next`. The state machine is `queued` → `running` → `completed` or `failed`, plus `queued` → `canceled`. Retrying a failed or canceled job creates a new queued record at the end of the queue and leaves the terminal record intact. `run-next` claims the oldest queued job and runs it in the caller's foreground process; no daemon claims work in the background.
+The conversion queue uses `jobs.sqlite` beside, but independent from, `library.sqlite`. Its CLI is deliberately exact: `jobs enqueue`, `jobs list`, `jobs get`, queued-only `jobs cancel`, history-preserving `jobs retry`, one-shot `jobs run-next`, and bounded foreground `jobs drain`. The state machine is `queued` → `running` → `completed` or `failed`, plus `queued` → `canceled`. Retrying a failed or canceled job creates a new queued record at the end of the queue and leaves the terminal record intact. `run-next` claims the oldest queued job; `drain` repeats the same runner up to an explicit bound and reports processed and remaining counts. SIGINT or SIGTERM kills the active conversion, records `conversion-cancelled`, and stops the drain before another claim. No daemon claims work in the background.
 
 The caller owns the requested output path, and enqueue refuses a path that already exists. Execution also refuses to overwrite a file that appeared later. A job becomes `completed` only after the output path, nonzero size, and SHA-256 digest are verified and recorded.
 
@@ -55,6 +55,10 @@ UUID of an internal managed copy.
 Before transfer, supported formats are copied into a private workspace and
 materialized with the current catalogue metadata. Bulk export materializes its
 new destination files in place and removes any file whose metadata write fails.
+`send-many` reuses the same verified transfer one item at a time for up to 256
+distinct IDs and reports every outcome in caller order; it does not implicitly
+convert missing formats. `library update-many` applies one validated patch with
+the same bound and accounting.
 
 `library verify` opens `library.sqlite` read-only with SQLite query-only mode.
 It refuses unsupported schemas rather than migrating them, then reuses the

@@ -794,6 +794,67 @@ describe("takio CLI", () => {
       expect(await Bun.file(sourcePath).text()).toBe(sourceContents);
     });
 
+    it("updates a bounded set with every item accounted for", async () => {
+      const firstPath = join(directory!, "batch-update-first.epub");
+      const secondPath = join(directory!, "batch-update-second.epub");
+      await Promise.all([
+        Bun.write(firstPath, "first batch update contents"),
+        Bun.write(secondPath, "second batch update contents"),
+      ]);
+      await addItem("batch-update-first", firstPath);
+      await addItem("batch-update-second", secondPath);
+
+      const result = parseProcessOutput(await invokeProcess([
+        "library",
+        "update-many",
+        "--db",
+        databasePath!,
+        "--id",
+        "batch-update-first",
+        "--id",
+        "missing-batch-update",
+        "--id",
+        "batch-update-second",
+        "--patch-json",
+        JSON.stringify({ publisher: "Batch Publisher", tags: ["Reviewed"] }),
+      ])) as {
+        ok: true;
+        value: {
+          outcomes: Array<{ status: string; itemId: string; item?: { publisher?: string; tags: string[] } }>;
+          counts: { total: number; updated: number; missing: number; failed: number };
+        };
+      };
+
+      expect(result.value.counts).toEqual({ total: 3, updated: 2, missing: 1, failed: 0 });
+      expect(result.value.outcomes.map(({ status, itemId }) => ({ status, itemId }))).toEqual([
+        { status: "updated", itemId: "batch-update-first" },
+        { status: "missing", itemId: "missing-batch-update" },
+        { status: "updated", itemId: "batch-update-second" },
+      ]);
+      expect(result.value.outcomes[0]?.item).toMatchObject({
+        publisher: "Batch Publisher",
+        tags: ["Reviewed"],
+      });
+      expect(result.value.outcomes[2]?.item).toMatchObject({
+        publisher: "Batch Publisher",
+        tags: ["Reviewed"],
+      });
+    });
+
+    it("rejects an oversized metadata batch before opening storage", async () => {
+      const blockedDataDirectory = join(directory!, "update-many-storage-blocked");
+      await Bun.write(blockedDataDirectory, "storage must not open");
+      const ids = Array.from({ length: 257 }, (_, index) => ["--id", `book-${index}`]).flat();
+
+      expectInvalidArgumentsProcess(await invokeProcess([
+        "library",
+        "update-many",
+        ...ids,
+        "--patch-json",
+        JSON.stringify({ tags: ["Reviewed"] }),
+      ], { TAKIO_DATA_DIR: blockedDataDirectory }));
+    });
+
     it("trashes, lists, restores, and purges through the strict process protocol", async () => {
       const sourcePath = join(directory!, "trash-process-book.epub");
       await Bun.write(sourcePath, "trash process contents");

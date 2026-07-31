@@ -118,7 +118,7 @@ The command surface is grouped by workflow:
 | `takio library backup`, `restore-backup` | Create and restore verified, non-overwriting snapshots of the catalogue and Takio-owned files. |
 | `takio library import`, `import-many` | Import one file or recursively import files and directories. |
 | `takio library list`, `get`, `open`, `search`, `query` | Read the catalogue through simple or structured queries. |
-| `takio library update` | Update title, authors, series, publisher, identifiers, languages, rating, description, or tags. |
+| `takio library update`, `update-many` | Update metadata for one item or apply one patch to up to 256 distinct items. |
 | `takio library format import`, `attach`, `replace`, `remove` | Manage owned copies and caller-owned format references. |
 | `takio library duplicates list`, `keep`, `reopen`, `merge` | Review and resolve duplicate candidates. |
 | `takio library saved-views list`, `save`, `remove` | Persist reusable catalogue queries, facets, and sorts. |
@@ -126,11 +126,11 @@ The command surface is grouped by workflow:
 | `takio library trash list`, `move`, `restore`, `purge` | Remove items recoverably or purge them permanently. |
 | `takio library export-many` | Export selected formats without overwriting existing files, materializing current metadata when supported. |
 | `takio convert` | Run any advertised conversion pair synchronously. |
-| `takio jobs enqueue`, `list`, `get`, `cancel`, `retry`, `run-next` | Manage the durable foreground conversion queue. |
+| `takio jobs enqueue`, `list`, `get`, `cancel`, `retry`, `run-next`, `drain` | Manage and boundedly drain the durable foreground conversion queue. |
 | `takio destination list`, `eject` | Discover and safely eject mounted macOS volumes. |
-| `takio send` | Materialize, copy, and verify a library format, optionally converting and attaching an explicitly requested missing format. |
+| `takio send`, `send-many` | Materialize, copy, and verify one format; batch delivery sends an attached exact format for up to 256 distinct items. |
 
-A plan is not execution. `takio convert` bypasses the queue, while `takio jobs enqueue` records work in `jobs.sqlite`, a database separate from `library.sqlite`. Jobs move through `queued`, `running`, `completed`, `failed`, and `canceled`; cancellation is queued-only. `jobs retry` clones failed or canceled work into a new queued job while preserving the terminal record. `run-next` claims the oldest queued job, runs it synchronously, and records either a failure or a completed artifact whose path, nonzero size, and SHA-256 digest have been verified.
+A plan is not execution. `takio convert` bypasses the queue, while `takio jobs enqueue` records work in `jobs.sqlite`, a database separate from `library.sqlite`. Jobs move through `queued`, `running`, `completed`, `failed`, and `canceled`; `jobs cancel` cancels queued work. `jobs retry` clones failed or canceled work into a new queued job while preserving the terminal record. `run-next` claims one oldest job; `drain` runs up to 256 jobs by default, accepts a smaller `--max-jobs`, and reports processed, terminal, and remaining counts. Both run synchronously and record either a failure or a completed artifact whose path, nonzero size, and SHA-256 digest have been verified. SIGINT or SIGTERM cancels the active foreground conversion, records `conversion-cancelled`, and makes `drain` stop before claiming another job.
 
 The caller chooses and owns the output path. Takio refuses to overwrite an existing file, including one that appears after enqueue. In the desktop app, an EPUB item's **Convert** control opens the native save dialog and adds the job to the conversion ledger; **Refresh**, **Run next**, and queued-job **Cancel** expose the same durable queue.
 
@@ -141,7 +141,7 @@ The caller chooses and owns the output path. Takio refuses to overwrite an exist
 is exclusive and never overwrites an existing path.
 
 This focused version intentionally has no daemon or detached worker, live
-progress stream, automatic retry, priorities, active cancellation, remote
+backend percentage stream, automatic retry, priorities, remote
 execution, automatic device-format guessing, or conversion pairs beyond the
 five advertised by `takio capabilities`. `send --format <format> --convert` is the
 explicit convert-and-send path: it prefers an attached exact format, otherwise

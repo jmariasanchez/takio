@@ -436,6 +436,84 @@ describe("mounted destinations", () => {
     });
   });
 
+  test("sends a bounded set with partial failures reported in caller order", async () => {
+    const fixture = await transferFixture();
+    const secondPath = join(fixture.root, "source", "second.epub");
+    const secondBytes = Buffer.from("second destination bytes\n");
+    await writeFile(secondPath, secondBytes);
+    const added = await invoke([
+      "library",
+      "add",
+      "--db",
+      fixture.databasePath,
+      "--id",
+      "book-2",
+      "--title",
+      "Second Book",
+      "--source-path",
+      secondPath,
+      "--format",
+      "epub",
+      "--added-at",
+      "2026-07-31T00:00:00.000Z",
+    ]);
+    expect(added.exitCode).toBeUndefined();
+
+    const result = await invoke([
+      "send-many",
+      "--db",
+      fixture.databasePath,
+      "--id",
+      "book-1",
+      "--id",
+      "missing-book",
+      "--id",
+      "book-2",
+      "--format",
+      "epub",
+      "--dest",
+      fixture.destination,
+      "--volumes-root",
+      fixture.volumesRoot,
+    ]);
+
+    expect(result.exitCode).toBeUndefined();
+    const record = parseRecord(result);
+    expect(record.value.counts).toEqual({ total: 3, sent: 2, failed: 1 });
+    expect(record.value.outcomes.map(({ status, itemId, code }: any) => ({ status, itemId, code }))).toEqual([
+      { status: "sent", itemId: "book-1", code: undefined },
+      { status: "failed", itemId: "missing-book", code: "unknown-item" },
+      { status: "sent", itemId: "book-2", code: undefined },
+    ]);
+    expect(await readFile(join(fixture.destination, "book.epub"))).toEqual(fixture.sourceBytes);
+    expect(await readFile(join(fixture.destination, "second.epub"))).toEqual(secondBytes);
+  });
+
+  test("rejects an oversized send batch before authorizing a destination", async () => {
+    const root = await temporaryRoot();
+    const unopenedDatabase = join(root, "must-not-open.sqlite");
+    const ids = Array.from({ length: 257 }, (_, index) => ["--id", `book-${index}`]).flat();
+    const result = await invoke([
+      "send-many",
+      "--db",
+      unopenedDatabase,
+      ...ids,
+      "--format",
+      "epub",
+      "--dest",
+      join(root, "missing-reader"),
+      "--volumes-root",
+      join(root, "Volumes"),
+    ]);
+
+    expect(result.exitCode).toBe(1);
+    expect(parseRecord(result)).toEqual({
+      ok: false,
+      error: { code: "invalid-arguments" },
+    });
+    expect(await Bun.file(unopenedDatabase).exists()).toBe(false);
+  });
+
   test("does not copy the primary when an explicit format is missing or unsupported", async () => {
     const fixture = await transferFixture();
     const baseArgs = [

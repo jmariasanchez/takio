@@ -10,6 +10,8 @@ import {
   PlanningError,
   detectFormat,
   planConversion,
+  type BookFormat,
+  type Destination,
   type FormatId,
   type LibraryItem,
 } from "@takio/core";
@@ -91,6 +93,7 @@ type Launcher = (argv: readonly string[]) => void | Promise<void>;
 type Ejector = (destinationPath: string) => Promise<number>;
 
 const MAX_LIBRARY_JSON_REQUEST_BYTES = 16 * 1024;
+const MAX_BATCH_ITEMS = 256;
 const JSON_INPUT_HINT = "JSON, '-' for stdin, or '@path' for a file";
 const CLI_VERSION = "0.1.0";
 const MACHINE_CONTRACT_VERSION = 1;
@@ -634,6 +637,99 @@ export function createProgram(
     .description("Manage durable foreground conversion jobs");
   program.addCommand(jobs);
 
+  const runNextJob = async (
+    store: JobStore,
+    databasePath: string | undefined,
+    command: Command,
+  ): Promise<ConversionJob | null> => {
+    const reconcileClaimedAttachment = async (job: ConversionJob): Promise<ConversionJob> => {
+      if (databasePath !== undefined) {
+        const released = store.releaseAttachmentClaim(job.id);
+        if (!released.ok) {
+          command.error("", { exitCode: 1, code: released.error.code });
+        }
+        command.error("", { exitCode: 1, code: "invalid-arguments" });
+      }
+
+      const { store: libraryStore } = await openLibraryStore(undefined, command);
+      try {
+        const reconciled = await reconcileJobAttachment(store, libraryStore, job);
+        if (!reconciled.ok) {
+          command.error("", { exitCode: 1, code: reconciled.error.code });
+        }
+        return reconciled.value;
+      } finally {
+        libraryStore.close();
+      }
+    };
+
+    const pendingAttachment = store.claimNextPendingAttachment();
+    if (!pendingAttachment.ok) {
+      command.error("", { exitCode: 1, code: pendingAttachment.error.code });
+    }
+    if (pendingAttachment.value) {
+      return reconcileClaimedAttachment(pendingAttachment.value);
+    }
+
+    if (!conversionBackend.ok) {
+      command.error("", { exitCode: 1, code: conversionBackend.code });
+    }
+    const claimed = store.claimNext();
+    if (!claimed.ok) command.error("", { exitCode: 1, code: claimed.error.code });
+    if (!claimed.value) return null;
+
+    let result: { ok: true; value: ConversionJob } | { ok: false; error: { code: string } } | undefined;
+    let converted: Awaited<ReturnType<typeof convertLocal>> | undefined;
+    try {
+      converted = await convertLocal({
+        backendPath: conversionBackend.path,
+        input: claimed.value.inputPath,
+        output: claimed.value.outputPath,
+        outputFormat: claimed.value.outputFormat,
+        timeoutMs: 300_000,
+      });
+    } catch (error) {
+      result = store.fail(
+        claimed.value.id,
+        error instanceof ConversionError ? error.code : "conversion-failed",
+      );
+    }
+    if (converted) {
+      const completed = await store.complete(claimed.value.id, {
+        path: converted.artifact.path,
+        bytes: converted.artifact.bytes,
+        sha256: converted.artifact.sha256,
+      });
+      if (!completed.ok && completed.error.code === "artifact-invalid") {
+        result = store.fail(claimed.value.id, "artifact-invalid");
+      } else if (completed.ok && completed.value.attachment?.status === "pending") {
+        const pending = store.claimNextPendingAttachment();
+        if (!pending.ok) {
+          command.error("", { exitCode: 1, code: pending.error.code });
+        }
+        if (!pending.value || pending.value.id !== completed.value.id) {
+          if (pending.value) {
+            const released = store.releaseAttachmentClaim(pending.value.id);
+            if (!released.ok) {
+              command.error("", { exitCode: 1, code: released.error.code });
+            }
+          }
+          result = completed;
+        } else {
+          result = {
+            ok: true,
+            value: await reconcileClaimedAttachment(pending.value),
+          };
+        }
+      } else {
+        result = completed;
+      }
+    }
+    if (!result) throw new Error("Conversion finished without a durable job result.");
+    if (!result.ok) command.error("", { exitCode: 1, code: result.error.code });
+    return result.value;
+  };
+
   storageCommand(jobs.command("enqueue").helpOption(false), writeError)
     .option("--db <path>", "jobs database path")
     .option("--input <path>", "source document path")
@@ -798,97 +894,53 @@ export function createProgram(
     .action(async (options: { db?: string }, command: Command) => {
       const store = await openJobStore(options.db, command);
       try {
-        const reconcileClaimedAttachment = async (job: ConversionJob): Promise<ConversionJob> => {
-          if (options.db !== undefined) {
-            const released = store.releaseAttachmentClaim(job.id);
-            if (!released.ok) {
-              command.error("", { exitCode: 1, code: released.error.code });
-            }
-            command.error("", { exitCode: 1, code: "invalid-arguments" });
-          }
+        const job = await runNextJob(store, options.db, command);
+        write(JSON.stringify({ ok: true, value: { job } }));
+      } finally {
+        store.close();
+      }
+    });
 
-          const { store: libraryStore } = await openLibraryStore(undefined, command);
-          try {
-            const reconciled = await reconcileJobAttachment(store, libraryStore, job);
-            if (!reconciled.ok) {
-              command.error("", { exitCode: 1, code: reconciled.error.code });
-            }
-            return reconciled.value;
-          } finally {
-            libraryStore.close();
-          }
-        };
+  storageCommand(jobs.command("drain").helpOption(false), writeError)
+    .description("Run queued conversions in the foreground until empty or bounded")
+    .option("--db <path>", "jobs database path")
+    .option("--max-jobs <count>", "maximum jobs to process", "256")
+    .action(async (
+      options: { db?: string; maxJobs: string },
+      command: Command,
+    ) => {
+      const maxJobs = Number(options.maxJobs);
+      if (!Number.isSafeInteger(maxJobs) || maxJobs < 1 || maxJobs > 256) {
+        command.error("", { exitCode: 1, code: "invalid-arguments" });
+      }
 
-        const pendingAttachment = store.claimNextPendingAttachment();
-        if (!pendingAttachment.ok) {
-          command.error("", { exitCode: 1, code: pendingAttachment.error.code });
+      const store = await openJobStore(options.db, command);
+      try {
+        const jobs: ConversionJob[] = [];
+        for (let index = 0; index < maxJobs; index += 1) {
+          const job = await runNextJob(store, options.db, command);
+          if (!job) break;
+          jobs.push(job);
+          if (job.errorCode === "conversion-cancelled") break;
         }
-        if (pendingAttachment.value) {
-          const job = await reconcileClaimedAttachment(pendingAttachment.value);
-          write(JSON.stringify({ ok: true, value: { job } }));
-          return;
-        }
-
-        if (!conversionBackend.ok) {
-          command.error("", { exitCode: 1, code: conversionBackend.code });
-        }
-        const claimed = store.claimNext();
-        if (!claimed.ok) command.error("", { exitCode: 1, code: claimed.error.code });
-        if (!claimed.value) {
-          write(JSON.stringify({ ok: true, value: { job: null } }));
-          return;
-        }
-
-        let result: { ok: true; value: ConversionJob } | { ok: false; error: { code: string } } | undefined;
-        let converted: Awaited<ReturnType<typeof convertLocal>> | undefined;
-        try {
-          converted = await convertLocal({
-            backendPath: conversionBackend.path,
-            input: claimed.value.inputPath,
-            output: claimed.value.outputPath,
-            outputFormat: claimed.value.outputFormat,
-            timeoutMs: 300_000,
-          });
-        } catch (error) {
-          result = store.fail(
-            claimed.value.id,
-            error instanceof ConversionError ? error.code : "conversion-failed",
-          );
-        }
-        if (converted) {
-          const completed = await store.complete(claimed.value.id, {
-            path: converted.artifact.path,
-            bytes: converted.artifact.bytes,
-            sha256: converted.artifact.sha256,
-          });
-          if (!completed.ok && completed.error.code === "artifact-invalid") {
-            result = store.fail(claimed.value.id, "artifact-invalid");
-          } else if (completed.ok && completed.value.attachment?.status === "pending") {
-            const pending = store.claimNextPendingAttachment();
-            if (!pending.ok) {
-              command.error("", { exitCode: 1, code: pending.error.code });
-            }
-            if (!pending.value || pending.value.id !== completed.value.id) {
-              if (pending.value) {
-                const released = store.releaseAttachmentClaim(pending.value.id);
-                if (!released.ok) {
-                  command.error("", { exitCode: 1, code: released.error.code });
-                }
-              }
-              result = completed;
-            } else {
-              result = {
-                ok: true,
-                value: await reconcileClaimedAttachment(pending.value),
-              };
-            }
-          } else {
-            result = completed;
-          }
-        }
-        if (!result) throw new Error("Conversion finished without a durable job result.");
-        if (!result.ok) command.error("", { exitCode: 1, code: result.error.code });
-        write(JSON.stringify({ ok: true, value: { job: result.value } }));
+        const listed = store.list();
+        if (!listed.ok) command.error("", { exitCode: 1, code: listed.error.code });
+        const remaining = listed.value.filter(
+          (job) => job.status === "queued" || job.attachment?.status === "pending",
+        ).length;
+        write(JSON.stringify({
+          ok: true,
+          value: {
+            jobs,
+            counts: {
+              processed: jobs.length,
+              completed: jobs.filter(({ status }) => status === "completed").length,
+              failed: jobs.filter(({ status }) => status === "failed").length,
+              canceled: jobs.filter(({ status }) => status === "canceled").length,
+              remaining,
+            },
+          },
+        }));
       } finally {
         store.close();
       }
@@ -945,6 +997,56 @@ export function createProgram(
         );
       },
     );
+
+  const deliverFormat = async (
+    item: LibraryItem,
+    selectedFormat: BookFormat,
+    mountedDestination: Destination,
+    options: { subdir?: string; overwrite?: boolean },
+  ) => {
+    const primaryName = basename(item.formats[0]!.sourcePath);
+    const primaryExtension = extname(primaryName);
+    const deliveryName = `${primaryName.slice(0, -primaryExtension.length)}.${selectedFormat.format}`;
+    let metadataWorkspace: string | undefined;
+    try {
+      let sourcePath = selectedFormat.sourcePath;
+      let metadata: "embedded" | "unsupported" | "backend-unavailable" =
+        EMBEDDABLE_METADATA_FORMATS.includes(selectedFormat.format)
+          ? "backend-unavailable"
+          : "unsupported";
+      if (metadataBackend.ok && metadata !== "unsupported") {
+        metadataWorkspace = await mkdtemp(join(tmpdir(), "takio-send-metadata-"));
+        await chmod(metadataWorkspace, 0o700);
+        sourcePath = join(metadataWorkspace, deliveryName);
+        try {
+          await copyFile(selectedFormat.sourcePath, sourcePath);
+        } catch {
+          throw new DestinationTransferError("source-unavailable");
+        }
+        await materializeEbookMetadata({
+          backendPath: metadataBackend.path,
+          artifactPath: sourcePath,
+          format: selectedFormat.format,
+          item,
+          timeoutMs: 15_000,
+        });
+        metadata = "embedded";
+      }
+      const result = await sendToDestination({
+        itemId: item.id,
+        sourcePath,
+        fileName: deliveryName,
+        destination: mountedDestination,
+        subdir: options.subdir,
+        overwrite: options.overwrite,
+      });
+      return { ...result, format: selectedFormat.format, metadata };
+    } finally {
+      if (metadataWorkspace) {
+        await rm(metadataWorkspace, { recursive: true, force: true }).catch(() => {});
+      }
+    }
+  };
 
   const send = storageCommand(new Command("send"), writeError)
     .description("Send a library item to a mounted destination")
@@ -1066,71 +1168,118 @@ export function createProgram(
           command.error("", { exitCode: 1, code: "format-not-found" });
         }
 
-        const primaryName = basename(item.value.formats[0]!.sourcePath);
-        const primaryExtension = extname(primaryName);
-        const deliveryName = `${primaryName.slice(0, -primaryExtension.length)}.${selectedFormat.format}`;
-
-        let metadataWorkspace: string | undefined;
         try {
-          let sourcePath = selectedFormat.sourcePath;
-          let metadata: "embedded" | "unsupported" | "backend-unavailable" =
-            EMBEDDABLE_METADATA_FORMATS.includes(selectedFormat.format)
-              ? "backend-unavailable"
-              : "unsupported";
-          if (metadataBackend.ok && metadata !== "unsupported") {
-            metadataWorkspace = await mkdtemp(join(tmpdir(), "takio-send-metadata-"));
-            await chmod(metadataWorkspace, 0o700);
-            sourcePath = join(metadataWorkspace, deliveryName);
-            try {
-              await copyFile(selectedFormat.sourcePath, sourcePath);
-            } catch {
-              command.error("", { exitCode: 1, code: "source-unavailable" });
-            }
-            try {
-              await materializeEbookMetadata({
-                backendPath: metadataBackend.path,
-                artifactPath: sourcePath,
-                format: selectedFormat.format,
-                item: item.value,
-                timeoutMs: 15_000,
-              });
-              metadata = "embedded";
-            } catch (error) {
-              if (error instanceof MetadataError) {
-                command.error("", { exitCode: 1, code: error.code });
-              }
-              command.error("", { exitCode: 1, code: "metadata-write-failed" });
-            }
-          }
-          const result = await sendToDestination({
-            itemId: item.value.id,
-            sourcePath,
-            fileName: deliveryName,
-            destination,
-            subdir: options.subdir,
-            overwrite: options.overwrite,
-          });
+          const result = await deliverFormat(item.value, selectedFormat, destination, options);
           write(
             JSON.stringify({
               ok: true,
-              value: { ...result, format: selectedFormat.format, converted, metadata },
+              value: { ...result, converted },
             }),
           );
         } catch (error) {
           if (error instanceof DestinationTransferError) {
             command.error("", { exitCode: 1, code: error.code });
           }
-          throw error;
-        } finally {
-          if (metadataWorkspace) {
-            await rm(metadataWorkspace, { recursive: true, force: true }).catch(() => {});
+          if (error instanceof MetadataError) {
+            command.error("", { exitCode: 1, code: error.code });
           }
+          throw error;
         }
       } finally {
         store.close();
       }
     },
   );
+
+  const sendMany = storageCommand(new Command("send-many"), writeError)
+    .description("Send attached formats for a bounded set of library items")
+    .option("--db <path>", "database path")
+    .requiredOption(
+      "--id <id>",
+      "library item ID (repeatable)",
+      (id: string, ids: string[]) => [...ids, id],
+      [],
+    )
+    .requiredOption("--format <format>", `attached document format: ${FORMAT_IDS.join(", ")}`)
+    .requiredOption("--dest <volume-path>", "mounted destination path")
+    .option("--subdir <dir>", "destination subdirectory")
+    .option("--overwrite", "replace existing destination files")
+    .option("--volumes-root <path>", "mounted-volume root", "/Volumes");
+  program.addCommand(sendMany);
+
+  sendMany.action(async (
+    options: {
+      db?: string;
+      id: string[];
+      format: string;
+      dest: string;
+      subdir?: string;
+      overwrite?: boolean;
+      volumesRoot: string;
+    },
+    command: Command,
+  ) => {
+    const format = FORMAT_IDS.find((candidate) => candidate === options.format);
+    if (
+      !format || options.id.length < 1 || options.id.length > MAX_BATCH_ITEMS ||
+      options.id.some((id) => id.trim() === "") || new Set(options.id).size !== options.id.length
+    ) {
+      command.error("", { exitCode: 1, code: "invalid-arguments" });
+    }
+    const destination = await authorizeDestination(options.dest, options.volumesRoot);
+    if (!destination) command.error("", { exitCode: 1, code: "unknown-destination" });
+
+    const { store } = await openLibraryStore(options.db, command);
+    try {
+      const outcomes: Array<
+        | ({ status: "sent" } & Awaited<ReturnType<typeof deliverFormat>>)
+        | { status: "failed"; itemId: string; code: string }
+      > = [];
+      for (const id of options.id) {
+        const found = await store.get({ id });
+        if (!found.ok) {
+          outcomes.push({ status: "failed", itemId: id, code: found.error.code });
+          continue;
+        }
+        if (!found.value) {
+          outcomes.push({ status: "failed", itemId: id, code: "unknown-item" });
+          continue;
+        }
+        const selectedFormat = found.value.formats.find((candidate) => candidate.format === format);
+        if (!selectedFormat) {
+          outcomes.push({ status: "failed", itemId: id, code: "format-not-found" });
+          continue;
+        }
+        try {
+          outcomes.push({
+            status: "sent",
+            ...(await deliverFormat(found.value, selectedFormat, destination, options)),
+          });
+        } catch (error) {
+          outcomes.push({
+            status: "failed",
+            itemId: id,
+            code: error instanceof DestinationTransferError || error instanceof MetadataError
+              ? error.code
+              : "copy-failed",
+          });
+        }
+      }
+      write(JSON.stringify({
+        ok: true,
+        value: {
+          outcomes,
+          counts: {
+            total: outcomes.length,
+            sent: outcomes.filter(({ status }) => status === "sent").length,
+            failed: outcomes.filter(({ status }) => status === "failed").length,
+          },
+        },
+      }));
+    } finally {
+      store.close();
+    }
+  });
 
   const library = storageCommand(new Command("library"), writeError)
     .description("Manage a durable local library");
@@ -1711,6 +1860,65 @@ export function createProgram(
         }
       },
     );
+
+  storageCommand(library.command("update-many").helpOption(false), writeError)
+    .description("Apply one metadata patch to a bounded set of library items")
+    .option("--db <path>", "database path")
+    .requiredOption(
+      "--id <id>",
+      "library item ID (repeatable)",
+      (id: string, ids: string[]) => [...ids, id],
+      [],
+    )
+    .requiredOption("--patch-json <json>", `structured metadata patch as ${JSON_INPUT_HINT}`)
+    .action(async (
+      options: { db?: string; id: string[]; patchJson: string },
+      command: Command,
+    ) => {
+      if (
+        options.id.length < 1 || options.id.length > MAX_BATCH_ITEMS ||
+        options.id.some((id) => id.trim() === "") || new Set(options.id).size !== options.id.length
+      ) {
+        command.error("", { exitCode: 1, code: "invalid-arguments" });
+      }
+      const patch = await parseLibraryJsonRequest<LibraryMetadataPatch>(
+        options.patchJson,
+        libraryMetadataPatchSchema,
+        command,
+      );
+      const { store } = await openLibraryStore(options.db, command);
+      try {
+        const outcomes: Array<
+          | { status: "updated"; itemId: string; item: LibraryItem }
+          | { status: "missing"; itemId: string }
+          | { status: "failed"; itemId: string; code: string }
+        > = [];
+        for (const id of options.id) {
+          const result = await store.update({ id, patch });
+          if (!result.ok) {
+            outcomes.push({ status: "failed", itemId: id, code: result.error.code });
+          } else if (!result.value) {
+            outcomes.push({ status: "missing", itemId: id });
+          } else {
+            outcomes.push({ status: "updated", itemId: id, item: result.value });
+          }
+        }
+        write(JSON.stringify({
+          ok: true,
+          value: {
+            outcomes,
+            counts: {
+              total: outcomes.length,
+              updated: outcomes.filter(({ status }) => status === "updated").length,
+              missing: outcomes.filter(({ status }) => status === "missing").length,
+              failed: outcomes.filter(({ status }) => status === "failed").length,
+            },
+          },
+        }));
+      } finally {
+        store.close();
+      }
+    });
 
   storageCommand(library.command("search").helpOption(false), writeError)
     .option("--db <path>", "database path")

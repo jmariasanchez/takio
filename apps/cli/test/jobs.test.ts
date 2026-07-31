@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { BunSqliteLibraryStore } from "@takio/library-store-bun";
 import { createHash } from "node:crypto";
-import { chmod, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -177,6 +177,87 @@ describe("takio jobs", () => {
     const empty = await runJobs(["run-next", "--db", database], FAKE_BACKEND, blockedDataDirectory);
     expect(empty.exitCode).toBe(0);
     expect(record(empty)).toEqual({ ok: true, value: { job: null } });
+  });
+
+  it("drains queued work up to the explicit bound and reports remaining progress", async () => {
+    const root = await temporaryRoot();
+    const database = join(root, "jobs.sqlite");
+    for (const number of [1, 2, 3]) {
+      const input = join(root, `book-${number}.epub`);
+      await writeFile(input, `book ${number}`);
+      expect((await runJobs([
+        "enqueue", "--db", database, "--input", input, "--to", "pdf",
+        "--output", join(root, `book-${number}.pdf`),
+      ])).exitCode).toBe(0);
+    }
+
+    const bounded = await runJobs(["drain", "--db", database, "--max-jobs", "2"]);
+    expect(bounded.exitCode).toBe(0);
+    expect(record(bounded)).toMatchObject({
+      ok: true,
+      value: {
+        jobs: [{ status: "completed" }, { status: "completed" }],
+        counts: { processed: 2, completed: 2, failed: 0, canceled: 0, remaining: 1 },
+      },
+    });
+
+    const finished = await runJobs(["drain", "--db", database]);
+    expect(finished.exitCode).toBe(0);
+    expect(record(finished)).toMatchObject({
+      value: {
+        jobs: [{ status: "completed" }],
+        counts: { processed: 1, completed: 1, failed: 0, canceled: 0, remaining: 0 },
+      },
+    });
+  });
+
+  it("stops a foreground drain after SIGINT cancels the active conversion", async () => {
+    const root = await temporaryRoot();
+    const database = join(root, "jobs.sqlite");
+    const started = join(root, "started");
+    const firstInput = join(root, "first.epub");
+    const secondInput = join(root, "second.epub");
+    await Promise.all([
+      writeFile(firstInput, JSON.stringify({ fakeEbookConvert: { mode: "sleep", started } })),
+      writeFile(secondInput, "second"),
+    ]);
+    for (const [input, output] of [
+      [firstInput, join(root, "first.pdf")],
+      [secondInput, join(root, "second.pdf")],
+    ]) {
+      expect((await runJobs([
+        "enqueue", "--db", database, "--input", input, "--to", "pdf", "--output", output,
+      ])).exitCode).toBe(0);
+    }
+
+    const child = Bun.spawn(["bun", "run", CLI, "jobs", "drain", "--db", database], {
+      env: { ...process.env, TAKIO_EBOOK_CONVERT: FAKE_BACKEND },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    for (let attempts = 0; attempts < 100; attempts += 1) {
+      try {
+        await stat(started);
+        break;
+      } catch {
+        await Bun.sleep(20);
+      }
+    }
+    await stat(started);
+    child.kill("SIGINT");
+    const [exitCode, stdout, stderr] = await Promise.all([
+      child.exited,
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+    ]);
+
+    expect(exitCode).toBe(0);
+    expect(record({ stdout, stderr })).toMatchObject({
+      value: {
+        jobs: [{ status: "failed", errorCode: "conversion-cancelled" }],
+        counts: { processed: 1, completed: 0, failed: 1, canceled: 0, remaining: 1 },
+      },
+    });
   });
 
   it("retries a failed job as new queued work while preserving the failed record", async () => {
