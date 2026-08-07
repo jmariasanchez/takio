@@ -7,9 +7,11 @@ type JobsPanelProps = {
   readonly items: readonly LibraryItem[];
   readonly jobs: readonly ConversionJob[];
   readonly jobsState: "loading" | "ready" | "error";
+  readonly conversionRunning: boolean;
   readonly pendingAction: string | null;
   readonly onCancel: (job: ConversionJob) => Promise<void>;
   readonly onRefresh: () => Promise<void>;
+  readonly onRetry: (job: ConversionJob) => Promise<void>;
   readonly onRunNext: () => Promise<void>;
 };
 
@@ -18,18 +20,25 @@ export function JobsPanel({
   items,
   jobs,
   jobsState,
+  conversionRunning,
   pendingAction,
   onCancel,
   onRefresh,
+  onRetry,
   onRunNext,
 }: JobsPanelProps) {
   const queuedJobs = jobs.filter((job) => job.status === "queued");
+  const convertingJobId = conversionRunning
+    ? (jobs.find((job) => job.status === "running")?.id ?? queuedJobs[0]?.id)
+    : undefined;
 
   return (
     <section
       className="jobs-section"
       aria-labelledby="conversions-heading"
-      aria-busy={jobsState === "loading" || pendingAction?.startsWith("job-") === true}
+      aria-busy={
+        conversionRunning || jobsState === "loading" || pendingAction?.startsWith("job-") === true
+      }
     >
       <div className="jobs-heading">
         <div>
@@ -52,10 +61,12 @@ export function JobsPanel({
           <button
             className="quiet-button run-next-button"
             aria-label="Run next queued conversion"
-            disabled={actionsPending || jobsState === "loading" || queuedJobs.length === 0}
+            disabled={
+              actionsPending || conversionRunning || jobsState === "loading" || queuedJobs.length === 0
+            }
             onClick={() => void onRunNext()}
           >
-            {pendingAction === "job-run-next" ? "Converting…" : "Run next"}
+            {conversionRunning ? "Converting…" : "Run next"}
           </button>
         </div>
       </div>
@@ -98,7 +109,10 @@ export function JobsPanel({
                 </div>
                 <div className="job-details">
                   <span className={`job-status status-${job.status}`}>
-                    Status: {job.status[0].toUpperCase() + job.status.slice(1)}
+                    Status:{" "}
+                    {job.id === convertingJobId
+                      ? "Converting…"
+                      : job.status[0].toUpperCase() + job.status.slice(1)}
                   </span>
                   <span className="job-output-label">Output</span>
                   <code title={job.outputPath}>{job.outputPath}</code>
@@ -121,7 +135,7 @@ export function JobsPanel({
                     </span>
                   )}
                 </div>
-                {job.status === "queued" && (
+                {job.status === "queued" && job.id !== convertingJobId && (
                   <button
                     className="row-button danger-button job-cancel"
                     aria-label={`Cancel ${job.inputFormat.toUpperCase()} to ${job.outputFormat.toUpperCase()} conversion for “${sourceTitle}”`}
@@ -135,6 +149,16 @@ export function JobsPanel({
                     }}
                   >
                     {pendingAction === `job-cancel:${job.id}` ? "Canceling…" : "Cancel"}
+                  </button>
+                )}
+                {(job.status === "failed" || job.status === "canceled") && (
+                  <button
+                    className="row-button"
+                    aria-label={`Retry ${job.inputFormat.toUpperCase()} to ${job.outputFormat.toUpperCase()} conversion for “${sourceTitle}”`}
+                    disabled={actionsPending}
+                    onClick={() => void onRetry(job)}
+                  >
+                    {pendingAction === `job-retry:${job.id}` ? "Retrying…" : "Retry"}
                   </button>
                 )}
               </li>

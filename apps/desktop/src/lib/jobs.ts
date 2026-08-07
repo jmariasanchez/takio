@@ -303,6 +303,13 @@ export function cancelConversionJob(
   return invokeJobMutation("jobs_cancel", { id }, invokeCommand);
 }
 
+export function retryConversionJob(
+  id: string,
+  invokeCommand: JobInvoker = invokeTauri,
+): Promise<DesktopJobResult> {
+  return invokeJobMutation("jobs_retry", { id }, invokeCommand);
+}
+
 export function describeJobError(code: string): string {
   switch (code) {
     case "invalid-arguments":
@@ -319,6 +326,8 @@ export function describeJobError(code: string): string {
       return "The conversion took too long and was stopped.";
     case "conversion-cancelled":
       return "The conversion engine stopped before finishing.";
+    case "interrupted":
+      return "Takio stopped while this conversion was running. Retry to start it again.";
     case "artifact-invalid":
       return "The converted file could not be verified.";
     case "copy-failed":

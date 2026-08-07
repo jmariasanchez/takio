@@ -754,6 +754,22 @@ test("passes a strict bulk export report and domain failures through", async () 
   ).toBe(domainFailure);
 });
 
+test("forwards the selected export filename preset without changing legacy requests", async () => {
+  const calls: unknown[] = [];
+  const request = {
+    ...exportRequest,
+    fileNameTemplate: "author-title",
+  } as const satisfies ExportLibraryItemsRequest;
+
+  await exportLibraryItems(request, async (_command, args) => {
+    calls.push(args);
+    return { ok: true, value: exportReport } as never;
+  });
+
+  expect(calls).toEqual([{ request }]);
+  expect(exportRequest).not.toHaveProperty("fileNameTemplate");
+});
+
 test("rejects invalid bulk export requests before desktop invocation", async () => {
   let invocations = 0;
   const invokeCommand: LibraryInvoker = async () => {
@@ -766,6 +782,7 @@ test("rejects invalid bulk export requests before desktop invocation", async () 
     { ...exportRequest, ids: [validItem.id, validItem.id] },
     { ...exportRequest, ids: [validItem.id, " \n"] },
     { ...exportRequest, destinationPath: " \n" },
+    { ...exportRequest, fileNameTemplate: "series-title" },
     { ...exportRequest, overwrite: false },
   ]) {
     expect(

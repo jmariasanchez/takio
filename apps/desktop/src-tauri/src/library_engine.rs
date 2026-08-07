@@ -60,7 +60,14 @@ fn validate_library_export_many_request(request: &Value) -> Result<(), ()> {
     let Value::Object(fields) = request else {
         return Err(());
     };
-    if fields.len() != 2 {
+    if !(2..=3).contains(&fields.len())
+        || fields.keys().any(|field| {
+            !matches!(
+                field.as_str(),
+                "ids" | "destinationPath" | "fileNameTemplate"
+            )
+        })
+    {
         return Err(());
     }
 
@@ -85,7 +92,15 @@ fn validate_library_export_many_request(request: &Value) -> Result<(), ()> {
     let Some(Value::String(destination_path)) = fields.get("destinationPath") else {
         return Err(());
     };
-    validate_nonempty(destination_path)
+    validate_nonempty(destination_path)?;
+
+    match fields.get("fileNameTemplate") {
+        None => Ok(()),
+        Some(Value::String(template)) if matches!(template.as_str(), "title" | "author-title") => {
+            Ok(())
+        }
+        Some(_) => Err(()),
+    }
 }
 
 fn library_export_many_arguments(request: Value) -> Result<Vec<String>, ()> {
@@ -227,6 +242,10 @@ fn jobs_run_next_arguments() -> Vec<String> {
 
 fn jobs_cancel_arguments(id: String) -> Vec<String> {
     vec!["jobs".into(), "cancel".into(), "--id".into(), id]
+}
+
+fn jobs_retry_arguments(id: String) -> Vec<String> {
+    vec!["jobs".into(), "retry".into(), "--id".into(), id]
 }
 
 fn serialize_nonempty_object(value: Value) -> Result<String, ()> {
@@ -758,6 +777,15 @@ pub async fn jobs_cancel(app: tauri::AppHandle, id: String) -> Value {
     run_engine(&app, jobs_cancel_arguments(id)).await
 }
 
+#[tauri::command]
+pub async fn jobs_retry(app: tauri::AppHandle, id: String) -> Value {
+    if validate_nonempty(&id).is_err() {
+        return failure("invalid-arguments");
+    }
+
+    run_engine(&app, jobs_retry_arguments(id)).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -854,6 +882,17 @@ mod tests {
             serde_json::from_str::<Value>(&arguments[3]).unwrap(),
             request
         );
+
+        let preset_request = json!({
+            "ids": ["book-1"],
+            "destinationPath": "/Exports",
+            "fileNameTemplate": "author-title",
+        });
+        let preset_arguments = library_export_many_arguments(preset_request.clone()).unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(&preset_arguments[3]).unwrap(),
+            preset_request
+        );
     }
 
     #[test]
@@ -909,6 +948,20 @@ mod tests {
             "overwrite": false,
         }))
         .is_err());
+        for file_name_template in [json!("series-title"), json!(""), json!(null), json!(2)] {
+            assert!(library_export_many_arguments(json!({
+                "ids": ["book-1"],
+                "destinationPath": "/Exports",
+                "fileNameTemplate": file_name_template,
+            }))
+            .is_err());
+        }
+        assert!(library_export_many_arguments(json!({
+            "ids": ["book-1"],
+            "destinationPath": "/Exports",
+            "fileNameTemplate": "title",
+        }))
+        .is_ok());
 
         let maximum_ids = (0..MAX_LIBRARY_EXPORT_IDS)
             .map(|index| format!("book-{index}"))
@@ -1358,6 +1411,10 @@ mod tests {
         assert_eq!(
             jobs_cancel_arguments("job-1".into()),
             vec!["jobs", "cancel", "--id", "job-1"]
+        );
+        assert_eq!(
+            jobs_retry_arguments("job-1".into()),
+            vec!["jobs", "retry", "--id", "job-1"]
         );
     }
 

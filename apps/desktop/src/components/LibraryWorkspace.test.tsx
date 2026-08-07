@@ -271,6 +271,8 @@ test("renders controlled bulk actions and tag-dialog state for the exact selecti
     pendingAction: "tags",
     canConvert: true,
     canSend: false,
+    exportDialogOpen: false,
+    exportSelectedCount: 0,
     tagsDialogOpen: true,
     tagsDialogError: "One update failed.",
     metadataDialogOpen: false,
@@ -284,6 +286,8 @@ test("renders controlled bulk actions and tag-dialog state for the exact selecti
     onClearSelection: () => undefined,
     onCloseTagsDialog: () => undefined,
     onCloseMetadataDialog: () => undefined,
+    onCloseExportDialog: () => undefined,
+    onConfirmExport: () => undefined,
     onApplyTags: () => undefined,
     onApplyMetadata: () => undefined,
   } as const satisfies NonNullable<LibraryWorkspaceProps["bulkActions"]>;
@@ -312,6 +316,8 @@ test("renders bulk metadata as a distinct controlled workflow with safe shared f
       pendingAction: "metadata",
       canConvert: true,
       canSend: true,
+      exportDialogOpen: false,
+      exportSelectedCount: 0,
       tagsDialogOpen: false,
       tagsDialogError: null,
       metadataDialogOpen: true,
@@ -325,6 +331,8 @@ test("renders bulk metadata as a distinct controlled workflow with safe shared f
       onClearSelection: () => undefined,
       onCloseTagsDialog: () => undefined,
       onCloseMetadataDialog: () => undefined,
+      onCloseExportDialog: () => undefined,
+      onConfirmExport: () => undefined,
       onApplyTags: () => undefined,
       onApplyMetadata: () => undefined,
     },
@@ -339,17 +347,15 @@ test("renders bulk metadata as a distinct controlled workflow with safe shared f
   expect(markup).not.toMatch(/<legend>(?:Title|Authors|Tags)<\/legend>/);
 });
 
-test("omits bulk controls without the controlled integration and disables library input globally", () => {
-  expect(renderWorkspace({ bulkActions: undefined })).not.toContain(
-    'aria-label="Bulk actions"',
-  );
-
+test("renders the export preset dialog with its snapshotted count", () => {
   const markup = renderWorkspace({
-    actionsPending: true,
+    selectedItemIds: [item.id],
     bulkActions: {
       pendingAction: null,
       canConvert: true,
       canSend: true,
+      exportDialogOpen: true,
+      exportSelectedCount: 3,
       tagsDialogOpen: false,
       tagsDialogError: null,
       metadataDialogOpen: false,
@@ -363,6 +369,47 @@ test("omits bulk controls without the controlled integration and disables librar
       onClearSelection: () => undefined,
       onCloseTagsDialog: () => undefined,
       onCloseMetadataDialog: () => undefined,
+      onCloseExportDialog: () => undefined,
+      onConfirmExport: () => undefined,
+      onApplyTags: () => undefined,
+      onApplyMetadata: () => undefined,
+    },
+  });
+
+  expect(markup).toContain('aria-expanded="true"');
+  expect(markup).toContain("Choose filename style");
+  expect(markup).toContain("3 books");
+  expect(markup).toContain('value="author-title"');
+});
+
+test("omits bulk controls without the controlled integration and disables library input globally", () => {
+  expect(renderWorkspace({ bulkActions: undefined })).not.toContain(
+    'aria-label="Bulk actions"',
+  );
+
+  const markup = renderWorkspace({
+    actionsPending: true,
+    bulkActions: {
+      pendingAction: null,
+      canConvert: true,
+      canSend: true,
+      exportDialogOpen: false,
+      exportSelectedCount: 0,
+      tagsDialogOpen: false,
+      tagsDialogError: null,
+      metadataDialogOpen: false,
+      metadataDialogError: null,
+      onExport: () => undefined,
+      onEditTags: () => undefined,
+      onEditMetadata: () => undefined,
+      onConvert: () => undefined,
+      onSend: () => undefined,
+      onMoveToTrash: () => undefined,
+      onClearSelection: () => undefined,
+      onCloseTagsDialog: () => undefined,
+      onCloseMetadataDialog: () => undefined,
+      onCloseExportDialog: () => undefined,
+      onConfirmExport: () => undefined,
       onApplyTags: () => undefined,
       onApplyMetadata: () => undefined,
     },

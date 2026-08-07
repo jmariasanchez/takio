@@ -14,6 +14,7 @@ export type LibraryBulkActionBarProps = {
   readonly pendingAction: LibraryBulkPendingAction | null;
   readonly canConvert: boolean;
   readonly canSend: boolean;
+  readonly exportDialogOpen: boolean;
   readonly onExport: () => void;
   readonly onEditTags: () => void;
   readonly onEditMetadata: () => void;
@@ -38,6 +39,7 @@ export function LibraryBulkActionBar({
   pendingAction,
   canConvert,
   canSend,
+  exportDialogOpen,
   onExport,
   onEditTags,
   onEditMetadata,
@@ -51,7 +53,7 @@ export function LibraryBulkActionBar({
   }
 
   const pending = pendingAction !== null;
-  const controlsDisabled = disabled || pending;
+  const controlsDisabled = disabled || pending || exportDialogOpen;
   const selectionLabel = `${selectedCount} ${selectedCount === 1 ? "book" : "books"} selected`;
 
   return (
@@ -75,6 +77,8 @@ export function LibraryBulkActionBar({
           className="library-bulk-action-bar__primary"
           type="button"
           disabled={controlsDisabled}
+          aria-haspopup="dialog"
+          aria-expanded={exportDialogOpen}
           title="Copy every attached format to a folder"
           onClick={onExport}
         >

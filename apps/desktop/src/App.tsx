@@ -47,6 +47,7 @@ import {
   type DuplicateReviewPendingAction,
 } from "./components/LibraryDuplicateReviewDialog";
 import { LibraryImportDialog } from "./components/LibraryImportDialog";
+import type { LibraryExportFileNameTemplate } from "./components/LibraryExportDialog";
 import {
   LibraryTrashDialog,
   type LibraryTrashPendingAction,
@@ -88,6 +89,7 @@ import {
   describeUnexpectedJobError,
   enqueueConversionJob,
   listConversionJobs,
+  retryConversionJob,
   runNextConversionJob,
   type ConversionJob,
 } from "./lib/jobs";
@@ -158,6 +160,20 @@ type MenuActionHandlers = {
   readonly find: () => void;
 };
 
+type LibraryModalState = {
+  readonly saveView: boolean;
+  readonly import: boolean;
+  readonly trash: boolean;
+  readonly duplicateReview: boolean;
+  readonly bulkTags: boolean;
+  readonly bulkMetadata: boolean;
+  readonly bulkExport: boolean;
+};
+
+export function hasOpenLibraryModal(state: LibraryModalState): boolean {
+  return Object.values(state).some(Boolean);
+}
+
 function uniqueImportPaths(paths: readonly string[]): readonly string[] {
   return [...new Set(paths)];
 }
@@ -217,6 +233,8 @@ export default function App() {
   const [bulkTagsDialogError, setBulkTagsDialogError] = useState<string | null>(null);
   const [bulkMetadataDialogOpen, setBulkMetadataDialogOpen] = useState(false);
   const [bulkMetadataDialogError, setBulkMetadataDialogError] = useState<string | null>(null);
+  const [bulkExportDialogOpen, setBulkExportDialogOpen] = useState(false);
+  const [bulkExportItemIds, setBulkExportItemIds] = useState<readonly string[]>([]);
   const [searchPending, setSearchPending] = useState(false);
   const [draft, setDraft] = useState<MetadataDraft | null>(null);
   const [conversionDraft, setConversionDraft] = useState<ConversionDraft | null>(null);
@@ -224,10 +242,20 @@ export default function App() {
   const [destinationsLoading, setDestinationsLoading] = useState(true);
   const [jobs, setJobs] = useState<readonly ConversionJob[]>([]);
   const [jobsState, setJobsState] = useState<JobsState>("loading");
+  const [conversionRunning, setConversionRunning] = useState(false);
   const [selectedDestinationId, setSelectedDestinationId] = useState<string | null>(null);
   const [preferredFormatsByDestinationPath, setPreferredFormatsByDestinationPath] =
     useState<SessionDeviceFormatPreferences>({});
   const [dropActive, setDropActive] = useState(false);
+  const libraryModalOpen = hasOpenLibraryModal({
+    saveView: saveViewDialogOpen,
+    import: importDialogOpen,
+    trash: trashDialogOpen,
+    duplicateReview: duplicateDialogOpen,
+    bulkTags: bulkTagsDialogOpen,
+    bulkMetadata: bulkMetadataDialogOpen,
+    bulkExport: bulkExportDialogOpen,
+  });
   const savedViewsRequestSequence = useRef(0);
   const trashRequestSequence = useRef(0);
   const trashPageOffsetRef = useRef(0);
@@ -235,6 +263,8 @@ export default function App() {
   const duplicatePageOffsetRef = useRef(0);
   const destinationRequestSequence = useRef(0);
   const jobRequestSequence = useRef(0);
+  const autoDrainBlocked = useRef(false);
+  const conversionWorkerPending = useRef(false);
   const deviceMutationPending = useRef(false);
   const formatMutationPending = useRef(false);
   const bulkMutationPending = useRef(false);
@@ -296,6 +326,7 @@ export default function App() {
     if (
       !postBulkFocusPending.current ||
       pendingAction !== null ||
+      bulkExportDialogOpen ||
       bulkTagsDialogOpen ||
       bulkMetadataDialogOpen ||
       librarySelection.selectedItemIds.length > 0
@@ -309,6 +340,7 @@ export default function App() {
     });
     return () => window.cancelAnimationFrame(frame);
   }, [
+    bulkExportDialogOpen,
     bulkMetadataDialogOpen,
     bulkTagsDialogOpen,
     librarySelection.selectedItemIds.length,
@@ -590,6 +622,7 @@ export default function App() {
         return false;
       }
 
+      autoDrainBlocked.current = false;
       setJobs(result.value.jobs);
       setJobsState("ready");
       return true;
@@ -1204,7 +1237,7 @@ export default function App() {
   }
 
   function openImportDialog(): void {
-    if (pendingAction !== null || importPending.current || duplicateDialogOpen) {
+    if (pendingAction !== null || importPending.current || libraryModalOpen) {
       return;
     }
     setImportRootPaths([]);
@@ -1330,7 +1363,7 @@ export default function App() {
   );
 
   async function importDroppedPaths(paths: readonly string[]): Promise<void> {
-    if (pendingAction !== null || importPending.current || duplicateDialogOpen) {
+    if (pendingAction !== null || importPending.current || libraryModalOpen) {
       return;
     }
     const roots = uniqueImportPaths(paths);
@@ -1807,60 +1840,107 @@ export default function App() {
     }
   }
 
-  async function runNextJob(): Promise<void> {
-    setPendingAction("job-run-next");
+  const runNextJob = useCallback(async (drainQueue = false): Promise<void> => {
+    if (conversionWorkerPending.current) {
+      return;
+    }
+    conversionWorkerPending.current = true;
+    setConversionRunning(true);
     setNotice(null);
     try {
-      const result = await runNextConversionJob();
+      do {
+        const result = await runNextConversionJob();
+        if (!result.ok) {
+          autoDrainBlocked.current = true;
+          setNotice({ kind: "error", text: describeJobError(result.error.code) });
+          break;
+        }
+
+        const completedJob = result.value.job?.status === "completed" ? result.value.job : null;
+        const [jobsLoaded, libraryLoaded] = await Promise.all([
+          loadJobs(false),
+          completedJob ? loadLibrary(false) : Promise.resolve(true),
+        ]);
+        if (!jobsLoaded || !libraryLoaded) {
+          break;
+        }
+        if (result.value.job === null) {
+          if (!drainQueue) {
+            setNotice({ kind: "status", text: "No queued conversions." });
+          }
+          break;
+        } else if (result.value.job.status === "completed") {
+          const completed = result.value.job;
+          const title = completed.libraryItemId
+            ? itemsRef.current.find(({ id }) => id === completed.libraryItemId)?.title
+            : undefined;
+          const subject = title ? ` for “${title}”` : "";
+          if (completed.attachment?.status === "pending") {
+            setNotice({
+              kind: "status",
+              text: `Conversion completed${subject}; PDF attachment is pending.`,
+            });
+          } else if (completed.attachment?.status === "attached") {
+            setNotice({
+              kind: "status",
+              text: `Conversion completed${subject}; PDF was attached to the library item.`,
+            });
+          } else if (completed.attachment?.status === "failed") {
+            setNotice({
+              kind: "error",
+              text: `Conversion completed${subject}, but PDF attachment failed (${completed.attachment.errorCode}).`,
+            });
+          } else {
+            setNotice({
+              kind: "status",
+              text: `Conversion completed: ${completed.outputPath}`,
+            });
+          }
+        } else if (result.value.job.status === "failed") {
+          setNotice({
+            kind: "error",
+            text: describeJobError(result.value.job.errorCode ?? "conversion-failed"),
+          });
+        } else {
+          setNotice({ kind: "status", text: "Conversion list updated." });
+        }
+      } while (drainQueue);
+    } catch (error) {
+      autoDrainBlocked.current = true;
+      setNotice({ kind: "error", text: describeUnexpectedJobError(error) });
+    } finally {
+      conversionWorkerPending.current = false;
+      setConversionRunning(false);
+    }
+  }, [loadJobs, loadLibrary]);
+
+  useEffect(() => {
+    if (
+      jobsState === "ready" &&
+      !conversionRunning &&
+      jobs.some(({ status }) => status === "queued") &&
+      !autoDrainBlocked.current &&
+      !conversionWorkerPending.current
+    ) {
+      void runNextJob(true);
+    }
+  }, [conversionRunning, jobs, jobsState, runNextJob]);
+
+  async function retryJob(job: ConversionJob): Promise<void> {
+    if (job.status !== "failed" && job.status !== "canceled") {
+      return;
+    }
+    setPendingAction(`job-retry:${job.id}`);
+    setNotice(null);
+    try {
+      const result = await retryConversionJob(job.id);
       if (!result.ok) {
         setNotice({ kind: "error", text: describeJobError(result.error.code) });
         return;
       }
 
-      const completedJob = result.value.job?.status === "completed" ? result.value.job : null;
-      const [jobsLoaded, libraryLoaded] = await Promise.all([
-        loadJobs(false),
-        completedJob ? loadLibrary(false) : Promise.resolve(true),
-      ]);
-      if (!jobsLoaded || !libraryLoaded) {
-        return;
-      }
-      if (result.value.job === null) {
-        setNotice({ kind: "status", text: "No queued conversions." });
-      } else if (result.value.job.status === "completed") {
-        const completed = result.value.job;
-        const title = completed.libraryItemId
-          ? itemsRef.current.find(({ id }) => id === completed.libraryItemId)?.title
-          : undefined;
-        const subject = title ? ` for “${title}”` : "";
-        if (completed.attachment?.status === "pending") {
-          setNotice({
-            kind: "status",
-            text: `Conversion completed${subject}; PDF attachment is pending.`,
-          });
-        } else if (completed.attachment?.status === "attached") {
-          setNotice({
-            kind: "status",
-            text: `Conversion completed${subject}; PDF was attached to the library item.`,
-          });
-        } else if (completed.attachment?.status === "failed") {
-          setNotice({
-            kind: "error",
-            text: `Conversion completed${subject}, but PDF attachment failed (${completed.attachment.errorCode}).`,
-          });
-        } else {
-          setNotice({
-            kind: "status",
-            text: `Conversion completed: ${completed.outputPath}`,
-          });
-        }
-      } else if (result.value.job.status === "failed") {
-        setNotice({
-          kind: "error",
-          text: describeJobError(result.value.job.errorCode ?? "conversion-failed"),
-        });
-      } else {
-        setNotice({ kind: "status", text: "Conversion list updated." });
+      if (await loadJobs(false)) {
+        setNotice({ kind: "status", text: `Queued conversion retry to ${job.outputPath}.` });
       }
     } catch (error) {
       setNotice({ kind: "error", text: describeUnexpectedJobError(error) });
@@ -2032,6 +2112,7 @@ export default function App() {
     if (
       pendingAction !== null ||
       bulkMutationPending.current ||
+      bulkExportDialogOpen ||
       bulkMetadataDialogOpen ||
       librarySelection.selectedItemIds.length === 0
     ) {
@@ -2052,6 +2133,7 @@ export default function App() {
     if (
       pendingAction !== null ||
       bulkMutationPending.current ||
+      bulkExportDialogOpen ||
       bulkTagsDialogOpen ||
       saveViewDialogOpen ||
       importDialogOpen ||
@@ -2069,6 +2151,41 @@ export default function App() {
     if (!bulkMutationPending.current) {
       setBulkMetadataDialogError(null);
       setBulkMetadataDialogOpen(false);
+    }
+  }
+
+  function openBulkExportDialog(): void {
+    const selectedIds = [...librarySelection.selectedItemIds];
+    if (
+      selectedIds.length === 0 ||
+      pendingAction !== null ||
+      bulkMutationPending.current ||
+      saveViewDialogOpen ||
+      importDialogOpen ||
+      trashDialogOpen ||
+      duplicateDialogOpen ||
+      bulkTagsDialogOpen ||
+      bulkMetadataDialogOpen ||
+      bulkExportDialogOpen
+    ) {
+      return;
+    }
+    if (selectedIds.length > MAX_LIBRARY_EXPORT_ITEMS) {
+      setNotice({
+        kind: "error",
+        text: `Choose no more than ${MAX_LIBRARY_EXPORT_ITEMS} books to save to disk.`,
+      });
+      return;
+    }
+
+    setBulkExportItemIds(selectedIds);
+    setBulkExportDialogOpen(true);
+  }
+
+  function closeBulkExportDialog(): void {
+    if (!bulkMutationPending.current) {
+      setBulkExportDialogOpen(false);
+      setBulkExportItemIds([]);
     }
   }
 
@@ -2288,30 +2405,21 @@ export default function App() {
     }
   }
 
-  async function saveBulkSelectionToDisk(): Promise<void> {
-    const selectedIds = [...librarySelection.selectedItemIds];
+  async function saveBulkSelectionToDisk(
+    fileNameTemplate: LibraryExportFileNameTemplate,
+  ): Promise<void> {
+    const selectedIds = [...bulkExportItemIds];
     if (
       selectedIds.length === 0 ||
       pendingAction !== null ||
       bulkMutationPending.current ||
-      saveViewDialogOpen ||
-      importDialogOpen ||
-      trashDialogOpen ||
-      duplicateDialogOpen ||
-      bulkTagsDialogOpen ||
-      bulkMetadataDialogOpen
+      !bulkExportDialogOpen
     ) {
-      return;
-    }
-    if (selectedIds.length > MAX_LIBRARY_EXPORT_ITEMS) {
-      setNotice({
-        kind: "error",
-        text: `Choose no more than ${MAX_LIBRARY_EXPORT_ITEMS} books to save to disk.`,
-      });
       return;
     }
 
     bulkMutationPending.current = true;
+    setBulkExportDialogOpen(false);
     setBulkPendingAction("export");
     setPendingAction("bulk-export");
     try {
@@ -2334,6 +2442,7 @@ export default function App() {
       const result = await exportLibraryItems({
         ids: selectedIds,
         destinationPath: selection,
+        fileNameTemplate,
       });
       if (!result.ok) {
         setNotice({ kind: "error", text: describeLibraryError(result.error.code) });
@@ -2373,6 +2482,7 @@ export default function App() {
       setNotice({ kind: "error", text: describeUnexpectedLibraryError(error) });
     } finally {
       bulkMutationPending.current = false;
+      setBulkExportItemIds([]);
       setBulkPendingAction(null);
       setPendingAction(null);
     }
@@ -2615,7 +2725,11 @@ export default function App() {
     openSelected: openSelectedItem,
     sendSelected: sendSelectedItem,
     ejectSelected: ejectSelectedDestination,
-    find: () => searchInput.current?.focus(),
+    find: () => {
+      if (!libraryModalOpen) {
+        searchInput.current?.focus();
+      }
+    },
   };
 
   useEffect(() => {
@@ -2771,9 +2885,11 @@ export default function App() {
           items={items}
           jobs={jobs}
           jobsState={jobsState}
+          conversionRunning={conversionRunning}
           pendingAction={pendingAction}
           onCancel={cancelJob}
           onRefresh={refreshJobs}
+          onRetry={retryJob}
           onRunNext={runNextJob}
         />
 
@@ -2792,11 +2908,13 @@ export default function App() {
               librarySelection.selectedItemIds.length > 0 &&
               selectedDestination !== null &&
               preferredDeviceFormat !== null,
+            exportDialogOpen: bulkExportDialogOpen,
+            exportSelectedCount: bulkExportItemIds.length,
             tagsDialogOpen: bulkTagsDialogOpen,
             tagsDialogError: bulkTagsDialogError,
             metadataDialogOpen: bulkMetadataDialogOpen,
             metadataDialogError: bulkMetadataDialogError,
-            onExport: () => void saveBulkSelectionToDisk(),
+            onExport: openBulkExportDialog,
             onEditTags: openBulkTagsDialog,
             onEditMetadata: openBulkMetadataDialog,
             onConvert: () => void convertBulkSelectionToPdf(),
@@ -2809,6 +2927,8 @@ export default function App() {
             },
             onCloseTagsDialog: closeBulkTagsDialog,
             onCloseMetadataDialog: closeBulkMetadataDialog,
+            onCloseExportDialog: closeBulkExportDialog,
+            onConfirmExport: (template) => void saveBulkSelectionToDisk(template),
             onApplyTags: (operation, tags) => void applyBulkTags(operation, tags),
             onApplyMetadata: (patch) => void applyBulkMetadata(patch),
           }}

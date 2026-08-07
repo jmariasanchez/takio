@@ -31,6 +31,7 @@ function props(
     pendingAction: null,
     canConvert: true,
     canSend: true,
+    exportDialogOpen: false,
     onExport: () => undefined,
     onEditTags: () => undefined,
     onEditMetadata: () => undefined,
@@ -79,6 +80,7 @@ test("offers only the requested bulk library actions without introducing a readi
     expect(markup).toContain(`>${label}</button>`);
   }
   expect(markup).toContain('title="Copy every attached format to a folder"');
+  expect(markup).toContain('aria-haspopup="dialog" aria-expanded="false"');
   expect(markup.match(/<button/g)).toHaveLength(7);
   expect(markup).not.toMatch(/reader|viewer|open book/i);
 });
@@ -132,6 +134,15 @@ test("globally disables every control while unrelated library work is pending", 
   expect(markup).toContain('aria-busy="false"');
   expect(markup).not.toContain("Updating tags…");
   expect(buttons).toHaveLength(7);
+  expect(buttons.every(({ props }) => props.disabled)).toBe(true);
+});
+
+test("disables selection controls while the export preset dialog owns the workflow", () => {
+  const tree = LibraryBulkActionBar(props({ exportDialogOpen: true }));
+  const buttons = elements(tree).filter((element) => element.type === "button");
+  const markup = renderToStaticMarkup(tree);
+
+  expect(markup).toContain('aria-expanded="true"');
   expect(buttons.every(({ props }) => props.disabled)).toBe(true);
 });
 

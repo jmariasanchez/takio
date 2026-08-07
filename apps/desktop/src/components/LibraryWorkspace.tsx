@@ -29,6 +29,10 @@ import {
   LibraryBulkActionBar,
   type LibraryBulkPendingAction,
 } from "./LibraryBulkActionBar";
+import {
+  LibraryExportDialog,
+  type LibraryExportFileNameTemplate,
+} from "./LibraryExportDialog";
 import { LibraryBulkMetadataDialog } from "./LibraryBulkMetadataDialog";
 import {
   LibraryBulkTagsDialog,
@@ -72,6 +76,8 @@ export type LibraryWorkspaceBulkActions = {
   readonly pendingAction: LibraryBulkPendingAction | null;
   readonly canConvert: boolean;
   readonly canSend: boolean;
+  readonly exportDialogOpen: boolean;
+  readonly exportSelectedCount: number;
   readonly tagsDialogOpen: boolean;
   readonly tagsDialogError: string | null;
   readonly metadataDialogOpen: boolean;
@@ -85,6 +91,8 @@ export type LibraryWorkspaceBulkActions = {
   readonly onClearSelection: () => void;
   readonly onCloseTagsDialog: () => void;
   readonly onCloseMetadataDialog: () => void;
+  readonly onCloseExportDialog: () => void;
+  readonly onConfirmExport: (template: LibraryExportFileNameTemplate) => void;
   readonly onApplyTags: (
     operation: LibraryBulkTagsOperation,
     tags: readonly string[],
@@ -712,6 +720,7 @@ export function LibraryWorkspace({
                   pendingAction={bulkActions.pendingAction}
                   canConvert={bulkActions.canConvert}
                   canSend={bulkActions.canSend}
+                  exportDialogOpen={bulkActions.exportDialogOpen}
                   onExport={bulkActions.onExport}
                   onEditTags={bulkActions.onEditTags}
                   onEditMetadata={bulkActions.onEditMetadata}
@@ -796,6 +805,13 @@ export function LibraryWorkspace({
 
       {bulkActions ? (
         <>
+          <LibraryExportDialog
+            open={bulkActions.exportDialogOpen}
+            selectedCount={bulkActions.exportSelectedCount}
+            pending={bulkActions.pendingAction === "export"}
+            onClose={bulkActions.onCloseExportDialog}
+            onConfirm={bulkActions.onConfirmExport}
+          />
           <LibraryBulkTagsDialog
             open={bulkActions.tagsDialogOpen}
             selectedCount={selectedItemIds.length}

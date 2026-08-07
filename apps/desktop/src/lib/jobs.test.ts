@@ -6,6 +6,7 @@ import {
   describeUnexpectedJobError,
   enqueueConversionJob,
   listConversionJobs,
+  retryConversionJob,
   runNextConversionJob,
   type JobInvoker,
 } from "./jobs";
@@ -71,6 +72,7 @@ test("uses only the fixed desktop job commands and argument names", async () => 
   );
   await runNextConversionJob(invokeCommand);
   await cancelConversionJob(queuedJob.id, invokeCommand);
+  await retryConversionJob(queuedJob.id, invokeCommand);
 
   expect(calls).toEqual([
     { command: "jobs_list", args: undefined },
@@ -89,6 +91,7 @@ test("uses only the fixed desktop job commands and argument names", async () => 
     },
     { command: "jobs_run_next", args: undefined },
     { command: "jobs_cancel", args: { id: "job_1" } },
+    { command: "jobs_retry", args: { id: "job_1" } },
   ]);
 });
 
@@ -167,6 +170,9 @@ test("preserves declared failures and sanitizes unexpected details", async () =>
   expect(failure).toEqual({ ok: false, error: { code: "storage-unavailable" } });
   expect(describeJobError("backend-unavailable")).toBe(
     "The Calibre conversion engine is unavailable.",
+  );
+  expect(describeJobError("interrupted")).toBe(
+    "Takio stopped while this conversion was running. Retry to start it again.",
   );
   expect(describeUnexpectedJobError(new Error(implementationDetail))).toBe(
     "The conversion service is unavailable.",

@@ -56,6 +56,7 @@ pub fn run() {
             library_engine::jobs_enqueue,
             library_engine::jobs_run_next,
             library_engine::jobs_cancel,
+            library_engine::jobs_retry,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Takio");
