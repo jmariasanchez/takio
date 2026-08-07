@@ -62,6 +62,8 @@ UUID of an internal managed copy.
 Before transfer, supported formats are copied into a private workspace and
 materialized with the current catalogue metadata. Bulk export materializes its
 new destination files in place and removes any file whose metadata write fails.
+Bulk export also accepts the closed `title` and `author-title` filename presets;
+both remain flat, sanitized, collision-suffixed, and non-overwriting.
 `send-many` reuses the same verified transfer one item at a time for up to 256
 distinct IDs and reports every outcome in caller order; it does not implicitly
 convert missing formats. `library update-many` applies one validated patch with

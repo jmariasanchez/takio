@@ -116,7 +116,9 @@ and mass-storage Kindle acceptance records include hashes and remount results.
 ### 4. Power library and public distribution
 
 - Structured and saved searches, virtual libraries, multiple physical
-  libraries, save-to-disk templates, and discovery indexing.
+  libraries, save-to-disk templates, and discovery indexing. **Bounded flat
+  `title` and `author-title` save-to-disk presets are implemented; arbitrary
+  expressions and persistent discovery indexing remain separate milestones.**
 - Complete export/import and database rebuild; keep the shipped read-only
   integrity audit as their acceptance gate.
 - Signed/notarized macOS packages, signed updates, and exercised rollback; keep

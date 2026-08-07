@@ -21,7 +21,7 @@ The domain package (`@takio/core`) is shared by both surfaces, so a conversion r
 The workspace currently includes a polished Tauri/React desktop app and a
 durable local library with multi-format books, rich metadata, recursive import,
 search and facets, saved views, duplicate review, covers, trash/restore, and
-bulk export. The CLI can also transfer books to mounted macOS volumes and eject
+bulk export with title or author-title filename presets. The CLI can also transfer books to mounted macOS volumes and eject
 them after a verified copy. Export and send materialize the current catalogue
 metadata and owned cover into supported delivery formats without changing the
 stored or caller-owned source.
@@ -36,7 +36,7 @@ a caller-owned file.
 
 - [Bun](https://bun.sh/) 1.3+ for development and source execution
 - Rust/Cargo plus Xcode Command Line Tools for Tauri desktop builds
-- [Calibre](https://calibre-ebook.com/download_osx) for embedded and online metadata, delivery materialization, and ebook conversion
+- [Calibre](https://calibre-ebook.com/download_osx) 9.9.0 or newer (the verified compatibility baseline) for embedded and online metadata, delivery materialization, and ebook conversion
 
 ## Quick start
 
@@ -46,6 +46,7 @@ bun run build
 bun run test
 
 # Agent-friendly CLI commands
+bun run takio doctor
 bun run takio capabilities
 bun run takio formats --json
 bun run takio library import --source-path ~/Books/example.epub
@@ -122,10 +123,15 @@ commands retain readable tables unless `--json` is requested.
 
 Structured `--request-json` and `--patch-json` values can be passed inline, as
 `-` to read stdin, or as `@path` to read a file. Inputs are capped at 16 KiB.
+For example, `takio library export-many --request-json
+'{"ids":["book-id"],"destinationPath":"/tmp/export","fileNameTemplate":"author-title"}'`
+uses `Author - title` names. Omitting `fileNameTemplate` or setting it to
+`title` preserves the default title-only naming.
 The command surface is grouped by workflow:
 
 | Command family | Purpose |
 | --- | --- |
+| `takio doctor` | Report Calibre conversion-kernel health, resolved executable paths, comparison with the verified version baseline, and precise remediation for missing required tools. |
 | `takio capabilities` | Return the protocol version, limits, schemas, formats, conversion pairs, and current backend availability in one JSON object. |
 | `takio formats`, `devices`, `plan` | Inspect known formats and execution targets, or validate a conversion request. |
 | `takio metadata extract` | Read normalized embedded metadata and cover facts without mutating the source or library. |
@@ -144,7 +150,7 @@ The command surface is grouped by workflow:
 | `takio library saved-views list`, `save`, `remove` | Persist reusable catalogue queries, facets, and sorts. |
 | `takio library cover set`, `remove` | Manage owned cover images. |
 | `takio library trash list`, `move`, `restore`, `purge` | Remove items recoverably or purge them permanently. |
-| `takio library export-many` | Export selected formats without overwriting existing files, materializing current metadata when supported. |
+| `takio library export-many` | Export selected formats without overwriting existing files, with optional `title` or `author-title` filename presets and current metadata when supported. |
 | `takio convert` | Run any advertised conversion pair synchronously. |
 | `takio polish` | Publish a new same-format EPUB, KEPUB, or AZW3 artifact with explicitly selected Calibre `ebook-polish` operations. |
 | `takio jobs enqueue`, `list`, `get`, `cancel`, `retry`, `run-next`, `drain` | Manage and boundedly drain the durable foreground conversion queue. |
