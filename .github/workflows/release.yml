@@ -66,7 +66,7 @@ jobs:
       - name: Build checksummed executable
         run: bun run release:cli
 
-      - name: Smoke-test executable and checksum
+      - name: Archive and smoke-test executable
         shell: bash
         run: |
           artifact="$(find dist/releases -maxdepth 1 -type f ! -name '*.sha256' -print -quit)"
@@ -74,11 +74,27 @@ jobs:
           env -i PATH=/usr/bin:/bin "$artifact" capabilities
           (cd dist/releases && shasum -a 256 --check ./*.sha256)
 
-      - name: Upload executable and checksum
+          archive="${artifact}.tar.gz"
+          artifact_name="$(basename "$artifact")"
+          archive_name="$(basename "$archive")"
+          tar -czf "$archive" -C dist/releases "$artifact_name"
+          (cd dist/releases && shasum -a 256 "$archive_name" > "${archive_name}.sha256")
+          rm -- "$artifact" "${artifact}.sha256"
+
+          extraction_directory="$(mktemp -d "${RUNNER_TEMP}/takio-cli.XXXXXX")"
+          trap 'rm -rf -- "$extraction_directory"' EXIT
+          tar -xzf "$archive" -C "$extraction_directory"
+          test -x "$extraction_directory/$artifact_name"
+          env -i PATH=/usr/bin:/bin "$extraction_directory/$artifact_name" capabilities
+          (cd dist/releases && shasum -a 256 --check ./*.sha256)
+
+      - name: Upload executable archive and checksum
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: takio-cli-${{ matrix.os }}
-          path: dist/releases/*
+          path: |
+            dist/releases/*.tar.gz
+            dist/releases/*.tar.gz.sha256
           if-no-files-found: error
 
   desktop-macos:
