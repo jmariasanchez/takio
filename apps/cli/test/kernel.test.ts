@@ -120,6 +120,11 @@ describe("calibre kernel report", () => {
 
     expect(report.status).toBe("degraded");
     expect(report.remediation?.code).toBe("kernel-incomplete");
+    expect(report.remediation?.actions).toContainEqual({
+      platform: "any",
+      kind: "override",
+      command: "TAKIO_EBOOK_META=/absolute/path/to/ebook-meta takio doctor",
+    });
   });
 
   it("does not mistake optional-only tools for an available conversion kernel", async () => {
@@ -163,6 +168,24 @@ describe("calibre kernel report", () => {
 
     expect(report.status).toBe("degraded");
     expect(report.remediation?.code).toBe("kernel-override-invalid");
+    expect(report.remediation?.actions[0]?.command).toBe(
+      "TAKIO_EBOOK_CONVERT=/absolute/path/to/ebook-convert takio doctor",
+    );
+  });
+
+  it("names the exact invalid metadata override in its remediation", async () => {
+    const report = await resolveKernelReport({
+      discoveries: discoveries({ metadata: { ok: false, code: "backend-unavailable" } }),
+      env: { TAKIO_EBOOK_META: "/nope/ebook-meta" },
+      platform: "darwin",
+      probe: async () => "9.9.0",
+      macosBundleDirectory: BUNDLE,
+    });
+
+    expect(report.remediation?.code).toBe("kernel-override-invalid");
+    expect(report.remediation?.actions[0]?.command).toBe(
+      "TAKIO_EBOOK_META=/absolute/path/to/ebook-meta takio doctor",
+    );
   });
 
   it("distinguishes env, PATH, and bundle discovery sources", async () => {

@@ -149,20 +149,26 @@ const INSTALL_ACTIONS: readonly KernelRemediationAction[] = [
   { platform: "any", kind: "verify", command: "takio doctor" },
 ];
 
-const OVERRIDE_ACTION: KernelRemediationAction = {
-  platform: "any",
-  kind: "override",
-  command: "TAKIO_EBOOK_CONVERT=/absolute/path/to/ebook-convert takio doctor",
-};
+function overrideAction(
+  executable: Pick<KernelExecutableReport, "binary" | "override">,
+): KernelRemediationAction {
+  return {
+    platform: "any",
+    kind: "override",
+    command: `${executable.override}=/absolute/path/to/${executable.binary} takio doctor`,
+  };
+}
 
 const DOCS_URL = "https://calibre-ebook.com/download";
 
 export function kernelRemediation(
   code: KernelRemediationCode,
+  executables: readonly Pick<KernelExecutableReport, "binary" | "override">[],
   platform: NodeJS.Platform = process.platform,
 ): KernelRemediation {
   const forPlatform = (actions: readonly KernelRemediationAction[]) =>
     actions.filter((action) => action.platform === "any" || action.platform === platform);
+  const overrideActions = executables.map(overrideAction);
 
   switch (code) {
     case "kernel-not-installed":
@@ -171,7 +177,7 @@ export function kernelRemediation(
         summary:
           "Takio uses Calibre as its conversion kernel; the required Calibre executable was not found.",
         docs: DOCS_URL,
-        actions: forPlatform([...INSTALL_ACTIONS, OVERRIDE_ACTION]),
+        actions: forPlatform([...INSTALL_ACTIONS, ...overrideActions]),
       };
     case "kernel-incomplete":
       return {
@@ -179,7 +185,7 @@ export function kernelRemediation(
         summary:
           "Calibre was found but at least one required executable is missing from this installation.",
         docs: DOCS_URL,
-        actions: forPlatform([...INSTALL_ACTIONS, OVERRIDE_ACTION]),
+        actions: forPlatform([...INSTALL_ACTIONS, ...overrideActions]),
       };
     case "kernel-override-invalid":
       return {
@@ -187,7 +193,7 @@ export function kernelRemediation(
         summary:
           "A TAKIO_* kernel override is set but does not point at a readable executable file.",
         docs: DOCS_URL,
-        actions: forPlatform([OVERRIDE_ACTION, ...INSTALL_ACTIONS]),
+        actions: forPlatform([...overrideActions, ...INSTALL_ACTIONS]),
       };
   }
 }
@@ -315,7 +321,7 @@ export async function resolveKernelReport({
   const missing = executables
     .filter((executable) => !executable.available)
     .map((executable) => executable.binary);
-  const overrideInvalid = executables.some(
+  const invalidOverrides = executables.filter(
     (executable) =>
       executable.required && !executable.available && Object.hasOwn(env, executable.override),
   );
@@ -338,7 +344,7 @@ export async function resolveKernelReport({
   const remediationCode: KernelRemediationCode | null =
     status === "ready"
       ? null
-      : overrideInvalid
+      : invalidOverrides.length > 0
         ? "kernel-override-invalid"
         : status === "unavailable"
           ? "kernel-not-installed"
@@ -354,6 +360,12 @@ export async function resolveKernelReport({
     executables,
     missing,
     remediation:
-      remediationCode === null ? null : kernelRemediation(remediationCode, platform),
+      remediationCode === null
+        ? null
+        : kernelRemediation(
+            remediationCode,
+            remediationCode === "kernel-override-invalid" ? invalidOverrides : missingRequired,
+            platform,
+          ),
   };
 }
