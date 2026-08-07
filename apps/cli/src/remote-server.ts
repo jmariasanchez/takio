@@ -9,6 +9,7 @@ import { catalogRecord } from "./catalog.js";
 
 const MAX_PAGE_SIZE = 256;
 const MAX_ACTIVE_REQUESTS = 16;
+const MAX_CATALOG_RESPONSE_BYTES = 8 * 1024 * 1024;
 const CONTENT_TYPES: Readonly<Record<FormatId, string>> = {
   kepub: "application/epub+zip",
   epub: "application/epub+zip",
@@ -42,6 +43,63 @@ function json(value: unknown, status = 200, headers?: HeadersInit): Response {
 
 function error(code: string, status: number, headers?: HeadersInit): Response {
   return json({ ok: false, error: { code } }, status, headers);
+}
+
+function catalogJson(value: unknown): Response {
+  const body = JSON.stringify(value);
+  if (Buffer.byteLength(body, "utf8") > MAX_CATALOG_RESPONSE_BYTES) {
+    return error("response-too-large", 503);
+  }
+  return new Response(body, {
+    headers: {
+      "cache-control": "no-store",
+      "content-type": "application/json",
+      "x-content-type-options": "nosniff",
+    },
+  });
+}
+
+export function holdRequestUntilBodyDone(response: Response, release: () => void): Response {
+  if (!response.body) {
+    release();
+    return response;
+  }
+
+  const reader = response.body.getReader();
+  let released = false;
+  const releaseOnce = () => {
+    if (released) return;
+    released = true;
+    release();
+  };
+  const body = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      try {
+        const next = await reader.read();
+        if (next.done) {
+          controller.close();
+          releaseOnce();
+        } else {
+          controller.enqueue(next.value);
+        }
+      } catch (cause) {
+        controller.error(cause);
+        releaseOnce();
+      }
+    },
+    async cancel(reason) {
+      try {
+        await reader.cancel(reason);
+      } finally {
+        releaseOnce();
+      }
+    },
+  });
+  return new Response(body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: response.headers,
+  });
 }
 
 function authorized(request: Request, tokenDigest: Buffer): boolean {
@@ -95,7 +153,14 @@ async function route(request: Request, store: ReadableLibraryStore): Promise<Res
     });
     if (!listed.ok) return error(listed.error.code, 503);
     const books = listed.value.items.map(catalogRecord);
-    return json({
+    let catalogBytes = 0;
+    for (const book of books) {
+      catalogBytes += Buffer.byteLength(JSON.stringify(book), "utf8") + 1;
+      if (catalogBytes > MAX_CATALOG_RESPONSE_BYTES) {
+        return error("response-too-large", 503);
+      }
+    }
+    return catalogJson({
       ok: true,
       value: { books, offset: page.offset, limit: page.limit, total: listed.value.total },
     });
@@ -140,7 +205,7 @@ async function route(request: Request, store: ReadableLibraryStore): Promise<Res
     const found = await store.get({ id });
     if (!found.ok) return error(found.error.code, 503);
     return found.value
-      ? json({ ok: true, value: { book: catalogRecord(found.value) } })
+      ? catalogJson({ ok: true, value: { book: catalogRecord(found.value) } })
       : error("not-found", 404);
   }
 
@@ -205,9 +270,12 @@ export async function startContentServer(options: {
         if (activeRequests >= MAX_ACTIVE_REQUESTS) return error("server-busy", 503);
         activeRequests += 1;
         try {
-          return await route(request, options.store);
-        } finally {
+          return holdRequestUntilBodyDone(await route(request, options.store), () => {
+            activeRequests -= 1;
+          });
+        } catch (cause) {
           activeRequests -= 1;
+          throw cause;
         }
       },
     });

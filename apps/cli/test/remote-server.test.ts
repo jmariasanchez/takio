@@ -7,7 +7,11 @@ import { join } from "node:path";
 import { BunSqliteLibraryStore } from "@takio/library-store-bun";
 import type { QueryLibraryItemsRequest } from "@takio/library-contract";
 
-import { ContentServerError, startContentServer } from "../src/remote-server.js";
+import {
+  ContentServerError,
+  holdRequestUntilBodyDone,
+  startContentServer,
+} from "../src/remote-server.js";
 
 const TOKEN = "test-token-with-at-least-thirty-two-bytes";
 let directory: string | undefined;
@@ -140,6 +144,94 @@ describe("authenticated content server", () => {
     });
     expect(response.status).toBe(200);
     expect(request?.page).toEqual({ limit: 25, offset: 275 });
+  });
+
+  it("rejects catalog pages whose serialized metadata would exceed the response budget", async () => {
+    const customMetadata = Object.fromEntries(
+      Array.from({ length: 64 }, (_, index) => [`field_${index}`, "x".repeat(16 * 1024)]),
+    );
+    const items = Array.from({ length: 9 }, (_, index) => ({
+      id: `large-book-${index}`,
+      title: `Large book ${index}`,
+      sourcePath: `/large-${index}.epub`,
+      format: "epub" as const,
+      addedAt: "2026-07-31T12:00:00.000Z",
+      formats: [{
+        sourcePath: `/large-${index}.epub`,
+        format: "epub" as const,
+        addedAt: "2026-07-31T12:00:00.000Z",
+        provenance: "referenced" as const,
+      }],
+      customMetadata,
+      tags: [],
+    }));
+    const reader = {
+      query: async () => ({
+        ok: true as const,
+        value: {
+          items,
+          total: items.length,
+          page: { offset: 0, limit: items.length },
+          facets: { authors: [], tags: [], series: [], languages: [], formats: [] },
+        },
+      }),
+      get: async () => ({ ok: true as const, value: null }),
+    };
+    const running = await startContentServer({
+      store: reader,
+      hostname: "127.0.0.1",
+      port: 0,
+      token: TOKEN,
+    });
+    server = running.server;
+
+    const response = await fetch(`${running.url}/v1/books?limit=9`, {
+      headers: { authorization: `Bearer ${TOKEN}` },
+    });
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({ ok: false, error: { code: "response-too-large" } });
+  });
+
+  it("holds active request permits until attachment bodies complete or are cancelled", async () => {
+    let closeSource = () => {};
+    let completedReleases = 0;
+    let pulls = 0;
+    const source = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pulls += 1;
+        if (pulls === 1) {
+          controller.enqueue(new Uint8Array([1]));
+          return;
+        }
+        return new Promise<void>((resolve) => {
+          closeSource = () => {
+            controller.close();
+            resolve();
+          };
+        });
+      },
+    });
+    const completedReader = holdRequestUntilBodyDone(
+      new Response(source),
+      () => { completedReleases += 1; },
+    ).body!.getReader();
+
+    expect(await completedReader.read()).toEqual({ done: false, value: new Uint8Array([1]) });
+    expect(completedReleases).toBe(0);
+    closeSource();
+    expect(await completedReader.read()).toEqual({ done: true, value: undefined });
+    expect(completedReleases).toBe(1);
+
+    let cancellations = 0;
+    let cancelledReleases = 0;
+    const cancelled = holdRequestUntilBodyDone(new Response(new ReadableStream({
+      cancel() {
+        cancellations += 1;
+      },
+    })), () => { cancelledReleases += 1; });
+    await cancelled.body!.cancel();
+    expect(cancellations).toBe(1);
+    expect(cancelledReleases).toBe(1);
   });
 
   it("starts through the CLI, prints its generated credential once, and stops on SIGTERM", async () => {
