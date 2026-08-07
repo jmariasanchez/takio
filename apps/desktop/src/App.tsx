@@ -152,6 +152,7 @@ const trashPageLimit = 25;
 type JobsState = "loading" | "ready" | "error";
 type Notice = { readonly kind: "status" | "error"; readonly text: string } | null;
 type MenuActionHandlers = {
+  readonly libraryModalOpen: boolean;
   readonly openImport: () => void;
   readonly importPaths: (paths: readonly string[]) => Promise<void>;
   readonly openSelected: () => Promise<void>;
@@ -172,6 +173,30 @@ type LibraryModalState = {
 
 export function hasOpenLibraryModal(state: LibraryModalState): boolean {
   return Object.values(state).some(Boolean);
+}
+
+export function dispatchLibraryMenuAction(payload: string, handlers: MenuActionHandlers): void {
+  if (handlers.libraryModalOpen) {
+    return;
+  }
+
+  switch (payload) {
+    case "import":
+      handlers.openImport();
+      break;
+    case "open-selected":
+      void handlers.openSelected();
+      break;
+    case "send-selected":
+      void handlers.sendSelected();
+      break;
+    case "eject-selected":
+      void handlers.ejectSelected();
+      break;
+    case "find":
+      handlers.find();
+      break;
+  }
 }
 
 function uniqueImportPaths(paths: readonly string[]): readonly string[] {
@@ -2720,6 +2745,7 @@ export default function App() {
   }
 
   menuActionHandlers.current = {
+    libraryModalOpen,
     openImport: openImportDialog,
     importPaths: importDroppedPaths,
     openSelected: openSelectedItem,
@@ -2744,23 +2770,7 @@ export default function App() {
           return;
         }
 
-        switch (payload) {
-          case "import":
-            handlers.openImport();
-            break;
-          case "open-selected":
-            void handlers.openSelected();
-            break;
-          case "send-selected":
-            void handlers.sendSelected();
-            break;
-          case "eject-selected":
-            void handlers.ejectSelected();
-            break;
-          case "find":
-            handlers.find();
-            break;
-        }
+        dispatchLibraryMenuAction(payload, handlers);
       },
       { target: { kind: "WebviewWindow", label: "main" } },
     )
