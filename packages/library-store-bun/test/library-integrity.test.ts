@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { Database } from "bun:sqlite";
-import { mkdir, mkdtemp, readdir, realpath, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, realpath, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -178,6 +178,36 @@ describe("library integrity verification", () => {
       error: { code: "destination-exists" },
     });
     expect(await Bun.file(markerPath).text()).toBe("keep me");
+  });
+
+  it("rejects oversized and symlinked backup manifests during restore", async () => {
+    const sourceRoot = join(root, "source-library");
+    await mkdir(sourceRoot);
+    databasePath = join(sourceRoot, "library.sqlite");
+    const store = new BunSqliteLibraryStore(databasePath);
+    await store.open({ config: {} });
+    store.close();
+
+    const backupPath = join(root, "backup");
+    expect(createLibraryBackup(databasePath, backupPath).ok).toBe(true);
+    const manifestPath = join(backupPath, "manifest.json");
+    const manifest = await Bun.file(manifestPath).text();
+    await Bun.write(
+      manifestPath,
+      JSON.stringify({ ...JSON.parse(manifest), padding: " ".repeat(2 * 1024 * 1024) }),
+    );
+    expect(
+      restoreLibraryBackup(backupPath, join(root, "oversized-restore", "library.sqlite")),
+    ).toEqual({ ok: false, error: { code: "invalid-backup" } });
+
+    const manifestTarget = join(root, "manifest-target.json");
+    await Bun.write(manifestTarget, manifest);
+    await rm(manifestPath);
+    await symlink(manifestTarget, manifestPath);
+
+    expect(
+      restoreLibraryBackup(backupPath, join(root, "restored-library", "library.sqlite")),
+    ).toEqual({ ok: false, error: { code: "invalid-backup" } });
   });
 
   it("rejects a backup whose managed file no longer matches the database", async () => {

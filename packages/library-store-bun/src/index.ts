@@ -117,7 +117,6 @@ import {
   lstatSync,
   mkdirSync,
   openSync,
-  readFileSync,
   readSync,
   realpathSync,
   readdirSync,
@@ -2113,6 +2112,7 @@ export function verifyLibraryIntegrity(databasePath: string): LibraryIntegrityRe
 
 const LIBRARY_BACKUP_FORMAT = "takio-library-backup";
 export const LIBRARY_BACKUP_VERSION = 1;
+const MAX_LIBRARY_BACKUP_MANIFEST_BYTES = 2 * 1024 * 1024;
 
 type LibraryBackupManifest = {
   readonly format: typeof LIBRARY_BACKUP_FORMAT;
@@ -2191,8 +2191,42 @@ function isLibraryIntegrityReport(value: unknown): value is LibraryIntegrityRepo
 }
 
 function readBackupManifest(backupRoot: string): LibraryBackupManifest | null {
+  let descriptor: number | undefined;
   try {
-    const parsed: unknown = JSON.parse(readFileSync(join(backupRoot, "manifest.json"), "utf8"));
+    const path = join(backupRoot, "manifest.json");
+    descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    const before = fstatSync(descriptor);
+    if (!before.isFile() || before.size > MAX_LIBRARY_BACKUP_MANIFEST_BYTES) return null;
+
+    const buffer = Buffer.allocUnsafe(before.size);
+    let bytes = 0;
+    while (bytes < buffer.length) {
+      const read = readSync(descriptor, buffer, bytes, buffer.length - bytes, null);
+      if (read === 0) break;
+      bytes += read;
+    }
+    const after = fstatSync(descriptor);
+    const current = lstatSync(path);
+    if (
+      !after.isFile() ||
+      !current.isFile() ||
+      current.isSymbolicLink() ||
+      before.dev !== after.dev ||
+      before.ino !== after.ino ||
+      before.size !== after.size ||
+      before.mtimeMs !== after.mtimeMs ||
+      before.ctimeMs !== after.ctimeMs ||
+      after.dev !== current.dev ||
+      after.ino !== current.ino ||
+      after.size !== current.size ||
+      after.mtimeMs !== current.mtimeMs ||
+      after.ctimeMs !== current.ctimeMs ||
+      bytes !== after.size
+    ) {
+      return null;
+    }
+
+    const parsed: unknown = JSON.parse(buffer.toString("utf8"));
     if (typeof parsed !== "object" || parsed === null) return null;
     const manifest = parsed as Partial<LibraryBackupManifest>;
     const artifacts = manifest.artifacts;
@@ -2218,6 +2252,8 @@ function readBackupManifest(backupRoot: string): LibraryBackupManifest | null {
       : null;
   } catch {
     return null;
+  } finally {
+    if (descriptor !== undefined) closeSync(descriptor);
   }
 }
 
