@@ -47,7 +47,11 @@ esac
 
 case "$tool_name" in
   plutil)
-    printf '%s\n' "${FAKE_PLIST_EXECUTABLE:-takio}"
+    if [[ " $* " == *" LSMinimumSystemVersion "* ]]; then
+      printf '%s\n' "${FAKE_PLIST_MINIMUM_VERSION:-13.0}"
+    else
+      printf '%s\n' "${FAKE_PLIST_EXECUTABLE:-takio}"
+    fi
     ;;
   lipo)
     if [[ "$is_sidecar" == true ]]; then
@@ -57,6 +61,17 @@ case "$tool_name" in
     fi
     ;;
   otool)
+    if [[ " $* " == *" -l "* ]]; then
+      if [[ "$is_sidecar" == true ]]; then
+        minimum_version="${FAKE_SIDECAR_MINIMUM_VERSION:-13.0}"
+      else
+        minimum_version="${FAKE_MAIN_MINIMUM_VERSION:-13.0}"
+      fi
+      printf 'Load command 0\n'
+      printf '      cmd LC_BUILD_VERSION\n'
+      printf '    minos %s\n' "$minimum_version"
+      exit
+    fi
     printf '%s:\n' "$target"
     if [[ "$is_sidecar" == true ]]; then
       dependencies="${FAKE_SIDECAR_DEPENDENCIES:-/usr/lib/libSystem.B.dylib}"
@@ -113,8 +128,11 @@ run_verifier() {
     TAKIO_CODESIGN_COMMAND="$tool_dir/codesign" \
     TAKIO_SPCTL_COMMAND="$tool_dir/spctl" \
     FAKE_PLIST_EXECUTABLE="${FAKE_PLIST_EXECUTABLE:-takio}" \
+    FAKE_PLIST_MINIMUM_VERSION="${FAKE_PLIST_MINIMUM_VERSION:-13.0}" \
     FAKE_MAIN_ARCHS="${FAKE_MAIN_ARCHS:-arm64}" \
     FAKE_SIDECAR_ARCHS="${FAKE_SIDECAR_ARCHS:-arm64}" \
+    FAKE_MAIN_MINIMUM_VERSION="${FAKE_MAIN_MINIMUM_VERSION:-13.0}" \
+    FAKE_SIDECAR_MINIMUM_VERSION="${FAKE_SIDECAR_MINIMUM_VERSION:-13.0}" \
     FAKE_MAIN_DEPENDENCIES="${FAKE_MAIN_DEPENDENCIES:-/System/Library/Frameworks/WebKit.framework/Versions/A/WebKit}" \
     FAKE_SIDECAR_DEPENDENCIES="${FAKE_SIDECAR_DEPENDENCIES:-/usr/lib/libSystem.B.dylib}" \
     FAKE_CODESIGN_VERIFY="${FAKE_CODESIGN_VERIFY:-pass}" \
@@ -156,6 +174,9 @@ expect_failure "option-like target" "target path must not begin with '-'" run_ve
 
 FAKE_SIDECAR_ARCHS=x86_64 \
   expect_failure "architecture mismatch" "architecture mismatch" run_verifier "$bundle_path"
+
+FAKE_SIDECAR_MINIMUM_VERSION=14.0 \
+  expect_failure "minimum system version mismatch" "requires macOS 14.0 but the bundle declares 13.0" run_verifier "$bundle_path"
 
 for forbidden_dependency in \
   "/nix/store/example/lib/libExample.dylib" \

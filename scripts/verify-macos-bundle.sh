@@ -73,9 +73,54 @@ esac
 main_executable="$bundle_path/Contents/MacOS/$executable_name"
 sidecar_executable="$bundle_path/Contents/MacOS/takio-library-engine"
 
+if ! bundle_minimum_version="$("$plutil_command" -extract LSMinimumSystemVersion raw -o - "$info_plist")"; then
+  fail "could not read LSMinimumSystemVersion from $info_plist"
+fi
+if [[ ! "$bundle_minimum_version" =~ ^[0-9]+([.][0-9]+){0,2}$ ]]; then
+  fail "invalid LSMinimumSystemVersion in $info_plist: $bundle_minimum_version"
+fi
+
 for executable in "$main_executable" "$sidecar_executable"; do
   [[ -f "$executable" ]] || fail "missing bundled executable: $executable"
   [[ -x "$executable" ]] || fail "bundled executable is not executable: $executable"
+done
+
+read_minimum_system_version() {
+  local executable="$1"
+  local output
+  local version
+
+  if ! output="$("$otool_command" -l "$executable")"; then
+    fail "could not inspect minimum system version for $executable"
+  fi
+  version="$(awk '
+    $1 == "cmd" { command = $2 }
+    command == "LC_BUILD_VERSION" && $1 == "minos" { print $2; exit }
+    command == "LC_VERSION_MIN_MACOSX" && $1 == "version" { print $2; exit }
+  ' <<< "$output")"
+  if [[ ! "$version" =~ ^[0-9]+([.][0-9]+){0,2}$ ]]; then
+    fail "no valid minimum system version reported for $executable"
+  fi
+  printf '%s\n' "$version"
+}
+
+version_is_newer() {
+  awk -v required="$1" -v configured="$2" 'BEGIN {
+    split(required, required_parts, ".")
+    split(configured, configured_parts, ".")
+    for (part = 1; part <= 3; part++) {
+      if ((required_parts[part] + 0) > (configured_parts[part] + 0)) exit 0
+      if ((required_parts[part] + 0) < (configured_parts[part] + 0)) exit 1
+    }
+    exit 1
+  }'
+}
+
+for executable in "$main_executable" "$sidecar_executable"; do
+  executable_minimum_version="$(read_minimum_system_version "$executable")"
+  if version_is_newer "$executable_minimum_version" "$bundle_minimum_version"; then
+    fail "$executable requires macOS $executable_minimum_version but the bundle declares $bundle_minimum_version"
+  fi
 done
 
 read_architectures() {
