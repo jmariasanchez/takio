@@ -1,4 +1,10 @@
-use std::{collections::HashSet, path::Path};
+use std::{
+    collections::HashSet,
+    fs::File,
+    io::Read,
+    path::Path,
+    sync::atomic::{AtomicUsize, Ordering},
+};
 
 use serde_json::{json, Value};
 use tauri_plugin_shell::{process::CommandEvent, ShellExt};
@@ -8,6 +14,30 @@ const MAX_OUTPUT_BYTES: usize = 8 * 1024 * 1024;
 const MAX_JSON_ARGUMENT_BYTES: usize = 16 * 1024;
 const MAX_LIBRARY_IMPORT_ROOTS: usize = 256;
 const MAX_LIBRARY_EXPORT_IDS: usize = 256;
+const MAX_COVER_BYTES: u64 = 32 * 1024 * 1024;
+const MAX_CONCURRENT_ENGINE_INVOCATIONS: usize = 4;
+static ACTIVE_ENGINE_INVOCATIONS: AtomicUsize = AtomicUsize::new(0);
+
+struct EnginePermit<'a> {
+    active: &'a AtomicUsize,
+}
+
+impl<'a> EnginePermit<'a> {
+    fn acquire(active: &'a AtomicUsize, limit: usize) -> Option<Self> {
+        active
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+                (current < limit).then_some(current + 1)
+            })
+            .ok()
+            .map(|_| Self { active })
+    }
+}
+
+impl Drop for EnginePermit<'_> {
+    fn drop(&mut self) {
+        self.active.fetch_sub(1, Ordering::Release);
+    }
+}
 
 fn failure(code: &str) -> Value {
     json!({ "ok": false, "error": { "code": code } })
@@ -18,6 +48,32 @@ fn validate_file_source(path: &Path) -> Result<(), ()> {
         Ok(metadata) if metadata.is_file() => Ok(()),
         _ => Err(()),
     }
+}
+
+fn validate_cover_source(path: &Path) -> Result<(), ()> {
+    let metadata = path.symlink_metadata().map_err(|_| ())?;
+    if !metadata.is_file() || metadata.len() == 0 || metadata.len() > MAX_COVER_BYTES {
+        return Err(());
+    }
+
+    let mut header = [0_u8; 12];
+    let length = File::open(path)
+        .and_then(|mut file| file.read(&mut header))
+        .map_err(|_| ())?;
+    let header = &header[..length];
+    if supported_cover_header(header) {
+        Ok(())
+    } else {
+        Err(())
+    }
+}
+
+fn supported_cover_header(header: &[u8]) -> bool {
+    header.starts_with(&[0xff, 0xd8, 0xff])
+        || header.starts_with(&[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a])
+        || header.starts_with(b"GIF87a")
+        || header.starts_with(b"GIF89a")
+        || (header.starts_with(b"RIFF") && header.get(8..12) == Some(b"WEBP"))
 }
 
 fn validate_nonempty(value: &str) -> Result<(), ()> {
@@ -397,6 +453,12 @@ fn parse_engine_record(exit_code: Option<i32>, stdout: &[u8], stderr: &[u8]) -> 
 }
 
 async fn run_engine(app: &tauri::AppHandle, args: Vec<String>) -> Value {
+    let Some(_permit) = EnginePermit::acquire(
+        &ACTIVE_ENGINE_INVOCATIONS,
+        MAX_CONCURRENT_ENGINE_INVOCATIONS,
+    ) else {
+        return failure("engine-unavailable");
+    };
     let command = match app.shell().sidecar(ENGINE_NAME) {
         Ok(command) => command,
         Err(_) => return failure("engine-unavailable"),
@@ -435,6 +497,12 @@ async fn run_engine(app: &tauri::AppHandle, args: Vec<String>) -> Value {
                 return failure("protocol-error");
             }
             output.append(&mut bytes);
+        }
+    }
+
+    if exit_code.is_none() {
+        if let Some(child) = child.take() {
+            let _ = child.kill();
         }
     }
 
@@ -650,7 +718,7 @@ pub async fn library_search(app: tauri::AppHandle, query: String) -> Value {
 
 #[tauri::command]
 pub async fn library_cover_set(app: tauri::AppHandle, id: String, source_path: String) -> Value {
-    if validate_nonempty(&id).is_err() || validate_file_source(Path::new(&source_path)).is_err() {
+    if validate_nonempty(&id).is_err() || validate_cover_source(Path::new(&source_path)).is_err() {
         return failure("invalid-arguments");
     }
 
@@ -684,19 +752,6 @@ pub async fn library_cover_remove(app: tauri::AppHandle, id: String) -> Value {
             "--id".into(),
             id,
         ],
-    )
-    .await
-}
-
-#[tauri::command]
-pub async fn library_remove(app: tauri::AppHandle, id: String) -> Value {
-    if validate_nonempty(&id).is_err() {
-        return failure("invalid-arguments");
-    }
-
-    run_engine(
-        &app,
-        vec!["library".into(), "remove".into(), "--id".into(), id],
     )
     .await
 }
@@ -791,11 +846,37 @@ mod tests {
     use super::*;
 
     #[test]
+    fn engine_permit_bounds_concurrency_and_releases_slots() {
+        let active = AtomicUsize::new(0);
+        let first = EnginePermit::acquire(&active, 2).unwrap();
+        let second = EnginePermit::acquire(&active, 2).unwrap();
+
+        assert!(EnginePermit::acquire(&active, 2).is_none());
+
+        drop(first);
+        let replacement = EnginePermit::acquire(&active, 2).unwrap();
+        drop(second);
+        drop(replacement);
+
+        assert_eq!(active.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
     fn validates_boundary_arguments() {
         assert!(validate_nonempty("book-1").is_ok());
         assert!(validate_nonempty("/Volumes/Reader").is_ok());
         assert!(validate_nonempty("  ").is_err());
         assert!(validate_file_source(Path::new("definitely-missing.epub")).is_err());
+    }
+
+    #[test]
+    fn accepts_only_supported_raster_cover_headers() {
+        assert!(supported_cover_header(&[0xff, 0xd8, 0xff]));
+        assert!(supported_cover_header(b"\x89PNG\r\n\x1a\n"));
+        assert!(supported_cover_header(b"GIF89a"));
+        assert!(supported_cover_header(b"RIFF1234WEBP"));
+        assert!(!supported_cover_header(b"private user data"));
+        assert!(!supported_cover_header(b"<svg onload=alert(1)>"));
     }
 
     #[test]

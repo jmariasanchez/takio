@@ -47,7 +47,6 @@ pub fn run() {
             library_engine::library_search,
             library_engine::library_cover_set,
             library_engine::library_cover_remove,
-            library_engine::library_remove,
             library_engine::library_open,
             library_engine::destination_list,
             library_engine::destination_send,
