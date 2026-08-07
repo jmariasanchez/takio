@@ -30,7 +30,6 @@ import {
   queryLibraryItems,
   removeLibraryCover,
   removeLibraryFormat,
-  removeLibraryItem,
   removeSavedLibraryView,
   reopenDuplicatePair,
   restoreLibraryItem,
@@ -271,12 +270,6 @@ test("uses only the fixed desktop library commands and argument names", async ()
         value: { id: "item-1", format: "pdf", path: "/Books/A title.pdf" },
       } as never;
     }
-    if (command === "library_remove") {
-      return {
-        ok: true,
-        value: { item: null, cleanupPending: false },
-      } as never;
-    }
     if (command === "library_attach_format") {
       return { ok: true, value: { item: validItem } } as never;
     }
@@ -346,7 +339,6 @@ test("uses only the fixed desktop library commands and argument names", async ()
   await removeSavedLibraryView({ id: savedView.id }, invokeCommand);
   await setLibraryCover("item-1", "/Pictures/A cover.jpg", invokeCommand);
   await removeLibraryCover("item-1", invokeCommand);
-  await removeLibraryItem("item-1", invokeCommand);
   await openLibraryItem("item-1", "pdf", invokeCommand);
 
   expect(calls).toEqual([
@@ -402,7 +394,6 @@ test("uses only the fixed desktop library commands and argument names", async ()
       args: { id: "item-1", sourcePath: "/Pictures/A cover.jpg" },
     },
     { command: "library_cover_remove", args: { id: "item-1" } },
-    { command: "library_remove", args: { id: "item-1" } },
     { command: "library_open", args: { id: "item-1", format: "pdf" } },
   ]);
 
@@ -674,9 +665,6 @@ test("passes valid library responses through with authoritative format order", a
       updateResult as never,
     ),
   ).toBe(updateResult);
-  expect(await removeLibraryItem(validItem.id, async () => removeResult as never)).toBe(
-    removeResult,
-  );
   expect(await openLibraryItem(validItem.id, "pdf", async () => openResult as never)).toBe(
     openResult,
   );
@@ -1081,21 +1069,6 @@ test("rejects malformed or mismatched exact-format open responses", async () => 
   ]) {
     expect(
       await openLibraryItem(validItem.id, "pdf", async () => ({
-        ok: true,
-        value,
-      }) as never),
-    ).toEqual({ ok: false, error: { code: "protocol-error" } });
-  }
-});
-
-test("requires explicit cleanup state after removing a library item", async () => {
-  for (const value of [
-    { item: null },
-    { item: null, cleanupPending: "no" },
-    { item: { ...validItem, formats: [] }, cleanupPending: false },
-  ]) {
-    expect(
-      await removeLibraryItem(validItem.id, async () => ({
         ok: true,
         value,
       }) as never),
