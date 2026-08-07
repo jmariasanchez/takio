@@ -8,6 +8,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { constants, createReadStream, createWriteStream } from "node:fs";
 import {
   access,
+  link,
   lstat,
   mkdir,
   open,
@@ -253,7 +254,7 @@ export async function sendToDestination({
   }
 
   const partialPath = join(targetDirectory, `.takio-partial-${randomUUID()}`);
-  let renamed = false;
+  let published = false;
   try {
     const sourceHash = createHash("sha256");
     let sourceBytes = 0;
@@ -278,12 +279,20 @@ export async function sendToDestination({
       throw new DestinationTransferError("verification-failed");
     }
 
-    if (!overwrite && (await pathExists(finalPath))) {
-      throw new DestinationTransferError("destination-file-exists");
+    if (overwrite) {
+      await rename(partialPath, finalPath);
+    } else {
+      try {
+        await link(partialPath, finalPath);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+          throw new DestinationTransferError("destination-file-exists");
+        }
+        throw error;
+      }
+      await rm(partialPath, { force: true }).catch(() => {});
     }
-
-    await rename(partialPath, finalPath);
-    renamed = true;
+    published = true;
     await syncDirectory(targetDirectory);
     return {
       itemId,
@@ -298,7 +307,7 @@ export async function sendToDestination({
     }
     throw new DestinationTransferError("copy-failed");
   } finally {
-    if (!renamed) {
+    if (!published) {
       await rm(partialPath, { force: true }).catch(() => {});
     }
   }

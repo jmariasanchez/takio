@@ -848,7 +848,7 @@ describe("mounted destinations", () => {
     );
   });
 
-  test("preserves a collision that appears while a copy is being verified", async () => {
+  test("atomically preserves a collision that appears after the initial absence check", async () => {
     const fixture = await transferFixture();
     const finalPath = join(fixture.destination, "book.epub");
     const collision = Buffer.from("late collision\n");
