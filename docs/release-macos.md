@@ -8,7 +8,7 @@ acceptance.
 
 The standalone macOS CLI is a terminal distribution, not a notarized app. Its
 checksum detects corruption but does not establish Apple publisher trust. The
-notarized DMG on macOS 11 or newer is the supported macOS v1 installation
+notarized DMG on macOS 13 or newer is the supported macOS v1 installation
 path. Intel and automatic update support are outside this baseline.
 
 ## Required GitHub Actions secrets
@@ -38,7 +38,9 @@ must have permission to submit software for notarization.
    the DMG, CLI artifacts, and all three checksums to a draft release.
 5. Confirm the CI and Release runs for the tag's exact commit both succeeded.
    From a maintainer account, download all six draft assets, then run
-   `shasum -a 256 --check ./*.sha256` before testing the DMG.
+   `shasum -a 256 --check ./*.sha256` before testing the DMG. Extract each CLI
+   `.tar.gz` archive before running its executable; the archive preserves the
+   executable permission that release downloads otherwise lose.
 6. On a clean Apple Silicon Mac, verify that Gatekeeper opens Takio without an
    override. Import documents, queue two conversions, and confirm they run in
    order. Relaunch during or after a conversion and exercise interrupted-job
