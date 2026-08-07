@@ -49,7 +49,7 @@ The conversion queue uses `jobs.sqlite` beside, but independent from, `library.s
 
 The caller owns the requested output path, and enqueue refuses a path that already exists. Execution also refuses to overwrite a file that appeared later. A job becomes `completed` only after the output path, nonzero size, and SHA-256 digest are verified and recorded.
 
-The desktop exposes the same contract: **Convert** on an EPUB item opens a native save dialog and adds a ledger entry, while **Refresh**, **Run next**, and queued-job **Cancel** list and operate the durable jobs.
+The desktop exposes the same contract: **Convert** on an EPUB item opens a native save dialog and adds a ledger entry. It drains queued jobs serially while open, offers **Retry** for failed, canceled, or interrupted work, and retains **Refresh**, **Run next**, and queued-job **Cancel** as manual controls.
 
 `send --convert` is a separate synchronous convenience path. It prefers an
 already attached format compatible with the detected destination. If none is
