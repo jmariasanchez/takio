@@ -1,4 +1,4 @@
-name: Release CLI
+name: Release
 
 on:
   push:
@@ -9,8 +9,40 @@ permissions:
   contents: read
 
 jobs:
+  version:
+    name: Validate release version
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: 1.3.13
+
+      - name: Require the tag to match all package versions
+        shell: bash
+        run: |
+          test "$(git cat-file -t "$GITHUB_REF_NAME")" = tag
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+          bash scripts/verify-release-version.sh "$GITHUB_REF_NAME"
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Validate release source
+        run: |
+          bun run build
+          bun run check
+          bun run test
+          bun run test:performance:library
+
   build:
     name: Build ${{ matrix.os }} CLI
+    needs: version
     strategy:
       matrix:
         include:
@@ -21,19 +53,15 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Set up Bun
-        uses: oven-sh/setup-bun@v2
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
           bun-version: 1.3.13
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
-
-      - name: Require the tag to match package.json
-        shell: bash
-        run: test "$GITHUB_REF_NAME" = "v$(bun -p 'require("./package.json").version')"
 
       - name: Build checksummed executable
         run: bun run release:cli
@@ -47,28 +75,92 @@ jobs:
           (cd dist/releases && shasum -a 256 --check ./*.sha256)
 
       - name: Upload executable and checksum
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: takio-cli-${{ matrix.os }}
           path: dist/releases/*
           if-no-files-found: error
 
+  desktop-macos:
+    name: Build signed and notarized macOS desktop app
+    needs: version
+    runs-on: macos-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: 1.3.13
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Require Apple Silicon runner
+        run: test "$(uname -m)" = arm64
+
+      - name: Check native application
+        run: bun run check:native:macos
+
+      - name: Import Developer ID certificate
+        uses: apple-actions/import-codesign-certs@7abe6dfe88f6bf6b1fa06e6a5704a2605d897418 # v7
+        with:
+          p12-file-base64: ${{ secrets.APPLE_CERTIFICATE }}
+          p12-password: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+
+      - name: Build, sign, and notarize desktop app
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: bun run --filter '@takio/desktop' tauri build --bundles dmg -- --locked
+
+      - name: Verify distribution bundle
+        shell: bash
+        run: |
+          bash scripts/verify-macos-bundle.sh --distribution apps/desktop/src-tauri/target/release/bundle/macos/Takio.app
+          xcrun stapler validate apps/desktop/src-tauri/target/release/bundle/dmg/*.dmg
+
+      - name: Checksum notarized DMG
+        shell: bash
+        run: |
+          cd apps/desktop/src-tauri/target/release/bundle/dmg
+          shasum -a 256 ./*.dmg > Takio.dmg.sha256
+
+      - name: Upload notarized DMG
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: takio-desktop-macos
+          path: |
+            apps/desktop/src-tauri/target/release/bundle/dmg/*.dmg
+            apps/desktop/src-tauri/target/release/bundle/dmg/*.sha256
+          if-no-files-found: error
+
   publish:
-    name: Publish GitHub release
-    needs: build
+    name: Create draft GitHub release
+    needs: [build, desktop-macos]
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - name: Download release artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          pattern: takio-cli-*
+          pattern: takio-*
           path: dist/releases
           merge-multiple: true
 
-      - name: Publish release
+      - name: Verify release asset inventory and checksums
+        shell: bash
+        run: |
+          test "$(find dist/releases -maxdepth 1 -type f | wc -l | tr -d ' ')" = 6
+          test "$(find dist/releases -maxdepth 1 -type f -name '*.sha256' | wc -l | tr -d ' ')" = 3
+          (cd dist/releases && sha256sum --check ./*.sha256)
+
+      - name: Create draft release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-        run: gh release create "$GITHUB_REF_NAME" dist/releases/* --generate-notes --verify-tag
+        run: gh release create "$GITHUB_REF_NAME" dist/releases/* --draft --generate-notes --verify-tag
