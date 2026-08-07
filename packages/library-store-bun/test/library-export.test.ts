@@ -62,6 +62,7 @@ describe("BunSqliteLibraryStore export", () => {
     title: string,
     format: FormatId,
     sourcePath: string,
+    metadata: Pick<LibraryItem, "author" | "authors"> = {},
   ): Promise<LibraryItem> {
     const item: LibraryItem = {
       id,
@@ -71,6 +72,7 @@ describe("BunSqliteLibraryStore export", () => {
       addedAt,
       formats: [{ sourcePath, format, addedAt, provenance: "referenced" }],
       tags: [],
+      ...metadata,
     };
     const result = await store.add({ item });
     if (!result.ok) {
@@ -188,6 +190,79 @@ describe("BunSqliteLibraryStore export", () => {
       },
     });
     expect(databaseState()).toEqual(stateBefore);
+  });
+
+  it("keeps author-title exports flat and prefers structured primary authors", async () => {
+    const store = await openStore();
+    const structuredSource = join(directory, "structured.epub");
+    const legacySource = join(directory, "legacy.pdf");
+    const unknownSource = join(directory, "unknown.txt");
+    await writeFile(structuredSource, "structured author");
+    await writeFile(legacySource, "legacy author");
+    await writeFile(unknownSource, "unknown author");
+
+    await addReferenced(
+      store,
+      "structured-id",
+      "Path/Book:* One?",
+      "epub",
+      structuredSource,
+      {
+        author: "Legacy Author",
+        authors: [
+          { name: "Shelf/Structured:* Author?" },
+          { name: "Secondary Author" },
+        ],
+      },
+    );
+    await addReferenced(store, "legacy-id", "Legacy Book", "pdf", legacySource, {
+      author: "Legacy Author",
+    });
+    await addReferenced(store, "unknown-id", "Unknown Book", "txt", unknownSource);
+
+    const canonicalDestination = await realpath(destinationPath);
+    const structuredName = exportedName(
+      "Structured Author - Book One",
+      "structured-id",
+      "epub",
+    );
+    const legacyName = exportedName("Legacy Author - Legacy Book", "legacy-id", "pdf");
+    const unknownName = exportedName("Unknown author - Unknown Book", "unknown-id", "txt");
+    const result = await store.exportMany({
+      ids: ["structured-id", "legacy-id", "unknown-id"],
+      destinationPath,
+      fileNameTemplate: "author-title",
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      value: {
+        outcomes: [
+          {
+            status: "exported",
+            itemId: "structured-id",
+            destinationPath: join(canonicalDestination, structuredName),
+          },
+          {
+            status: "exported",
+            itemId: "legacy-id",
+            destinationPath: join(canonicalDestination, legacyName),
+          },
+          {
+            status: "exported",
+            itemId: "unknown-id",
+            destinationPath: join(canonicalDestination, unknownName),
+          },
+        ],
+        counts: { total: 3, exported: 3, skipped: 0, failed: 0 },
+      },
+    });
+    expect((await readdir(destinationPath)).sort()).toEqual(
+      [structuredName, legacyName, unknownName].sort(),
+    );
+    expect(await readFile(join(destinationPath, structuredName), "utf8")).toBe(
+      "structured author",
+    );
   });
 
   it("continues after per-format source failures and preserves collision bytes", async () => {

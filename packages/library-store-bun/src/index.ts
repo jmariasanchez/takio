@@ -445,11 +445,25 @@ function truncateUtf8(value: string, maxBytes: number): string {
   return result;
 }
 
-function exportFileName(title: string, itemId: string, format: FormatId): string {
+function exportFileName(
+  title: string,
+  author: string | null,
+  template: ExportLibraryItemsRequest["fileNameTemplate"],
+  itemId: string,
+  format: FormatId,
+): string {
   const extension = FORMAT_CATALOG.find(({ id }) => id === format)!.extensions[0]!;
   const identity = createHash("sha256").update(itemId).digest("hex");
   const suffix = ` [${identity}]${extension}`;
-  const sanitized = sanitizeDestinationFileName(title.normalize("NFC"))
+  const sanitizeStem = (value: string, fallback: string): string =>
+    sanitizeDestinationFileName(value.normalize("NFC"))
+      ?.trim()
+      .replace(/[. ]+$/u, "") || fallback;
+  const stemSource =
+    template === "author-title"
+      ? `${sanitizeStem(author ?? "Unknown author", "Unknown author")} - ${sanitizeStem(title, "Untitled")}`
+      : title;
+  const sanitized = sanitizeDestinationFileName(stemSource.normalize("NFC"))
     ?.trim()
     .replace(/[. ]+$/u, "");
   const stem = truncateUtf8(
@@ -4146,22 +4160,43 @@ export class BunSqliteLibraryStore
     };
     type PreparedItem =
       | { itemId: string; missing: true }
-      | { itemId: string; missing: false; title: string; formats: PreparedFormat[] };
+      | {
+          itemId: string;
+          missing: false;
+          title: string;
+          author: string | null;
+          formats: PreparedFormat[];
+        };
     let items: PreparedItem[];
     try {
       items = this.#database.transaction(() =>
         parsedRequest.data.ids.map((itemId): PreparedItem => {
           const item = this.#database!
-            .query<{ title: unknown }, [string]>(`
-              SELECT title
+            .query<{ title: unknown; author: unknown }, [string]>(`
+              SELECT library_items.title,
+                COALESCE(
+                  (SELECT name
+                    FROM library_item_authors
+                    WHERE library_item_id = library_items.id
+                    ORDER BY position
+                    LIMIT 1),
+                  library_items.author
+                ) AS author
               FROM library_items
-              WHERE id = ? AND trashed_at IS NULL
+              WHERE library_items.id = ? AND library_items.trashed_at IS NULL
             `)
             .get(itemId);
           if (!item) {
             return { itemId, missing: true };
           }
           if (typeof item.title !== "string" || item.title.length === 0) {
+            throw invalidStoredExport;
+          }
+          if (
+            parsedRequest.data.fileNameTemplate === "author-title" &&
+            item.author !== null &&
+            (typeof item.author !== "string" || item.author.length === 0)
+          ) {
             throw invalidStoredExport;
           }
 
@@ -4205,7 +4240,13 @@ export class BunSqliteLibraryStore
             }
             return { format, provenance, sourcePath };
           });
-          return { itemId, missing: false, title: item.title, formats };
+          return {
+            itemId,
+            missing: false,
+            title: item.title,
+            author: typeof item.author === "string" ? item.author : null,
+            formats,
+          };
         }),
       )();
     } catch (error) {
@@ -4221,7 +4262,13 @@ export class BunSqliteLibraryStore
       for (const format of item.formats) {
         const destinationPath = join(
           destinationDirectory,
-          exportFileName(item.title, item.itemId, format.format),
+          exportFileName(
+            item.title,
+            item.author,
+            parsedRequest.data.fileNameTemplate,
+            item.itemId,
+            format.format,
+          ),
         );
         const target = {
           itemId: item.itemId,
