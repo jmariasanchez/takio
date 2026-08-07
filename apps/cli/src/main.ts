@@ -86,6 +86,12 @@ import {
   sendToDestination,
 } from "./destinations.js";
 import { reconcileJobAttachment } from "./job-attachment.js";
+import {
+  KERNEL_NAME,
+  VERIFIED_KERNEL_VERSION,
+  resolveKernelReport,
+  type KernelReport,
+} from "./kernel.js";
 import { JOB_STATUSES, JobStore, type ConversionJob, type JobStatus } from "./job-store.js";
 import { enrichImportedLibraryOutcomes } from "./library-import.js";
 import {
@@ -117,7 +123,7 @@ const MAX_LIBRARY_JSON_REQUEST_BYTES = 16 * 1024;
 const MAX_BATCH_ITEMS = 256;
 const JSON_INPUT_HINT = "JSON, '-' for stdin, or '@path' for a file";
 const CLI_VERSION = "0.1.0";
-const MACHINE_CONTRACT_VERSION = 1;
+const MACHINE_CONTRACT_VERSION = 2;
 
 type JsonRequestSchema<T> = {
   safeParse(value: unknown): { success: true; data: T } | { success: false };
@@ -441,15 +447,72 @@ export function createProgram(
     .option("--library <name>", "named library under the Takio data directory")
     .version(CLI_VERSION);
 
+  const currentKernelReport = async (): Promise<{
+    readonly kernel: KernelReport;
+    readonly onlineMetadataBackend: EbookMetaDiscovery;
+  }> => {
+    const onlineMetadataBackend = await discoverFetchEbookMetadata();
+    const kernel = await resolveKernelReport({
+      discoveries: {
+        conversion: conversionBackend,
+        metadata: metadataBackend,
+        onlineMetadata: onlineMetadataBackend,
+        polish: polishBackend,
+      },
+      platform,
+    });
+    return { kernel, onlineMetadataBackend };
+  };
+
+  program
+    .command("doctor")
+    .description("Report Calibre conversion-kernel health and how to repair it")
+    .option("--human", "emit a readable report instead of JSON")
+    .action(async (options: { human?: boolean }) => {
+      const { kernel } = await currentKernelReport();
+      if (!options.human) {
+        write(JSON.stringify({
+          ok: true,
+          value: {
+            status: kernel.status,
+            cli: { name: "takio", version: CLI_VERSION },
+            platform,
+            kernel,
+          },
+        }));
+        return;
+      }
+
+      write(`takio ${CLI_VERSION} on ${platform}`);
+      write(
+        `${KERNEL_NAME} kernel: ${kernel.status}` +
+          ` (version ${kernel.version ?? "unknown"}, verified baseline ${VERIFIED_KERNEL_VERSION})`,
+      );
+      for (const executable of kernel.executables) {
+        write(
+          `  ${executable.available ? "ok     " : "missing"} ${executable.binary}` +
+            `  ${executable.available ? `${executable.path} [${executable.source}]` : executable.purpose}`,
+        );
+      }
+      if (kernel.remediation) {
+        write(`remediation: ${kernel.remediation.code} — ${kernel.remediation.summary}`);
+        for (const action of kernel.remediation.actions) {
+          write(`  ${action.kind}: ${action.command}`);
+        }
+        write(`  docs: ${kernel.remediation.docs}`);
+      }
+    });
+
   program
     .command("capabilities")
     .description("Describe the machine contract and currently available backends")
     .action(async () => {
-      const onlineMetadataBackend = await discoverFetchEbookMetadata();
+      const { kernel, onlineMetadataBackend } = await currentKernelReport();
       write(JSON.stringify({
         ok: true,
         value: {
           cli: { name: "takio", version: CLI_VERSION },
+          kernel,
           protocol: {
             version: MACHINE_CONTRACT_VERSION,
             output: "one-json-object",

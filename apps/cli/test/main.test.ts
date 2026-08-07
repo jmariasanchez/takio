@@ -127,8 +127,13 @@ describe("takio CLI", () => {
       ok: true,
       value: {
         cli: { name: "takio", version: "0.1.0" },
+        kernel: {
+          name: "calibre",
+          role: "conversion-kernel",
+          verifiedVersion: "9.9.0",
+        },
         protocol: {
-          version: 1,
+          version: 2,
           output: "one-json-object",
           structuredInput: ["inline", "stdin", "file"],
           maxRequestBytes: 16 * 1024,
@@ -153,6 +158,39 @@ describe("takio CLI", () => {
         },
       },
     });
+  });
+
+  it("reports an absent conversion kernel as one actionable JSON object", async () => {
+    const absent = {
+      TAKIO_EBOOK_CONVERT: join(import.meta.dir, "missing-ebook-convert"),
+      TAKIO_EBOOK_META: join(import.meta.dir, "missing-ebook-meta"),
+      TAKIO_FETCH_EBOOK_METADATA: join(import.meta.dir, "missing-fetch-ebook-metadata"),
+      TAKIO_EBOOK_POLISH: join(import.meta.dir, "missing-ebook-polish"),
+    };
+
+    const report = parseProcessOutput(await invokeProcess(["doctor"], absent)) as {
+      value: {
+        status: string;
+        kernel: {
+          name: string;
+          version: string | null;
+          missing: string[];
+          remediation: { code: string; actions: { command: string }[] } | null;
+        };
+      };
+    };
+
+    expect(report.value.status).toBe("unavailable");
+    expect(report.value.kernel.name).toBe("calibre");
+    expect(report.value.kernel.version).toBeNull();
+    expect(report.value.kernel.missing).toEqual([
+      "ebook-convert",
+      "ebook-meta",
+      "fetch-ebook-metadata",
+      "ebook-polish",
+    ]);
+    expect(report.value.kernel.remediation?.code).toBe("kernel-override-invalid");
+    expect(report.value.kernel.remediation?.actions.length).toBeGreaterThan(0);
   });
 
   it("does not fabricate a plan when no local conversion capability is configured", async () => {
@@ -690,6 +728,7 @@ describe("takio CLI", () => {
         JSON.stringify({ ids: ["book-1", "book-1"], destinationPath }),
         JSON.stringify({ ids: ["   "], destinationPath }),
         JSON.stringify({ ids: ["book-1"], destinationPath: "   " }),
+        JSON.stringify({ ids: ["book-1"], destinationPath, fileNameTemplate: "author/title" }),
         JSON.stringify({ ids: ["book-1"], destinationPath, unexpected: true }),
         oversizedRequest,
       ];
@@ -726,12 +765,27 @@ describe("takio CLI", () => {
         value: { item: { id: string; title: string } };
       };
       const item = imported.value.item;
+      expect(
+        parseProcessOutput(
+          await invokeProcess(
+            [
+              "library",
+              "update",
+              "--id",
+              item.id,
+              "--patch-json",
+              JSON.stringify({ authors: [{ name: "CLI Author" }] }),
+            ],
+            env,
+          ),
+        ),
+      ).toMatchObject({ ok: true, value: { item: { author: "CLI Author" } } });
       const itemHash = new Bun.CryptoHasher("sha256")
         .update(item.id)
         .digest("hex");
       const exportedPath = join(
         await realpath(destinationDirectory),
-        `${item.title} [${itemHash}].epub`,
+        `CLI Author - ${item.title} [${itemHash}].epub`,
       );
       const expected = {
         ok: true,
@@ -767,6 +821,7 @@ describe("takio CLI", () => {
           JSON.stringify({
             ids: [item.id, "missing-export-item"],
             destinationPath: destinationDirectory,
+            fileNameTemplate: "author-title",
           }),
         ],
         { ...env, TAKIO_EBOOK_META: FAKE_EBOOK_META },
