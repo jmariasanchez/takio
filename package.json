@@ -20,5 +20,8 @@
     "test:performance:native:macos": "bun scripts/benchmark-native-startup-macos.ts",
     "takio": "bun run --filter '@takio/cli' start",
     "desktop": "bun run --filter '@takio/desktop' tauri dev"
+  },
+  "overrides": {
+    "postcss": "8.5.26"
   }
 }
