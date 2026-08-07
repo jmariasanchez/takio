@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { Database } from "bun:sqlite";
+import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readdir, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -1632,7 +1633,7 @@ describe("takio CLI", () => {
       expect(reopened.value.item).toEqual(updated.value.item);
     });
 
-    it("round-trips a portable OPF library and rejects changed artifacts before rebuilding", async () => {
+    it("round-trips a portable OPF library and rejects oversized or changed artifacts before rebuilding", async () => {
       const epubPath = join(directory!, "portable.epub");
       const pdfPath = join(directory!, "portable.pdf");
       const coverPath = join(directory!, "portable.jpg");
@@ -1707,9 +1708,34 @@ describe("takio CLI", () => {
       expect(await Bun.file(rebuilt.value.item.formats[1]!.sourcePath).text()).toBe("portable pdf contents");
       expect(await Bun.file(rebuilt.value.item.coverPath).text()).toBe("portable cover contents");
 
-      const manifest = await Bun.file(join(portablePath, "manifest.json")).json() as {
-        books: Array<{ directory: string }>;
+      const manifestPath = join(portablePath, "manifest.json");
+      const manifest = await Bun.file(manifestPath).json() as {
+        books: Array<{
+          directory: string;
+          artifacts: Array<{ path: string; bytes: number; sha256: string }>;
+        }>;
       };
+      const opfPath = join(portablePath, "books", manifest.books[0]!.directory, "metadata.opf");
+      const opf = await Bun.file(opfPath).text();
+      const oversizedOpf = opf.replace("</package>", `${" ".repeat(2 * 1024 * 1024)}</package>`);
+      await Bun.write(opfPath, oversizedOpf);
+      const opfArtifact = manifest.books[0]!.artifacts.find(({ path }) => path === "metadata.opf")!;
+      const originalOpfArtifact = { ...opfArtifact };
+      opfArtifact.bytes = Buffer.byteLength(oversizedOpf);
+      opfArtifact.sha256 = createHash("sha256").update(oversizedOpf).digest("hex");
+      await Bun.write(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+      const oversizedDatabase = join(directory!, "oversized", "library.sqlite");
+      const oversized = await invoke([
+        "library", "rebuild", "--db", oversizedDatabase, "--source", portablePath,
+      ]);
+      expect(oversized.exitCode).toBe(1);
+      expect(parseOutput(oversized.output)).toEqual({ ok: false, error: { code: "source-invalid" } });
+      expect(await Bun.file(oversizedDatabase).exists()).toBe(false);
+
+      await Bun.write(opfPath, opf);
+      Object.assign(opfArtifact, originalOpfArtifact);
+      await Bun.write(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+
       await Bun.write(join(portablePath, "books", manifest.books[0]!.directory, "book.pdf"), "changed");
       const rejectedDatabase = join(directory!, "rejected", "library.sqlite");
       const rejected = await invoke([

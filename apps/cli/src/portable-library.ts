@@ -21,6 +21,7 @@ import { parseEbookMetadataOpf } from "./metadata.js";
 const PORTABLE_FORMAT = "takio-portable-library";
 export const PORTABLE_LIBRARY_VERSION = 1;
 const MAX_MANIFEST_BYTES = 2 * 1024 * 1024;
+const MAX_OPF_BYTES = 2 * 1024 * 1024;
 
 type PortableArtifact = Readonly<{ path: string; bytes: number; sha256: string }>;
 type PortableBook = Readonly<{ directory: string; artifacts: readonly PortableArtifact[] }>;
@@ -314,9 +315,50 @@ type ParsedPortableBook = Readonly<{
   coverPath?: string;
 }>;
 
+async function readPortableOpf(path: string): Promise<string> {
+  const file = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+  try {
+    const before = await file.stat();
+    if (!before.isFile() || before.size > MAX_OPF_BYTES) {
+      throw new TypeError("Invalid OPF file.");
+    }
+
+    const buffer = Buffer.allocUnsafe(before.size);
+    let bytes = 0;
+    while (bytes < buffer.length) {
+      const read = await file.read(buffer, bytes, buffer.length - bytes, null);
+      if (read.bytesRead === 0) break;
+      bytes += read.bytesRead;
+    }
+    const after = await file.stat();
+    const current = await lstat(path);
+    if (
+      !after.isFile() ||
+      !current.isFile() ||
+      current.isSymbolicLink() ||
+      before.dev !== after.dev ||
+      before.ino !== after.ino ||
+      before.size !== after.size ||
+      before.mtimeMs !== after.mtimeMs ||
+      before.ctimeMs !== after.ctimeMs ||
+      after.dev !== current.dev ||
+      after.ino !== current.ino ||
+      after.size !== current.size ||
+      after.mtimeMs !== current.mtimeMs ||
+      after.ctimeMs !== current.ctimeMs ||
+      bytes !== after.size
+    ) {
+      throw new TypeError("Portable OPF changed while being read.");
+    }
+    return buffer.toString("utf8");
+  } finally {
+    await file.close();
+  }
+}
+
 async function parsePortableBook(root: string, book: PortableBook): Promise<ParsedPortableBook> {
   const opfPath = artifactPath(root, book.directory, "metadata.opf");
-  const opf = await readFile(opfPath, "utf8");
+  const opf = await readPortableOpf(opfPath);
   if (XMLValidator.validate(opf) !== true) throw new TypeError("Invalid OPF.");
   const document = new XMLParser({
     ignoreAttributes: false,
