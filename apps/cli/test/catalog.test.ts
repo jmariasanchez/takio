@@ -43,6 +43,23 @@ describe("catalog generation", () => {
     expect(renderCatalog([item], "html")).toContain("A &lt;Book&gt;");
   });
 
+  it("keeps formula-like metadata passive in spreadsheet catalogs", () => {
+    const dangerous: LibraryItem = {
+      ...item,
+      title: "\t=HYPERLINK(\"https://example.invalid\")",
+      authors: [{ name: "\u0000@SUM(1,1)" }],
+      series: "  +1+1",
+      publisher: "\r-2+2",
+    };
+
+    const catalog = renderCatalog([dangerous], "csv");
+
+    expect(catalog).toContain(`"'\t=HYPERLINK(""https://example.invalid"")"`);
+    expect(catalog).toContain(`"'\u0000@SUM(1,1)"`);
+    expect(catalog).toContain("'  +1+1");
+    expect(catalog).toContain(`"'\r-2+2"`);
+  });
+
   it("publishes one checksummed file and refuses replacement", async () => {
     directory = await mkdtemp(join(tmpdir(), "takio-catalog-"));
     const outputPath = join(directory, "catalog.json");
@@ -71,20 +88,23 @@ describe("catalog generation", () => {
       return output;
     };
     await invoke([
-      "library", "add", "--db", databasePath, "--id", "book-1", "--title", "Human\tBook",
+      "library", "add", "--db", databasePath, "--id", "book-1", "--title",
+      "Human\t\u001b[31mBook\u001b]0;forged title\u0007\u009b2J",
       "--source-path", sourcePath, "--format", "epub", "--added-at",
       "2026-07-31T12:00:00.000Z",
     ]);
 
     expect(await invoke(["library", "list", "--db", databasePath, "--human"])).toEqual([
       "ID\tTITLE\tAUTHORS\tFORMATS",
-      "book-1\tHuman Book\t\tepub",
+      "book-1\tHuman [31mBook ]0;forged title 2J\t\tepub",
     ]);
     const response = JSON.parse((await invoke([
       "library", "catalog", "--db", databasePath, "--format", "html", "--output", outputPath,
     ]))[0]!) as { value: { catalog: { books: number; sha256: string } } };
     expect(response.value.catalog).toMatchObject({ books: 1 });
     expect(response.value.catalog.sha256).toHaveLength(64);
-    expect(await Bun.file(outputPath).text()).toContain("Human\tBook");
+    expect(await Bun.file(outputPath).text()).toContain(
+      "Human\t\u001b[31mBook\u001b]0;forged title\u0007\u009b2J",
+    );
   });
 });

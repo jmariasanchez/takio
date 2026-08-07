@@ -53,7 +53,11 @@ export function catalogRecord(item: LibraryItem): CatalogRecord {
 
 function escapeCsv(value: unknown): string {
   const text = typeof value === "string" ? value : JSON.stringify(value);
-  return /[",\r\n]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text;
+  const safeText =
+    typeof value === "string" && /^[\s\u0000-\u001f\u007f-\u009f]*[=+\-@]/u.test(text)
+      ? `'${text}`
+      : text;
+  return /[",\r\n]/.test(safeText) ? `"${safeText.replaceAll('"', '""')}"` : safeText;
 }
 
 function escapeHtml(value: unknown): string {

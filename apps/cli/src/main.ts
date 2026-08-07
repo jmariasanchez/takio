@@ -192,7 +192,7 @@ function openWithDefaultApp(argv: readonly string[]): void {
 }
 
 function humanCell(value: string): string {
-  return value.replace(/[\t\r\n]+/g, " ");
+  return value.replace(/[\u0000-\u001f\u007f-\u009f]+/g, " ");
 }
 
 function defaultAppCommand(sourcePath: string): readonly string[] {
