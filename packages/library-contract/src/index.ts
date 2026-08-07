@@ -46,6 +46,7 @@ export const LIBRARY_EXPORT_METADATA_STATES = [
   "unsupported",
   "backend-unavailable",
 ] as const;
+export const LIBRARY_EXPORT_FILE_NAME_TEMPLATES = ["title", "author-title"] as const;
 
 export const LIBRARY_QUERY_SORT_FIELDS = [
   "title",
@@ -530,6 +531,7 @@ export const exportLibraryItemsRequestSchema = z
       })
       .readonly(),
     destinationPath: libraryExportPathSchema,
+    fileNameTemplate: z.enum(LIBRARY_EXPORT_FILE_NAME_TEMPLATES).optional(),
   })
   .strict()
   .readonly();

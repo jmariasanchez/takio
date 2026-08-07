@@ -9,6 +9,7 @@ import {
   LIBRARY_IMPORT_FAILURE_CODES,
   LIBRARY_IMPORT_SKIPPED_REASONS,
   LIBRARY_EXPORT_FAILURE_CODES,
+  LIBRARY_EXPORT_FILE_NAME_TEMPLATES,
   LIBRARY_EXPORT_METADATA_STATES,
   LIBRARY_EXPORT_SKIPPED_REASONS,
   MAX_LIBRARY_QUERY_PAGE_SIZE,
@@ -309,7 +310,14 @@ describe("LibraryStore", () => {
       "unsupported",
       "backend-unavailable",
     ]);
+    expect(LIBRARY_EXPORT_FILE_NAME_TEMPLATES).toEqual(["title", "author-title"]);
     expect(exportLibraryItemsRequestSchema.parse(request)).toEqual(request);
+    for (const fileNameTemplate of LIBRARY_EXPORT_FILE_NAME_TEMPLATES) {
+      expect(exportLibraryItemsRequestSchema.parse({ ...request, fileNameTemplate })).toEqual({
+        ...request,
+        fileNameTemplate,
+      });
+    }
     expect(outcomes.map((outcome) => libraryExportEntryOutcomeSchema.parse(outcome))).toEqual(
       outcomes,
     );
@@ -327,6 +335,7 @@ describe("LibraryStore", () => {
         destinationPath: request.destinationPath,
       },
       { ids: [canonicalItem.id], destinationPath: "   " },
+      { ...request, fileNameTemplate: "author/title" },
       { ...request, overwrite: true },
     ]) {
       expect(exportLibraryItemsRequestSchema.safeParse(invalid).success).toBe(false);
