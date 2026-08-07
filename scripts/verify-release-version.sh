@@ -2,8 +2,8 @@
 
 set -euo pipefail
 
-if [[ "$#" -ne 1 || "$1" != v* ]]; then
-  echo "Usage: scripts/verify-release-version.sh v<version>" >&2
+if [[ "$#" -ne 1 || ! "$1" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+  echo "Usage: scripts/verify-release-version.sh v<major>.<minor>.<patch>" >&2
   exit 1
 fi
 
