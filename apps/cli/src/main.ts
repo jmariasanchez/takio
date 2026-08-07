@@ -1162,6 +1162,24 @@ export function createProgram(
       }
     });
 
+  storageCommand(jobs.command("retry-attachment").helpOption(false), writeError)
+    .description("Retry a failed library attachment without rerunning conversion")
+    .option("--db <path>", "jobs database path")
+    .requiredOption("--id <id>", "job ID")
+    .action(async (options: { db?: string; id: string }, command: Command) => {
+      if (options.db !== undefined || options.id === "") {
+        command.error("", { exitCode: 1, code: "invalid-arguments" });
+      }
+      const store = await openJobStore(undefined, command);
+      try {
+        const result = store.retryAttachment(options.id);
+        if (!result.ok) command.error("", { exitCode: 1, code: result.error.code });
+        write(JSON.stringify({ ok: true, value: { job: result.value } }));
+      } finally {
+        store.close();
+      }
+    });
+
   storageCommand(jobs.command("run-next").helpOption(false), writeError)
     .option("--db <path>", "jobs database path")
     .action(async (options: { db?: string }, command: Command) => {

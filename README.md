@@ -153,7 +153,7 @@ The command surface is grouped by workflow:
 | `takio library export-many` | Export selected formats without overwriting existing files, with optional `title` or `author-title` filename presets and current metadata when supported. |
 | `takio convert` | Run any advertised conversion pair synchronously. |
 | `takio polish` | Publish a new same-format EPUB, KEPUB, or AZW3 artifact with explicitly selected Calibre `ebook-polish` operations. |
-| `takio jobs enqueue`, `list`, `get`, `cancel`, `retry`, `run-next`, `drain` | Manage and boundedly drain the durable foreground conversion queue. |
+| `takio jobs enqueue`, `list`, `get`, `cancel`, `retry`, `retry-attachment`, `run-next`, `drain` | Manage and boundedly drain the durable foreground conversion queue. |
 | `takio destination list`, `eject` | Discover and safely eject mounted macOS volumes. |
 | `takio send`, `send-many` | Materialize, copy, and verify one format; `send --convert` can select a tested device format, while batch delivery sends an attached exact format for up to 256 distinct items. |
 | `takio serve` | Run a foreground authenticated, read-only catalog and format-download API. |
@@ -165,7 +165,7 @@ library path; combining both selectors is rejected.
 `takio library list --human` emits a tabular view; the default remains the
 stable one-line JSON envelope for scripts.
 
-A plan is not execution. `takio convert` bypasses the queue, while `takio jobs enqueue` records work in `jobs.sqlite`, a database separate from `library.sqlite`. Jobs move through `queued`, `running`, `completed`, `failed`, and `canceled`; `jobs cancel` cancels queued work. `jobs retry` clones failed or canceled work into a new queued job while preserving the terminal record. `run-next` claims one oldest job; `drain` runs up to 256 jobs by default, accepts a smaller `--max-jobs`, and reports processed, terminal, and remaining counts. Both run synchronously and record either a failure or a completed artifact whose path, nonzero size, and SHA-256 digest have been verified. SIGINT or SIGTERM cancels the active foreground conversion, records `conversion-cancelled`, and makes `drain` stop before claiming another job.
+A plan is not execution. `takio convert` bypasses the queue, while `takio jobs enqueue` records work in `jobs.sqlite`, a database separate from `library.sqlite`. Jobs move through `queued`, `running`, `completed`, `failed`, and `canceled`; `jobs cancel` cancels queued work. `jobs retry` clones failed or canceled work into a new queued job while preserving the terminal record. `jobs retry-attachment --id <job>` returns a failed library attachment to `pending` without rerunning a completed conversion; it uses the selected default or named library and rejects an unrelated explicit jobs database. `run-next` claims one oldest job; `drain` runs up to 256 jobs by default, accepts a smaller `--max-jobs`, and reports processed, terminal, and remaining counts. Both run synchronously and record either a failure or a completed artifact whose path, nonzero size, and SHA-256 digest have been verified. SIGINT or SIGTERM cancels the active foreground conversion, records `conversion-cancelled`, and makes `drain` stop before claiming another job.
 
 The caller chooses and owns the output path. Takio refuses to overwrite an existing file, including one that appears after enqueue. In the desktop app, an EPUB item's **Convert** control opens the native save dialog and adds the job to the conversion ledger; **Refresh**, **Run next**, and queued-job **Cancel** expose the same durable queue.
 

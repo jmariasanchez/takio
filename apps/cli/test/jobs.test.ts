@@ -545,6 +545,41 @@ await copyFile(process.argv[2], process.argv[3]);
     expect(record(await runJobs(["list", "--status", "queued"], FAKE_BACKEND, root)).value.jobs)
       .toMatchObject([{ outputPath: queuedOutput }]);
     await expect(readFile(queuedOutput)).rejects.toThrow();
+
+    const library = new BunSqliteLibraryStore(join(root, "library.sqlite"));
+    expect(await library.open({ config: {} })).toEqual({ ok: true, value: null });
+    expect(await library.add({
+      item: {
+        id: "missing-book",
+        title: "Recovered book",
+        sourcePath: pending.inputPath,
+        format: "epub",
+        addedAt: "2026-07-20T12:00:00.000Z",
+        formats: [{
+          sourcePath: pending.inputPath,
+          format: "epub",
+          addedAt: "2026-07-20T12:00:00.000Z",
+          provenance: "referenced",
+        }],
+        tags: [],
+      },
+    })).toMatchObject({ ok: true });
+    library.close();
+
+    expect(record(await runJobs(["retry-attachment", "--id", pending.id], FAKE_BACKEND, root)))
+      .toMatchObject({ value: { job: { attachment: { status: "pending" } } } });
+    expect(record(await runJobs(["run-next"], join(root, "missing-ebook-convert"), root)))
+      .toMatchObject({ value: { job: { attachment: { status: "attached" } } } });
+  });
+
+  it("rejects attachment retry against an unrelated explicit jobs database", async () => {
+    const root = await temporaryRoot();
+    const result = await runJobs([
+      "retry-attachment", "--db", join(root, "custom-jobs.sqlite"), "--id", "job-1",
+    ], FAKE_BACKEND, root);
+
+    expect(result.exitCode).not.toBe(0);
+    expect(record(result)).toEqual({ ok: false, error: { code: "invalid-arguments" } });
   });
 
   it("rejects custom linked attachment recovery without touching the default library", async () => {
