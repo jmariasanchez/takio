@@ -16,6 +16,8 @@
     "check": "bun run --filter '@takio/core' check && bun run --filter '@takio/library-contract' check && bun run --filter '@takio/library-store-bun' check && bun run --filter '@takio/cli' check && bun run --filter '@takio/desktop' check",
     "check:native:macos": "bash scripts/check-native-macos.sh",
     "verify:bundle:macos": "bash scripts/verify-macos-bundle.sh",
+    "verify:dmg:macos": "bash scripts/verify-macos-dmg.sh",
+    "package:macos": "bash scripts/package-macos-release.sh",
     "verify:bundle:macos:self-test": "bash scripts/test-verify-macos-bundle.sh",
     "test": "bun run --filter '@takio/core' test && bun run --filter '@takio/library-contract' test && bun run --filter '@takio/library-store-bun' test && bun run --filter '@takio/cli' test && bun run --filter '@takio/desktop' test",
     "test:performance:library": "TAKIO_LIBRARY_QUERY_BENCHMARK=enforce bun test packages/library-store-bun/test/library-query-performance.test.ts",

@@ -18,9 +18,10 @@ bun run check:native:macos
 Local unsigned app:
 
 ```sh
-bun run --filter '@takio/desktop' tauri build --bundles dmg -- --locked
-bash scripts/verify-macos-bundle.sh apps/desktop/src-tauri/target/release/bundle/macos/Takio.app
+bun run package:macos
 ```
+
+`package:macos` builds the `.app` with Tauri, verifies it, creates the DMG with Tauri's generated `bundle_dmg.sh --skip-jenkins` path, verifies the DMG with `hdiutil imageinfo`, `hdiutil verify`, a read-only attach, mounted bundle checks, and writes the `.sha256` sidecar. The `--skip-jenkins` path deliberately avoids Finder AppleScript because headless or busy macOS sessions can time out with `Finder got an error: AppleEvent timed out. (-1712)` after leaving only `rw.*.dmg` intermediates. If DMG verification fails, the script exits non-zero after creating a verified `Takio.app.tar.gz` fallback and checksum, which must not be treated as full DMG release success.
 
 Distribution app with Apple credentials available:
 
