@@ -82,8 +82,12 @@ import { CATALOG_FORMATS, CatalogError, writeCatalog, type CatalogFormat } from 
 import {
   DestinationTransferError,
   authorizeDestination,
+  destinationDeliveryRelativePath,
   ejectDestination,
+  inventoryDestination,
   listDestinations,
+  recordDestinationDelivery,
+  removeDestinationDelivery,
   sendToDestination,
 } from "./destinations.js";
 import { reconcileJobAttachment } from "./job-attachment.js";
@@ -1290,6 +1294,54 @@ export function createProgram(
       },
     );
 
+  storageCommand(destination.command("inventory").helpOption(false), writeError)
+    .requiredOption("--dest <volume-path>", "mounted destination path")
+    .option("--volumes-root <path>", "mounted-volume root", "/Volumes")
+    .action(async (options: { dest: string; volumesRoot: string }, command: Command) => {
+      const mountedDestination = await authorizeDestination(options.dest, options.volumesRoot);
+      if (!mountedDestination) command.error("", { exitCode: 1, code: "unknown-destination" });
+      try {
+        const entries = await inventoryDestination(mountedDestination);
+        write(JSON.stringify({ ok: true, value: { destinationId: mountedDestination.id, entries } }));
+      } catch (error) {
+        if (error instanceof DestinationTransferError) command.error("", { exitCode: 1, code: error.code });
+        throw error;
+      }
+    });
+
+  storageCommand(destination.command("reconcile").helpOption(false), writeError)
+    .requiredOption("--dest <volume-path>", "mounted destination path")
+    .option("--volumes-root <path>", "mounted-volume root", "/Volumes")
+    .action(async (options: { dest: string; volumesRoot: string }, command: Command) => {
+      const mountedDestination = await authorizeDestination(options.dest, options.volumesRoot);
+      if (!mountedDestination) command.error("", { exitCode: 1, code: "unknown-destination" });
+      try {
+        const entries = await inventoryDestination(mountedDestination);
+        write(JSON.stringify({ ok: true, value: { destinationId: mountedDestination.id, entries } }));
+      } catch (error) {
+        if (error instanceof DestinationTransferError) command.error("", { exitCode: 1, code: error.code });
+        throw error;
+      }
+    });
+
+  storageCommand(destination.command("remove").helpOption(false), writeError)
+    .requiredOption("--dest <volume-path>", "mounted destination path")
+    .requiredOption("--id <id>", "Takio delivery item ID")
+    .option("--volumes-root <path>", "mounted-volume root", "/Volumes")
+    .action(async (options: { dest: string; id: string; volumesRoot: string }, command: Command) => {
+      const mountedDestination = await authorizeDestination(options.dest, options.volumesRoot);
+      if (!mountedDestination || options.id.trim() === "") {
+        command.error("", { exitCode: 1, code: mountedDestination ? "invalid-arguments" : "unknown-destination" });
+      }
+      try {
+        const removed = await removeDestinationDelivery(mountedDestination, options.id);
+        write(JSON.stringify({ ok: true, value: { destinationId: mountedDestination.id, removed } }));
+      } catch (error) {
+        if (error instanceof DestinationTransferError) command.error("", { exitCode: 1, code: error.code });
+        throw error;
+      }
+    });
+
   const deliverFormat = async (
     item: LibraryItem,
     selectedFormat: BookFormat,
@@ -1337,6 +1389,14 @@ export function createProgram(
         destination: mountedDestination,
         subdir: options.subdir,
         overwrite: options.overwrite,
+      });
+      const relativePath = destinationDeliveryRelativePath(mountedDestination, result.path);
+      await recordDestinationDelivery(mountedDestination, {
+        itemId: result.itemId,
+        relativePath,
+        bytes: result.bytes,
+        sha256: result.sha256,
+        format: selectedFormat.format,
       });
       return { ...result, format: selectedFormat.format, metadata };
     } finally {

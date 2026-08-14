@@ -18,6 +18,7 @@ import {
   rm,
   stat,
   statfs,
+  writeFile,
 } from "node:fs/promises";
 import {
   basename,
@@ -66,6 +67,23 @@ export interface SendToDestinationResult {
   readonly bytes: number;
   readonly sha256: string;
 }
+
+export interface DestinationManifestRecord {
+  readonly itemId: string;
+  readonly relativePath: string;
+  readonly bytes: number;
+  readonly sha256: string;
+  readonly format: string;
+  readonly timestamp: string;
+}
+
+export interface DestinationInventoryEntry extends DestinationManifestRecord {
+  readonly status: "present" | "missing" | "changed";
+}
+
+const MANIFEST_VERSION = 1;
+const MANIFEST_DIRECTORY = ".takio";
+const MANIFEST_FILE = "deliveries.json";
 
 export type DestinationCommandRunner = (
   argv: readonly string[],
@@ -209,6 +227,113 @@ async function syncDirectory(path: string): Promise<void> {
   }
 }
 
+function manifestPath(destination: Destination): string {
+  return join(destination.path, MANIFEST_DIRECTORY, MANIFEST_FILE);
+}
+
+function relativeDestinationPath(destination: Destination, path: string): string {
+  const absolutePath = resolve(path);
+  if (!isContained(destination.path, absolutePath)) {
+    throw new DestinationTransferError("invalid-arguments");
+  }
+  const relativePath = relative(destination.path, absolutePath).split(sep).join("/");
+  if (relativePath === "" || relativePath.startsWith("../") || relativePath === "..") {
+    throw new DestinationTransferError("invalid-arguments");
+  }
+  return relativePath;
+}
+
+export function destinationDeliveryRelativePath(destination: Destination, path: string): string {
+  return relativeDestinationPath(destination, path);
+}
+
+async function readManifest(destination: Destination): Promise<DestinationManifestRecord[]> {
+  try {
+    const raw = await Bun.file(manifestPath(destination)).text();
+    const parsed = JSON.parse(raw) as { version?: unknown; deliveries?: unknown };
+    if (parsed.version !== MANIFEST_VERSION || !Array.isArray(parsed.deliveries)) return [];
+    return parsed.deliveries.filter((record): record is DestinationManifestRecord => {
+      const candidate = record as Partial<DestinationManifestRecord>;
+      return typeof candidate.itemId === "string" && typeof candidate.relativePath === "string" &&
+        typeof candidate.bytes === "number" && typeof candidate.sha256 === "string" &&
+        typeof candidate.format === "string" && typeof candidate.timestamp === "string" &&
+        !candidate.relativePath.startsWith("/") && !candidate.relativePath.split("/").includes("..");
+    });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw new DestinationTransferError("copy-failed");
+  }
+}
+
+async function writeManifest(destination: Destination, deliveries: readonly DestinationManifestRecord[]): Promise<void> {
+  const directory = join(destination.path, MANIFEST_DIRECTORY);
+  await mkdir(directory, { recursive: true });
+  const path = manifestPath(destination);
+  const temporary = join(directory, `.deliveries-${randomUUID()}.json.tmp`);
+  const body = JSON.stringify({ version: MANIFEST_VERSION, deliveries }, null, 2);
+  await writeFile(temporary, body, { flag: "wx" });
+  await syncFile(temporary);
+  await rm(path, { force: true }).catch(() => {});
+  await rename(temporary, path);
+  await syncDirectory(directory).catch(() => {});
+}
+
+export async function recordDestinationDelivery(
+  destination: Destination,
+  delivery: Omit<DestinationManifestRecord, "timestamp"> & { readonly timestamp?: string },
+): Promise<DestinationManifestRecord> {
+  const deliveries = await readManifest(destination);
+  const record = {
+    ...delivery,
+    relativePath: relativeDestinationPath(destination, resolve(destination.path, delivery.relativePath)),
+    timestamp: delivery.timestamp ?? new Date().toISOString(),
+  };
+  await writeManifest(destination, [
+    ...deliveries.filter((candidate) => candidate.itemId !== record.itemId),
+    record,
+  ].sort((left, right) => left.itemId.localeCompare(right.itemId)));
+  return record;
+}
+
+export async function inventoryDestination(destination: Destination): Promise<DestinationInventoryEntry[]> {
+  const deliveries = await readManifest(destination);
+  const entries: DestinationInventoryEntry[] = [];
+  for (const record of deliveries) {
+    const path = resolve(destination.path, record.relativePath);
+    if (!isContained(destination.path, path)) continue;
+    try {
+      const actual = await hashFile(path);
+      entries.push({ ...record, status: actual.bytes === record.bytes && actual.sha256 === record.sha256 ? "present" : "changed" });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") entries.push({ ...record, status: "missing" });
+      else throw new DestinationTransferError("copy-failed");
+    }
+  }
+  return entries;
+}
+
+export async function removeDestinationDelivery(destination: Destination, itemId: string): Promise<DestinationManifestRecord> {
+  const deliveries = await readManifest(destination);
+  const record = deliveries.find((candidate) => candidate.itemId === itemId);
+  if (!record || record.relativePath.startsWith("/") || record.relativePath.split("/").includes("..")) {
+    throw new DestinationTransferError("invalid-arguments");
+  }
+  const path = resolve(destination.path, record.relativePath);
+  if (!isContained(destination.path, path)) throw new DestinationTransferError("invalid-arguments");
+  try {
+    const actual = await hashFile(path);
+    if (actual.bytes !== record.bytes || actual.sha256 !== record.sha256) {
+      throw new DestinationTransferError("verification-failed");
+    }
+    await rm(path);
+  } catch (error) {
+    if (error instanceof DestinationTransferError) throw error;
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw new DestinationTransferError("copy-failed");
+  }
+  await writeManifest(destination, deliveries.filter((candidate) => candidate.itemId !== itemId));
+  return record;
+}
+
 export async function sendToDestination({
   itemId,
   sourcePath,
@@ -306,13 +431,14 @@ export async function sendToDestination({
     }
     published = true;
     await syncDirectory(targetDirectory);
-    return {
+    const result = {
       itemId,
       destinationId: destination.id,
       path: finalPath,
       bytes: sourceBytes,
       sha256: sourceSha256,
     };
+    return result;
   } catch (error) {
     if (error instanceof DestinationTransferError) {
       throw error;

@@ -381,6 +381,81 @@ describe("mounted destinations", () => {
         metadata: "embedded",
       },
     });
+    const manifest = JSON.parse(await readFile(join(fixture.destination, ".takio", "deliveries.json"), "utf8"));
+    expect(manifest.version).toBe(1);
+    expect(manifest.deliveries).toHaveLength(1);
+    expect(manifest.deliveries[0]).toMatchObject({
+      itemId: "book-1",
+      relativePath: "Transfer Book.epub",
+      bytes: destinationBytes.byteLength,
+      sha256,
+      format: "epub",
+    });
+    expect(typeof manifest.deliveries[0].timestamp).toBe("string");
+  });
+
+  test("inventories manifest deliveries as present, missing, and changed", async () => {
+    const fixture = await transferFixture();
+    const secondPath = join(fixture.root, "source", "second.epub");
+    await writeFile(secondPath, "second bytes");
+    const added = await invoke([
+      "library", "add", "--db", fixture.databasePath, "--id", "book-2", "--title", "Second Book",
+      "--source-path", secondPath, "--format", "epub", "--added-at", "2026-07-18T00:00:00.000Z",
+    ]);
+    expect(added.exitCode).toBeUndefined();
+    for (const id of ["book-1", "book-2"]) {
+      expect((await invoke(["send", "--db", fixture.databasePath, "--id", id, "--dest", fixture.destination, "--volumes-root", fixture.volumesRoot])).exitCode).toBeUndefined();
+    }
+    const manifestPath = join(fixture.destination, ".takio", "deliveries.json");
+    const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+    manifest.deliveries.push({
+      itemId: "book-3",
+      relativePath: "Missing Book.epub",
+      bytes: 1,
+      sha256: "0".repeat(64),
+      format: "epub",
+      timestamp: "2026-08-14T00:00:00.000Z",
+    });
+    await writeFile(manifestPath, JSON.stringify(manifest));
+    await writeFile(join(fixture.destination, "Second Book.epub"), "changed bytes");
+
+    const inventory = await invoke(["destination", "inventory", "--dest", fixture.destination, "--volumes-root", fixture.volumesRoot]);
+
+    expect(inventory.exitCode).toBeUndefined();
+    expect(parseRecord(inventory).value.entries.map(({ itemId, status }: any) => ({ itemId, status }))).toEqual([
+      { itemId: "book-1", status: "present" },
+      { itemId: "book-2", status: "changed" },
+      { itemId: "book-3", status: "missing" },
+    ]);
+  });
+
+  test("removes only an unchanged Takio-managed delivery and preserves unrelated files", async () => {
+    const fixture = await transferFixture();
+    const unrelated = join(fixture.destination, "unrelated.epub");
+    await writeFile(unrelated, "do not touch");
+    expect((await invoke(["send", "--db", fixture.databasePath, "--id", "book-1", "--dest", fixture.destination, "--volumes-root", fixture.volumesRoot])).exitCode).toBeUndefined();
+
+    const removed = await invoke(["destination", "remove", "--dest", fixture.destination, "--volumes-root", fixture.volumesRoot, "--id", "book-1"]);
+
+    expect(removed.exitCode).toBeUndefined();
+    expect(parseRecord(removed).value.removed).toMatchObject({ itemId: "book-1", relativePath: "Transfer Book.epub" });
+    expect(await Bun.file(join(fixture.destination, "Transfer Book.epub")).exists()).toBe(false);
+    expect(await readFile(unrelated, "utf8")).toBe("do not touch");
+    const missing = await invoke(["destination", "remove", "--dest", fixture.destination, "--volumes-root", fixture.volumesRoot, "--id", "book-1"]);
+    expect(missing.exitCode).toBe(1);
+    expect(parseRecord(missing)).toEqual({ ok: false, error: { code: "invalid-arguments" } });
+  });
+
+  test("refuses to remove changed tracked files", async () => {
+    const fixture = await transferFixture();
+    expect((await invoke(["send", "--db", fixture.databasePath, "--id", "book-1", "--dest", fixture.destination, "--volumes-root", fixture.volumesRoot])).exitCode).toBeUndefined();
+    await writeFile(join(fixture.destination, "Transfer Book.epub"), "changed");
+
+    const result = await invoke(["destination", "remove", "--dest", fixture.destination, "--volumes-root", fixture.volumesRoot, "--id", "book-1"]);
+
+    expect(result.exitCode).toBe(1);
+    expect(parseRecord(result)).toEqual({ ok: false, error: { code: "verification-failed" } });
+    expect(await readFile(join(fixture.destination, "Transfer Book.epub"), "utf8")).toBe("changed");
   });
 
   test("sends the exact requested secondary format with its bytes, extension, and hash", async () => {
