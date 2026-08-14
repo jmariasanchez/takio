@@ -10,6 +10,7 @@ import {
   FORMAT_IDS,
   PlanningError,
   detectFormat,
+  destinationBookFileName,
   destinationFormatPreferences,
   planConversion,
   type BookFormat,
@@ -1295,13 +1296,15 @@ export function createProgram(
     mountedDestination: Destination,
     options: { subdir?: string; overwrite?: boolean },
   ) => {
-    const primaryName = basename(item.formats[0]!.sourcePath);
-    const primaryExtension = extname(primaryName);
     const deliveryExtension =
       selectedFormat.format === "kepub" && mountedDestination.kind === "kobo"
         ? "kepub.epub"
         : selectedFormat.format;
-    const deliveryName = `${primaryName.slice(0, -primaryExtension.length)}.${deliveryExtension}`;
+    const deliveryName = destinationBookFileName(
+      item.title,
+      item.authors?.[0]?.name ?? item.author,
+      deliveryExtension,
+    );
     let metadataWorkspace: string | undefined;
     try {
       let sourcePath = selectedFormat.sourcePath;
@@ -1390,7 +1393,10 @@ export function createProgram(
         if (!item.value) {
           command.error("", { exitCode: 1, code: "unknown-item" });
         }
-        const preferredFormats = destinationFormatPreferences(destination.kind);
+        const preferredFormats = destinationFormatPreferences(
+          destination.kind,
+          destination.features,
+        );
         let targetFormat = requestedFormat;
         let selectedFormat = requestedFormat === undefined
           ? preferredFormats.length === 0

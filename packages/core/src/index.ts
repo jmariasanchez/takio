@@ -1,10 +1,13 @@
 export {
   DESTINATION_KINDS,
+  DESTINATION_FEATURES,
   classifyDestinationKind,
+  destinationBookFileName,
   defaultDestinationSubdir,
   destinationFormatPreferences,
   sanitizeDestinationFileName,
   type Destination,
+  type DestinationFeature,
   type DestinationKind,
 } from "./destinations.js";
 export { FORMAT_CATALOG, FORMAT_IDS, detectFormat, type FormatDefinition, type FormatId } from "./formats.js";

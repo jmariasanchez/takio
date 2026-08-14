@@ -148,6 +148,7 @@ describe("mounted destinations", () => {
     await Promise.all([
       mkdir(join(root, "Kindle", "documents"), { recursive: true }),
       mkdir(join(root, "Kindle", "system"), { recursive: true }),
+      mkdir(join(root, "Kindle", "koreader"), { recursive: true }),
       mkdir(join(root, "Kobo", ".kobo"), { recursive: true }),
       mkdir(join(root, "Generic", "Books"), { recursive: true }),
       symlink("/", join(root, "System Root")),
@@ -160,6 +161,7 @@ describe("mounted destinations", () => {
       { id: "Kindle", kind: "kindle" },
       { id: "Kobo", kind: "kobo" },
     ]);
+    expect(destinations.find(({ id }) => id === "Kindle")?.features).toEqual(["koreader"]);
     expect(destinations.every((destination) => destination.freeBytes !== undefined)).toBe(
       true,
     );
@@ -361,7 +363,7 @@ describe("mounted destinations", () => {
 
     expect(result.exitCode).toBeUndefined();
     const record = parseRecord(result);
-    const finalPath = join(await realpath(fixture.destination), "book.epub");
+    const finalPath = join(await realpath(fixture.destination), "Transfer Book.epub");
     const destinationBytes = await readFile(finalPath);
     const sha256 = createHash("sha256").update(destinationBytes).digest("hex");
     expect(destinationBytes).toEqual(Buffer.from(`${fixture.sourceBytes.toString()}\nembedded metadata`));
@@ -416,11 +418,11 @@ describe("mounted destinations", () => {
 
     expect(result.exitCode).toBeUndefined();
     const record = parseRecord(result);
-    const finalPath = join(await realpath(fixture.destination), "book.pdf");
+    const finalPath = join(await realpath(fixture.destination), "Transfer Book.pdf");
     const destinationBytes = await readFile(finalPath);
     const sha256 = createHash("sha256").update(pdfBytes).digest("hex");
     expect(destinationBytes).toEqual(pdfBytes);
-    expect(await Bun.file(join(fixture.destination, "book.epub")).exists()).toBe(false);
+    expect(await Bun.file(join(fixture.destination, "Transfer Book.epub")).exists()).toBe(false);
     expect(record).toEqual({
       ok: true,
       value: {
@@ -485,8 +487,8 @@ describe("mounted destinations", () => {
       { status: "failed", itemId: "missing-book", code: "unknown-item" },
       { status: "sent", itemId: "book-2", code: undefined },
     ]);
-    expect(await readFile(join(fixture.destination, "book.epub"))).toEqual(fixture.sourceBytes);
-    expect(await readFile(join(fixture.destination, "second.epub"))).toEqual(secondBytes);
+    expect(await readFile(join(fixture.destination, "Transfer Book.epub"))).toEqual(fixture.sourceBytes);
+    expect(await readFile(join(fixture.destination, "Second Book.epub"))).toEqual(secondBytes);
   });
 
   test("rejects an oversized send batch before authorizing a destination", async () => {
@@ -566,7 +568,7 @@ describe("mounted destinations", () => {
     expect(converted.exitCode).toBe(0);
     expect(converted.stderr).toBe("");
     const convertedRecord = JSON.parse(converted.stdout);
-    const destinationPath = join(await realpath(fixture.destination), "book.azw3");
+    const destinationPath = join(await realpath(fixture.destination), "Transfer Book.azw3");
     expect(convertedRecord).toMatchObject({
       ok: true,
       value: {
@@ -631,7 +633,7 @@ describe("mounted destinations", () => {
     expect(JSON.parse(converted.stdout)).toMatchObject({
       ok: true,
       value: {
-        path: join(await realpath(fixture.destination), "documents", "book.azw3"),
+        path: join(await realpath(fixture.destination), "documents", "Transfer Book.azw3"),
         format: "azw3",
         converted: true,
       },
@@ -643,7 +645,7 @@ describe("mounted destinations", () => {
       ok: false,
       error: { code: "unsupported-conversion" },
     });
-    expect(await readFile(join(fixture.destination, "documents", "book.azw3"))).toEqual(
+    expect(await readFile(join(fixture.destination, "documents", "Transfer Book.azw3"))).toEqual(
       fixture.sourceBytes,
     );
   });
@@ -669,7 +671,7 @@ describe("mounted destinations", () => {
     expect(JSON.parse(converted.stdout)).toMatchObject({
       ok: true,
       value: {
-        path: join(await realpath(fixture.destination), "book.kepub.epub"),
+        path: join(await realpath(fixture.destination), "Transfer Book.kepub.epub"),
         format: "kepub",
         converted: true,
       },
@@ -716,7 +718,7 @@ describe("mounted destinations", () => {
 
   test("rejects a collision without changing the existing destination", async () => {
     const fixture = await transferFixture();
-    const finalPath = join(fixture.destination, "book.epub");
+    const finalPath = join(fixture.destination, "Transfer Book.epub");
     const original = Buffer.from("existing reader copy\n");
     await writeFile(finalPath, original);
 
@@ -742,7 +744,7 @@ describe("mounted destinations", () => {
 
   test("overwrites only when requested and verifies the replacement", async () => {
     const fixture = await transferFixture();
-    const finalPath = join(fixture.destination, "book.epub");
+    const finalPath = join(fixture.destination, "Transfer Book.epub");
     await writeFile(finalPath, "old bytes");
 
     const result = await invoke([
@@ -842,7 +844,7 @@ describe("mounted destinations", () => {
       ok: false,
       error: { code: "verification-failed" },
     });
-    expect(await Bun.file(join(fixture.destination, "book.epub")).exists()).toBe(false);
+    expect(await Bun.file(join(fixture.destination, "Transfer Book.epub")).exists()).toBe(false);
     expect((await readdir(fixture.destination)).some((name) => name.startsWith(".takio-partial-"))).toBe(
       false,
     );
@@ -850,7 +852,7 @@ describe("mounted destinations", () => {
 
   test("atomically preserves a collision that appears after the initial absence check", async () => {
     const fixture = await transferFixture();
-    const finalPath = join(fixture.destination, "book.epub");
+    const finalPath = join(fixture.destination, "Transfer Book.epub");
     const collision = Buffer.from("late collision\n");
     destinationTestSeam.afterPartialWrite = async () => {
       await writeFile(finalPath, collision);

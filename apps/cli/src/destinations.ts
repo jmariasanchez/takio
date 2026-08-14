@@ -116,6 +116,9 @@ export async function listDestinations(
         name,
         path: canonicalPath,
         kind: classifyDestinationKind(rootEntries),
+        ...(rootEntries.some((entry) => entry.toLowerCase() === "koreader")
+          ? { features: ["koreader"] as const }
+          : {}),
         ...(freeBytes === undefined ? {} : { freeBytes }),
       });
     } catch {

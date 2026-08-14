@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   classifyDestinationKind,
+  destinationBookFileName,
   defaultDestinationSubdir,
   destinationFormatPreferences,
   sanitizeDestinationFileName,
@@ -23,7 +24,23 @@ describe("destination helpers", () => {
   test("prefers formats each recognized device can read", () => {
     expect(destinationFormatPreferences("kobo")).toEqual(["kepub", "epub", "pdf", "cbz"]);
     expect(destinationFormatPreferences("kindle")).toEqual(["azw3", "mobi", "pdf", "txt"]);
+    expect(destinationFormatPreferences("kindle", ["koreader"])).toEqual([
+      "epub",
+      "pdf",
+      "cbz",
+      "azw3",
+      "mobi",
+      "txt",
+    ]);
     expect(destinationFormatPreferences("generic")).toEqual([]);
+  });
+
+  test("builds bounded human-readable device filenames", () => {
+    expect(destinationBookFileName("A Book: One?", "An/Author", "azw3")).toBe(
+      "AnAuthor - A Book One.azw3",
+    );
+    expect(destinationBookFileName("A Book", undefined, "epub")).toBe("A Book.epub");
+    expect(destinationBookFileName("x".repeat(300), "Author", "epub").length).toBe(180);
   });
 
   test("turns traversal-shaped names into contained FAT-safe basenames", () => {
