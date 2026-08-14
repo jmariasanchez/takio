@@ -11,8 +11,10 @@ usage() {
   cat <<'EOF'
 Usage: scripts/verify-macos-bundle.sh [--distribution] <path-to-app>
 
-Verifies a built macOS application bundle. Distribution mode additionally
-requires a signing team, hardened runtime, and a successful Gatekeeper check.
+Verifies a built macOS application bundle. Local mode verifies bundle shape,
+architectures, minimum OS, and dependency portability. Distribution mode also
+requires a valid code signature, signing team, hardened runtime, and a
+successful Gatekeeper check.
 
 For focused tests, tool paths may be overridden with:
   TAKIO_PLUTIL_COMMAND, TAKIO_LIPO_COMMAND, TAKIO_OTOOL_COMMAND,
@@ -168,10 +170,6 @@ verify_dependencies() {
 verify_dependencies "$main_executable"
 verify_dependencies "$sidecar_executable"
 
-if ! "$codesign_command" --verify --deep --strict --verbose=2 "$bundle_path"; then
-  fail "strict deep code-signature verification failed: $bundle_path"
-fi
-
 distribution_team() {
   local target="$1"
   local label="$2"
@@ -202,6 +200,9 @@ distribution_team() {
 }
 
 if [[ "$distribution" == true ]]; then
+  if ! "$codesign_command" --verify --deep --strict --verbose=2 "$bundle_path"; then
+    fail "strict deep code-signature verification failed: $bundle_path"
+  fi
   if ! app_team="$(distribution_team "$bundle_path" "application bundle")"; then
     exit 1
   fi
@@ -219,3 +220,6 @@ fi
 mode="local"
 [[ "$distribution" == true ]] && mode="distribution"
 echo "Verified macOS bundle: $bundle_path (architectures: $main_architectures; mode: $mode)"
+if [[ "$distribution" != true ]]; then
+  echo "Skipped code-signing, notarization, stapler, and Gatekeeper checks because distribution mode was not requested."
+fi

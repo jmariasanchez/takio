@@ -188,7 +188,7 @@ for forbidden_dependency in \
 done
 
 FAKE_CODESIGN_VERIFY=fail \
-  expect_failure "invalid signature" "strict deep code-signature verification failed" run_verifier "$bundle_path"
+  expect_failure "invalid signature" "strict deep code-signature verification failed" run_verifier --distribution "$bundle_path"
 
 FAKE_APP_TEAM='' \
   expect_failure "missing team" "has no signing TeamIdentifier" run_verifier --distribution "$bundle_path"

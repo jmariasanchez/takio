@@ -120,24 +120,44 @@ jobs:
         run: bun run check:native:macos
 
       - name: Import Developer ID certificate
+        if: ${{ secrets.APPLE_CERTIFICATE != '' && secrets.APPLE_CERTIFICATE_PASSWORD != '' }}
         uses: apple-actions/import-codesign-certs@7abe6dfe88f6bf6b1fa06e6a5704a2605d897418 # v7
         with:
           p12-file-base64: ${{ secrets.APPLE_CERTIFICATE }}
           p12-password: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
 
-      - name: Build, sign, and notarize desktop app
+      - name: Build desktop app with version-matched official Bun sidecar runtime
         env:
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-        run: bun run --filter '@takio/desktop' tauri build --bundles dmg -- --locked
+        shell: bash
+        run: |
+          export SDKROOT="$(xcrun --sdk macosx --show-sdk-path)"
+          export CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER=/usr/bin/clang
+          export TAKIO_BUN_COMPILE_EXECUTABLE="$(bun scripts/bootstrap-official-bun.ts)"
+          echo "Using official Bun compile executable: $TAKIO_BUN_COMPILE_EXECUTABLE"
+          if [[ -n "${APPLE_SIGNING_IDENTITY:-}" && -n "${APPLE_ID:-}" && -n "${APPLE_PASSWORD:-}" && -n "${APPLE_TEAM_ID:-}" ]]; then
+            echo "Apple signing and notarization credentials are present. Building distribution DMG."
+          else
+            echo "Apple signing and notarization credentials are absent. Building unsigned local DMG and skipping distribution-only gates truthfully."
+          fi
+          bun run --filter '@takio/desktop' tauri build --bundles dmg -- --locked
 
       - name: Verify distribution bundle
+        if: ${{ secrets.APPLE_SIGNING_IDENTITY != '' && secrets.APPLE_ID != '' && secrets.APPLE_PASSWORD != '' && secrets.APPLE_TEAM_ID != '' }}
         shell: bash
         run: |
           bash scripts/verify-macos-bundle.sh --distribution apps/desktop/src-tauri/target/release/bundle/macos/Takio.app
           xcrun stapler validate apps/desktop/src-tauri/target/release/bundle/dmg/*.dmg
+
+      - name: Verify local unsigned bundle
+        if: ${{ !(secrets.APPLE_SIGNING_IDENTITY != '' && secrets.APPLE_ID != '' && secrets.APPLE_PASSWORD != '' && secrets.APPLE_TEAM_ID != '') }}
+        shell: bash
+        run: |
+          bash scripts/verify-macos-bundle.sh apps/desktop/src-tauri/target/release/bundle/macos/Takio.app
+          echo "Skipped distribution signing, notarization, stapler, and Gatekeeper gates because Apple credentials were not provided."
 
       - name: Checksum notarized DMG
         shell: bash

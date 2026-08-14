@@ -26,6 +26,14 @@ SDKROOT="$(xcrun --sdk macosx --show-sdk-path)"
 repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repository_root"
 
+if [[ -z "${TAKIO_BUN_COMPILE_EXECUTABLE:-}" ]]; then
+  TAKIO_BUN_COMPILE_EXECUTABLE="$(bun scripts/bootstrap-official-bun.ts)"
+  export TAKIO_BUN_COMPILE_EXECUTABLE
+  echo "Using official version-matched Bun compile executable: $TAKIO_BUN_COMPILE_EXECUTABLE"
+else
+  echo "Using caller-provided Bun compile executable: $TAKIO_BUN_COMPILE_EXECUTABLE"
+fi
+
 bun run --filter '@takio/desktop' build:engine
 cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml -- --check
 cargo check --locked --manifest-path apps/desktop/src-tauri/Cargo.toml
