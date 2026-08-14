@@ -98,7 +98,11 @@ import {
   type KernelReport,
 } from "./kernel.js";
 import { JOB_STATUSES, JobStore, type ConversionJob, type JobStatus } from "./job-store.js";
-import { enrichImportedLibraryOutcomes } from "./library-import.js";
+import {
+  CalibreImportError,
+  enrichImportedLibraryOutcomes,
+  importCalibreLibrary,
+} from "./library-import.js";
 import {
   EMBEDDABLE_METADATA_FORMATS,
   MetadataError,
@@ -1927,6 +1931,25 @@ export function createProgram(
         }
       },
     );
+
+  storageCommand(library.command("import-calibre").helpOption(false), writeError)
+    .description("Import a Calibre library directory containing metadata.db without modifying it")
+    .option("--db <path>", "database path")
+    .requiredOption("--library-root <path>", "Calibre library directory containing metadata.db")
+    .action(async (options: { db?: string; libraryRoot: string }, command: Command) => {
+      const { store } = await openLibraryStore(options.db, command);
+      try {
+        const report = await importCalibreLibrary(store, options.libraryRoot);
+        write(JSON.stringify({ ok: true, value: report }));
+      } catch (error) {
+        if (error instanceof CalibreImportError) {
+          command.error("", { exitCode: 1, code: error.code });
+        }
+        command.error("", { exitCode: 1, code: "storage-unavailable" });
+      } finally {
+        store.close();
+      }
+    });
 
   storageCommand(library.command("import-watch").helpOption(false), writeError)
     .description("Rescan import roots in the foreground until stopped or cycle-bounded")

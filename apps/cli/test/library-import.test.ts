@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { Database } from "bun:sqlite";
 import type { LibraryItem } from "@takio/core";
 import type {
   LibraryImportEntryOutcome,
@@ -9,9 +10,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
+  importCalibreLibrary,
   enrichImportedLibraryOutcomes,
   type MetadataImportStore,
 } from "../src/library-import.js";
+import { BunSqliteLibraryStore } from "@takio/library-store-bun";
 
 const FAKE_BACKEND = join(import.meta.dir, "fixtures/fake-ebook-meta.ts");
 const ADDED_AT = "2026-07-20T12:00:00.000Z";
@@ -209,5 +212,88 @@ describe("library import metadata enrichment", () => {
     const undiscovered = await enrichImportedLibraryOutcomes(store, [coverOutcome]);
     expect(undiscovered[0]).toBe(coverOutcome);
     expect(calls).toHaveLength(3);
+  });
+});
+
+describe("Calibre library import", () => {
+  it("imports Calibre metadata, multiple formats, cover, and custom columns without writing to metadata.db", async () => {
+    const root = await temporaryRoot();
+    const dbPath = join(root, "metadata.db");
+    using calibre = new Database(dbPath, { create: true, strict: true });
+    calibre.exec(`
+      CREATE TABLE books (id INTEGER PRIMARY KEY, title TEXT NOT NULL, path TEXT NOT NULL, series_index REAL, pubdate TEXT);
+      CREATE TABLE authors (id INTEGER PRIMARY KEY, name TEXT, sort TEXT);
+      CREATE TABLE books_authors_link (id INTEGER PRIMARY KEY, book INTEGER, author INTEGER);
+      CREATE TABLE series (id INTEGER PRIMARY KEY, name TEXT);
+      CREATE TABLE books_series_link (id INTEGER PRIMARY KEY, book INTEGER, series INTEGER);
+      CREATE TABLE publishers (id INTEGER PRIMARY KEY, name TEXT);
+      CREATE TABLE books_publishers_link (id INTEGER PRIMARY KEY, book INTEGER, publisher INTEGER);
+      CREATE TABLE tags (id INTEGER PRIMARY KEY, name TEXT);
+      CREATE TABLE books_tags_link (id INTEGER PRIMARY KEY, book INTEGER, tag INTEGER);
+      CREATE TABLE languages (id INTEGER PRIMARY KEY, lang_code TEXT);
+      CREATE TABLE books_languages_link (id INTEGER PRIMARY KEY, book INTEGER, lang_code INTEGER, item_order INTEGER);
+      CREATE TABLE identifiers (id INTEGER PRIMARY KEY, book INTEGER, type TEXT, val TEXT);
+      CREATE TABLE comments (id INTEGER PRIMARY KEY, book INTEGER, text TEXT);
+      CREATE TABLE data (id INTEGER PRIMARY KEY, book INTEGER, format TEXT, name TEXT);
+      CREATE TABLE ratings (id INTEGER PRIMARY KEY, rating INTEGER);
+      CREATE TABLE books_ratings_link (id INTEGER PRIMARY KEY, book INTEGER, rating INTEGER);
+      CREATE TABLE custom_columns (id INTEGER PRIMARY KEY, name TEXT, label TEXT);
+      CREATE TABLE custom_column_1 (id INTEGER PRIMARY KEY, book INTEGER, value TEXT);
+      INSERT INTO books VALUES (1, 'Calibre Title', 'Author/Calibre Title (1)', 2.5, '2020-05-02 00:00:00+00:00');
+      INSERT INTO authors VALUES (1, 'Ada Lovelace', 'Lovelace, Ada');
+      INSERT INTO books_authors_link VALUES (1, 1, 1);
+      INSERT INTO series VALUES (1, 'Analytical Engines');
+      INSERT INTO books_series_link VALUES (1, 1, 1);
+      INSERT INTO publishers VALUES (1, 'First Publisher');
+      INSERT INTO books_publishers_link VALUES (1, 1, 1);
+      INSERT INTO tags VALUES (1, 'Math'), (2, 'Computing');
+      INSERT INTO books_tags_link VALUES (1, 1, 1), (2, 1, 2);
+      INSERT INTO languages VALUES (1, 'en');
+      INSERT INTO books_languages_link VALUES (1, 1, 1, 0);
+      INSERT INTO identifiers VALUES (1, 1, 'isbn', '9780000000001');
+      INSERT INTO comments VALUES (1, 1, 'Important description');
+      INSERT INTO data VALUES (1, 1, 'EPUB', 'Calibre Title - Ada'), (2, 1, 'PDF', 'Calibre Title - Ada');
+      INSERT INTO ratings VALUES (1, 4);
+      INSERT INTO books_ratings_link VALUES (1, 1, 1);
+      INSERT INTO custom_columns VALUES (1, 'custom_column_1', 'reading_state');
+      INSERT INTO custom_column_1 VALUES (1, 1, 'planned');
+    `);
+    calibre.close();
+    const bookDir = join(root, "Author/Calibre Title (1)");
+    await import("node:fs/promises").then(({ mkdir }) => mkdir(bookDir, { recursive: true }));
+    await writeFile(join(bookDir, "Calibre Title - Ada.epub"), "epub bytes");
+    await writeFile(join(bookDir, "Calibre Title - Ada.pdf"), "pdf bytes");
+    await writeFile(join(bookDir, "cover.jpg"), Buffer.from([0xff, 0xd8, 0xff, 0xd9]));
+    const before = await stat(dbPath);
+
+    const takioDb = join(root, "takio.sqlite");
+    const store = new BunSqliteLibraryStore(takioDb);
+    expect(await store.open({ config: {} })).toEqual({ ok: true, value: null });
+    const report = await importCalibreLibrary(store, root);
+    const listed = await store.list({});
+    const duplicateReport = await importCalibreLibrary(store, root);
+    store.close();
+
+    expect(report.counts).toEqual({ total: 1, imported: 1, skipped: 0, duplicates: 0, failed: 0 });
+    expect(duplicateReport.counts).toEqual({ total: 1, imported: 0, skipped: 0, duplicates: 1, failed: 0 });
+    expect(duplicateReport.outcomes[0]).toMatchObject({ status: "duplicate", reason: "existing-library" });
+    expect(listed).toMatchObject({ ok: true, value: [{
+      title: "Calibre Title",
+      authors: [{ name: "Ada Lovelace", sortName: "Lovelace, Ada" }],
+      series: "Analytical Engines",
+      seriesIndex: 2.5,
+      publisher: "First Publisher",
+      publishedDate: "2020-05-02",
+      rating: 8,
+      identifiers: { isbn: "9780000000001" },
+      languages: ["en"],
+      tags: ["Math", "Computing"],
+      description: "Important description",
+      customMetadata: { reading_state: "planned" },
+      formats: [{ format: "epub" }, { format: "pdf" }],
+    }] });
+    const after = await stat(dbPath);
+    expect(after.mtimeMs).toBe(before.mtimeMs);
+    expect(after.size).toBe(before.size);
   });
 });
