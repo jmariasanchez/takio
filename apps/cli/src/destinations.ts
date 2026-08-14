@@ -8,7 +8,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { constants, createReadStream, createWriteStream } from "node:fs";
 import {
   access,
-  link,
+  copyFile,
   lstat,
   mkdir,
   open,
@@ -283,12 +283,21 @@ export async function sendToDestination({
       await rename(partialPath, finalPath);
     } else {
       try {
-        await link(partialPath, finalPath);
+        await copyFile(partialPath, finalPath, constants.COPYFILE_EXCL);
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code === "EEXIST") {
           throw new DestinationTransferError("destination-file-exists");
         }
         throw error;
+      }
+      await syncFile(finalPath);
+      const publishedHash = await hashFile(finalPath);
+      if (
+        publishedHash.bytes !== sourceBytes ||
+        publishedHash.sha256 !== sourceSha256
+      ) {
+        await rm(finalPath, { force: true }).catch(() => {});
+        throw new DestinationTransferError("verification-failed");
       }
       await rm(partialPath, { force: true }).catch(() => {});
     }
