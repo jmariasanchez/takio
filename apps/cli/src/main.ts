@@ -98,6 +98,7 @@ import {
   type KernelReport,
 } from "./kernel.js";
 import { JOB_STATUSES, JobStore, type ConversionJob, type JobStatus } from "./job-store.js";
+import { sendToKindleSsh, type KindleSshRunner } from "./kindle-ssh.js";
 import {
   CalibreImportError,
   enrichImportedLibraryOutcomes,
@@ -444,6 +445,7 @@ export function createProgram(
     ok: false,
     code: "backend-unavailable",
   },
+  kindleSshRunner?: KindleSshRunner,
 ): Command {
   const program = storageCommand(new Command(), writeError);
   const localCapabilities = conversionBackend.ok
@@ -573,6 +575,20 @@ export function createProgram(
             mode: "foreground-read-only",
             authentication: "per-run-bearer-token",
             remoteTransport: "tls-required",
+          },
+          transports: {
+            usbMassStorage: { available: true, mode: "mounted-filesystem" },
+            rootedKindleSsh: {
+              available: true,
+              gated: true,
+              optInRequired: true,
+              command: "takio destination rooted-kindle-send",
+              binaries: ["ssh", "scp"],
+              passwordHandling: false,
+              hostKeyCheckingDefault: "strict",
+            },
+            mtp: { available: false, gated: true, code: "unsupported-transport" },
+            sendToKindle: { available: false, gated: true, code: "unsupported-transport" },
           },
         },
       }));
@@ -1389,6 +1405,63 @@ export function createProgram(
   const destination = storageCommand(new Command("destination"), writeError)
     .description("Manage mounted document destinations");
   program.addCommand(destination);
+
+  storageCommand(destination.command("rooted-kindle-send").helpOption(false), writeError)
+    .description("Opt-in upload to a rooted Kindle over SSH/SCP for KOReader paths")
+    .requiredOption("--source <path>", "local file to upload")
+    .requiredOption("--id <id>", "library or caller item ID")
+    .requiredOption("--host <host>", "Kindle SSH host; no passwords are handled")
+    .requiredOption("--user <user>", "Kindle SSH user")
+    .requiredOption("--remote-root <path>", "absolute /mnt/us/.../documents or KOReader directory")
+    .option("--port <port>", "SSH port", "22")
+    .option("--identity-file <path>", "absolute private key path")
+    .option("--file-name <name>", "published remote file name")
+    .option("--timeout-ms <milliseconds>", "bounded per-command timeout", "30000")
+    .option("--accept-new-host-key", "allow OpenSSH accept-new instead of strict known-host matching")
+    .action(async (
+      options: {
+        source: string;
+        id: string;
+        host: string;
+        user: string;
+        remoteRoot: string;
+        port: string;
+        identityFile?: string;
+        fileName?: string;
+        timeoutMs: string;
+        acceptNewHostKey?: boolean;
+      },
+      command: Command,
+    ) => {
+      const port = Number(options.port);
+      const timeoutMs = Number(options.timeoutMs);
+      if (options.id.trim() === "" || !Number.isSafeInteger(port) || !Number.isSafeInteger(timeoutMs)) {
+        command.error("", { exitCode: 1, code: "invalid-arguments" });
+      }
+      try {
+        const result = await sendToKindleSsh({
+          itemId: options.id,
+          sourcePath: options.source,
+          fileName: options.fileName,
+          destination: {
+            host: options.host,
+            user: options.user,
+            port,
+            remoteRoot: options.remoteRoot,
+            identityFile: options.identityFile,
+            strictHostKeyChecking: !options.acceptNewHostKey,
+            timeoutMs,
+          },
+          runner: kindleSshRunner,
+        });
+        write(JSON.stringify({ ok: true, value: result }));
+      } catch (error) {
+        if (error instanceof DestinationTransferError) {
+          command.error("", { exitCode: 1, code: error.code });
+        }
+        throw error;
+      }
+    });
 
   storageCommand(destination.command("list").helpOption(false), writeError)
     .option("--volumes-root <path>", "mounted-volume root", "/Volumes")

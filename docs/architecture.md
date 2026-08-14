@@ -17,11 +17,12 @@ Takio replaces the heavyweight, application-centric Calibre workflow with a focu
 | `@takio/desktop` | Tauri v2 native shell and minimalist React interface | Implemented: library, destinations, and conversion queue |
 | Converter adapters | Declare supported pairs and invoke a real engine safely | Implemented: local `ebook-convert`, six synchronous conversion pairs and four output profiles |
 | Controller/queue | Persist local jobs and run one foreground job at a time | Implemented: separate `jobs.sqlite` queue |
-| Destination transfer | Detect mounted USB mass-storage recipients and copy verified library files | Implemented: macOS |
+| Destination transfer | Detect mounted USB mass-storage recipients and copy verified library files; optionally upload to a caller-specified rooted Kindle SSH target | Implemented: macOS USB mass storage plus gated rooted Kindle SSH/SCP |
+| Unsupported device transports | MTP and Amazon Send-to-Kindle integrations | Explicitly unavailable and gated in capability reporting |
 | Content server | Foreground authenticated read-only catalog and attached-format delivery | Implemented: loopback HTTP or explicit remote TLS |
 | Device agent | Authenticated worker that advertises adapters and capacity | Planned |
 
-A `Destination` is a passive mounted recipient volume, distinct from the planned device agent that will act as an authenticated remote execution worker.
+A `Destination` is a passive mounted recipient volume, distinct from the planned device agent that will act as an authenticated remote execution worker. Rooted Kindle SSH/SCP is deliberately modeled as a gated transport command, not as discovery: it never contacts a host unless the caller supplies host, user, port, remote root, and optional key for that invocation.
 
 The unnamed library keeps the original data layout. A global validated
 `--library <name>` selector resolves to `libraries/<name>/library.sqlite` under
@@ -66,8 +67,15 @@ Bulk export also accepts the closed `title` and `author-title` filename presets;
 both remain flat, sanitized, collision-suffixed, and non-overwriting.
 `send-many` reuses the same verified transfer one item at a time for up to 256
 distinct IDs and reports every outcome in caller order; it does not implicitly
-convert missing formats. `library update-many` applies one validated patch with
-the same bound and accounting.
+convert missing formats. `destination rooted-kindle-send` is an explicit SSH/SCP
+escape hatch for rooted Kindles, suitable for KOReader directories under
+`/mnt/us/...`. It validates host/user/port/key/path input, disables password
+authentication, uses strict host-key checking unless the caller opts into
+OpenSSH `accept-new`, runs only system `ssh` and `scp` argv arrays with bounded
+timeouts, uploads to a private `.takio-partial-*` remote name, verifies remote
+SHA-256 when `sha256sum` exists or size otherwise, and publishes by non-overwrite
+hard-link before removing the partial. USB mass storage remains unchanged.
+`library update-many` applies one validated patch with the same bound and accounting.
 
 `library verify` opens `library.sqlite` read-only with SQLite query-only mode.
 It refuses unsupported schemas rather than migrating them, then reuses the
@@ -128,11 +136,11 @@ This handoff adds no built-in ebook reader or viewer. Opening books continues to
 
 - Every command has a narrow, documented contract.
 - Every success and failure has a one-line machine envelope with a stable error code; discovery commands retain readable output unless `--json` is requested.
-- `capabilities` reports the protocol version, structured-input limits, schema, backup, portable and catalog versions, exact conversion pairs, remote policy, and live backend availability without requiring agents to scrape help text.
+- `capabilities` reports the protocol version, structured-input limits, schema, backup, portable and catalog versions, exact conversion pairs, remote policy, live backend availability, available gated rooted-Kindle SSH/SCP transport, and explicitly unavailable gated MTP and Send-to-Kindle transports without requiring agents to scrape help text.
 - Structured requests accept bounded inline JSON, stdin with `-`, or a file with `@path`.
 - Commands must return non-zero for invalid requests and never claim a conversion completed before an adapter reports success.
 - Diagnostic commands are read-only: `library verify` never creates, migrates, or repairs a library.
-- `convert` is the synchronous queue-bypassing primitive; `send --format ... --convert` composes conversion, attachment, and verified delivery; `jobs enqueue|list|get|cancel|retry|run-next` are the durable foreground primitives. Remote-device commands remain planned.
+- `convert` is the synchronous queue-bypassing primitive; `send --format ... --convert` composes conversion, attachment, and verified USB mass-storage delivery; `destination rooted-kindle-send` is an explicit, separately configured rooted-Kindle SSH/SCP upload; `jobs enqueue|list|get|cancel|retry|run-next` are the durable foreground primitives. Remote-device agent commands remain planned.
 
 ## Focused v1 boundary
 

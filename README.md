@@ -6,7 +6,11 @@ while using Calibre's proven command-line tools for conversion.
 
 Takio is intended to replace operating Calibre directly for focused library
 workflows, not to reimplement Calibre's reader, editor, conversion engine, or
-plugin ecosystem. Its optional content server is a narrow read-only delivery
+plugin ecosystem. USB mass-storage delivery remains the default hardware path.
+Rooted Kindle SSH/SCP delivery is available only through an explicit per-command
+opt-in with host/user/key/path validation and no password handling. MTP and
+Amazon Send-to-Kindle are reported as unavailable gated transports rather than
+claimed as supported. Its optional content server is a narrow read-only delivery
 surface rather than a browser reader.
 
 It is a Bun monorepo with two deliberate product surfaces:
@@ -60,6 +64,8 @@ bun run takio library catalog --format html --output ~/Exports/takio-catalog.htm
 bun run takio plan --input ~/Books/example.epub --to pdf --json
 bun run takio polish --input ~/Books/example.epub --output ~/Books/example-polished.epub --operation remove-unused-css
 bun run takio send --id <book-id> --format azw3 --convert --dest /Volumes/Kindle
+# Explicit opt-in only. Do not run without your own rooted Kindle host/config.
+bun run takio destination rooted-kindle-send --source ~/Books/example.epub --id <book-id> --host kindle.local --user root --remote-root /mnt/us/documents/koreader --identity-file ~/.ssh/kindle_key
 bun run takio serve
 
 # Native desktop app
@@ -155,7 +161,7 @@ The command surface is grouped by workflow:
 | `takio convert` | Run any advertised conversion pair synchronously. |
 | `takio polish` | Publish a new same-format EPUB, KEPUB, or AZW3 artifact with explicitly selected Calibre `ebook-polish` operations. |
 | `takio jobs enqueue`, `list`, `get`, `cancel`, `retry`, `retry-attachment`, `run-next`, `drain` | Manage and boundedly drain the durable foreground conversion queue. |
-| `takio destination list`, `eject` | Discover and safely eject mounted macOS volumes. |
+| `takio destination list`, `eject`, `rooted-kindle-send` | Discover and safely eject mounted macOS volumes; optionally upload one caller-supplied file to a rooted Kindle over SSH/SCP when explicit host configuration is provided. |
 | `takio send`, `send-many` | Materialize, copy, and verify one format; `send --convert` can select a tested device format, while batch delivery sends an attached exact format for up to 256 distinct items. |
 | `takio serve` | Run a foreground authenticated, read-only catalog and format-download API. |
 
@@ -200,6 +206,20 @@ that choice. Conversions use the corresponding Calibre output profile and KEPUB
 delivery uses Kobo's `.kepub.epub` filename. A later send reuses an attached
 format without requiring the conversion backend. Physical Kobo and Kindle
 open/remount acceptance is still required before claiming hardware support.
+Physical Kobo and Kindle USB mass-storage delivery remains unchanged: Takio
+copies to the mounted filesystem through a private partial file, verifies bytes
+and SHA-256, and refuses collisions unless an explicit overwrite option is used.
+`destination rooted-kindle-send` is separate from USB send. It requires explicit
+`--host`, `--user`, `--remote-root`, and optional absolute `--identity-file`, uses
+system `ssh` and `scp` as argv arrays with `BatchMode=yes`, password auth disabled,
+strict host-key checking by default, bounded per-command timeouts, private remote
+partial names, remote size or SHA-256 verification, and non-overwrite publication.
+The remote root must be an absolute `/mnt/us/...` KOReader or documents path.
+Takio does not discover or contact rooted Kindles unless this command is invoked
+with caller-supplied connection details. `takio capabilities` advertises this as
+available but gated and reports MTP and Amazon Send-to-Kindle as unavailable gated
+transports.
+
 For KEPUB, EPUB, PDF, MOBI, AZW3, and DOCX delivery copies, a discovered `ebook-meta`
 backend writes the current title, authors, structured metadata, identifiers,
 tags, and owned cover before the copy is reported complete. Sources are never
