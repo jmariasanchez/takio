@@ -136,6 +136,7 @@ The command surface is grouped by workflow:
 | `takio formats`, `devices`, `plan` | Inspect known formats and execution targets, or validate a conversion request. |
 | `takio metadata extract` | Read normalized embedded metadata and cover facts without mutating the source or library. |
 | `takio metadata fetch` | Fetch a reviewable online metadata candidate and optionally publish a cover to a new file. |
+| `takio metadata candidates filename`, `item`, `apply` | Parse filename candidates, collect candidates for one existing item, then explicitly apply a selected candidate or patch with provenance. |
 | `takio library verify` | Audit database structure and every managed format fingerprint without creating, migrating, or repairing the library. |
 | `takio library backup`, `restore-backup` | Create and restore verified, non-overwriting snapshots of the catalogue and Takio-owned files. |
 | `takio library portable-export`, `rebuild` | Export active books as verified OPF directories and reconstruct them into a new self-contained library. |
@@ -174,6 +175,17 @@ The caller chooses and owns the output path. Takio refuses to overwrite an exist
 `value.metadata`, apply it with `library update --patch-json`, then use
 `library cover set` if a requested `--cover-output` was returned. Cover output
 is exclusive and never overwrites an existing path.
+
+`metadata candidates filename --source-path <path>` emits schema version 1
+candidate objects from bounded built-in patterns plus any repeated `--pattern`
+regular expressions with named groups such as `title`, `author`, `series`, and
+`seriesIndex`. `metadata candidates item --id <id> [--include-online]` opens an
+existing library item, combines filename and embedded candidates, and optionally
+adds a Calibre online lookup. Both commands are review-only. To mutate the
+library, call `metadata candidates apply --id <id>` with exactly one of
+`--candidate-json` or `--patch-json` and a non-empty `--provenance` note. Takio
+then applies only that explicit patch through the normal library update API and
+returns the applied source/provenance in the JSON envelope.
 
 `library import-watch` is foreground-only, rescans the same validated roots,
 and reuses the normal import and best-effort metadata-enrichment path. Stop it

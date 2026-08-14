@@ -114,6 +114,12 @@ import {
   type EbookMetaDiscovery,
 } from "./metadata.js";
 import {
+  candidateFromPatch,
+  parseFilenameMetadataCandidates,
+  parseMetadataCandidateJson,
+  type MetadataCandidate,
+} from "./metadata-automation.js";
+import {
   PORTABLE_LIBRARY_VERSION,
   exportPortableLibrary,
   rebuildPortableLibrary,
@@ -914,6 +920,140 @@ export function createProgram(
         }
       },
     );
+
+  const metadataAutomation = storageCommand(metadata.command("candidates").helpOption(false), writeError)
+    .description("Review bounded metadata candidates without changing the library");
+
+  storageCommand(metadataAutomation.command("filename").helpOption(false), writeError)
+    .description("Parse filename metadata candidates using configurable named-group regex patterns")
+    .requiredOption("--source-path <path>", "ebook source path or filename")
+    .option("--id <id>", "library item ID for provenance")
+    .option(
+      "--pattern <regex>",
+      "extra ECMAScript regex with named groups title, author, series, seriesIndex",
+      (pattern: string, patterns: string[]) => [...patterns, pattern],
+      [],
+    )
+    .action((options: { sourcePath: string; id?: string; pattern: string[] }, command: Command) => {
+      try {
+        const candidates = parseFilenameMetadataCandidates({
+          sourcePath: options.sourcePath,
+          itemId: options.id,
+          patterns: options.pattern,
+          generatedAt: new Date(0).toISOString(),
+        });
+        write(JSON.stringify({ ok: true, value: { candidates } }));
+      } catch {
+        command.error("", { exitCode: 1, code: "invalid-arguments" });
+      }
+    });
+
+  storageCommand(metadataAutomation.command("item").helpOption(false), writeError)
+    .description("Fetch filename, embedded, and online candidates for one existing library item")
+    .option("--db <path>", "database path")
+    .requiredOption("--id <id>", "library item ID")
+    .option("--include-online", "also run fetch-ebook-metadata")
+    .option("--timeout-seconds <seconds>", "per-backend timeout", "30")
+    .action(async (options: { db?: string; id: string; includeOnline?: boolean; timeoutSeconds: string }, command: Command) => {
+      const timeoutSeconds = Number(options.timeoutSeconds);
+      if (options.id.trim() === "" || !Number.isSafeInteger(timeoutSeconds) || timeoutSeconds <= 0) {
+        command.error("", { exitCode: 1, code: "invalid-arguments" });
+      }
+      const { store } = await openLibraryStore(options.db, command);
+      try {
+        const found = await store.get({ id: options.id });
+        if (!found.ok) command.error("", { exitCode: 1, code: found.error.code });
+        if (!found.value) command.error("", { exitCode: 1, code: "item-not-found" });
+        const item = found.value!;
+        const generatedAt = new Date(0).toISOString();
+        const candidates: MetadataCandidate[] = [
+          ...parseFilenameMetadataCandidates({ sourcePath: item.sourcePath, itemId: item.id, generatedAt }),
+        ];
+        if (metadataBackend.ok) {
+          try {
+            const extracted = await extractEbookMetadata({
+              backendPath: metadataBackend.path,
+              sourcePath: item.sourcePath,
+              timeoutMs: timeoutSeconds * 1000,
+            });
+            const candidate = candidateFromPatch({
+              id: "embedded:1",
+              source: "embedded",
+              confidence: "high",
+              patch: extracted.metadata,
+              provenance: { generatedAt, itemId: item.id, sourcePath: extracted.sourcePath, backend: "ebook-meta" },
+            });
+            if (candidate) candidates.push(candidate);
+          } catch {
+            // Candidate collection is non-destructive: unavailable embedded metadata is reported by omission.
+          }
+        }
+        if (options.includeOnline) {
+          const backend = await discoverFetchEbookMetadata();
+          if (backend.ok) {
+            try {
+              const fetched = await fetchOnlineMetadata({
+                backendPath: backend.path,
+                title: item.title,
+                authors: item.authors?.map(({ name }) => name) ?? (item.author ? [item.author] : []),
+                identifiers: item.identifiers,
+                timeoutMs: timeoutSeconds * 1000,
+              });
+              const candidate = candidateFromPatch({
+                id: "online:1",
+                source: "online",
+                confidence: "medium",
+                patch: fetched.metadata,
+                provenance: { generatedAt, itemId: item.id, backend: "fetch-ebook-metadata" },
+              });
+              if (candidate) candidates.push(candidate);
+            } catch {
+              // Online candidate failures do not mutate or fail the review workflow.
+            }
+          }
+        }
+        write(JSON.stringify({ ok: true, value: { itemId: item.id, candidates: candidates.slice(0, 8) } }));
+      } finally {
+        store.close();
+      }
+    });
+
+  storageCommand(metadataAutomation.command("apply").helpOption(false), writeError)
+    .description("Explicitly apply a selected candidate or patch with provenance")
+    .option("--db <path>", "database path")
+    .requiredOption("--id <id>", "library item ID")
+    .option("--candidate-json <json>", `metadata candidate as ${JSON_INPUT_HINT}`)
+    .option("--patch-json <json>", `manual metadata patch as ${JSON_INPUT_HINT}`)
+    .requiredOption("--provenance <text>", "human-readable provenance/review note")
+    .action(async (options: { db?: string; id: string; candidateJson?: string; patchJson?: string; provenance: string }, command: Command) => {
+      if (options.id.trim() === "" || options.provenance.trim() === "" || (options.candidateJson === undefined) === (options.patchJson === undefined)) {
+        command.error("", { exitCode: 1, code: "invalid-arguments" });
+      }
+      let patch: LibraryMetadataPatch;
+      let candidate: MetadataCandidate | null = null;
+      try {
+        if (options.candidateJson !== undefined) {
+          candidate = parseMetadataCandidateJson(options.candidateJson);
+          if (!candidate) command.error("", { exitCode: 1, code: "invalid-arguments" });
+          patch = candidate!.patch;
+        } else {
+          patch = await parseLibraryJsonRequest<LibraryMetadataPatch>(options.patchJson!, libraryMetadataPatchSchema, command);
+        }
+      } catch (error) {
+        if (error instanceof CommanderError) throw error;
+        command.error("", { exitCode: 1, code: "invalid-arguments" });
+        throw error;
+      }
+      const { store } = await openLibraryStore(options.db, command);
+      try {
+        const result = await store.update({ id: options.id, patch });
+        if (!result.ok) command.error("", { exitCode: 1, code: result.error.code });
+        if (!result.value) command.error("", { exitCode: 1, code: "item-not-found" });
+        write(JSON.stringify({ ok: true, value: { item: result.value, applied: { candidateId: candidate?.id ?? null, source: candidate?.source ?? "manual", provenance: options.provenance } } }));
+      } finally {
+        store.close();
+      }
+    });
 
   const jobs = storageCommand(new Command("jobs"), writeError)
     .description("Manage durable foreground conversion jobs");
