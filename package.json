@@ -2,6 +2,7 @@
   "name": "takio",
   "version": "0.1.0",
   "private": true,
+  "license": "MIT",
   "description": "A lightweight, modern desktop and CLI alternative to Calibre",
   "packageManager": "bun@1.3.13",
   "engines": {

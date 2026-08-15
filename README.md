@@ -13,6 +13,11 @@ Amazon Send-to-Kindle are reported as unavailable gated transports rather than
 claimed as supported. Its optional content server is a narrow read-only delivery
 surface rather than a browser reader.
 
+Takio is MIT licensed. Native transformation code is implemented independently
+from public format specifications, interoperability tests, and observed file
+behavior. Calibre is used only through its public command-line interface; GPL
+source code is not copied, translated, or incorporated into Takio.
+
 It is a Bun monorepo with two deliberate product surfaces:
 
 - **Desktop (`@takio/desktop`)** — a native Tauri application for people who want a calm, local-first library and conversion workspace.
