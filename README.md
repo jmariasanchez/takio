@@ -35,8 +35,9 @@ them after a verified copy. Export and send materialize the current catalogue
 metadata and owned cover into supported delivery formats without changing the
 stored or caller-owned source.
 
-Conversion currently supports EPUB-to-KEPUB, EPUB-to-PDF, EPUB-to-AZW3, and
-DOCX, HTML, or TXT to EPUB through a discovered Calibre `ebook-convert` backend. It can run
+Conversion currently supports EPUB-to-KEPUB through Takio's native MIT-licensed
+transformer. EPUB-to-PDF, EPUB-to-AZW3, and DOCX, HTML, or TXT to EPUB use a
+discovered Calibre `ebook-convert` backend. Conversion can run
 immediately or through a durable local queue, but always runs in the foreground.
 Each stored format is recorded as either a Takio-managed copy or a reference to
 a caller-owned file.
@@ -45,7 +46,7 @@ a caller-owned file.
 
 - [Bun](https://bun.sh/) 1.3+ for development and source execution
 - Rust/Cargo plus Xcode Command Line Tools for Tauri desktop builds
-- [Calibre](https://calibre-ebook.com/download_osx) 9.9.0 or newer (the verified compatibility baseline) for embedded and online metadata, delivery materialization, and ebook conversion
+- [Calibre](https://calibre-ebook.com/download_osx) 9.9.0 or newer (optional for native EPUB-to-KEPUB; required for embedded and online metadata, delivery materialization, and the remaining ebook conversions)
 
 ## Quick start
 

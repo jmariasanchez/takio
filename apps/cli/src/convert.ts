@@ -26,13 +26,21 @@ import { basename, dirname, join, resolve } from "node:path";
 const MAX_ARTIFACT_BYTES = 4 * 1024 ** 3;
 const MACOS_BUNDLE_BINARY = "/Applications/calibre.app/Contents/MacOS/ebook-convert";
 
-export const LOCAL_CONVERSION_CAPABILITIES: readonly ConversionCapability[] = [
+export const NATIVE_CONVERSION_CAPABILITIES: readonly ConversionCapability[] = [
   { from: "epub", to: "kepub" },
+];
+
+export const CALIBRE_CONVERSION_CAPABILITIES: readonly ConversionCapability[] = [
   { from: "epub", to: "pdf" },
   { from: "epub", to: "azw3" },
   { from: "docx", to: "epub" },
   { from: "html", to: "epub" },
   { from: "txt", to: "epub" },
+];
+
+export const LOCAL_CONVERSION_CAPABILITIES: readonly ConversionCapability[] = [
+  ...NATIVE_CONVERSION_CAPABILITIES,
+  ...CALIBRE_CONVERSION_CAPABILITIES,
 ];
 
 const CONVERSION_ERROR_CODES = [
@@ -114,7 +122,7 @@ export async function discoverEbookConvert(
 }
 
 type ConvertLocalOptions = {
-  readonly backendPath: string;
+  readonly backendPath?: string;
   readonly input: string;
   readonly output: string;
   readonly outputFormat: string;
@@ -130,7 +138,7 @@ type ConversionArtifact = {
 
 type CompletedConversionJob = {
   readonly id: string;
-  readonly backend: "ebook-convert";
+  readonly backend: "ebook-convert" | "takio-epub";
   readonly inputFormat: FormatId;
   readonly outputFormat: FormatId;
   readonly profileId: ConversionProfileId;
@@ -258,6 +266,14 @@ function childEnvironment(workspace: string): Record<string, string> {
   return environment;
 }
 
+function nativeKepubCommand(input: string, output: string): string[] {
+  const executable = process.execPath;
+  const entrypoint = process.argv[1];
+  return /(?:^|\/)bun(?:\.exe)?$/i.test(executable) && entrypoint
+    ? [executable, entrypoint, "__native-kepub", input, output]
+    : [executable, "__native-kepub", input, output];
+}
+
 async function syncDirectory(path: string): Promise<void> {
   const directory = await open(path, "r");
   try {
@@ -371,11 +387,12 @@ export async function convertLocal({
   }
 
   const plan = validatedPlan(input, outputFormat, profileId);
+  const nativeKepub = plan.inputFormat === "epub" && plan.outputFormat === "kepub";
   const [canonicalBackendPath, canonicalInput] = await Promise.all([
-    executable(backendPath),
+    backendPath ? executable(backendPath) : Promise.resolve(null),
     sourceFile(input),
   ]);
-  if (!canonicalBackendPath) {
+  if (!nativeKepub && !canonicalBackendPath) {
     throw new ConversionError("backend-unavailable");
   }
   const finalPath = await outputFile(output, plan.outputFormat);
@@ -411,25 +428,37 @@ export async function convertLocal({
       throw new ConversionError("conversion-cancelled");
     }
 
-    try {
-      child = Bun.spawn([
-        canonicalBackendPath,
-        canonicalInput,
-        artifactPath,
-        ...(profileId === "default" ? [] : ["--output-profile", profileId]),
-      ], {
-        cwd: workspace,
-        env: childEnvironment(workspace),
-        stdin: "ignore",
-        stdout: "ignore",
-        stderr: "ignore",
-      });
-    } catch {
-      throw new ConversionError("backend-unavailable");
+    if (nativeKepub) {
+      try {
+        child = Bun.spawn(nativeKepubCommand(canonicalInput, artifactPath), {
+          cwd: workspace,
+          env: childEnvironment(workspace),
+          stdin: "ignore",
+          stdout: "ignore",
+          stderr: "ignore",
+        });
+      } catch {
+        throw new ConversionError("backend-unavailable");
+      }
+    } else {
+      try {
+        child = Bun.spawn([
+          canonicalBackendPath!,
+          canonicalInput,
+          artifactPath,
+          ...(profileId === "default" ? [] : ["--output-profile", profileId]),
+        ], {
+          cwd: workspace,
+          env: childEnvironment(workspace),
+          stdin: "ignore",
+          stdout: "ignore",
+          stderr: "ignore",
+        });
+      } catch {
+        throw new ConversionError("backend-unavailable");
+      }
     }
-    if (cancelled) {
-      killChild();
-    }
+    if (cancelled) killChild();
 
     const timer = setTimeout(() => {
       timedOut = true;
@@ -438,6 +467,9 @@ export async function convertLocal({
     timer.unref();
     const exitCode = await child.exited;
     clearTimeout(timer);
+    if (!cancelled && !timedOut && exitCode !== 0) {
+      throw new ConversionError("conversion-failed");
+    }
 
     if (cancelled) {
       throw new ConversionError("conversion-cancelled");
@@ -445,10 +477,6 @@ export async function convertLocal({
     if (timedOut) {
       throw new ConversionError("conversion-timeout");
     }
-    if (exitCode !== 0) {
-      throw new ConversionError("conversion-failed");
-    }
-
     partialPath = `${finalPath}.tmp-${crypto.randomUUID()}`;
     try {
       const verified = await copyArtifact(artifactPath, partialPath);
@@ -467,7 +495,7 @@ export async function convertLocal({
       await syncDirectory(dirname(finalPath)).catch(() => {});
       return {
         id: plan.id,
-        backend: "ebook-convert",
+        backend: nativeKepub ? "takio-epub" : "ebook-convert",
         inputFormat: plan.inputFormat,
         outputFormat: plan.outputFormat,
         profileId,

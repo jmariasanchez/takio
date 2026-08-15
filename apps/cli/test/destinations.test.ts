@@ -14,6 +14,7 @@ import {
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { CommanderError } from "commander";
+import { strToU8, zipSync } from "fflate";
 
 import { destinationTestSeam } from "../src/destination-test-seam.js";
 import { ejectDestination, listDestinations } from "../src/destinations.js";
@@ -26,6 +27,19 @@ const FAKE_METADATA_BACKEND = {
   path: join(import.meta.dir, "fixtures/fake-ebook-meta.ts"),
 } as const satisfies EbookMetaDiscovery;
 const temporaryRoots = new Set<string>();
+
+function validEpub(): Uint8Array {
+  return zipSync({
+    mimetype: [strToU8("application/epub+zip"), { level: 0 }],
+    "META-INF/container.xml": strToU8(
+      '<container><rootfiles><rootfile full-path="book.opf"/></rootfiles></container>',
+    ),
+    "book.opf": strToU8(
+      '<package><manifest><item id="c" href="chapter.xhtml" media-type="application/xhtml+xml"/></manifest><spine><itemref idref="c"/></spine></package>',
+    ),
+    "chapter.xhtml": strToU8("<html><body><p>Kobo transfer.</p></body></html>"),
+  });
+}
 
 async function temporaryRoot(): Promise<string> {
   const root = await mkdtemp(join(tmpdir(), "takio-destinations-"));
@@ -727,6 +741,7 @@ describe("mounted destinations", () => {
 
   test("uses Kobo's canonical compound filename for an explicit KEPUB conversion", async () => {
     const fixture = await transferFixture();
+    await writeFile(fixture.sourcePath, validEpub());
     const converted = await invokeProcess([
       "send",
       "--db",

@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "bun:test";
 import { chmod, mkdtemp, readFile, readdir, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
+import { strFromU8, strToU8, unzipSync, zipSync } from "fflate";
 import { discoverEbookConvert, LOCAL_CONVERSION_CAPABILITIES } from "../src/convert.js";
 
 const CLI = join(import.meta.dir, "../src/main.ts");
@@ -10,6 +11,19 @@ const roots: string[] = [];
 
 function fakeInput(control: Record<string, string> = {}): string {
   return JSON.stringify({ fakeEbookConvert: control });
+}
+
+function epubInput(): Uint8Array {
+  return zipSync({
+    mimetype: [strToU8("application/epub+zip"), { level: 0 }],
+    "META-INF/container.xml": strToU8(
+      '<container><rootfiles><rootfile full-path="book.opf"/></rootfiles></container>',
+    ),
+    "book.opf": strToU8(
+      '<package><manifest><item id="c" href="chapter.xhtml" media-type="application/xhtml+xml"/></manifest><spine><itemref idref="c"/></spine></package>',
+    ),
+    "chapter.xhtml": strToU8("<html><body><p>Native conversion works.</p></body></html>"),
+  });
 }
 
 async function temporaryRoot(): Promise<string> {
@@ -137,7 +151,8 @@ describe("takio convert", () => {
       const root = await temporaryRoot();
       const input = join(root, `book.${capability.from}`);
       const output = join(root, `book.${capability.to}`);
-      await writeFile(input, fakeInput());
+      const nativeKepub = capability.from === "epub" && capability.to === "kepub";
+      await writeFile(input, nativeKepub ? epubInput() : fakeInput());
 
       const result = await runConvert([
         "--input", input,
@@ -156,22 +171,47 @@ describe("takio convert", () => {
           },
         },
       });
-      expect(await readFile(output), `${capability.from}→${capability.to}`).toEqual(
-        Buffer.from(fakeInput()),
-      );
+      if (nativeKepub) {
+        const chapter = strFromU8(unzipSync(await readFile(output))["chapter.xhtml"]!);
+        expect(chapter).toContain('class="koboSpan"');
+      } else {
+        expect(await readFile(output), `${capability.from}→${capability.to}`).toEqual(
+          Buffer.from(fakeInput()),
+        );
+      }
     }
+  });
+
+  it("converts EPUB to KEPUB without a Calibre executable", async () => {
+    const root = await temporaryRoot();
+    const input = join(root, "native.epub");
+    const output = join(root, "native.kepub.epub");
+    await writeFile(input, epubInput());
+
+    const result = await runConvert(
+      ["--input", input, "--to", "kepub", "--output", output],
+      { TAKIO_EBOOK_CONVERT: "" },
+    );
+    expect(result.exitCode).toBe(0);
+    expect(record(result)).toMatchObject({
+      ok: true,
+      value: { job: { backend: "takio-epub", inputFormat: "epub", outputFormat: "kepub" } },
+    });
+    expect(strFromU8(unzipSync(await readFile(output))["chapter.xhtml"]!)).toContain(
+      'class="koboSpan"',
+    );
   });
 
   it("converts with literal canonical argv and reports verified bytes and digest", async () => {
     const root = await temporaryRoot();
     const input = join(root, "- input;$(touch nope).epub");
-    const output = join(root, "- output;still-literal.kepub.epub");
+    const output = join(root, "- output;still-literal.pdf");
     const invocation = join(root, "invocation.json");
     const bytes = Buffer.from(fakeInput({ record: invocation }));
     await writeFile(input, bytes);
 
     const result = await runConvert(
-      ["--input", input, "--to", "kepub", "--output", output, "--profile", "kobo"],
+      ["--input", input, "--to", "pdf", "--output", output, "--profile", "kobo"],
       {
         TAKIO_TEST_SECRET: "must-not-reach-backend",
         CI_SECRET: "must-not-reach-backend",
@@ -193,7 +233,7 @@ describe("takio convert", () => {
 
     const observed = JSON.parse(await readFile(invocation, "utf8"));
     expect(observed.argv[0]).toBe(await realpath(input));
-    expect(basename(observed.argv[1])).toBe("output.kepub");
+    expect(basename(observed.argv[1])).toBe("output.pdf");
     expect(observed.argv.slice(2)).toEqual(["--output-profile", "kobo"]);
     expect(observed.argv[1]).not.toContain(input);
     expect(observed.tmpdir).toBe(observed.tmp);

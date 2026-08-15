@@ -243,7 +243,7 @@ describe("takio CLI", () => {
     expect(await invoke(["devices"])).toEqual({
       output: [
         "ID     STATUS  NAME      CONVERSIONS",
-        "local  online  This Mac  (none)",
+        "local  online  This Mac  epub→kepub",
       ],
     });
 

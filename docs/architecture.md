@@ -15,7 +15,7 @@ Takio replaces the heavyweight, application-centric Calibre workflow with a focu
 | `@takio/core` | Format catalogue, detection, request validation, device-aware planning | Implemented |
 | `@takio/cli` | Structured commands for tools and agents | Implemented: planning, six proven local conversion pairs, durable foreground jobs, and device-aware convert-and-send |
 | `@takio/desktop` | Tauri v2 native shell and minimalist React interface | Implemented: library, destinations, and conversion queue |
-| Converter adapters | Declare supported pairs and invoke a real engine safely | Implemented: local `ebook-convert`, six synchronous conversion pairs and four output profiles |
+| Converter adapters | Declare supported pairs and invoke a real engine safely | Implemented: native EPUB-to-KEPUB plus local `ebook-convert` for five synchronous conversion pairs and four output profiles |
 | Controller/queue | Persist local jobs and run one foreground job at a time | Implemented: separate `jobs.sqlite` queue |
 | Destination transfer | Detect mounted USB mass-storage recipients and copy verified library files; optionally upload to a caller-specified rooted Kindle SSH target | Implemented: macOS USB mass storage plus gated rooted Kindle SSH/SCP |
 | Unsupported device transports | MTP and Amazon Send-to-Kindle integrations | Explicitly unavailable and gated in capability reporting |
@@ -31,6 +31,9 @@ Explicit `--db` paths remain supported and are mutually exclusive with a named
 library selector.
 
 Local `ebook-convert` discovery checks `TAKIO_EBOOK_CONVERT`, then `PATH`, then `/Applications/calibre.app/Contents/MacOS/ebook-convert` on macOS.
+EPUB-to-KEPUB does not use that executable. The native transformer validates the
+EPUB container, follows the package spine, adds Kobo location spans, preserves
+non-transformed resources, and publishes through the same atomic artifact path.
 The `metadata extract` command and delivery paths similarly discover
 `ebook-meta` through `TAKIO_EBOOK_META`, `PATH`, then the Calibre macOS bundle.
 Online candidate lookup discovers `fetch-ebook-metadata` through

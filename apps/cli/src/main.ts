@@ -1,7 +1,18 @@
 #!/usr/bin/env bun
 import { Command, CommanderError } from "commander";
 import { createReadStream } from "node:fs";
-import { chmod, copyFile, lstat, mkdir, mkdtemp, realpath, rm, stat } from "node:fs/promises";
+import {
+  chmod,
+  copyFile,
+  lstat,
+  mkdir,
+  mkdtemp,
+  readFile,
+  realpath,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import {
@@ -60,9 +71,12 @@ import {
   restoreLibraryBackup,
   verifyLibraryIntegrity,
 } from "@takio/library-store-bun";
+import { EpubTransformError, transformEpubToKepub } from "@takio/epub-transform";
 import {
+  CALIBRE_CONVERSION_CAPABILITIES,
   ConversionError,
   LOCAL_CONVERSION_CAPABILITIES,
+  NATIVE_CONVERSION_CAPABILITIES,
   convertLocal,
   discoverEbookConvert,
   type EbookConvertDiscovery,
@@ -448,9 +462,10 @@ export function createProgram(
   kindleSshRunner?: KindleSshRunner,
 ): Command {
   const program = storageCommand(new Command(), writeError);
-  const localCapabilities = conversionBackend.ok
-    ? LOCAL_CONVERSION_CAPABILITIES
-    : [];
+  const localCapabilities = [
+    ...NATIVE_CONVERSION_CAPABILITIES,
+    ...(conversionBackend.ok ? CALIBRE_CONVERSION_CAPABILITIES : []),
+  ];
   const localTarget = {
     id: "local",
     name: "This Mac",
@@ -562,8 +577,8 @@ export function createProgram(
           },
           formats: FORMAT_CATALOG,
           conversions: {
-            available: conversionBackend.ok,
-            pairs: LOCAL_CONVERSION_CAPABILITIES,
+            available: localCapabilities.length > 0,
+            pairs: localCapabilities,
             profiles: CONVERSION_PROFILE_IDS,
           },
           help: {
@@ -698,7 +713,7 @@ export function createProgram(
     });
 
   const convert = storageCommand(new Command("convert"), writeError)
-    .description("Convert a local document with Calibre ebook-convert")
+    .description("Convert a local document with Takio or Calibre")
     .requiredOption("--input <path>", "source document path")
     .requiredOption("--to <format>", `target format: ${FORMAT_IDS.join(", ")}`)
     .requiredOption("--output <path>", "output artifact path")
@@ -730,13 +745,14 @@ export function createProgram(
       ) {
         command.error("", { exitCode: 1, code: "invalid-arguments" });
       }
-      if (!conversionBackend.ok) {
+      const nativeKepub = detectFormat(options.input) === "epub" && options.to === "kepub";
+      if (!nativeKepub && !conversionBackend.ok) {
         command.error("", { exitCode: 1, code: conversionBackend.code });
       }
 
       try {
         const job = await convertLocal({
-          backendPath: conversionBackend.path,
+          backendPath: conversionBackend.ok ? conversionBackend.path : undefined,
           input: options.input,
           output: options.output,
           outputFormat: options.to,
@@ -1110,7 +1126,12 @@ export function createProgram(
     }
 
     if (!conversionBackend.ok) {
-      command.error("", { exitCode: 1, code: conversionBackend.code });
+      const queued = store.list("queued");
+      if (!queued.ok) command.error("", { exitCode: 1, code: queued.error.code });
+      const next = queued.value[0];
+      if (next && !(next.inputFormat === "epub" && next.outputFormat === "kepub")) {
+        command.error("", { exitCode: 1, code: conversionBackend.code });
+      }
     }
     const claimed = store.claimNext();
     if (!claimed.ok) command.error("", { exitCode: 1, code: claimed.error.code });
@@ -1120,7 +1141,7 @@ export function createProgram(
     let converted: Awaited<ReturnType<typeof convertLocal>> | undefined;
     try {
       converted = await convertLocal({
-        backendPath: conversionBackend.path,
+        backendPath: conversionBackend.ok ? conversionBackend.path : undefined,
         input: claimed.value.inputPath,
         output: claimed.value.outputPath,
         outputFormat: claimed.value.outputFormat,
@@ -1701,7 +1722,8 @@ export function createProgram(
           if (!sourceFormat) {
             command.error("", { exitCode: 1, code: "unsupported-conversion" });
           }
-          if (!conversionBackend.ok) {
+          const nativeKepub = sourceFormat.format === "epub" && targetFormat === "kepub";
+          if (!nativeKepub && !conversionBackend.ok) {
             command.error("", { exitCode: 1, code: conversionBackend.code });
           }
 
@@ -1710,7 +1732,7 @@ export function createProgram(
             workspace = await mkdtemp(join(tmpdir(), "takio-send-"));
             await chmod(workspace, 0o700);
             const conversion = await convertLocal({
-              backendPath: conversionBackend.path,
+              backendPath: conversionBackend.ok ? conversionBackend.path : undefined,
               input: sourceFormat.sourcePath,
               output: join(workspace, `converted.${targetFormat}`),
               outputFormat: targetFormat,
@@ -3332,6 +3354,21 @@ export function createProgram(
 }
 
 export async function run(argv: string[]): Promise<void> {
+  if (argv[2] === "__native-kepub") {
+    const input = argv[3];
+    const output = argv[4];
+    if (!input || !output || argv.length !== 5) {
+      process.exitCode = 64;
+      return;
+    }
+    try {
+      const transformed = transformEpubToKepub(await readFile(input));
+      await writeFile(output, transformed.bytes, { flag: "wx", mode: 0o600 });
+    } catch (error) {
+      process.exitCode = error instanceof EpubTransformError ? 65 : 74;
+    }
+    return;
+  }
   try {
     const [conversionBackend, metadataBackend, polishBackend] = await Promise.all([
       discoverEbookConvert(),
