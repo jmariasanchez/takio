@@ -35,8 +35,19 @@
   width: 42px;
   height: 58px;
   place-items: center;
-  background: #e4e7ec;
   border: 1px solid #d0d5dd;
+  border-radius: 3px;
+  box-shadow: 0 8px 18px rgb(16 24 40 / 10%);
+}
+
+.library-inspector__cover--image {
+  object-fit: cover;
+}
+
+.library-inspector__cover--fallback {
+  background:
+    linear-gradient(135deg, rgb(79 70 229 / 12%), transparent 55%),
+    #e4e7ec;
   color: #667085;
   font-size: 0.8125rem;
   font-weight: 700;
@@ -136,7 +147,7 @@
 }
 
 .library-inspector__formats li {
-  padding: 10px 0;
+  padding: 12px 0;
   border-top: 1px solid #eceef2;
 }
 
@@ -152,15 +163,73 @@
   gap: 8px;
 }
 
+.library-inspector__format-heading > div {
+  display: grid;
+  gap: 2px;
+}
+
 .library-inspector__format-heading strong {
   color: #344054;
   font-size: 0.6875rem;
   letter-spacing: 0.04em;
 }
 
-.library-inspector__format-heading span {
+.library-inspector__format-heading span,
+.library-inspector__format-heading time {
   color: #98a2b3;
   font-size: 0.6875rem;
+}
+
+.library-inspector__format-heading time {
+  white-space: nowrap;
+}
+
+.library-inspector__format-details {
+  margin-top: 8px;
+  color: #667085;
+  font-size: 0.6875rem;
+}
+
+.library-inspector__format-details summary {
+  width: fit-content;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.library-inspector__format-details summary:focus-visible {
+  border-radius: 3px;
+  outline: 2px solid #4f46e5;
+  outline-offset: 2px;
+}
+
+.library-inspector__format-details dl {
+  display: grid;
+  gap: 4px;
+  margin: 8px 0 0;
+  padding: 8px;
+  background: #f8fafc;
+  border: 1px solid #eceef2;
+  border-radius: 4px;
+}
+
+.library-inspector__format-details div {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  gap: 8px;
+}
+
+.library-inspector__format-details dt,
+.library-inspector__format-details dd {
+  margin: 0;
+}
+
+.library-inspector__format-details dt {
+  color: #98a2b3;
+}
+
+.library-inspector__format-details dd {
+  overflow-wrap: anywhere;
+  color: #475467;
 }
 
 .library-inspector__format-actions {

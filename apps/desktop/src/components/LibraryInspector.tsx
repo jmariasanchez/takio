@@ -9,6 +9,7 @@ import {
   conversionChoices,
   type ConversionChoice,
 } from "../lib/conversion-choices";
+import { coverFileSource } from "../lib/desktop";
 
 import "./LibraryInspector.css";
 
@@ -62,6 +63,10 @@ function authorLabel(item: LibraryItem): string | undefined {
   return item.authors?.map(({ name }) => name).join(", ") ?? item.author;
 }
 
+function coverFallbackLabel(title: string): string {
+  return title.trim().slice(0, 1).toUpperCase() || "B";
+}
+
 export function LibraryInspector({
   actionsDisabled = false,
   item,
@@ -90,9 +95,17 @@ export function LibraryInspector({
       <header className="library-inspector__header">
         <p>Selected book</p>
         <div className="library-inspector__identity">
-          <span className="library-inspector__cover" aria-hidden="true">
-            {item.title.slice(0, 1).toUpperCase()}
-          </span>
+          {item.coverPath ? (
+            <img
+              className="library-inspector__cover library-inspector__cover--image"
+              src={coverFileSource(item.coverPath)}
+              alt={`Cover of ${item.title}`}
+            />
+          ) : (
+            <span className="library-inspector__cover library-inspector__cover--fallback" aria-hidden="true">
+              {coverFallbackLabel(item.title)}
+            </span>
+          )}
           <div>
             <h2 id="library-inspector-heading">{item.title}</h2>
             {authors && <span>{authors}</span>}
@@ -177,7 +190,7 @@ export function LibraryInspector({
         <section className="library-inspector__section" aria-labelledby="inspector-formats-heading">
           <div className="library-inspector__section-heading">
             <h3 id="inspector-formats-heading">Formats</h3>
-            <span>{item.formats.length}</span>
+            <span>{item.formats.length} owned</span>
           </div>
           <ul className="library-inspector__formats">
             {item.formats.map((bookFormat) => {
@@ -187,9 +200,29 @@ export function LibraryInspector({
               return (
                 <li key={bookFormat.format}>
                   <div className="library-inspector__format-heading">
-                    <strong>{label}</strong>
-                    <span>{provenanceLabel(bookFormat)}</span>
+                    <div>
+                      <strong>{label}</strong>
+                      <span>{provenanceLabel(bookFormat)}</span>
+                    </div>
+                    <time dateTime={bookFormat.addedAt}>Added {displayDate(bookFormat.addedAt)}</time>
                   </div>
+                  <details className="library-inspector__format-details">
+                    <summary>Technical details</summary>
+                    <dl>
+                      <div>
+                        <dt>Format</dt>
+                        <dd>{bookFormat.format.toUpperCase()}</dd>
+                      </div>
+                      <div>
+                        <dt>Provenance</dt>
+                        <dd>{provenanceLabel(bookFormat)}</dd>
+                      </div>
+                      <div>
+                        <dt>Source path</dt>
+                        <dd>{bookFormat.sourcePath}</dd>
+                      </div>
+                    </dl>
+                  </details>
                   <div className="library-inspector__format-actions">
                     <button
                       type="button"

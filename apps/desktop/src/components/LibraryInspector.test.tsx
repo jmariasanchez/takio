@@ -24,6 +24,7 @@ const item = {
   id: "item-1",
   title: "The Left Hand of Darkness",
   sourcePath: "/Books/left-hand.epub",
+  coverPath: "/Covers/left-hand.jpg",
   format: "epub",
   addedAt: "2026-07-18T12:00:00.000Z",
   formats: [
@@ -87,6 +88,8 @@ test("renders selected metadata and every real format without a reading surface"
   );
 
   expect(markup).toContain("The Left Hand of Darkness");
+  expect(markup).toContain('alt="Cover of The Left Hand of Darkness"');
+  expect(markup).toContain("takio-cover://local/%2FCovers%2Fleft-hand.jpg");
   expect(markup).toContain("Ursula K. Le Guin, A second contributor");
   expect(markup).not.toContain("Legacy author");
   expect(markup).toContain("Hainish Cycle");
@@ -100,11 +103,31 @@ test("renders selected metadata and every real format without a reading surface"
   expect(markup).toContain("A novel of exile, identity, and trust.");
   expect(markup).toContain("EPUB");
   expect(markup).toContain("PDF");
+  expect(markup).toContain("2 owned");
   expect(markup).toContain("Managed copy");
   expect(markup).toContain("Linked file");
+  expect(markup).toContain("Added");
+  expect(markup).toContain("Technical details");
+  expect(markup).toContain("Source path");
+  expect(markup).toContain("/Books/left-hand.pdf");
   expect(markup).not.toContain("Convert PDF");
   expect(markup).not.toContain("Convert EPUB");
   expect(markup).not.toContain("Reader");
+});
+
+test("renders a fallback monogram when the selected book has no cover", () => {
+  const markup = renderToStaticMarkup(
+    <LibraryInspector
+      item={{ ...item, coverPath: undefined }}
+      onConvertFormat={() => undefined}
+      onOpenFormat={() => undefined}
+      onSendFormat={() => undefined}
+    />,
+  );
+
+  expect(markup).toContain("library-inspector__cover--fallback");
+  expect(markup).toContain(">T</span>");
+  expect(markup).not.toContain("takio-cover://local/");
 });
 
 test("open and send buttons emit the selected item and exact format object", () => {
