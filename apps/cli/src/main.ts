@@ -49,6 +49,7 @@ import {
   trashLibraryItemRequestSchema,
   type ExportLibraryItemsRequest,
   type ImportLibraryItemsRequest,
+  type AttachLibraryFormatRequest,
   type KeepDuplicatePairRequest,
   type LibraryExportEntryOutcome,
   type LibraryMetadataPatch,
@@ -59,9 +60,12 @@ import {
   type QueryLibraryItemsRequest,
   type RemoveSavedLibraryViewRequest,
   type ReplaceLibraryFormatRequest,
+  type RemoveLibraryFormatRequest,
   type ReopenDuplicatePairRequest,
   type RestoreLibraryItemRequest,
   type SaveSavedLibraryViewRequest,
+  type SetLibraryCoverRequest,
+  type RemoveLibraryCoverRequest,
   type TrashLibraryItemRequest,
 } from "@takio/library-contract";
 import {
@@ -168,6 +172,11 @@ type ServiceResponse =
 
 type LibraryServiceRequest =
   | { readonly id: string; readonly command: "library_update"; readonly args: { readonly id: string; readonly patch: LibraryMetadataPatch } }
+  | { readonly id: string; readonly command: "library_attach_format"; readonly args: AttachLibraryFormatRequest }
+  | { readonly id: string; readonly command: "library_remove_format"; readonly args: RemoveLibraryFormatRequest }
+  | { readonly id: string; readonly command: "library_replace_format"; readonly args: ReplaceLibraryFormatRequest }
+  | { readonly id: string; readonly command: "library_cover_set"; readonly args: SetLibraryCoverRequest }
+  | { readonly id: string; readonly command: "library_cover_remove"; readonly args: RemoveLibraryCoverRequest }
   | { readonly id: string; readonly command: "library_trash"; readonly args: TrashLibraryItemRequest }
   | { readonly id: string; readonly command: "library_restore"; readonly args: RestoreLibraryItemRequest }
   | { readonly id: string; readonly command: "library_purge"; readonly args: PurgeLibraryItemRequest };
@@ -388,6 +397,32 @@ function parseServiceRequest(line: string):
       ? { ok: true, id, command: record.command, args: { id: itemId, patch: patch.data } }
       : { ok: false, id, code: "invalid-arguments" };
   }
+  if (record.command === "library_attach_format") {
+    const request = parseAttachFormatServiceArgs(args as Record<string, unknown>);
+    return request ? { ok: true, id, command: record.command, args: request } : { ok: false, id, code: "invalid-arguments" };
+  }
+  if (record.command === "library_remove_format") {
+    const request = parseRemoveFormatServiceArgs(args as Record<string, unknown>);
+    return request ? { ok: true, id, command: record.command, args: request } : { ok: false, id, code: "invalid-arguments" };
+  }
+  if (record.command === "library_replace_format") {
+    const request = replaceLibraryFormatRequestSchema.safeParse(args);
+    return request.success
+      ? { ok: true, id, command: record.command, args: request.data }
+      : { ok: false, id, code: "invalid-arguments" };
+  }
+  if (record.command === "library_cover_set") {
+    const cover = args as Record<string, unknown>;
+    return hasExactKeys(cover, ["id", "sourcePath"]) && typeof cover.id === "string" && cover.id.trim() !== "" && typeof cover.sourcePath === "string" && cover.sourcePath.trim() !== ""
+      ? { ok: true, id, command: record.command, args: { id: cover.id, sourcePath: cover.sourcePath } }
+      : { ok: false, id, code: "invalid-arguments" };
+  }
+  if (record.command === "library_cover_remove") {
+    const cover = args as Record<string, unknown>;
+    return hasExactKeys(cover, ["id"]) && typeof cover.id === "string" && cover.id.trim() !== ""
+      ? { ok: true, id, command: record.command, args: { id: cover.id } }
+      : { ok: false, id, code: "invalid-arguments" };
+  }
   if (record.command === "library_trash") {
     const request = trashLibraryItemRequestSchema.safeParse(args);
     return request.success
@@ -409,22 +444,70 @@ function parseServiceRequest(line: string):
   return { ok: false, id, code: "invalid-arguments" };
 }
 
+function parseAttachFormatServiceArgs(args: Record<string, unknown>): AttachLibraryFormatRequest | null {
+  if (!hasExactKeys(args, ["id", "source"]) || typeof args.id !== "string" || args.id.trim() === "") return null;
+  const source = args.source;
+  if (typeof source !== "object" || source === null || Array.isArray(source)) return null;
+  const record = source as Record<string, unknown>;
+  if (record.kind === "reference") {
+    return hasExactKeys(record, ["kind", "path"]) && typeof record.path === "string" && record.path.trim() !== ""
+      ? { id: args.id, source: { kind: "reference", path: record.path } }
+      : null;
+  }
+  if (record.kind !== "copy") return null;
+  const keys = Object.keys(record).sort();
+  const validKeys = keys.join("\0") === "kind\0path" || keys.join("\0") === "expectedArtifact\0kind\0path";
+  if (!validKeys || typeof record.path !== "string" || record.path.trim() === "") return null;
+  const expectedArtifact = parseExpectedArtifact(record.expectedArtifact);
+  if (Object.hasOwn(record, "expectedArtifact") && !expectedArtifact) return null;
+  return expectedArtifact
+    ? { id: args.id, source: { kind: "copy", path: record.path, expectedArtifact } }
+    : { id: args.id, source: { kind: "copy", path: record.path } };
+}
+
+function parseExpectedArtifact(value: unknown): { bytes: number; sha256: string } | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  const bytes = record.bytes;
+  const sha256 = record.sha256;
+  return hasExactKeys(record, ["bytes", "sha256"]) && typeof bytes === "number" && Number.isSafeInteger(bytes) && bytes > 0 && typeof sha256 === "string" && /^[0-9a-f]{64}$/.test(sha256)
+    ? { bytes, sha256 }
+    : null;
+}
+
+function parseRemoveFormatServiceArgs(args: Record<string, unknown>): RemoveLibraryFormatRequest | null {
+  const format = typeof args.format === "string" ? FORMAT_IDS.find((candidate) => candidate === args.format) : undefined;
+  return hasExactKeys(args, ["id", "format"]) && typeof args.id === "string" && args.id.trim() !== "" && format
+    ? { id: args.id, format }
+    : null;
+}
+
 async function executeServiceRequest(
   store: BunSqliteLibraryStore,
   request: LibraryServiceRequest,
 ): Promise<ServiceResponse> {
   const result = request.command === "library_update"
     ? await store.update(request.args)
-    : request.command === "library_trash"
-      ? await store.trash(request.args)
-      : request.command === "library_restore"
-        ? await store.restore(request.args)
-        : await store.purge(request.args);
+    : request.command === "library_attach_format"
+      ? await store.attachFormat(request.args)
+      : request.command === "library_remove_format"
+        ? await store.removeFormat(request.args)
+        : request.command === "library_replace_format"
+          ? await store.replaceFormat(request.args)
+          : request.command === "library_cover_set"
+            ? await store.setCover(request.args)
+            : request.command === "library_cover_remove"
+              ? await store.removeCover(request.args)
+              : request.command === "library_trash"
+                ? await store.trash(request.args)
+                : request.command === "library_restore"
+                  ? await store.restore(request.args)
+                  : await store.purge(request.args);
   if (!result.ok) return serviceFailure(request.id, result.error.code);
   return {
     id: request.id,
     ok: true,
-    value: request.command === "library_purge"
+      value: request.command === "library_purge" || request.command === "library_remove_format" || request.command === "library_replace_format"
       ? result.value
       : { item: result.value },
   };

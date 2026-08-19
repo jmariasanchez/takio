@@ -256,6 +256,37 @@ describe("Electron engine boundary", () => {
     });
   });
 
+  test("uses the same live service for format and cover mutations", async () => {
+    const service = serviceDouble();
+    const client = new LibraryServiceClient(service.spawn);
+    const copied = client.invoke("library_attach_format", { id: "item-1", mode: "copy", sourcePath: "/books/a.pdf" });
+    const referenced = client.invoke("library_attach_format", { id: "item-1", mode: "reference", sourcePath: "/books/a.mobi" });
+    const removed = client.invoke("library_remove_format", { id: "item-1", format: "mobi" });
+    const coverSet = client.invoke("library_cover_set", { id: "item-1", sourcePath: "/covers/a.jpg" });
+    const coverRemoved = client.invoke("library_cover_remove", { id: "item-1" });
+
+    expect(service.children).toHaveLength(1);
+    expect(service.children[0]!.writes.map((line) => {
+      const request = JSON.parse(line);
+      return [request.command, request.args];
+    })).toEqual([
+      ["library_attach_format", { id: "item-1", source: { kind: "copy", path: "/books/a.pdf" } }],
+      ["library_attach_format", { id: "item-1", source: { kind: "reference", path: "/books/a.mobi" } }],
+      ["library_remove_format", { id: "item-1", format: "mobi" }],
+      ["library_cover_set", { id: "item-1", sourcePath: "/covers/a.jpg" }],
+      ["library_cover_remove", { id: "item-1" }],
+    ]);
+
+    for (const line of service.children[0]!.writes) {
+      service.children[0]!.stdout.write(JSON.stringify({ id: requestId(line), ok: true, value: { item: { id: "item-1" } } }) + "\n");
+    }
+    await expect(copied).resolves.toMatchObject({ ok: true });
+    await expect(referenced).resolves.toMatchObject({ ok: true });
+    await expect(removed).resolves.toMatchObject({ ok: true });
+    await expect(coverSet).resolves.toMatchObject({ ok: true });
+    await expect(coverRemoved).resolves.toMatchObject({ ok: true });
+  });
+
   test("rejects response mismatches and lazily restarts after a crash", async () => {
     const service = serviceDouble();
     const client = new LibraryServiceClient(service.spawn);

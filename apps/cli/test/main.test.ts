@@ -650,6 +650,67 @@ describe("takio CLI", () => {
       expect(await Bun.file(sourcePath).exists()).toBe(true);
     });
 
+    it("processes representative format and cover mutations through one persistent service", async () => {
+      const sourcePath = join(directory!, "service-format-book.epub");
+      const managedPdf = join(directory!, "service-format-copy.pdf");
+      const referencedMobi = join(directory!, "service-format-reference.mobi");
+      const replacementEpub = join(directory!, "service-format-replacement.epub");
+      const coverPath = join(directory!, "service-cover.jpg");
+      await Bun.write(sourcePath, "original epub");
+      await Bun.write(managedPdf, "managed pdf");
+      await Bun.write(referencedMobi, "referenced mobi");
+      await Bun.write(replacementEpub, "replacement epub");
+      await Bun.write(coverPath, "cover image");
+      const env = { TAKIO_DATA_DIR: directory };
+      const imported = parseProcessOutput(
+        await invokeProcess(["library", "import", "--source-path", sourcePath], env),
+      ) as { ok: true; value: { item: { id: string; formats: Array<{ format: string; sourcePath: string; addedAt: string; provenance: string }> } } };
+      const itemId = imported.value.item.id;
+      const currentEpub = imported.value.item.formats.find(({ format }) => format === "epub")!;
+      const expectedCurrentEpub = {
+        sourcePath: currentEpub.sourcePath,
+        addedAt: currentEpub.addedAt,
+        provenance: currentEpub.provenance,
+      };
+      const requests = [
+        { id: "copy-pdf", command: "library_attach_format", args: { id: itemId, source: { kind: "copy", path: managedPdf } } },
+        { id: "ref-mobi", command: "library_attach_format", args: { id: itemId, source: { kind: "reference", path: referencedMobi } } },
+        { id: "cover-set", command: "library_cover_set", args: { id: itemId, sourcePath: coverPath } },
+        { id: "remove-mobi", command: "library_remove_format", args: { id: itemId, format: "mobi" } },
+        { id: "replace-epub", command: "library_replace_format", args: { id: itemId, format: "epub", expectedCurrent: expectedCurrentEpub, source: { kind: "copy", path: replacementEpub } } },
+        { id: "cover-remove", command: "library_cover_remove", args: { id: itemId } },
+      ];
+
+      const service = await invokeProcess(
+        ["library", "service"],
+        env,
+        requests.map((request) => JSON.stringify(request)).join("\n") + "\n",
+      );
+      expect(service.exitCode).toBe(0);
+      expect(service.stderr).toBe("");
+      const responses = service.stdout.trim().split("\n").map((line) => JSON.parse(line));
+      expect(responses.map(({ id, ok }) => [id, ok])).toEqual(requests.map(({ id }) => [id, true]));
+
+      const persisted = parseProcessOutput(
+        await invokeProcess(["library", "get", "--id", itemId], env),
+      ) as { ok: true; value: { item: { coverPath: string | null; formats: Array<{ format: string; sourcePath: string; provenance: string }> } } };
+      expect(persisted.value.item.coverPath ?? null).toBeNull();
+      expect(persisted.value.item.formats.map(({ format }) => format).sort()).toEqual(["epub", "pdf"]);
+      const epub = persisted.value.item.formats.find(({ format }) => format === "epub")!;
+      const pdf = persisted.value.item.formats.find(({ format }) => format === "pdf")!;
+      expect(epub.provenance).toBe("managed");
+      expect(pdf.provenance).toBe("managed");
+      expect(epub.sourcePath).not.toBe(replacementEpub);
+      expect(pdf.sourcePath).not.toBe(managedPdf);
+      expect(await Bun.file(epub.sourcePath).text()).toBe("replacement epub");
+      expect(await Bun.file(pdf.sourcePath).text()).toBe("managed pdf");
+      expect(await Bun.file(referencedMobi).exists()).toBe(true);
+      expect(await Bun.file(coverPath).exists()).toBe(true);
+      expect(await Bun.file(sourcePath).exists()).toBe(true);
+      expect(await Bun.file(managedPdf).exists()).toBe(true);
+      expect(await Bun.file(replacementEpub).exists()).toBe(true);
+    });
+
     it("rejects non-strict library service protocol and does not leak startup errors", async () => {
       const env = { TAKIO_DATA_DIR: directory };
       const extra = { id: "req-1", command: "library_update", args: { id: "missing", patch: { title: "No" }, extra: true } };

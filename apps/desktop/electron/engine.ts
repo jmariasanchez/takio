@@ -11,6 +11,11 @@ const MAX_CONCURRENT_INVOCATIONS = 4;
 const MAX_SERVICE_PENDING = 16;
 const LIBRARY_SERVICE_COMMANDS = new Set([
   "library_update",
+  "library_attach_format",
+  "library_remove_format",
+  "library_replace_format",
+  "library_cover_set",
+  "library_cover_remove",
   "library_trash",
   "library_restore",
   "library_purge",
@@ -306,11 +311,7 @@ export class LibraryServiceClient {
   invoke(command: string, args: CommandArguments): Promise<EngineResult> {
     if (!LIBRARY_SERVICE_COMMANDS.has(command)) return Promise.resolve(failure("invalid-arguments"));
     const input = args ?? {};
-    const requestJson = objectJson(
-      command === "library_update"
-        ? { id: input.id, patch: input.patch }
-        : input.request,
-    );
+    const requestJson = objectJson(servicePayload(command, input));
     if (!requestJson || this.#pending.size >= MAX_SERVICE_PENDING) {
       return Promise.resolve(failure(requestJson ? "engine-unavailable" : "invalid-arguments"));
     }
@@ -419,6 +420,25 @@ export class LibraryServiceClient {
     this.#pending.clear();
     for (const request of pending) request.resolve(failure(code));
   }
+}
+
+function servicePayload(command: string, input: Record<string, unknown>): unknown {
+  if (command === "library_update") return { id: input.id, patch: input.patch };
+  if (command === "library_attach_format") {
+    const mode = input.mode;
+    return {
+      id: input.id,
+      source: mode === "copy"
+        ? { kind: "copy", path: input.sourcePath, ...(input.expectedArtifact ? { expectedArtifact: input.expectedArtifact } : {}) }
+        : mode === "reference"
+          ? { kind: "reference", path: input.sourcePath }
+          : undefined,
+    };
+  }
+  if (command === "library_remove_format") return { id: input.id, format: input.format };
+  if (command === "library_cover_set") return { id: input.id, sourcePath: input.sourcePath };
+  if (command === "library_cover_remove") return { id: input.id };
+  return input.request;
 }
 
 export const libraryServiceClient = new LibraryServiceClient();
