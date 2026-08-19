@@ -2814,33 +2814,71 @@ export default function App() {
     };
   }, []);
 
+  const activityCount =
+    destinations.length + jobs.filter(({ status }) => status === "queued").length;
+
   return (
     <main className={`app-shell${dropActive ? " drop-active" : ""}`}>
       {dropActive && (
         <div className="drop-affordance" role="status">
-          Drop files to import
+          <span className="drop-affordance__icon" aria-hidden="true">+</span>
+          <strong>Drop to add to your library</strong>
+          <span>Takio will recognize and organize the books for you.</span>
         </div>
       )}
-      <aside className="sidebar">
-        <div className="brand">
-          <span className="brand-mark" aria-hidden="true">T</span>
-          <span><strong>takio</strong><small>personal library</small></span>
-        </div>
-        <nav aria-label="Main navigation">
-          <a className="nav-item active" href="#library"><span aria-hidden="true">01</span>Library</a>
-          <a className="nav-item" href="#readers"><span aria-hidden="true">02</span>Readers</a>
-          <a className="nav-item" href="#conversions"><span aria-hidden="true">03</span>Conversions</a>
-        </nav>
-        <div className="sidebar-footer"><i aria-hidden="true" /> Stored locally on this device</div>
-      </aside>
 
-      <section className="content" id="library">
-        <header className="topbar">
-          <div>
-            <p className="eyebrow">LOCAL LIBRARY / {cataloguePage?.total ?? 0} TITLES</p>
-            <h1>Books, ready when you are.</h1>
-            <p className="topbar-copy">Organize, convert, and send your collection without giving up your files.</p>
-          </div>
+      <header className="app-header">
+        <div className="brand" aria-label="Takio personal library">
+          <span className="brand-mark" aria-hidden="true">T</span>
+          <span>
+            <strong>Takio</strong>
+            <small>{cataloguePage?.total ?? 0} books · stored on this device</small>
+          </span>
+        </div>
+
+        <div className="app-header__actions">
+          <span className="drop-hint">Drop books anywhere to add them</span>
+          <details className="utility-menu">
+            <summary>
+              <span>Devices &amp; activity</span>
+              {activityCount > 0 ? (
+                <span className="utility-menu__status" aria-hidden="true">
+                  {activityCount}
+                </span>
+              ) : null}
+            </summary>
+            <div className="utility-menu__panel">
+              <section id="readers">
+                <DeviceControls
+                  actionsPending={actionsPending}
+                  destinations={destinations}
+                  destinationsLoading={destinationsLoading}
+                  pendingAction={pendingAction}
+                  preferredFormat={preferredDeviceFormat}
+                  selectedDestination={selectedDestination}
+                  selectedDestinationId={selectedDestinationId}
+                  onEject={ejectSelectedDestination}
+                  onRefresh={refreshDestinations}
+                  onSelectDestination={setSelectedDestinationId}
+                  onSelectPreferredFormat={selectPreferredDeviceFormat}
+                />
+              </section>
+              <section id="conversions">
+                <JobsPanel
+                  actionsPending={actionsPending}
+                  items={items}
+                  jobs={jobs}
+                  jobsState={jobsState}
+                  conversionRunning={conversionRunning}
+                  pendingAction={pendingAction}
+                  onCancel={cancelJob}
+                  onRefresh={refreshJobs}
+                  onRetry={retryJob}
+                  onRunNext={runNextJob}
+                />
+              </section>
+            </div>
+          </details>
           <button
             ref={importButton}
             className="primary-button topbar-import"
@@ -2849,57 +2887,12 @@ export default function App() {
             aria-expanded={importDialogOpen}
             onClick={openImportDialog}
           >
-            {pendingAction === "import" ? "Importing..." : "+ Import books"}
+            {pendingAction === "import" ? "Adding…" : "Add books"}
           </button>
-        </header>
+        </div>
+      </header>
 
-        <section className="hero-card" aria-labelledby="import-heading">
-          <p className="hero-index" aria-hidden="true">DROP</p>
-          <div>
-            <p className="eyebrow">QUICK CAPTURE</p>
-            <h2 id="import-heading">Drop books anywhere in this window.</h2>
-            <p>EPUB, PDF, KEPUB, AZW3, MOBI, DOCX, HTML, and text are recognized automatically.</p>
-          </div>
-          <span className="hero-shortcut">CMD + SHIFT + I</span>
-        </section>
-
-        <section id="readers">
-          <DeviceControls
-            actionsPending={actionsPending}
-            destinations={destinations}
-            destinationsLoading={destinationsLoading}
-            pendingAction={pendingAction}
-            preferredFormat={preferredDeviceFormat}
-            selectedDestination={selectedDestination}
-            selectedDestinationId={selectedDestinationId}
-            onEject={ejectSelectedDestination}
-            onRefresh={refreshDestinations}
-            onSelectDestination={setSelectedDestinationId}
-            onSelectPreferredFormat={selectPreferredDeviceFormat}
-          />
-        </section>
-
-        <section id="conversions">
-          <JobsPanel
-            actionsPending={actionsPending}
-            items={items}
-            jobs={jobs}
-            jobsState={jobsState}
-            conversionRunning={conversionRunning}
-            pendingAction={pendingAction}
-            onCancel={cancelJob}
-            onRefresh={refreshJobs}
-            onRetry={retryJob}
-            onRunNext={runNextJob}
-          />
-        </section>
-
-        {notice ? (
-          <p className={`notice ${notice.kind}`} role={notice.kind === "error" ? "alert" : "status"}>
-            {notice.text}
-          </p>
-        ) : <div className="notice" aria-hidden="true" />}
-
+      <section className="content" id="library">
         <LibraryWorkspace
           actionsPending={actionsPending}
           bulkActions={{
@@ -2989,6 +2982,15 @@ export default function App() {
           onTogglePageSelection={toggleLibraryPageSelection}
           onToggleSelectedItem={toggleSelectedLibraryItem}
         />
+
+        {notice ? (
+          <p
+            className={`notice ${notice.kind}`}
+            role={notice.kind === "error" ? "alert" : "status"}
+          >
+            {notice.text}
+          </p>
+        ) : null}
 
         <LibraryDuplicateReviewDialog
           open={duplicateDialogOpen}

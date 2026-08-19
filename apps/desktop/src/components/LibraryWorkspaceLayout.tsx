@@ -43,9 +43,9 @@ function useCompactLayout(): boolean {
 // Mount either desktop panes or drawer panes so interactive slot content and fixed IDs exist once.
 export function LibraryWorkspaceLayout({
   facets,
-  facetsLabel = "Library facets",
+  facetsLabel = "Filter books",
   inspector,
-  inspectorLabel = "Book inspector",
+  inspectorLabel = "Book details",
   openPane,
   table,
   tableLabel = "Library results",

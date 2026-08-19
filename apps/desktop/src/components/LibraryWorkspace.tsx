@@ -651,7 +651,7 @@ export function LibraryWorkspace({
               <div className="library-workspace__title">
                 <div>
                   <span>Library</span>
-                  <h2>Your books</h2>
+                  <h2>All books</h2>
                 </div>
                 <span className="library-workspace__count">
                   {busy
@@ -660,54 +660,57 @@ export function LibraryWorkspace({
                 </span>
               </div>
               <div className="library-workspace__toolbar-actions">
-                <div className="library-workspace__maintenance-actions">
-                  <button
-                    id="library-duplicates-trigger"
-                    className="library-workspace__maintenance-button"
-                    type="button"
-                    aria-haspopup="dialog"
-                    disabled={actionsPending}
-                    onClick={() =>
-                      openDuplicateReviewDialog("unreviewed", onOpenDuplicateReview)
-                    }
-                  >
-                    Review duplicates…
-                  </button>
-                  <button
-                    id="library-kept-duplicates-trigger"
-                    className="library-workspace__maintenance-button"
-                    type="button"
-                    aria-haspopup="dialog"
-                    disabled={actionsPending}
-                    onClick={() =>
-                      openDuplicateReviewDialog("kept-both", onOpenDuplicateReview)
-                    }
-                  >
-                    Kept separate…
-                  </button>
-                  <button
-                    id="library-trash-trigger"
-                    className="library-workspace__maintenance-button"
-                    type="button"
-                    aria-haspopup="dialog"
-                    disabled={actionsPending}
-                    onClick={() => openTrashDialog(onOpenTrash)}
-                  >
-                    Trash
-                  </button>
-                </div>
                 <label className="library-workspace__search" htmlFor="library-search">
-                  <span>Search library</span>
+                  <span className="visually-hidden">Search library</span>
                   <input
                     ref={searchInput}
                     id="library-search"
                     type="search"
                     value={query}
                     disabled={actionsPending}
-                    placeholder="Title, author, description, or tag"
+                    placeholder="Search your library"
                     onChange={(event) => onChangeSearch(event.currentTarget.value)}
                   />
                 </label>
+                <details className="library-workspace__more">
+                  <summary aria-label="More library actions">•••</summary>
+                  <div className="library-workspace__maintenance-actions">
+                    <button
+                      id="library-duplicates-trigger"
+                      className="library-workspace__maintenance-button"
+                      type="button"
+                      aria-haspopup="dialog"
+                      disabled={actionsPending}
+                      onClick={() =>
+                        openDuplicateReviewDialog("unreviewed", onOpenDuplicateReview)
+                      }
+                    >
+                      Review duplicates…
+                    </button>
+                    <button
+                      id="library-kept-duplicates-trigger"
+                      className="library-workspace__maintenance-button"
+                      type="button"
+                      aria-haspopup="dialog"
+                      disabled={actionsPending}
+                      onClick={() =>
+                        openDuplicateReviewDialog("kept-both", onOpenDuplicateReview)
+                      }
+                    >
+                      Kept separate…
+                    </button>
+                    <button
+                      id="library-trash-trigger"
+                      className="library-workspace__maintenance-button"
+                      type="button"
+                      aria-haspopup="dialog"
+                      disabled={actionsPending}
+                      onClick={() => openTrashDialog(onOpenTrash)}
+                    >
+                      Trash
+                    </button>
+                  </div>
+                </details>
               </div>
             </div>
           }
