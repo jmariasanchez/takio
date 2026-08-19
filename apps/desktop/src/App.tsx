@@ -301,6 +301,7 @@ export default function App() {
   const [selectedDestinationId, setSelectedDestinationId] = useState<string | null>(null);
   const [preferredFormatsByDestinationPath, setPreferredFormatsByDestinationPath] =
     useState<SessionDeviceFormatPreferences>({});
+  const [convertIfNeeded, setConvertIfNeeded] = useState(true);
   const [dropActive, setDropActive] = useState(false);
   const libraryModalOpen = hasOpenLibraryModal({
     saveView: saveViewDialogOpen,
@@ -2042,6 +2043,7 @@ export default function App() {
         item.id,
         bookFormat.format,
         selectedDestination.path,
+        convertIfNeeded,
       );
       if (!result.ok) {
         const errorText = describeDestinationError(result.error.code);
@@ -2667,6 +2669,7 @@ export default function App() {
             entry.item.id,
             entry.bookFormat.format,
             destination.path,
+            false,
           );
           if (!result.ok) {
             failed += 1;
@@ -2963,10 +2966,12 @@ export default function App() {
                   actionsPending={actionsPending}
                   destinations={destinations}
                   destinationsLoading={destinationsLoading}
+                  convertIfNeeded={convertIfNeeded}
                   pendingAction={pendingAction}
                   preferredFormat={preferredDeviceFormat}
                   selectedDestination={selectedDestination}
                   selectedDestinationId={selectedDestinationId}
+                  onToggleConvertIfNeeded={setConvertIfNeeded}
                   onEject={ejectSelectedDestination}
                   onRefresh={refreshDestinations}
                   onSelectDestination={setSelectedDestinationId}

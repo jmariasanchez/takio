@@ -50,9 +50,10 @@ export function sendLibraryItem(
   id: string,
   format: FormatId,
   destinationPath: string,
+  convertIfNeeded: boolean,
   invokeCommand: DestinationInvoker = invokeDesktop,
 ): Promise<DesktopDestinationSendResult> {
-  return invokeCommand("destination_send", { id, format, destinationPath });
+  return invokeCommand("destination_send", { id, format, destinationPath, convertIfNeeded });
 }
 
 export function ejectDestination(

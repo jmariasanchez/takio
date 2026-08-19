@@ -25,6 +25,8 @@ test("shows connection status first and keeps explicit format and device managem
       preferredFormat={null}
       selectedDestination={destination}
       selectedDestinationId={destination.id}
+      convertIfNeeded={true}
+      onToggleConvertIfNeeded={() => undefined}
       onEject={async () => undefined}
       onRefresh={async () => undefined}
       onSelectDestination={() => undefined}
@@ -37,7 +39,9 @@ test("shows connection status first and keeps explicit format and device managem
   expect(markup).toContain("<summary>Options</summary>");
   expect(markup).toContain("Preferred format");
   expect(markup).toContain('<option value="" selected="">Choose a format…</option>');
-  expect(markup).toContain("Takio can convert a book when needed.");
+  expect(markup).toContain("Convert if needed");
+  expect(markup).toContain('type="checkbox" checked=""');
+  expect(markup).toContain("Takio can create a compatible copy before sending.");
   expect(markup).toContain("Check for readers");
   expect(markup).toContain("Eject Kindle");
   expect(markup).toContain('<option value="epub">EPUB</option>');
@@ -54,6 +58,8 @@ test("turns an empty reader state into one clear next action", () => {
       preferredFormat={null}
       selectedDestination={null}
       selectedDestinationId={null}
+      convertIfNeeded={true}
+      onToggleConvertIfNeeded={() => undefined}
       onEject={async () => undefined}
       onRefresh={async () => undefined}
       onSelectDestination={() => undefined}

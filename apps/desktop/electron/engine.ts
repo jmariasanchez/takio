@@ -160,10 +160,18 @@ export async function buildEngineArguments(
         : null;
     case "destination_list":
       return ["destination", "list"];
-    case "destination_send":
-      return nonempty(id) && nonempty(format) && nonempty(input.destinationPath)
-        ? ["send", "--id", id, "--format", format, "--dest", input.destinationPath]
-        : null;
+    case "destination_send": {
+      if (
+        !nonempty(id) ||
+        !nonempty(format) ||
+        !nonempty(input.destinationPath) ||
+        typeof input.convertIfNeeded !== "boolean"
+      ) {
+        return null;
+      }
+      const sendArgs = ["send", "--id", id, "--format", format, "--dest", input.destinationPath];
+      return input.convertIfNeeded ? [...sendArgs, "--convert"] : sendArgs;
+    }
     case "destination_eject":
       return nonempty(input.destinationPath)
         ? ["destination", "eject", "--dest", input.destinationPath]

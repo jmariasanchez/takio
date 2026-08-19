@@ -12,6 +12,41 @@ describe("Electron engine boundary", () => {
       "--request-json",
       JSON.stringify(request),
     ]);
+    expect(await buildEngineArguments("destination_send", {
+      id: "item-1",
+      format: "epub",
+      destinationPath: "/Volumes/Kindle",
+      convertIfNeeded: true,
+    })).toEqual([
+      "send",
+      "--id",
+      "item-1",
+      "--format",
+      "epub",
+      "--dest",
+      "/Volumes/Kindle",
+      "--convert",
+    ]);
+    expect(await buildEngineArguments("destination_send", {
+      id: "item-1",
+      format: "epub",
+      destinationPath: "/Volumes/Kindle",
+      convertIfNeeded: false,
+    })).toEqual([
+      "send",
+      "--id",
+      "item-1",
+      "--format",
+      "epub",
+      "--dest",
+      "/Volumes/Kindle",
+    ]);
+    expect(await buildEngineArguments("destination_send", {
+      id: "item-1",
+      format: "epub",
+      destinationPath: "/Volumes/Kindle",
+      convertIfNeeded: "true",
+    })).toBeNull();
     expect(await buildEngineArguments("shell_exec", { command: "rm" })).toBeNull();
   });
 

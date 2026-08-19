@@ -45,10 +45,12 @@ type DeviceControlsProps = {
   readonly actionsPending: boolean;
   readonly destinations: readonly Destination[];
   readonly destinationsLoading: boolean;
+  readonly convertIfNeeded: boolean;
   readonly pendingAction: string | null;
   readonly preferredFormat: FormatId | null;
   readonly selectedDestination: Destination | null;
   readonly selectedDestinationId: string | null;
+  readonly onToggleConvertIfNeeded: (convertIfNeeded: boolean) => void;
   readonly onEject: () => Promise<void>;
   readonly onRefresh: () => Promise<void>;
   readonly onSelectDestination: (id: string | null) => void;
@@ -59,10 +61,12 @@ export function DeviceControls({
   actionsPending,
   destinations,
   destinationsLoading,
+  convertIfNeeded,
   pendingAction,
   preferredFormat,
   selectedDestination,
   selectedDestinationId,
+  onToggleConvertIfNeeded,
   onEject,
   onRefresh,
   onSelectDestination,
@@ -150,6 +154,18 @@ export function DeviceControls({
               </label>
               <small className="reader-format-preference-help" id="reader-format-preference-help">
                 Used when you choose Send. Takio can convert a book when needed.
+              </small>
+              <label className="reader-convert-option">
+                <input
+                  type="checkbox"
+                  checked={convertIfNeeded}
+                  disabled={actionsPending || destinationsLoading}
+                  onChange={(event) => onToggleConvertIfNeeded(event.currentTarget.checked)}
+                />
+                <span>Convert if needed</span>
+              </label>
+              <small className="reader-convert-option-help">
+                Takio can create a compatible copy before sending.
               </small>
               <button
                 className="quiet-button reader-refresh"
