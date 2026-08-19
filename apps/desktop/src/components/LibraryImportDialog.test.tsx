@@ -100,7 +100,8 @@ test("renders an accessible recursive-import modal with controlled root paths", 
   expect(markup).toContain('<button type="button">Choose folders…</button>');
   expect(markup).toContain('value="move"');
   expect(markup).toContain("Organize into Takio");
-  expect(markup).toContain("removes each original only after its managed copy is verified");
+  expect(markup).toContain("atomically moves books on the same drive");
+  expect(markup).toContain("another drive stay in place");
   expect(markup).toContain('<button type="button" class="library-import-dialog__import">Import</button>');
 });
 

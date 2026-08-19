@@ -307,7 +307,8 @@ export function LibraryImportDialog({
               <span>
                 <strong>Organize into Takio</strong>
                 <small>
-                  Takio removes each original only after its managed copy is verified.
+                  Takio atomically moves books on the same drive. Books on another drive stay in
+                  place and are reported instead of being copied and deleted.
                 </small>
               </span>
             </label>
