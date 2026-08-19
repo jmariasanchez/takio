@@ -136,7 +136,7 @@ import { initializationTestSeam } from "./initialization-test-seam.js";
 import { lifecycleTestSeam } from "./lifecycle-test-seam.js";
 import { queryTestSeam } from "./query-test-seam.js";
 
-export const LIBRARY_SCHEMA_VERSION = 9;
+export const LIBRARY_SCHEMA_VERSION = 10;
 const SCHEMA_VERSION = LIBRARY_SCHEMA_VERSION;
 const incompatibleSchema = Symbol("incompatible-schema");
 const duplicateFormat = Symbol("duplicate-format");
@@ -1362,6 +1362,33 @@ function createDuplicatePairReviewsTable(database: Database): void {
   `);
 }
 
+function createLibraryAdoptionsTable(database: Database): void {
+  database.run(`
+    CREATE TABLE library_adoptions (
+      id TEXT PRIMARY KEY CHECK (length(id) > 0),
+      source_path TEXT NOT NULL CHECK (length(source_path) > 0),
+      target_path TEXT NOT NULL CHECK (length(target_path) > 0),
+      format TEXT NOT NULL CHECK (format IN ('epub', 'pdf', 'mobi', 'azw3', 'txt')),
+      content_bytes INTEGER NOT NULL CHECK (content_bytes >= 0),
+      content_sha256 TEXT NOT NULL CHECK (
+        length(content_sha256) = 64 AND content_sha256 NOT GLOB '*[^0-9a-f]*'
+      ),
+      state TEXT NOT NULL CHECK (state IN ('pending-rename', 'renamed', 'finalizing')),
+      created_at TEXT NOT NULL CHECK (length(created_at) > 0),
+      updated_at TEXT NOT NULL CHECK (length(updated_at) > 0),
+      CHECK (source_path <> target_path)
+    ) STRICT
+  `);
+  database.run(`
+    CREATE INDEX library_adoptions_by_state
+    ON library_adoptions(state, updated_at, id)
+  `);
+}
+
+function migrateV9ToV10(database: Database): void {
+  createLibraryAdoptionsTable(database);
+}
+
 function ensureManagedCleanupTable(database: Database): void {
   database.run(`
     CREATE TABLE IF NOT EXISTS managed_file_cleanup (
@@ -2118,6 +2145,88 @@ function verifyV9Database(
   }
 }
 
+function verifyV9Backup(
+  path: string,
+  coversDirectory: string,
+  itemsDirectory: string,
+): void {
+  using backup = new Database(path, { strict: true });
+  backup.run("PRAGMA foreign_keys = ON");
+  const version = backup.query<{ user_version: number }, []>("PRAGMA user_version").get()
+    ?.user_version;
+  if (version !== 9) {
+    throw new Error("The pre-migration backup could not be verified.");
+  }
+  verifyV9Database(backup, coversDirectory, itemsDirectory);
+}
+
+function retainVerifiedV9Backup(
+  database: Database,
+  databasePath: string,
+  coversDirectory: string,
+  itemsDirectory: string,
+): void {
+  retainVerifiedBackup(database, `${databasePath}.v9.backup`, (path) =>
+    verifyV9Backup(path, coversDirectory, itemsDirectory),
+  );
+}
+
+function verifyV10Database(
+  database: Database,
+  coversDirectory: string,
+  itemsDirectory: string,
+): void {
+  verifyV9Database(database, coversDirectory, itemsDirectory);
+  const adoptions = database
+    .query<
+      {
+        id: unknown;
+        sourcePath: unknown;
+        targetPath: unknown;
+        format: unknown;
+        contentBytes: unknown;
+        contentSha256: unknown;
+        state: unknown;
+        createdAt: unknown;
+        updatedAt: unknown;
+      },
+      []
+    >(`
+      SELECT id, source_path AS sourcePath, target_path AS targetPath, format,
+        content_bytes AS contentBytes, content_sha256 AS contentSha256,
+        state, created_at AS createdAt, updated_at AS updatedAt
+      FROM library_adoptions
+      ORDER BY id
+    `)
+    .all();
+  if (
+    adoptions.some(
+      (row) =>
+        typeof row.id !== "string" ||
+        row.id.length === 0 ||
+        typeof row.sourcePath !== "string" ||
+        row.sourcePath.length === 0 ||
+        typeof row.targetPath !== "string" ||
+        row.targetPath.length === 0 ||
+        row.sourcePath === row.targetPath ||
+        typeof row.format !== "string" ||
+        !FORMAT_IDS.includes(row.format as FormatId) ||
+        typeof row.contentBytes !== "number" ||
+        !Number.isSafeInteger(row.contentBytes) ||
+        row.contentBytes < 0 ||
+        typeof row.contentSha256 !== "string" ||
+        !/^[0-9a-f]{64}$/.test(row.contentSha256) ||
+        (row.state !== "pending-rename" && row.state !== "renamed" && row.state !== "finalizing") ||
+        typeof row.createdAt !== "string" ||
+        row.createdAt.length === 0 ||
+        typeof row.updatedAt !== "string" ||
+        row.updatedAt.length === 0,
+    )
+  ) {
+    throw new Error("The migrated database could not be verified.");
+  }
+}
+
 export type LibraryIntegrityReport = {
   readonly schemaVersion: number;
   readonly items: {
@@ -2167,7 +2276,7 @@ export function verifyLibraryIntegrity(databasePath: string): LibraryIntegrityRe
       return { ok: false, error: { code: "incompatible-schema" } };
     }
 
-    verifyV9Database(database, join(libraryRoot, "covers"), join(libraryRoot, "items"));
+    verifyV10Database(database, join(libraryRoot, "covers"), join(libraryRoot, "items"));
     const itemCounts = database
       .query<{ total: number; active: number; trashed: number }, []>(`
         SELECT COUNT(*) AS total,
@@ -3643,8 +3752,9 @@ export class BunSqliteLibraryStore
           createLibraryTrashIndex(database!);
           createManagedFingerprintIndex(database!);
           createDuplicatePairReviewsTable(database!);
+          createLibraryAdoptionsTable(database!);
           ensureSourceCleanupTable(database!);
-          verifyV9Database(database!, this.#coversDirectory, this.#itemsDirectory);
+          verifyV10Database(database!, this.#coversDirectory, this.#itemsDirectory);
           database!.run(`PRAGMA user_version = ${SCHEMA_VERSION}`);
         } else if (version === 1) {
           retainVerifiedV1Backup(database!, this.#databasePath);
@@ -3661,7 +3771,8 @@ export class BunSqliteLibraryStore
           migrateV6ToV7(database!, this.#itemsDirectory);
           migrateV7ToV8(database!);
           migrateV8ToV9(database!);
-          verifyV9Database(database!, this.#coversDirectory, this.#itemsDirectory);
+          migrateV9ToV10(database!);
+          verifyV10Database(database!, this.#coversDirectory, this.#itemsDirectory);
           database!.run(`PRAGMA user_version = ${SCHEMA_VERSION}`);
         } else if (version === 2) {
           retainVerifiedV2Backup(database!, this.#databasePath, this.#coversDirectory);
@@ -3672,7 +3783,8 @@ export class BunSqliteLibraryStore
           migrateV6ToV7(database!, this.#itemsDirectory);
           migrateV7ToV8(database!);
           migrateV8ToV9(database!);
-          verifyV9Database(database!, this.#coversDirectory, this.#itemsDirectory);
+          migrateV9ToV10(database!);
+          verifyV10Database(database!, this.#coversDirectory, this.#itemsDirectory);
           database!.run(`PRAGMA user_version = ${SCHEMA_VERSION}`);
         } else if (version === 3) {
           retainVerifiedV3Backup(database!, this.#databasePath, this.#coversDirectory);
@@ -3682,7 +3794,8 @@ export class BunSqliteLibraryStore
           migrateV6ToV7(database!, this.#itemsDirectory);
           migrateV7ToV8(database!);
           migrateV8ToV9(database!);
-          verifyV9Database(database!, this.#coversDirectory, this.#itemsDirectory);
+          migrateV9ToV10(database!);
+          verifyV10Database(database!, this.#coversDirectory, this.#itemsDirectory);
           database!.run(`PRAGMA user_version = ${SCHEMA_VERSION}`);
         } else if (version === 4) {
           retainVerifiedV4Backup(
@@ -3696,7 +3809,8 @@ export class BunSqliteLibraryStore
           migrateV6ToV7(database!, this.#itemsDirectory);
           migrateV7ToV8(database!);
           migrateV8ToV9(database!);
-          verifyV9Database(database!, this.#coversDirectory, this.#itemsDirectory);
+          migrateV9ToV10(database!);
+          verifyV10Database(database!, this.#coversDirectory, this.#itemsDirectory);
           database!.run(`PRAGMA user_version = ${SCHEMA_VERSION}`);
         } else if (version === 5) {
           retainVerifiedV5Backup(
@@ -3709,7 +3823,8 @@ export class BunSqliteLibraryStore
           migrateV6ToV7(database!, this.#itemsDirectory);
           migrateV7ToV8(database!);
           migrateV8ToV9(database!);
-          verifyV9Database(database!, this.#coversDirectory, this.#itemsDirectory);
+          migrateV9ToV10(database!);
+          verifyV10Database(database!, this.#coversDirectory, this.#itemsDirectory);
           database!.run(`PRAGMA user_version = ${SCHEMA_VERSION}`);
         } else if (version === 6) {
           retainVerifiedV6Backup(
@@ -3721,7 +3836,8 @@ export class BunSqliteLibraryStore
           migrateV6ToV7(database!, this.#itemsDirectory);
           migrateV7ToV8(database!);
           migrateV8ToV9(database!);
-          verifyV9Database(database!, this.#coversDirectory, this.#itemsDirectory);
+          migrateV9ToV10(database!);
+          verifyV10Database(database!, this.#coversDirectory, this.#itemsDirectory);
           database!.run(`PRAGMA user_version = ${SCHEMA_VERSION}`);
         } else if (version === 7) {
           retainVerifiedV7Backup(
@@ -3732,7 +3848,8 @@ export class BunSqliteLibraryStore
           );
           migrateV7ToV8(database!);
           migrateV8ToV9(database!);
-          verifyV9Database(database!, this.#coversDirectory, this.#itemsDirectory);
+          migrateV9ToV10(database!);
+          verifyV10Database(database!, this.#coversDirectory, this.#itemsDirectory);
           database!.run(`PRAGMA user_version = ${SCHEMA_VERSION}`);
         } else if (version === 8) {
           retainVerifiedV8Backup(
@@ -3742,7 +3859,18 @@ export class BunSqliteLibraryStore
             this.#itemsDirectory,
           );
           migrateV8ToV9(database!);
-          verifyV9Database(database!, this.#coversDirectory, this.#itemsDirectory);
+          migrateV9ToV10(database!);
+          verifyV10Database(database!, this.#coversDirectory, this.#itemsDirectory);
+          database!.run(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+        } else if (version === 9) {
+          retainVerifiedV9Backup(
+            database!,
+            this.#databasePath,
+            this.#coversDirectory,
+            this.#itemsDirectory,
+          );
+          migrateV9ToV10(database!);
+          verifyV10Database(database!, this.#coversDirectory, this.#itemsDirectory);
           database!.run(`PRAGMA user_version = ${SCHEMA_VERSION}`);
         } else if (version !== SCHEMA_VERSION) {
           throw incompatibleSchema;
