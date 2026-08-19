@@ -64,6 +64,7 @@ bun run takio library verify
 bun run takio library backup --dest ~/Backups/takio-library
 bun run takio library portable-export --dest ~/Exports/takio-portable
 bun run takio library search --query "Ursula Le Guin"
+bun run takio library list --human --dest /Volumes/Kindle
 bun run takio library content-search --query "the dispossessed"
 bun run takio library validate
 bun run takio library catalog --format html --output ~/Exports/takio-catalog.html
@@ -175,8 +176,9 @@ Use `takio --library <name> ...` to keep independent named libraries under the
 Takio data directory. `--db <path>` remains available for an explicit physical
 library path; combining both selectors is rejected.
 
-`takio library list --human` emits a tabular view; the default remains the
-stable one-line JSON envelope for scripts.
+`takio library list --human` emits a tabular view; add `--dest /Volumes/Kindle`
+to include verified `present`, `changed`, `missing`, or `not-tracked` device
+status. The default remains the stable one-line JSON envelope for scripts.
 
 A plan is not execution. `takio convert` bypasses the queue, while `takio jobs enqueue` records work in `jobs.sqlite`, a database separate from `library.sqlite`. Jobs move through `queued`, `running`, `completed`, `failed`, and `canceled`; `jobs cancel` cancels queued work. `jobs retry` clones failed or canceled work into a new queued job while preserving the terminal record. `jobs retry-attachment --id <job>` returns a failed library attachment to `pending` without rerunning a completed conversion; it uses the selected default or named library and rejects an unrelated explicit jobs database. `run-next` claims one oldest job; `drain` runs up to 256 jobs by default, accepts a smaller `--max-jobs`, and reports processed, terminal, and remaining counts. Both run synchronously and record either a failure or a completed artifact whose path, nonzero size, and SHA-256 digest have been verified. SIGINT or SIGTERM cancels the active foreground conversion, records `conversion-cancelled`, and makes `drain` stop before claiming another job.
 

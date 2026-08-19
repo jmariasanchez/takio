@@ -443,6 +443,31 @@ describe("mounted destinations", () => {
     ]);
   });
 
+  test("lists which library books are on a connected destination", async () => {
+    const fixture = await transferFixture();
+    const secondPath = join(fixture.root, "source", "second.epub");
+    await writeFile(secondPath, "second bytes");
+    expect((await invoke([
+      "library", "add", "--db", fixture.databasePath, "--id", "book-2", "--title", "Second Book",
+      "--source-path", secondPath, "--format", "epub", "--added-at", "2026-08-19T00:00:00.000Z",
+    ])).exitCode).toBeUndefined();
+    expect((await invoke([
+      "send", "--db", fixture.databasePath, "--id", "book-1", "--dest", fixture.destination,
+      "--volumes-root", fixture.volumesRoot,
+    ])).exitCode).toBeUndefined();
+
+    const result = await invoke([
+      "library", "list", "--db", fixture.databasePath, "--dest", fixture.destination,
+      "--volumes-root", fixture.volumesRoot,
+    ]);
+
+    expect(result.exitCode).toBeUndefined();
+    expect(parseRecord(result).value.items.map(({ id, device }: any) => ({ id, device }))).toEqual([
+      { id: "book-2", device: { destinationId: "Reader", status: "not-tracked", onDevice: false } },
+      { id: "book-1", device: { destinationId: "Reader", status: "present", onDevice: true } },
+    ]);
+  });
+
   test("removes only an unchanged Takio-managed delivery and preserves unrelated files", async () => {
     const fixture = await transferFixture();
     const unrelated = join(fixture.destination, "unrelated.epub");

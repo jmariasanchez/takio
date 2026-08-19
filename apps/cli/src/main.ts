@@ -2045,7 +2045,27 @@ export function createProgram(
   storageCommand(library.command("list").helpOption(false), writeError)
     .option("--db <path>", "database path")
     .option("--human", "emit a readable table instead of JSON")
-    .action(async (options: { db?: string; human?: boolean }, command: Command) => {
+    .option("--dest <volume-path>", "include status on a mounted destination")
+    .option("--volumes-root <path>", "mounted-volume root", "/Volumes")
+    .action(async (
+      options: { db?: string; human?: boolean; dest?: string; volumesRoot: string },
+      command: Command,
+    ) => {
+      let mountedDestination: Destination | undefined;
+      let destinationEntries: Awaited<ReturnType<typeof inventoryDestination>> = [];
+      if (options.dest) {
+        mountedDestination = await authorizeDestination(options.dest, options.volumesRoot) ?? undefined;
+        if (!mountedDestination) command.error("", { exitCode: 1, code: "unknown-destination" });
+        try {
+          destinationEntries = await inventoryDestination(mountedDestination);
+        } catch (error) {
+          if (error instanceof DestinationTransferError) {
+            command.error("", { exitCode: 1, code: error.code });
+          }
+          throw error;
+        }
+      }
+
       const { store } = await openLibraryStore(options.db, command);
       try {
         const result = await store.list({});
@@ -2053,14 +2073,30 @@ export function createProgram(
           command.error("", { exitCode: 1, code: result.error.code });
         }
 
+        const destinationByItemId = new Map(destinationEntries.map((entry) => [entry.itemId, entry]));
         if (options.human) {
-          write("ID\tTITLE\tAUTHORS\tFORMATS");
+          write(`ID\tTITLE\tAUTHORS\tFORMATS${mountedDestination ? "\tDEVICE" : ""}`);
           for (const item of result.value) {
             const authors = item.authors?.map(({ name }) => name).join(", ") ?? item.author ?? "";
-            write(`${humanCell(item.id)}\t${humanCell(item.title)}\t${humanCell(authors)}\t${item.formats.map(({ format }) => format).join(",")}`);
+            const deviceStatus = destinationByItemId.get(item.id)?.status ?? "not-tracked";
+            write(`${humanCell(item.id)}\t${humanCell(item.title)}\t${humanCell(authors)}\t${item.formats.map(({ format }) => format).join(",")}${mountedDestination ? `\t${deviceStatus}` : ""}`);
           }
         } else {
-          write(JSON.stringify({ ok: true, value: { items: result.value } }));
+          const items = mountedDestination
+            ? result.value.map((item) => {
+                const entry = destinationByItemId.get(item.id);
+                const status = entry?.status ?? "not-tracked";
+                return {
+                  ...item,
+                  device: {
+                    destinationId: mountedDestination.id,
+                    status,
+                    onDevice: status === "present" || status === "changed",
+                  },
+                };
+              })
+            : result.value;
+          write(JSON.stringify({ ok: true, value: { items } }));
         }
       } finally {
         store.close();
