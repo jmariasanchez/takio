@@ -16,7 +16,7 @@ import {
   type OpenDialogOptions,
 } from "electron";
 
-import { invokeEngine } from "./engine";
+import { invokeEngine, libraryServiceClient } from "./engine";
 
 protocol.registerSchemesAsPrivileged([
   { scheme: "takio-cover", privileges: { standard: true, secure: true, supportFetchAPI: true } },
@@ -181,4 +181,8 @@ app.whenReady().then(async () => {
 
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();
+});
+
+app.on("before-quit", () => {
+  libraryServiceClient.close();
 });

@@ -138,6 +138,7 @@ import { queryTestSeam } from "./query-test-seam.js";
 
 export const LIBRARY_SCHEMA_VERSION = 10;
 const SCHEMA_VERSION = LIBRARY_SCHEMA_VERSION;
+const SQLITE_BUSY_TIMEOUT_MS = 5000;
 const incompatibleSchema = Symbol("incompatible-schema");
 const duplicateFormat = Symbol("duplicate-format");
 const sourceChanged = Symbol("source-changed");
@@ -3850,6 +3851,7 @@ export class BunSqliteLibraryStore
 
     try {
       database = new Database(this.#databasePath, { create: true, strict: true });
+      database.run(`PRAGMA busy_timeout = ${SQLITE_BUSY_TIMEOUT_MS}`);
       database.run("PRAGMA foreign_keys = ON");
       database.transaction(() => {
         const version = database!

@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { stat } from "node:fs/promises";
 import * as electron from "electron";
 import { join } from "node:path";
@@ -8,13 +8,24 @@ const { app } = electron;
 const MAX_OUTPUT_BYTES = 8 * 1024 * 1024;
 const MAX_JSON_ARGUMENT_BYTES = 16 * 1024;
 const MAX_CONCURRENT_INVOCATIONS = 4;
+const MAX_SERVICE_PENDING = 16;
 
 type CommandArguments = Record<string, unknown> | undefined;
 type EngineResult =
   | { readonly ok: true; readonly value: unknown }
   | { readonly ok: false; readonly error: { readonly code: string } };
 
+type ServiceRecord = EngineResult & { readonly id?: unknown };
+type LibraryServiceProcess = {
+  readonly stdin: { write: (chunk: string, callback: (error?: Error | null) => void) => boolean };
+  readonly stdout: { on: (event: "data", listener: (chunk: Buffer) => void) => unknown };
+  readonly stderr: { on: (event: "data", listener: (chunk: Buffer) => void) => unknown };
+  kill: () => boolean;
+  once: (event: "error" | "close", listener: (...args: unknown[]) => void) => unknown;
+};
+
 let activeInvocations = 0;
+let nextServiceId = 1;
 
 function failure(code: string): EngineResult {
   return { ok: false, error: { code } };
@@ -271,6 +282,133 @@ async function runEngine(args: readonly string[]): Promise<EngineResult> {
   }
 }
 
+export class LibraryServiceClient {
+  readonly #spawnEngine: (args: readonly string[]) => LibraryServiceProcess;
+  #child: LibraryServiceProcess | null = null;
+  #pending = new Map<string, { resolve: (result: EngineResult) => void }>();
+  #buffer = "";
+
+  constructor(spawnEngine: (args: readonly string[]) => LibraryServiceProcess = (args) =>
+    spawn(enginePath(), args, { windowsHide: true, stdio: ["pipe", "pipe", "pipe"] })) {
+    this.#spawnEngine = spawnEngine;
+  }
+
+  invoke(command: string, args: CommandArguments): Promise<EngineResult> {
+    if (command !== "library_update") return Promise.resolve(failure("invalid-arguments"));
+    const input = args ?? {};
+    const requestJson = objectJson({ id: input.id, patch: input.patch });
+    if (!requestJson || this.#pending.size >= MAX_SERVICE_PENDING) {
+      return Promise.resolve(failure(requestJson ? "engine-unavailable" : "invalid-arguments"));
+    }
+    const id = String(nextServiceId++);
+    const line = JSON.stringify({ id, command, args: JSON.parse(requestJson) }) + "\n";
+    if (Buffer.byteLength(line, "utf8") > MAX_JSON_ARGUMENT_BYTES) {
+      return Promise.resolve(failure("invalid-arguments"));
+    }
+    const child = this.#ensureChild();
+    if (!child) return Promise.resolve(failure("engine-unavailable"));
+    return new Promise((resolve) => {
+      this.#pending.set(id, { resolve });
+      try {
+        child.stdin.write(line, (error) => {
+          if (error) this.#failAll("engine-unavailable");
+        });
+      } catch {
+        this.#failAll("engine-unavailable");
+      }
+    });
+  }
+
+  close(): void {
+    const child = this.#child;
+    this.#child = null;
+    this.#failPending("engine-unavailable");
+    child?.kill();
+  }
+
+  #ensureChild(): LibraryServiceProcess | null {
+    if (this.#child) return this.#child;
+    let child: LibraryServiceProcess;
+    try {
+      child = this.#spawnEngine(["library", "service"]);
+    } catch {
+      return null;
+    }
+    this.#child = child;
+    this.#buffer = "";
+    child.stdout.on("data", (chunk: Buffer) => this.#onStdout(chunk));
+    child.stderr.on("data", () => this.#failAll("protocol-error"));
+    child.once("error", () => this.#failAll("engine-unavailable"));
+    child.once("close", () => this.#failAll("engine-unavailable"));
+    return child;
+  }
+
+  #onStdout(chunk: Buffer): void {
+    this.#buffer += chunk.toString("utf8");
+    if (Buffer.byteLength(this.#buffer, "utf8") > MAX_OUTPUT_BYTES) {
+      this.#failAll("protocol-error");
+      return;
+    }
+    for (;;) {
+      const newline = this.#buffer.indexOf("\n");
+      if (newline < 0) break;
+      const line = this.#buffer.slice(0, newline).replace(/\r$/, "");
+      this.#buffer = this.#buffer.slice(newline + 1);
+      if (Buffer.byteLength(line, "utf8") > MAX_OUTPUT_BYTES) {
+        this.#failAll("protocol-error");
+        return;
+      }
+      this.#handleLine(line);
+    }
+  }
+
+  #handleLine(line: string): void {
+    let record: ServiceRecord;
+    try {
+      record = JSON.parse(line) as ServiceRecord;
+    } catch {
+      this.#failAll("protocol-error");
+      return;
+    }
+    const id = typeof record.id === "string" ? record.id : "";
+    const pending = this.#pending.get(id);
+    if (record.ok !== true && record.ok !== false) {
+      this.#failAll("protocol-error");
+      return;
+    }
+    const keys = Object.keys(record).sort();
+    const validKeys = record.ok
+      ? keys.length === 3 && keys[0] === "id" && keys[1] === "ok" && keys[2] === "value"
+      : keys.length === 3 && keys[0] === "error" && keys[1] === "id" && keys[2] === "ok";
+    const errorKeys = record.ok || typeof record.error !== "object" || record.error === null
+      ? []
+      : Object.keys(record.error).sort();
+    const validError = record.ok || (errorKeys.length === 1 && errorKeys[0] === "code");
+    const valid = validKeys && validError && (record.ok ? Object.hasOwn(record, "value") : nonempty(record.error?.code));
+    if (!pending || !valid) {
+      this.#failAll("protocol-error");
+      return;
+    }
+    this.#pending.delete(id);
+    pending.resolve(record.ok ? { ok: true, value: record.value } : { ok: false, error: { code: record.error.code } });
+  }
+
+  #failAll(code: string): void {
+    const child = this.#child;
+    this.#child = null;
+    child?.kill();
+    this.#failPending(code);
+  }
+
+  #failPending(code: string): void {
+    const pending = [...this.#pending.values()];
+    this.#pending.clear();
+    for (const request of pending) request.resolve(failure(code));
+  }
+}
+
+export const libraryServiceClient = new LibraryServiceClient();
+
 export async function invokeEngine(command: string, input?: CommandArguments): Promise<EngineResult> {
   if (command === "app_report_library_usable") {
     if (process.env.TAKIO_STARTUP_BENCHMARK === "1") {
@@ -279,5 +417,6 @@ export async function invokeEngine(command: string, input?: CommandArguments): P
     return { ok: true, value: null };
   }
   const args = await buildEngineArguments(command, input);
+  if (command === "library_update") return args ? libraryServiceClient.invoke(command, input) : failure("invalid-arguments");
   return args ? runEngine(args) : failure("invalid-arguments");
 }

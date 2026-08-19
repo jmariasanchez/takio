@@ -151,6 +151,8 @@ type Launcher = (argv: readonly string[]) => void | Promise<void>;
 type Ejector = (destinationPath: string) => Promise<number>;
 
 const MAX_LIBRARY_JSON_REQUEST_BYTES = 16 * 1024;
+const MAX_LIBRARY_SERVICE_LINE_BYTES = 16 * 1024;
+const MAX_LIBRARY_SERVICE_ID_BYTES = 128;
 const MAX_BATCH_ITEMS = 256;
 const JSON_INPUT_HINT = "JSON, '-' for stdin, or '@path' for a file";
 const CLI_VERSION = "0.1.0";
@@ -159,6 +161,31 @@ const MACHINE_CONTRACT_VERSION = 2;
 type JsonRequestSchema<T> = {
   safeParse(value: unknown): { success: true; data: T } | { success: false };
 };
+
+type ServiceResponse =
+  | { readonly id: string; readonly ok: true; readonly value: unknown }
+  | { readonly id: string; readonly ok: false; readonly error: { readonly code: string } };
+
+function serviceFailure(id: string, code: string): ServiceResponse {
+  return { id, ok: false, error: { code } };
+}
+
+class LibraryServiceOpenError extends Error {
+  constructor(readonly code: string) {
+    super(code);
+  }
+}
+
+function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
+  const present = Object.keys(value);
+  return present.length === keys.length && keys.every((key) => Object.hasOwn(value, key));
+}
+
+function boundedServiceId(value: unknown): string {
+  return typeof value === "string" && value.trim() !== "" && Buffer.byteLength(value, "utf8") <= MAX_LIBRARY_SERVICE_ID_BYTES
+    ? value
+    : "";
+}
 
 async function readBoundedJsonInput(
   source: AsyncIterable<string | Uint8Array>,
@@ -311,6 +338,95 @@ async function openLibraryStore(
   }
 
   return { store, paths };
+}
+
+async function openLibraryServiceStore(databasePath?: string): Promise<BunSqliteLibraryStore> {
+  const paths = libraryPaths(databasePath, databasePath === undefined ? process.env.TAKIO_LIBRARY : undefined);
+  await mkdir(dirname(paths.databasePath), { recursive: true });
+  const store = new BunSqliteLibraryStore(paths.databasePath);
+  const opened = await store.open({ config: {} });
+  if (!opened.ok) {
+    store.close();
+    throw new LibraryServiceOpenError(opened.error.code);
+  }
+  return store;
+}
+
+function parseServiceRequest(line: string):
+  | { readonly ok: true; readonly id: string; readonly command: "library_update"; readonly args: { readonly id: string; readonly patch: LibraryMetadataPatch } }
+  | { readonly ok: false; readonly id: string; readonly code: string } {
+  let value: unknown;
+  try {
+    value = JSON.parse(line);
+  } catch {
+    return { ok: false, id: "", code: "invalid-arguments" };
+  }
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return { ok: false, id: "", code: "invalid-arguments" };
+  }
+  const record = value as Record<string, unknown>;
+  const id = boundedServiceId(record.id);
+  if (!hasExactKeys(record, ["id", "command", "args"]) || id === "") {
+    return { ok: false, id, code: "invalid-arguments" };
+  }
+  if (record.command !== "library_update") return { ok: false, id, code: "invalid-arguments" };
+  const args = record.args;
+  if (typeof args !== "object" || args === null || Array.isArray(args)) {
+    return { ok: false, id, code: "invalid-arguments" };
+  }
+  const update = args as Record<string, unknown>;
+  if (!hasExactKeys(update, ["id", "patch"])) return { ok: false, id, code: "invalid-arguments" };
+  const itemId = typeof update.id === "string" ? update.id : "";
+  const patch = libraryMetadataPatchSchema.safeParse(update.patch);
+  if (itemId.trim() === "" || !patch.success) {
+    return { ok: false, id, code: "invalid-arguments" };
+  }
+  return { ok: true, id, command: "library_update", args: { id: itemId, patch: patch.data } };
+}
+
+export async function runLibraryService(databasePath?: string): Promise<void> {
+  let store: BunSqliteLibraryStore;
+  try {
+    store = await openLibraryServiceStore(databasePath);
+  } catch (error) {
+    const code = error instanceof LibraryServiceOpenError ? error.code : "storage-unavailable";
+    process.stdout.write(JSON.stringify(serviceFailure("", code)) + "\n");
+    process.exitCode = 1;
+    return;
+  }
+
+  let pending = "";
+  try {
+    for await (const chunk of process.stdin) {
+      pending += Buffer.from(chunk).toString("utf8");
+      for (;;) {
+        const newline = pending.indexOf("\n");
+        if (newline < 0) break;
+        const line = pending.slice(0, newline).replace(/\r$/, "");
+        pending = pending.slice(newline + 1);
+        if (line.length === 0) continue;
+        if (Buffer.byteLength(line, "utf8") > MAX_LIBRARY_SERVICE_LINE_BYTES) {
+          process.stdout.write(JSON.stringify(serviceFailure("", "invalid-arguments")) + "\n");
+          process.exitCode = 1;
+          return;
+        }
+        const request = parseServiceRequest(line);
+        if (!request.ok) {
+          process.stdout.write(JSON.stringify(serviceFailure(request.id, request.code)) + "\n");
+          continue;
+        }
+        const result = await store.update(request.args);
+        process.stdout.write(JSON.stringify(result.ok ? { id: request.id, ok: true, value: { item: result.value } } : serviceFailure(request.id, result.error.code)) + "\n");
+      }
+      if (Buffer.byteLength(pending, "utf8") > MAX_LIBRARY_SERVICE_LINE_BYTES) {
+        process.stdout.write(JSON.stringify(serviceFailure("", "invalid-arguments")) + "\n");
+        process.exitCode = 1;
+        return;
+      }
+    }
+  } finally {
+    store.close();
+  }
 }
 
 function jobsDatabasePath(databasePath?: string, libraryName?: string): string {
@@ -3452,6 +3568,10 @@ export async function run(argv: string[]): Promise<void> {
     } catch (error) {
       process.exitCode = error instanceof EpubTransformError ? 65 : 74;
     }
+    return;
+  }
+  if (argv[2] === "library" && argv[3] === "service" && (argv.length === 4 || argv.length === 6 && argv[4] === "--db")) {
+    await runLibraryService(argv[5]);
     return;
   }
   try {

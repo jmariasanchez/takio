@@ -506,6 +506,47 @@ describe("takio CLI", () => {
       });
     });
 
+    it("processes strict library service updates sequentially and preserves one-shot updates", async () => {
+      const sourcePath = join(directory!, "service-book.epub");
+      await Bun.write(sourcePath, "service contents");
+      const env = { TAKIO_DATA_DIR: directory };
+      const imported = parseProcessOutput(
+        await invokeProcess(["library", "import", "--source-path", sourcePath], env),
+      ) as { ok: true; value: { item: { id: string } } };
+      const itemId = imported.value.item.id;
+
+      const first = { id: "req-1", command: "library_update", args: { id: itemId, patch: { title: "First" } } };
+      const second = { id: "req-2", command: "library_update", args: { id: itemId, patch: { title: "Second" } } };
+      const service = await invokeProcess(["library", "service"], env, `${JSON.stringify(first)}\n${JSON.stringify(second)}\n`);
+      expect(service.exitCode).toBe(0);
+      expect(service.stderr).toBe("");
+      const responses = service.stdout.trim().split("\n").map((line) => JSON.parse(line));
+      expect(responses.map((response) => [response.id, response.ok, response.value.item.title])).toEqual([
+        ["req-1", true, "First"],
+        ["req-2", true, "Second"],
+      ]);
+
+      const updated = parseProcessOutput(
+        await invokeProcess(["library", "update", "--id", itemId, "--patch-json", JSON.stringify({ title: "Third" })], env),
+      ) as { ok: true; value: { item: { title: string } } };
+      expect(updated.value.item.title).toBe("Third");
+    });
+
+    it("rejects non-strict library service protocol and does not leak startup errors", async () => {
+      const env = { TAKIO_DATA_DIR: directory };
+      const extra = { id: "req-1", command: "library_update", args: { id: "missing", patch: { title: "No" }, extra: true } };
+      const invalid = await invokeProcess(["library", "service"], env, `${JSON.stringify(extra)}\n`);
+      expect(invalid.exitCode).toBe(0);
+      expect(JSON.parse(invalid.stdout.trim())).toEqual({ id: "req-1", ok: false, error: { code: "invalid-arguments" } });
+
+      const blockedPath = join(directory!, "missing", "library.sqlite");
+      await Bun.write(join(directory!, "missing"), "not a directory");
+      const startup = await invokeProcess(["library", "service", "--db", blockedPath], {}, "");
+      expect(startup.exitCode).not.toBe(0);
+      expect(startup.stdout.trim()).toBe(JSON.stringify({ id: "", ok: false, error: { code: "storage-unavailable" } }));
+      expect(startup.stdout).not.toContain(blockedPath);
+    });
+
     it("enriches a single import while preserving an explicit title", async () => {
       const sourcePath = join(directory!, "single-metadata.epub");
       await Bun.write(

@@ -1,6 +1,34 @@
 import { describe, expect, test } from "bun:test";
+import { EventEmitter } from "node:events";
+import { PassThrough, Writable } from "node:stream";
 
-import { buildEngineArguments, parseEngineRecord } from "./engine";
+import { LibraryServiceClient, buildEngineArguments, parseEngineRecord } from "./engine";
+
+function serviceDouble() {
+  const children: Array<EventEmitter & { stdin: Writable; stdout: PassThrough; stderr: PassThrough; kill: () => boolean; writes: string[]; killed: boolean }> = [];
+  const spawn = (args: readonly string[]) => {
+    const child = new EventEmitter() as EventEmitter & { stdin: Writable; stdout: PassThrough; stderr: PassThrough; kill: () => boolean; writes: string[]; killed: boolean };
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    child.writes = [];
+    child.killed = false;
+    child.stdin = new Writable({
+      write(chunk, _encoding, callback) {
+        child.writes.push(Buffer.from(chunk).toString("utf8"));
+        callback();
+      },
+    });
+    child.kill = () => { child.killed = true; return true; };
+    expect(args).toEqual(["library", "service"]);
+    children.push(child);
+    return child;
+  };
+  return { children, spawn };
+}
+
+function requestId(line: string): string {
+  return JSON.parse(line).id;
+}
 
 describe("Electron engine boundary", () => {
   test("maps only fixed command names and preserves JSON as one literal argument", async () => {
@@ -157,5 +185,69 @@ describe("Electron engine boundary", () => {
     expect(
       parseEngineRecord(0, Buffer.from("not-json"), Buffer.alloc(0)),
     ).toEqual({ ok: false, error: { code: "protocol-error" } });
+  });
+
+  test("uses one live library service child and correlates sequential responses", async () => {
+    const service = serviceDouble();
+    const client = new LibraryServiceClient(service.spawn);
+
+    const first = client.invoke("library_update", { id: "item-1", patch: { title: "One" } });
+    const second = client.invoke("library_update", { id: "item-1", patch: { title: "Two" } });
+
+    expect(service.children).toHaveLength(1);
+    expect(service.children[0]!.writes.map((line) => JSON.parse(line).args.patch.title)).toEqual(["One", "Two"]);
+    service.children[0]!.stdout.write(JSON.stringify({ id: requestId(service.children[0]!.writes[0]!), ok: true, value: { item: { title: "One" } } }) + "\n");
+    service.children[0]!.stdout.write(JSON.stringify({ id: requestId(service.children[0]!.writes[1]!), ok: true, value: { item: { title: "Two" } } }) + "\n");
+
+    await expect(first).resolves.toEqual({ ok: true, value: { item: { title: "One" } } });
+    await expect(second).resolves.toEqual({ ok: true, value: { item: { title: "Two" } } });
+  });
+
+  test("rejects response mismatches and lazily restarts after a crash", async () => {
+    const service = serviceDouble();
+    const client = new LibraryServiceClient(service.spawn);
+
+    const mismatched = client.invoke("library_update", { id: "item-1", patch: { title: "One" } });
+    service.children[0]!.stdout.write(JSON.stringify({ id: "other", ok: true, value: null }) + "\n");
+    await expect(mismatched).resolves.toEqual({ ok: false, error: { code: "protocol-error" } });
+
+    const crashed = client.invoke("library_update", { id: "item-1", patch: { title: "Two" } });
+    service.children[1]!.emit("close", 1);
+    await expect(crashed).resolves.toEqual({ ok: false, error: { code: "engine-unavailable" } });
+
+    const restarted = client.invoke("library_update", { id: "item-1", patch: { title: "Three" } });
+    expect(service.children).toHaveLength(3);
+    service.children[2]!.stdout.write(JSON.stringify({ id: requestId(service.children[2]!.writes[0]!), ok: true, value: { item: { title: "Three" } } }) + "\n");
+    await expect(restarted).resolves.toEqual({ ok: true, value: { item: { title: "Three" } } });
+  });
+
+  test("rejects malformed response shapes and spawn failures", async () => {
+    const service = serviceDouble();
+    const client = new LibraryServiceClient(service.spawn);
+    const malformed = client.invoke("library_update", { id: "item-1", patch: { title: "One" } });
+    service.children[0]!.stdout.write(JSON.stringify({ id: requestId(service.children[0]!.writes[0]!), ok: true, value: null, extra: true }) + "\n");
+    await expect(malformed).resolves.toEqual({ ok: false, error: { code: "protocol-error" } });
+
+    const truthy = client.invoke("library_update", { id: "item-1", patch: { title: "Two" } });
+    service.children[1]!.stdout.write(JSON.stringify({ id: requestId(service.children[1]!.writes[0]!), ok: 1, value: null }) + "\n");
+    await expect(truthy).resolves.toEqual({ ok: false, error: { code: "protocol-error" } });
+
+    const falsy = client.invoke("library_update", { id: "item-1", patch: { title: "Three" } });
+    service.children[2]!.stdout.write(JSON.stringify({ id: requestId(service.children[2]!.writes[0]!), ok: 0, error: { code: "bad" } }) + "\n");
+    await expect(falsy).resolves.toEqual({ ok: false, error: { code: "protocol-error" } });
+
+    const broken = new LibraryServiceClient(() => { throw new Error("missing binary /private/path"); });
+    await expect(broken.invoke("library_update", { id: "item-1", patch: { title: "One" } })).resolves.toEqual({ ok: false, error: { code: "engine-unavailable" } });
+  });
+
+  test("close kills the service child and fails pending requests", async () => {
+    const service = serviceDouble();
+    const client = new LibraryServiceClient(service.spawn);
+    const pending = client.invoke("library_update", { id: "item-1", patch: { title: "One" } });
+
+    client.close();
+
+    expect(service.children[0]!.killed).toBe(true);
+    await expect(pending).resolves.toEqual({ ok: false, error: { code: "engine-unavailable" } });
   });
 });
