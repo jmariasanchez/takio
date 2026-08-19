@@ -63,6 +63,23 @@ async function invokeProcess(
   return { stdout, stderr, exitCode };
 }
 
+async function readProcessLine(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  state: { pending: string },
+): Promise<string> {
+  for (;;) {
+    const newline = state.pending.indexOf("\n");
+    if (newline >= 0) {
+      const line = state.pending.slice(0, newline).replace(/\r$/, "");
+      state.pending = state.pending.slice(newline + 1);
+      return line;
+    }
+    const chunk = await reader.read();
+    if (chunk.done) throw new Error("Library service closed before returning a response.");
+    state.pending += Buffer.from(chunk.value).toString("utf8");
+  }
+}
+
 function parseOutput(output: string[]): unknown {
   expect(output).toHaveLength(1);
   const line = output[0]!;
@@ -530,6 +547,65 @@ describe("takio CLI", () => {
         await invokeProcess(["library", "update", "--id", itemId, "--patch-json", JSON.stringify({ title: "Third" })], env),
       ) as { ok: true; value: { item: { title: string } } };
       expect(updated.value.item.title).toBe("Third");
+
+      const restarted = { id: "req-3", command: "library_update", args: { id: itemId, patch: { title: "Fourth" } } };
+      const restartedService = await invokeProcess(["library", "service"], env, `${JSON.stringify(restarted)}\n`);
+      expect(restartedService.exitCode).toBe(0);
+      expect(JSON.parse(restartedService.stdout.trim())).toMatchObject({
+        id: "req-3",
+        ok: true,
+        value: { item: { title: "Fourth" } },
+      });
+      const persisted = parseProcessOutput(
+        await invokeProcess(["library", "get", "--id", itemId], env),
+      ) as { ok: true; value: { item: { title: string } } };
+      expect(persisted.value.item.title).toBe("Fourth");
+    });
+
+    it("coordinates an open library service with a foreground CLI writer", async () => {
+      const sourcePath = join(directory!, "coordinated-service-book.epub");
+      await Bun.write(sourcePath, "coordinated service contents");
+      const env = { ...process.env, TAKIO_DATA_DIR: directory! };
+      const imported = parseProcessOutput(
+        await invokeProcess(["library", "import", "--source-path", sourcePath], env),
+      ) as { ok: true; value: { item: { id: string } } };
+      const itemId = imported.value.item.id;
+      const service = Bun.spawn({
+        cmd: [process.execPath, join(import.meta.dir, "../src/main.ts"), "library", "service"],
+        env,
+        stdin: "pipe",
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      const reader = service.stdout.getReader();
+      const output = { pending: "" };
+
+      service.stdin.write(`${JSON.stringify({ id: "service-1", command: "library_update", args: { id: itemId, patch: { title: "Service One" } } })}\n`);
+      expect(JSON.parse(await readProcessLine(reader, output))).toMatchObject({
+        id: "service-1",
+        ok: true,
+        value: { item: { title: "Service One" } },
+      });
+
+      const foreground = parseProcessOutput(
+        await invokeProcess(["library", "update", "--id", itemId, "--patch-json", JSON.stringify({ title: "Foreground" })], env),
+      ) as { ok: true; value: { item: { title: string } } };
+      expect(foreground.value.item.title).toBe("Foreground");
+
+      service.stdin.write(`${JSON.stringify({ id: "service-2", command: "library_update", args: { id: itemId, patch: { title: "Service Two" } } })}\n`);
+      expect(JSON.parse(await readProcessLine(reader, output))).toMatchObject({
+        id: "service-2",
+        ok: true,
+        value: { item: { title: "Service Two" } },
+      });
+      service.stdin.end();
+      expect(await service.exited).toBe(0);
+      expect(await new Response(service.stderr).text()).toBe("");
+
+      const persisted = parseProcessOutput(
+        await invokeProcess(["library", "get", "--id", itemId], env),
+      ) as { ok: true; value: { item: { title: string } } };
+      expect(persisted.value.item.title).toBe("Service Two");
     });
 
     it("rejects non-strict library service protocol and does not leak startup errors", async () => {
