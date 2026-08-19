@@ -171,6 +171,29 @@ test("strictly decodes reader send results", () => {
   }
 });
 
+test("rejects a valid send response for another item or format", async () => {
+  const result = {
+    ok: true,
+    value: {
+      itemId: "another-item",
+      destinationId: "Reader",
+      path: "/Volumes/Reader/Books/Title.epub",
+      bytes: 42,
+      sha256: "b".repeat(64),
+      format: "epub",
+      converted: false,
+    },
+  } as const;
+  const invokeCommand: DestinationInvoker = async () => result as never;
+
+  expect(
+    await sendLibraryItem("item-1", "epub", "/Volumes/Reader", false, invokeCommand),
+  ).toEqual({ ok: false, error: { code: "protocol-error" } });
+  expect(
+    await sendLibraryItem("another-item", "pdf", "/Volumes/Reader", true, invokeCommand),
+  ).toEqual({ ok: false, error: { code: "protocol-error" } });
+});
+
 test("keeps reader collision, availability, format, verification, and eject failures distinct", () => {
   expect(describeDestinationError("destination-file-exists")).toBe(
     "The destination file already exists on that reader.",

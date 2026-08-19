@@ -78,7 +78,12 @@ export function sendLibraryItem(
   invokeCommand: DestinationInvoker = invokeDesktop,
 ): Promise<DesktopDestinationSendResult> {
   return invokeCommand("destination_send", { id, format, destinationPath, convertIfNeeded })
-    .then(decodeDestinationSendResult);
+    .then(decodeDestinationSendResult)
+    .then((result) =>
+      result.ok && (result.value.itemId !== id || result.value.format !== format)
+        ? { ok: false as const, error: { code: "protocol-error" } }
+        : result,
+    );
 }
 
 export function ejectDestination(
