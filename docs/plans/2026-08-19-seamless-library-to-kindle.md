@@ -42,7 +42,8 @@ ownership, usable offline, and available through both desktop and CLI contracts.
   sends. Responses are strictly decoded and correlated to the requested item and
   format before the UI counts a success.
 - Desktop reader inventory reports present, missing, and changed Takio-tracked
-  deliveries without exposing destructive removal.
+  deliveries. Only unchanged present records expose removal; changed records are
+  protected and missing records remain informational.
 - Public CLI acceptance delivered an attached PDF and converted a real EPUB to
   PDF before verified delivery to an isolated Kindle-shaped destination. Both
   appeared as present in the destination manifest inventory.
@@ -63,6 +64,12 @@ ownership, usable offline, and available through both desktop and CLI contracts.
   permanently deleted it through the explicit confirmation UI, removed only the
   managed library copy, preserved the original EPUB, and reopened and quit cleanly
   with an empty library.
+- Public destination acceptance refused removal after a tracked reader file was
+  changed, retained both the file and manifest record, then removed the restored
+  unchanged delivery while preserving an unrelated reader file. Inventory was
+  empty afterward. The updated signed macOS package built, passed strict code-sign
+  verification, rendered its Takio page, and shut down cleanly under an isolated
+  profile.
 - Full physical Kindle acceptance remains open because no device was available.
 
 ## Program rules
@@ -214,5 +221,7 @@ vertical slice for desktop metadata updates and passed restart, competing-writer
 packaging, and end-user persistence acceptance. Trash, restore, and purge are now
 also coordinated and packaged-acceptance validated. The next service slice should
 move format and cover mutations behind the same owner. In parallel, the Kindle
-milestone continues with safe tracked removal, rooted transport presentation, and
-physical-device acceptance.
+milestone has completed safe tracked removal and continues with rooted transport
+presentation and physical-device acceptance. Reference resilience, complete
+snapshots, unified discovery, and declarative format capabilities remain later
+program milestones rather than completed outcomes.
