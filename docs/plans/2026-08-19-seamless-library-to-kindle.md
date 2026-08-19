@@ -46,6 +46,16 @@ ownership, usable offline, and available through both desktop and CLI contracts.
 - Public CLI acceptance delivered an attached PDF and converted a real EPUB to
   PDF before verified delivery to an isolated Kindle-shaped destination. Both
   appeared as present in the destination manifest inventory.
+- Desktop metadata updates now use one persistent, bounded library service with
+  correlated NDJSON responses, strict protocol validation, lazy restart after
+  failure, clean shutdown, and a five-second SQLite busy timeout for foreground
+  CLI coexistence.
+- Public process tests kept that service open while a foreground CLI writer
+  updated the same book, then confirmed a second service update and a post-restart
+  read without lock-dependent output or lost state.
+- A newly packaged macOS app imported a real EPUB, saved a title edit, quit,
+  relaunched against the same isolated library, saved a second edit, and exposed
+  the final title through the public one-shot CLI after shutdown.
 - Full physical Kindle acceptance remains open because no device was available.
 
 ## Program rules
@@ -192,6 +202,9 @@ after atomic rename, fingerprint mismatch, duplicate discovery, and `EXDEV`.
 Only after those tests drive the store state machine should the existing CLI,
 Electron, and desktop import surfaces be switched to the new semantics.
 
-This slice is complete. The next implementation slice is the coordinated library
-service, while the Kindle milestone continues with safe tracked removal, rooted
-transport presentation, and physical-device acceptance.
+This slice is complete. The coordinated service has landed its first production
+vertical slice for desktop metadata updates and passed restart, competing-writer,
+packaging, and end-user persistence acceptance. The next service slice should move
+the remaining desktop library mutations behind the same owner. In parallel, the
+Kindle milestone continues with safe tracked removal, rooted transport
+presentation, and physical-device acceptance.
