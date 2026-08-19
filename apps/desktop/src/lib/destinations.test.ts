@@ -47,22 +47,22 @@ test("uses only the fixed desktop destination commands and argument names", asyn
 });
 
 test("strictly decodes reader inventory entries", () => {
+  const sha256 = "a".repeat(64);
+  const validEntry = {
+    itemId: "item-1",
+    relativePath: "Books/Title.epub",
+    bytes: 12,
+    sha256,
+    format: "epub",
+    timestamp: "2026-08-19T00:00:00.000Z",
+    status: "present",
+  } as const;
   expect(
     decodeDestinationInventoryResult({
       ok: true,
       value: {
         destinationId: "Reader",
-        entries: [
-          {
-            itemId: "item-1",
-            relativePath: "Books/Title.epub",
-            bytes: 12,
-            sha256: "abc",
-            format: "epub",
-            timestamp: "2026-08-19T00:00:00.000Z",
-            status: "present",
-          },
-        ],
+        entries: [validEntry],
       },
     }),
   ).toEqual({
@@ -74,7 +74,7 @@ test("strictly decodes reader inventory entries", () => {
           itemId: "item-1",
           relativePath: "Books/Title.epub",
           bytes: 12,
-          sha256: "abc",
+          sha256,
           format: "epub",
           timestamp: "2026-08-19T00:00:00.000Z",
           status: "present",
@@ -88,6 +88,38 @@ test("strictly decodes reader inventory entries", () => {
       value: { destinationId: "Reader", entries: [{ itemId: "item-1", status: "removed" }] },
     }),
   ).toEqual({ ok: false, error: { code: "protocol-error" } });
+
+  for (const entry of [
+    { ...validEntry, itemId: "" },
+    { ...validEntry, relativePath: "" },
+    { ...validEntry, relativePath: "/Books/Title.epub" },
+    { ...validEntry, relativePath: "Books/../Title.epub" },
+    { ...validEntry, bytes: -1 },
+    { ...validEntry, bytes: 1.5 },
+    { ...validEntry, sha256: "not-a-sha" },
+    { ...validEntry, format: "unknown" },
+    { ...validEntry, timestamp: "not-a-date" },
+    { ...validEntry, status: "removed" },
+    { ...validEntry, extra: "unexpected" },
+  ]) {
+    expect(
+      decodeDestinationInventoryResult({
+        ok: true,
+        value: { destinationId: "Reader", entries: [entry] },
+      }),
+    ).toEqual({ ok: false, error: { code: "protocol-error" } });
+  }
+
+  for (const result of [
+    { ok: true, value: { destinationId: "", entries: [validEntry] } },
+    { ok: true, value: { destinationId: "Reader", entries: [validEntry], extra: true } },
+    { ok: true, value: { destinationId: "Reader", entries: [validEntry] }, extra: true },
+  ]) {
+    expect(decodeDestinationInventoryResult(result)).toEqual({
+      ok: false,
+      error: { code: "protocol-error" },
+    });
+  }
 });
 
 test("keeps reader collision, availability, format, verification, and eject failures distinct", () => {

@@ -1,4 +1,4 @@
-import type { Destination, FormatId } from "@takio/core";
+import { FORMAT_CATALOG, type Destination, type FormatId } from "@takio/core";
 import { invoke } from "./desktop";
 
 export type DestinationFailure = {
@@ -89,16 +89,50 @@ function isInventoryStatus(value: unknown): value is DestinationInventoryStatus 
   return value === "present" || value === "missing" || value === "changed";
 }
 
+const inventoryEntryKeys = [
+  "bytes",
+  "format",
+  "itemId",
+  "relativePath",
+  "sha256",
+  "status",
+  "timestamp",
+].sort();
+const inventoryResultKeys = ["ok", "value"].sort();
+const inventoryResultValueKeys = ["destinationId", "entries"].sort();
+const knownFormats = new Set(FORMAT_CATALOG.map(({ id }) => id));
+
+function hasOnlyKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
+  const actual = Object.keys(value).sort();
+  return actual.length === keys.length && actual.every((key, index) => key === keys[index]);
+}
+
+function nonemptyString(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function safeRelativePath(value: unknown): value is string {
+  if (!nonemptyString(value) || value.startsWith("/")) return false;
+  return !value.split("/").some((part) => part === "" || part === "." || part === "..");
+}
+
+function validTimestamp(value: unknown): value is string {
+  return nonemptyString(value) && !Number.isNaN(Date.parse(value));
+}
+
 export function decodeDestinationInventoryEntry(value: unknown): DestinationInventoryEntry | null {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
   const candidate = value as Record<string, unknown>;
-  return typeof candidate.itemId === "string" &&
-    typeof candidate.relativePath === "string" &&
+  return hasOnlyKeys(candidate, inventoryEntryKeys) &&
+    nonemptyString(candidate.itemId) &&
+    safeRelativePath(candidate.relativePath) &&
     typeof candidate.bytes === "number" &&
     Number.isFinite(candidate.bytes) &&
-    typeof candidate.sha256 === "string" &&
-    typeof candidate.format === "string" &&
-    typeof candidate.timestamp === "string" &&
+    Number.isInteger(candidate.bytes) &&
+    candidate.bytes >= 0 &&
+    typeof candidate.sha256 === "string" && /^[a-f0-9]{64}$/i.test(candidate.sha256) &&
+    typeof candidate.format === "string" && knownFormats.has(candidate.format as FormatId) &&
+    validTimestamp(candidate.timestamp) &&
     isInventoryStatus(candidate.status)
     ? {
         itemId: candidate.itemId,
@@ -123,8 +157,17 @@ export function decodeDestinationInventoryResult(value: unknown): DesktopDestina
       ? { ok: false, error: { code: error.code } }
       : { ok: false, error: { code: "protocol-error" } };
   }
-  const payload = result.value as { destinationId?: unknown; entries?: unknown } | null;
-  if (result.ok !== true || typeof payload?.destinationId !== "string" || !Array.isArray(payload.entries)) {
+  const payload = result.value as Record<string, unknown> | null;
+  if (
+    result.ok !== true ||
+    !hasOnlyKeys(result as Record<string, unknown>, inventoryResultKeys) ||
+    typeof payload !== "object" ||
+    payload === null ||
+    Array.isArray(payload) ||
+    !hasOnlyKeys(payload, inventoryResultValueKeys) ||
+    !nonemptyString(payload.destinationId) ||
+    !Array.isArray(payload.entries)
+  ) {
     return { ok: false, error: { code: "protocol-error" } };
   }
   const entries = payload.entries.map(decodeDestinationInventoryEntry);
