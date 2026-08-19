@@ -60,6 +60,10 @@ ownership, usable offline, and available through both desktop and CLI contracts.
 - Trash, restore, and permanent purge now share the persistent library service
   with metadata updates. Public service tests execute all three in order through
   one process and verify final absence without deleting the caller-owned source.
+- Format attach by managed copy or reference, format removal and replacement, and
+  cover set and removal now share that same persistent service. A public process
+  test executed the full sequence through one service, verified the final managed
+  EPUB and PDF bytes, and confirmed every caller-owned source remained in place.
 - Packaged macOS acceptance restored a trashed book through the visible Trash UI,
   permanently deleted it through the explicit confirmation UI, removed only the
   managed library copy, preserved the original EPUB, and reopened and quit cleanly
@@ -219,9 +223,9 @@ Electron, and desktop import surfaces be switched to the new semantics.
 This slice is complete. The coordinated service has landed its first production
 vertical slice for desktop metadata updates and passed restart, competing-writer,
 packaging, and end-user persistence acceptance. Trash, restore, and purge are now
-also coordinated and packaged-acceptance validated. The next service slice should
-move format and cover mutations behind the same owner. In parallel, the Kindle
-milestone has completed safe tracked removal and continues with rooted transport
-presentation and physical-device acceptance. Reference resilience, complete
-snapshots, unified discovery, and declarative format capabilities remain later
-program milestones rather than completed outcomes.
+also coordinated and packaged-acceptance validated. Format and cover mutations now
+use the same owner and passed public process, full workspace, and production build
+checks. The Kindle milestone has completed safe tracked removal and continues with
+rooted transport presentation and physical-device acceptance. Reference
+resilience, complete snapshots, unified discovery, and declarative format
+capabilities remain later program milestones rather than completed outcomes.
