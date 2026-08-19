@@ -203,6 +203,48 @@ describe("Electron engine boundary", () => {
     await expect(second).resolves.toEqual({ ok: true, value: { item: { title: "Two" } } });
   });
 
+  test("uses the same live service for trash, restore, and purge mutations", async () => {
+    const service = serviceDouble();
+    const client = new LibraryServiceClient(service.spawn);
+    const trashed = client.invoke("library_trash", { request: { id: "item-1" } });
+    const restored = client.invoke("library_restore", { request: { id: "item-1" } });
+    const purged = client.invoke("library_purge", { request: { id: "item-1" } });
+
+    expect(service.children).toHaveLength(1);
+    expect(service.children[0]!.writes.map((line) => {
+      const request = JSON.parse(line);
+      return [request.command, request.args];
+    })).toEqual([
+      ["library_trash", { id: "item-1" }],
+      ["library_restore", { id: "item-1" }],
+      ["library_purge", { id: "item-1" }],
+    ]);
+
+    const [trashLine, restoreLine, purgeLine] = service.children[0]!.writes;
+    service.children[0]!.stdout.write(JSON.stringify({
+      id: requestId(trashLine!),
+      ok: true,
+      value: { item: { id: "item-1", trashedAt: "2026-08-19T23:00:00.000Z" } },
+    }) + "\n");
+    service.children[0]!.stdout.write(JSON.stringify({
+      id: requestId(restoreLine!),
+      ok: true,
+      value: { item: { id: "item-1" } },
+    }) + "\n");
+    service.children[0]!.stdout.write(JSON.stringify({
+      id: requestId(purgeLine!),
+      ok: true,
+      value: { item: { id: "item-1" }, cleanupPending: false },
+    }) + "\n");
+
+    await expect(trashed).resolves.toMatchObject({ ok: true, value: { item: { id: "item-1" } } });
+    await expect(restored).resolves.toMatchObject({ ok: true, value: { item: { id: "item-1" } } });
+    await expect(purged).resolves.toEqual({
+      ok: true,
+      value: { item: { id: "item-1" }, cleanupPending: false },
+    });
+  });
+
   test("rejects response mismatches and lazily restarts after a crash", async () => {
     const service = serviceDouble();
     const client = new LibraryServiceClient(service.spawn);

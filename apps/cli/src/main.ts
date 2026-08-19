@@ -166,6 +166,12 @@ type ServiceResponse =
   | { readonly id: string; readonly ok: true; readonly value: unknown }
   | { readonly id: string; readonly ok: false; readonly error: { readonly code: string } };
 
+type LibraryServiceRequest =
+  | { readonly id: string; readonly command: "library_update"; readonly args: { readonly id: string; readonly patch: LibraryMetadataPatch } }
+  | { readonly id: string; readonly command: "library_trash"; readonly args: TrashLibraryItemRequest }
+  | { readonly id: string; readonly command: "library_restore"; readonly args: RestoreLibraryItemRequest }
+  | { readonly id: string; readonly command: "library_purge"; readonly args: PurgeLibraryItemRequest };
+
 function serviceFailure(id: string, code: string): ServiceResponse {
   return { id, ok: false, error: { code } };
 }
@@ -353,7 +359,7 @@ async function openLibraryServiceStore(databasePath?: string): Promise<BunSqlite
 }
 
 function parseServiceRequest(line: string):
-  | { readonly ok: true; readonly id: string; readonly command: "library_update"; readonly args: { readonly id: string; readonly patch: LibraryMetadataPatch } }
+  | ({ readonly ok: true } & LibraryServiceRequest)
   | { readonly ok: false; readonly id: string; readonly code: string } {
   let value: unknown;
   try {
@@ -369,19 +375,59 @@ function parseServiceRequest(line: string):
   if (!hasExactKeys(record, ["id", "command", "args"]) || id === "") {
     return { ok: false, id, code: "invalid-arguments" };
   }
-  if (record.command !== "library_update") return { ok: false, id, code: "invalid-arguments" };
   const args = record.args;
   if (typeof args !== "object" || args === null || Array.isArray(args)) {
     return { ok: false, id, code: "invalid-arguments" };
   }
-  const update = args as Record<string, unknown>;
-  if (!hasExactKeys(update, ["id", "patch"])) return { ok: false, id, code: "invalid-arguments" };
-  const itemId = typeof update.id === "string" ? update.id : "";
-  const patch = libraryMetadataPatchSchema.safeParse(update.patch);
-  if (itemId.trim() === "" || !patch.success) {
-    return { ok: false, id, code: "invalid-arguments" };
+  if (record.command === "library_update") {
+    const update = args as Record<string, unknown>;
+    if (!hasExactKeys(update, ["id", "patch"])) return { ok: false, id, code: "invalid-arguments" };
+    const itemId = typeof update.id === "string" ? update.id : "";
+    const patch = libraryMetadataPatchSchema.safeParse(update.patch);
+    return itemId.trim() !== "" && patch.success
+      ? { ok: true, id, command: record.command, args: { id: itemId, patch: patch.data } }
+      : { ok: false, id, code: "invalid-arguments" };
   }
-  return { ok: true, id, command: "library_update", args: { id: itemId, patch: patch.data } };
+  if (record.command === "library_trash") {
+    const request = trashLibraryItemRequestSchema.safeParse(args);
+    return request.success
+      ? { ok: true, id, command: record.command, args: request.data }
+      : { ok: false, id, code: "invalid-arguments" };
+  }
+  if (record.command === "library_restore") {
+    const request = restoreLibraryItemRequestSchema.safeParse(args);
+    return request.success
+      ? { ok: true, id, command: record.command, args: request.data }
+      : { ok: false, id, code: "invalid-arguments" };
+  }
+  if (record.command === "library_purge") {
+    const request = purgeLibraryItemRequestSchema.safeParse(args);
+    return request.success
+      ? { ok: true, id, command: record.command, args: request.data }
+      : { ok: false, id, code: "invalid-arguments" };
+  }
+  return { ok: false, id, code: "invalid-arguments" };
+}
+
+async function executeServiceRequest(
+  store: BunSqliteLibraryStore,
+  request: LibraryServiceRequest,
+): Promise<ServiceResponse> {
+  const result = request.command === "library_update"
+    ? await store.update(request.args)
+    : request.command === "library_trash"
+      ? await store.trash(request.args)
+      : request.command === "library_restore"
+        ? await store.restore(request.args)
+        : await store.purge(request.args);
+  if (!result.ok) return serviceFailure(request.id, result.error.code);
+  return {
+    id: request.id,
+    ok: true,
+    value: request.command === "library_purge"
+      ? result.value
+      : { item: result.value },
+  };
 }
 
 export async function runLibraryService(databasePath?: string): Promise<void> {
@@ -415,8 +461,7 @@ export async function runLibraryService(databasePath?: string): Promise<void> {
           process.stdout.write(JSON.stringify(serviceFailure(request.id, request.code)) + "\n");
           continue;
         }
-        const result = await store.update(request.args);
-        process.stdout.write(JSON.stringify(result.ok ? { id: request.id, ok: true, value: { item: result.value } } : serviceFailure(request.id, result.error.code)) + "\n");
+        process.stdout.write(JSON.stringify(await executeServiceRequest(store, request)) + "\n");
       }
       if (Buffer.byteLength(pending, "utf8") > MAX_LIBRARY_SERVICE_LINE_BYTES) {
         process.stdout.write(JSON.stringify(serviceFailure("", "invalid-arguments")) + "\n");

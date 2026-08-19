@@ -608,6 +608,48 @@ describe("takio CLI", () => {
       expect(persisted.value.item.title).toBe("Service Two");
     });
 
+    it("processes trash, restore, and purge through one persistent service", async () => {
+      const sourcePath = join(directory!, "service-trash-book.epub");
+      await Bun.write(sourcePath, "service trash contents");
+      const env = { TAKIO_DATA_DIR: directory };
+      const imported = parseProcessOutput(
+        await invokeProcess(["library", "import", "--source-path", sourcePath], env),
+      ) as { ok: true; value: { item: { id: string } } };
+      const itemId = imported.value.item.id;
+      const requests = [
+        { id: "trash-1", command: "library_trash", args: { id: itemId } },
+        { id: "restore-1", command: "library_restore", args: { id: itemId } },
+        { id: "trash-2", command: "library_trash", args: { id: itemId } },
+        { id: "purge-1", command: "library_purge", args: { id: itemId } },
+      ];
+
+      const service = await invokeProcess(
+        ["library", "service"],
+        env,
+        requests.map((request) => JSON.stringify(request)).join("\n") + "\n",
+      );
+      expect(service.exitCode).toBe(0);
+      expect(service.stderr).toBe("");
+      const responses = service.stdout.trim().split("\n").map((line) => JSON.parse(line));
+      expect(responses.map(({ id, ok }) => [id, ok])).toEqual([
+        ["trash-1", true],
+        ["restore-1", true],
+        ["trash-2", true],
+        ["purge-1", true],
+      ]);
+      expect(responses[0].value.item.id).toBe(itemId);
+      expect(responses[1].value.item.id).toBe(itemId);
+      expect(responses[3].value).toMatchObject({
+        item: { id: itemId },
+        cleanupPending: false,
+      });
+
+      expect(parseProcessOutput(
+        await invokeProcess(["library", "get", "--id", itemId], env),
+      )).toEqual({ ok: true, value: { item: null } });
+      expect(await Bun.file(sourcePath).exists()).toBe(true);
+    });
+
     it("rejects non-strict library service protocol and does not leak startup errors", async () => {
       const env = { TAKIO_DATA_DIR: directory };
       const extra = { id: "req-1", command: "library_update", args: { id: "missing", patch: { title: "No" }, extra: true } };

@@ -9,6 +9,12 @@ const MAX_OUTPUT_BYTES = 8 * 1024 * 1024;
 const MAX_JSON_ARGUMENT_BYTES = 16 * 1024;
 const MAX_CONCURRENT_INVOCATIONS = 4;
 const MAX_SERVICE_PENDING = 16;
+const LIBRARY_SERVICE_COMMANDS = new Set([
+  "library_update",
+  "library_trash",
+  "library_restore",
+  "library_purge",
+]);
 
 type CommandArguments = Record<string, unknown> | undefined;
 type EngineResult =
@@ -294,9 +300,13 @@ export class LibraryServiceClient {
   }
 
   invoke(command: string, args: CommandArguments): Promise<EngineResult> {
-    if (command !== "library_update") return Promise.resolve(failure("invalid-arguments"));
+    if (!LIBRARY_SERVICE_COMMANDS.has(command)) return Promise.resolve(failure("invalid-arguments"));
     const input = args ?? {};
-    const requestJson = objectJson({ id: input.id, patch: input.patch });
+    const requestJson = objectJson(
+      command === "library_update"
+        ? { id: input.id, patch: input.patch }
+        : input.request,
+    );
     if (!requestJson || this.#pending.size >= MAX_SERVICE_PENDING) {
       return Promise.resolve(failure(requestJson ? "engine-unavailable" : "invalid-arguments"));
     }
@@ -417,6 +427,8 @@ export async function invokeEngine(command: string, input?: CommandArguments): P
     return { ok: true, value: null };
   }
   const args = await buildEngineArguments(command, input);
-  if (command === "library_update") return args ? libraryServiceClient.invoke(command, input) : failure("invalid-arguments");
+  if (LIBRARY_SERVICE_COMMANDS.has(command)) {
+    return args ? libraryServiceClient.invoke(command, input) : failure("invalid-arguments");
+  }
   return args ? runEngine(args) : failure("invalid-arguments");
 }
