@@ -130,7 +130,9 @@
 
 .library-duplicate-dialog__candidate h3,
 .library-duplicate-dialog__book h4,
-.library-duplicate-dialog__signals h4 {
+.library-duplicate-dialog__signals h4,
+.library-duplicate-dialog__recommendation h4,
+.library-duplicate-dialog__differences h4 {
   margin: 0;
 }
 
@@ -201,12 +203,17 @@
 }
 
 .library-duplicate-dialog__formats > strong,
-.library-duplicate-dialog__signals h4 {
+.library-duplicate-dialog__signals h4,
+.library-duplicate-dialog__recommendation h4,
+.library-duplicate-dialog__differences h4,
+.library-duplicate-dialog__technical-evidence summary {
   font-size: 0.75rem;
 }
 
 .library-duplicate-dialog__formats ul,
-.library-duplicate-dialog__signals ul {
+.library-duplicate-dialog__signals ul,
+.library-duplicate-dialog__recommendation ul,
+.library-duplicate-dialog__differences ul {
   margin: 6px 0 0;
   padding: 0;
   list-style: none;
@@ -250,7 +257,10 @@
   white-space: nowrap;
 }
 
-.library-duplicate-dialog__signals {
+.library-duplicate-dialog__signals,
+.library-duplicate-dialog__recommendation,
+.library-duplicate-dialog__differences,
+.library-duplicate-dialog__technical-evidence {
   margin-top: 10px;
   padding: 10px 12px;
   background: #f8f9fb;
@@ -258,14 +268,39 @@
   border-radius: 6px;
 }
 
-.library-duplicate-dialog__signals ul {
+.library-duplicate-dialog__recommendation {
+  background: #eef4ff;
+  border-color: #c7d7fe;
+}
+
+.library-duplicate-dialog__recommendation p {
+  margin: 6px 0 0;
+  color: #344054;
+  font-size: 0.8125rem;
+}
+
+.library-duplicate-dialog__technical-evidence summary {
+  cursor: pointer;
+  color: #344054;
+  font-weight: 750;
+}
+
+.library-duplicate-dialog__technical-evidence .library-duplicate-dialog__comparison {
+  margin-top: 10px;
+}
+
+.library-duplicate-dialog__signals ul,
+.library-duplicate-dialog__recommendation ul,
+.library-duplicate-dialog__differences ul {
   display: grid;
   gap: 4px;
   color: #475467;
   font-size: 0.6875rem;
 }
 
-.library-duplicate-dialog__signals li {
+.library-duplicate-dialog__signals li,
+.library-duplicate-dialog__recommendation li,
+.library-duplicate-dialog__differences li {
   overflow-wrap: anywhere;
 }
 
@@ -395,6 +430,7 @@
 }
 
 .library-duplicate-dialog button:focus-visible,
+.library-duplicate-dialog summary:focus-visible,
 .library-duplicate-dialog input:focus-visible,
 .library-duplicate-dialog:focus-visible {
   outline: 2px solid #4f46e5;

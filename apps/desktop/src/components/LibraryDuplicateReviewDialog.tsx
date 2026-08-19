@@ -209,6 +209,71 @@ function signalLabel(signal: DuplicateSignal): string {
   }
 }
 
+type DuplicateRecommendation = {
+  readonly target: LibraryItem;
+  readonly source: LibraryItem;
+  readonly reasons: readonly string[];
+};
+
+function metadataScore(item: LibraryItem): number {
+  return [
+    item.authors?.length || item.author ? 1 : 0,
+    item.series ? 1 : 0,
+    item.publisher ? 1 : 0,
+    item.publishedDate ? 1 : 0,
+    item.languages?.length ? 1 : 0,
+    item.identifiers && Object.keys(item.identifiers).length > 0 ? 1 : 0,
+    item.rating !== undefined ? 1 : 0,
+    item.description ? 1 : 0,
+    item.tags.length ? 1 : 0,
+    item.coverPath ? 1 : 0,
+  ].reduce((total, value) => total + value, 0);
+}
+
+function formatScore(item: LibraryItem): number {
+  return item.formats.length;
+}
+
+function deriveDuplicateRecommendation(candidate: DuplicateCandidate): DuplicateRecommendation {
+  const leftScore = metadataScore(candidate.left) + formatScore(candidate.left);
+  const rightScore = metadataScore(candidate.right) + formatScore(candidate.right);
+  const target = rightScore > leftScore ? candidate.right : candidate.left;
+  const source = target === candidate.left ? candidate.right : candidate.left;
+  const reasons = [
+    candidate.signals.some((signal) => signal.kind === "same-content")
+      ? "The files share identical content evidence."
+      : candidate.signals.some((signal) => signal.kind === "same-identifier")
+        ? "The records share a matching identifier."
+        : "The records share matching title and author evidence.",
+    rightScore === leftScore
+      ? "Both records have the same amount of available metadata, so the left record is the deterministic target."
+      : `${target.title} has more available metadata or formats to preserve.`,
+  ];
+  return { target, source, reasons };
+}
+
+function meaningfulDifferences(left: LibraryItem, right: LibraryItem): readonly string[] {
+  const differences: string[] = [];
+  if (left.title !== right.title) {
+    differences.push(`Title: “${left.title}” vs “${right.title}”`);
+  }
+  if (authorLabel(left) !== authorLabel(right)) {
+    differences.push(`Author: ${authorLabel(left)} vs ${authorLabel(right)}`);
+  }
+  const leftFormats = left.formats.map(({ format }) => format.toUpperCase()).join(", ");
+  const rightFormats = right.formats.map(({ format }) => format.toUpperCase()).join(", ");
+  if (leftFormats !== rightFormats) {
+    differences.push(`Formats: ${leftFormats} vs ${rightFormats}`);
+  }
+  if (identifiersLabel(left) !== identifiersLabel(right)) {
+    differences.push(`Identifiers: ${identifiersLabel(left)} vs ${identifiersLabel(right)}`);
+  }
+  if (textList(left.tags) !== textList(right.tags)) {
+    differences.push(`Tags: ${textList(left.tags)} vs ${textList(right.tags)}`);
+  }
+  return differences.length ? differences : ["No meaningful metadata differences are available."];
+}
+
 function defaultCoverChoice(target: LibraryItem, source: LibraryItem): DuplicateCoverChoice {
   if (target.coverPath) {
     return "target";
@@ -241,23 +306,44 @@ function ItemDetails({ item, side }: { readonly item: LibraryItem; readonly side
         <div><dt>Identifiers</dt><dd>{identifiersLabel(item)}</dd></div>
         <div><dt>Rating</dt><dd>{item.rating === undefined ? "—" : `${item.rating}/10`}</dd></div>
         <div><dt>Tags</dt><dd>{textList(item.tags)}</dd></div>
-        <div><dt>Added</dt><dd>{item.addedAt}</dd></div>
         <div><dt>Cover</dt><dd>{item.coverPath ? "Available" : "None"}</dd></div>
-        <div><dt>Library ID</dt><dd><code>{item.id}</code></dd></div>
       </dl>
-      <div className="library-duplicate-dialog__formats">
-        <strong>Formats</strong>
-        <ul>
-          {item.formats.map((bookFormat) => (
-            <li key={bookFormat.format}>
-              <span>{bookFormat.format.toUpperCase()}</span>
-              <small>{bookFormat.provenance} · {bookFormat.addedAt}</small>
-              <code title={bookFormat.sourcePath}>{bookFormat.sourcePath}</code>
-            </li>
-          ))}
-        </ul>
-      </div>
     </section>
+  );
+}
+
+function TechnicalEvidence({ candidate }: { readonly candidate: DuplicateCandidate }) {
+  return (
+    <details className="library-duplicate-dialog__technical-evidence">
+      <summary>Technical evidence</summary>
+      <div className="library-duplicate-dialog__comparison">
+        {[candidate.left, candidate.right].map((item) => (
+          <section key={item.id} className="library-duplicate-dialog__book" aria-label={`Technical evidence for ${item.title}`}>
+            <h4>{item.title}</h4>
+            <dl>
+              <div><dt>Library ID</dt><dd><code>{item.id}</code></dd></div>
+              <div><dt>Added</dt><dd>{item.addedAt}</dd></div>
+            </dl>
+            <div className="library-duplicate-dialog__formats">
+              <strong>Source paths and timestamps</strong>
+              <ul>
+                {item.formats.map((bookFormat) => (
+                  <li key={bookFormat.format}>
+                    <span>{bookFormat.format.toUpperCase()}</span>
+                    <small>{bookFormat.provenance} · {bookFormat.addedAt}</small>
+                    <code title={bookFormat.sourcePath}>{bookFormat.sourcePath}</code>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </section>
+        ))}
+      </div>
+      <section className="library-duplicate-dialog__signals" aria-label="Duplicate evidence">
+        <h4>Duplicate signals</h4>
+        <ul>{candidate.signals.map((signal, signalIndex) => <li key={signalIndex}>{signalLabel(signal)}</li>)}</ul>
+      </section>
+    </details>
   );
 }
 
@@ -285,15 +371,17 @@ function CandidateReview({
   onMerge,
 }: CandidateReviewProps) {
   const instanceId = useId();
-  const [targetId, setTargetId] = useState(candidate.left.id);
+  const recommendation = deriveDuplicateRecommendation(candidate);
+  const [targetId, setTargetId] = useState(recommendation.target.id);
   const [metadataPolicy, setMetadataPolicy] = useState<DuplicateMetadataPolicy>("target");
   const [selectedFormats, setSelectedFormats] = useState<readonly FormatId[]>(() =>
-    missingSourceFormats(candidate.left, candidate.right),
+    missingSourceFormats(recommendation.target, recommendation.source),
   );
   const [cover, setCover] = useState<DuplicateCoverChoice>(() =>
-    defaultCoverChoice(candidate.left, candidate.right),
+    defaultCoverChoice(recommendation.target, recommendation.source),
   );
   const [confirming, setConfirming] = useState(false);
+  const [reviewingChoices, setReviewingChoices] = useState(false);
   const mergeButtonRef = useRef<HTMLButtonElement>(null);
   const confirmationCancelRef = useRef<HTMLButtonElement>(null);
   const target = targetId === candidate.left.id ? candidate.left : candidate.right;
@@ -302,6 +390,7 @@ function CandidateReview({
   const actionDisabled = disabled || stale;
   const titleId = `${instanceId}-title`;
   const confirmationId = `${instanceId}-confirmation`;
+  const choicesId = `${instanceId}-choices`;
 
   useEffect(() => {
     if (!confirming) {
@@ -347,13 +436,21 @@ function CandidateReview({
         <ItemDetails item={candidate.right} side="Right" />
       </div>
 
-      <section className="library-duplicate-dialog__signals" aria-label="Duplicate evidence">
-        <h4>Why these books match</h4>
-        <ul>{candidate.signals.map((signal, signalIndex) => <li key={signalIndex}>{signalLabel(signal)}</li>)}</ul>
+      <section className="library-duplicate-dialog__recommendation" aria-label="Recommendation">
+        <h4>Recommendation</h4>
+        <p>Merge into <strong>{recommendation.target.title}</strong> and move <strong>{recommendation.source.title}</strong> to Trash.</p>
+        <ul>{recommendation.reasons.map((reason) => <li key={reason}>{reason}</li>)}</ul>
       </section>
 
+      <section className="library-duplicate-dialog__differences" aria-label="Meaningful differences">
+        <h4>Meaningful differences</h4>
+        <ul>{meaningfulDifferences(candidate.left, candidate.right).map((difference) => <li key={difference}>{difference}</li>)}</ul>
+      </section>
+
+      <TechnicalEvidence candidate={candidate} />
+
       {disposition === "unreviewed" ? (
-        <div className="library-duplicate-dialog__decision">
+        <div className="library-duplicate-dialog__decision" id={choicesId} hidden={!reviewingChoices} inert={!reviewingChoices}>
           <fieldset disabled={actionDisabled}>
             <legend>1. Choose the book to keep</legend>
             <label>
@@ -429,6 +526,15 @@ function CandidateReview({
               {pendingAction === "keep" ? "Keeping separate…" : "Keep separate"}
             </button>
             <button
+              type="button"
+              disabled={actionDisabled}
+              aria-expanded={reviewingChoices}
+              aria-controls={choicesId}
+              onClick={() => setReviewingChoices((current) => !current)}
+            >
+              Review choices
+            </button>
+            <button
               ref={mergeButtonRef}
               className="library-duplicate-dialog__merge"
               type="button"
@@ -437,7 +543,7 @@ function CandidateReview({
               aria-controls={confirmationId}
               onClick={() => setConfirming(true)}
             >
-              Review merge
+              Merge using recommendation
             </button>
           </>
         ) : (

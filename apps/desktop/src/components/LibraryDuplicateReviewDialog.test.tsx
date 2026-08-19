@@ -116,7 +116,7 @@ function render(
   );
 }
 
-test("renders an accessible paged modal with explicit left/right evidence", () => {
+test("renders an accessible paged modal with recommendation first and closed technical evidence", () => {
   const markup = render();
   const titleId = markup.match(/aria-labelledby="([^"]+)"/)?.[1];
 
@@ -124,14 +124,24 @@ test("renders an accessible paged modal with explicit left/right evidence", () =
   expect(markup).toContain(`role="dialog" aria-modal="true" aria-labelledby="${titleId}"`);
   expect(markup).toContain('tabindex="-1"');
   expect(markup).toContain(`<h2 id="${titleId}">Review duplicates</h2>`);
+  expect(markup).toContain('aria-label="Recommendation"');
+  expect(markup).toContain("Merge into <strong>The Left Hand of Darkness</strong> and move <strong>Left Hand of Darkness</strong> to Trash.");
+  expect(markup).toContain("The files share identical content evidence.");
+  expect(markup).toContain("Both records have the same amount of available metadata, so the left record is the deterministic target.");
+  expect(markup).toContain('aria-label="Meaningful differences"');
+  expect(markup).toContain("Formats: EPUB vs EPUB, PDF");
   expect(markup).toContain('aria-label="Left book: The Left Hand of Darkness"');
   expect(markup).toContain('aria-label="Right book: Left Hand of Darkness"');
   expect(markup).toContain("Ursula K. Le Guin");
   expect(markup).toContain("Hainish Cycle #4");
   expect(markup).toContain("isbn: 9780441478125");
+  expect(markup).toContain("<details");
+  expect(markup).not.toContain("<details open");
+  expect(markup).toContain("<summary>Technical evidence</summary>");
   expect(markup).toContain("/Imports/left-hand.pdf");
   expect(markup).toContain("Same file content");
   expect(markup).toContain(`SHA-256 ${"b".repeat(64)}`);
+  expect(markup).toContain("42 bytes");
   expect(markup).toContain("Same identifier");
   expect(markup).toContain("Same title and author");
   expect(markup).toContain('<nav aria-label="Duplicate candidate pages">');
@@ -139,9 +149,11 @@ test("renders an accessible paged modal with explicit left/right evidence", () =
   expect(markup).not.toMatch(/reader|viewer|open book/i);
 });
 
-test("renders every explicit merge choice and a destructive confirmation", () => {
+test("renders progressive merge choices and a destructive confirmation", () => {
   const markup = render();
 
+  expect(markup).toContain('class="library-duplicate-dialog__decision"');
+  expect(markup).toContain('hidden="" inert=""');
   expect(markup).toContain("1. Choose the book to keep");
   expect(markup).toContain("Keep left · The Left Hand of Darkness");
   expect(markup).toContain("Keep right · Left Hand of Darkness");
@@ -155,7 +167,9 @@ test("renders every explicit merge choice and a destructive confirmation", () =>
   expect(markup).toContain("Use source cover");
   expect(markup).toContain("Remove cover");
   expect(markup).toContain("Keep separate");
-  expect(markup).toContain("Review merge");
+  expect(markup).toContain("Review choices");
+  expect(markup).toContain("Merge using recommendation");
+  expect(markup).not.toContain("Review merge");
   expect(markup).toContain('aria-label="Confirm merge into The Left Hand of Darkness" hidden="" inert=""');
   expect(markup).toContain("Merge and move source to Trash");
 });
@@ -242,7 +256,7 @@ test("shows kept, pending, stale, error, empty, and closed states", () => {
   const emptyMarkup = render({ candidates: [], total: 0 });
 
   expect(keptMarkup).toContain("Reopen review");
-  expect(keptMarkup).not.toContain("Review merge");
+  expect(keptMarkup).not.toContain("Merge using recommendation");
   expect(pendingMarkup).toContain('aria-busy="true"');
   expect(pendingMarkup).toContain("Merging duplicate pair…");
   expect(pendingMarkup).toContain('aria-label="Close duplicate review" disabled=""');
