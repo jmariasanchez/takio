@@ -33,6 +33,7 @@ import {
 import {
   DeviceControls,
   retainConnectedDeviceFormatPreferences,
+  selectedDestinationAfterRefresh,
   setSessionDeviceFormatPreference,
   type SessionDeviceFormatPreferences,
 } from "./components/DeviceControls";
@@ -614,10 +615,7 @@ export default function App() {
         ),
       );
       setSelectedDestinationId((currentId) =>
-        currentId &&
-        result.value.destinations.some((destination) => destination.id === currentId)
-          ? currentId
-          : null,
+        selectedDestinationAfterRefresh(currentId, result.value.destinations),
       );
       return true;
     } catch (error) {

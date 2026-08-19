@@ -31,6 +31,16 @@ export function retainConnectedDeviceFormatPreferences(
     : retainedPreferences;
 }
 
+export function selectedDestinationAfterRefresh(
+  currentId: string | null,
+  destinations: readonly Destination[],
+): string | null {
+  if (currentId && destinations.some(({ id }) => id === currentId)) {
+    return currentId;
+  }
+  return destinations.length === 1 ? (destinations[0]?.id ?? null) : null;
+}
+
 type DeviceControlsProps = {
   readonly actionsPending: boolean;
   readonly destinations: readonly Destination[];
@@ -58,73 +68,116 @@ export function DeviceControls({
   onSelectDestination,
   onSelectPreferredFormat,
 }: DeviceControlsProps) {
+  const readerCountLabel = `${destinations.length} ${
+    destinations.length === 1 ? "reader" : "readers"
+  } found`;
+
   return (
     <section className="reader-bar" aria-label="Connected readers">
       <div className="reader-heading">
-        <p className="eyebrow">READER</p>
-        <strong>Send to a mounted device</strong>
+        <span
+          className={`reader-heading__status${selectedDestination ? " is-connected" : ""}`}
+          aria-hidden="true"
+        />
+        <div>
+          <p className="eyebrow">Reader</p>
+          <strong>
+            {destinationsLoading
+              ? "Looking for a reader…"
+              : selectedDestination
+                ? selectedDestination.name
+                : destinations.length > 0
+                  ? "Choose a reader"
+                  : "No reader connected"}
+          </strong>
+          <span className="reader-detail" aria-live="polite">
+            {destinationsLoading
+              ? "Checking USB devices"
+              : selectedDestination
+                ? `${
+                    selectedDestination.freeBytes === undefined
+                      ? "Connected"
+                      : `${formatFileSize(selectedDestination.freeBytes)} available`
+                  }`
+                : destinations.length > 0
+                  ? readerCountLabel
+                  : "Connect one by USB and Takio will find it."}
+          </span>
+        </div>
       </div>
-      <div className="reader-controls">
-        <select
-          aria-label="Selected reader"
-          value={selectedDestinationId ?? ""}
-          disabled={actionsPending || destinationsLoading}
-          onChange={(event) => onSelectDestination(event.currentTarget.value || null)}
-        >
-          <option value="">Choose a reader…</option>
-          {destinations.map((destination) => (
-            <option key={destination.id} value={destination.id}>
-              {destination.name}
-            </option>
-          ))}
-        </select>
-        <span className="reader-detail" aria-live="polite">
-          {destinationsLoading
-            ? "Scanning…"
-            : selectedDestination
-              ? `${selectedDestination.kind[0]?.toUpperCase()}${selectedDestination.kind.slice(1)} · ${
-                  selectedDestination.freeBytes === undefined
-                    ? "Free space unavailable"
-                    : `${formatFileSize(selectedDestination.freeBytes)} free`
-                }`
-              : `${destinations.length} ${destinations.length === 1 ? "reader" : "readers"} found`}
-        </span>
-        <label className="reader-format-preference">
-          <span>Send format (this session)</span>
+
+      {destinations.length > 0 ? (
+        <label className="reader-picker">
+          <span className="visually-hidden">Reader</span>
           <select
-            aria-describedby="reader-format-preference-help"
-            value={preferredFormat ?? ""}
-            disabled={!selectedDestination || actionsPending || destinationsLoading}
-            onChange={(event) =>
-              onSelectPreferredFormat((event.currentTarget.value || null) as FormatId | null)
-            }
+            aria-label="Selected reader"
+            value={selectedDestinationId ?? ""}
+            disabled={actionsPending || destinationsLoading}
+            onChange={(event) => onSelectDestination(event.currentTarget.value || null)}
           >
-            <option value="">Choose a format…</option>
-            {FORMAT_CATALOG.map((format) => (
-              <option key={format.id} value={format.id}>
-                {format.label}
+            <option value="">Choose a reader…</option>
+            {destinations.map((destination) => (
+              <option key={destination.id} value={destination.id}>
+                {destination.name}
               </option>
             ))}
           </select>
         </label>
-        <small className="reader-format-preference-help" id="reader-format-preference-help">
-          Used for general Send actions. Resets when this reader disconnects or Takio closes.
-        </small>
-        <button
-          className="quiet-button"
-          disabled={actionsPending || destinationsLoading}
-          onClick={() => void onRefresh()}
-        >
-          {destinationsLoading ? "Refreshing…" : "Refresh"}
-        </button>
-        <button
-          className="quiet-button"
-          disabled={!selectedDestination || actionsPending || destinationsLoading}
-          onClick={() => void onEject()}
-        >
-          {pendingAction === "eject" ? "Ejecting…" : "Eject"}
-        </button>
+      ) : null}
+
+      <div className="reader-actions">
+        {selectedDestination ? (
+          <details className="reader-options">
+            <summary>Options</summary>
+            <div className="reader-options__panel">
+              <label className="reader-format-preference">
+                <span>Preferred format</span>
+                <select
+                  aria-describedby="reader-format-preference-help"
+                  value={preferredFormat ?? ""}
+                  disabled={actionsPending || destinationsLoading}
+                  onChange={(event) =>
+                    onSelectPreferredFormat((event.currentTarget.value || null) as FormatId | null)
+                  }
+                >
+                  <option value="">Choose a format…</option>
+                  {FORMAT_CATALOG.map((format) => (
+                    <option key={format.id} value={format.id}>
+                      {format.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <small className="reader-format-preference-help" id="reader-format-preference-help">
+                Used when you choose Send. Takio can convert a book when needed.
+              </small>
+              <button
+                className="quiet-button reader-refresh"
+                disabled={actionsPending || destinationsLoading}
+                onClick={() => void onRefresh()}
+              >
+                {destinationsLoading ? "Checking…" : "Check for readers"}
+              </button>
+              <button
+                className="quiet-button reader-eject"
+                disabled={actionsPending || destinationsLoading}
+                onClick={() => void onEject()}
+              >
+                {pendingAction === "eject" ? "Ejecting…" : `Eject ${selectedDestination.name}`}
+              </button>
+            </div>
+          </details>
+        ) : (
+          <button
+            className="quiet-button reader-refresh"
+            disabled={actionsPending || destinationsLoading}
+            onClick={() => void onRefresh()}
+          >
+            {destinationsLoading ? "Checking…" : "Check again"}
+          </button>
+        )}
       </div>
+
     </section>
   );
 }
