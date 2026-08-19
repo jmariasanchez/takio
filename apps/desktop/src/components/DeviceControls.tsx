@@ -1,6 +1,7 @@
 import { FORMAT_CATALOG, type Destination, type FormatId } from "@takio/core";
 
 import { formatFileSize } from "../lib/format";
+import type { DestinationInventoryEntry } from "../lib/destinations";
 
 export type SessionDeviceFormatPreferences = Readonly<Record<string, FormatId>>;
 
@@ -48,11 +49,14 @@ type DeviceControlsProps = {
   readonly convertIfNeeded: boolean;
   readonly pendingAction: string | null;
   readonly preferredFormat: FormatId | null;
+  readonly inventoryEntries: readonly DestinationInventoryEntry[];
+  readonly inventoryLoading: boolean;
   readonly selectedDestination: Destination | null;
   readonly selectedDestinationId: string | null;
   readonly onToggleConvertIfNeeded: (convertIfNeeded: boolean) => void;
   readonly onEject: () => Promise<void>;
   readonly onRefresh: () => Promise<void>;
+  readonly onReconcile: () => Promise<void>;
   readonly onSelectDestination: (id: string | null) => void;
   readonly onSelectPreferredFormat: (format: FormatId | null) => void;
 };
@@ -64,17 +68,26 @@ export function DeviceControls({
   convertIfNeeded,
   pendingAction,
   preferredFormat,
+  inventoryEntries,
+  inventoryLoading,
   selectedDestination,
   selectedDestinationId,
   onToggleConvertIfNeeded,
   onEject,
   onRefresh,
+  onReconcile,
   onSelectDestination,
   onSelectPreferredFormat,
 }: DeviceControlsProps) {
   const readerCountLabel = `${destinations.length} ${
     destinations.length === 1 ? "reader" : "readers"
   } found`;
+  const visibleInventoryEntries = inventoryEntries.slice(0, 5);
+  const inventorySummary = {
+    present: inventoryEntries.filter((entry) => entry.status === "present").length,
+    missing: inventoryEntries.filter((entry) => entry.status === "missing").length,
+    changed: inventoryEntries.filter((entry) => entry.status === "changed").length,
+  };
 
   return (
     <section className="reader-bar" aria-label="Connected readers">
@@ -175,6 +188,13 @@ export function DeviceControls({
                 {destinationsLoading ? "Checking…" : "Check for readers"}
               </button>
               <button
+                className="quiet-button reader-refresh"
+                disabled={actionsPending || destinationsLoading || inventoryLoading}
+                onClick={() => void onReconcile()}
+              >
+                {inventoryLoading ? "Checking…" : "Recheck deliveries"}
+              </button>
+              <button
                 className="quiet-button reader-eject"
                 disabled={actionsPending || destinationsLoading}
                 onClick={() => void onEject()}
@@ -193,6 +213,36 @@ export function DeviceControls({
           </button>
         )}
       </div>
+
+      {selectedDestination ? (
+        <section className="reader-inventory" aria-label="Tracked reader deliveries">
+          <div className="reader-inventory__summary" aria-live="polite">
+            <span>{inventorySummary.present} present</span>
+            <span>{inventorySummary.missing} missing</span>
+            <span>{inventorySummary.changed} changed</span>
+          </div>
+          {inventoryEntries.length === 0 ? (
+            <p className="reader-detail">
+              {inventoryLoading ? "Checking tracked deliveries…" : "No tracked deliveries on this reader."}
+            </p>
+          ) : (
+            <ul className="reader-inventory__list">
+              {visibleInventoryEntries.map((entry) => (
+                <li key={`${entry.itemId}:${entry.relativePath}`}>
+                  <strong>{entry.status}</strong>
+                  <span>{entry.relativePath}</span>
+                  <small>{entry.format.toUpperCase()} · {formatFileSize(entry.bytes)}</small>
+                </li>
+              ))}
+            </ul>
+          )}
+          {inventoryEntries.length > visibleInventoryEntries.length ? (
+            <small className="reader-detail">
+              Showing {visibleInventoryEntries.length} of {inventoryEntries.length} tracked deliveries.
+            </small>
+          ) : null}
+        </section>
+      ) : null}
 
     </section>
   );

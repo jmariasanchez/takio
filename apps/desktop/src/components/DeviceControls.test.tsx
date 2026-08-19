@@ -23,12 +23,34 @@ test("shows connection status first and keeps explicit format and device managem
       destinationsLoading={false}
       pendingAction={null}
       preferredFormat={null}
+      inventoryEntries={[
+        {
+          itemId: "item-1",
+          relativePath: "Books/Title.epub",
+          bytes: 42,
+          sha256: "abc",
+          format: "epub",
+          timestamp: "2026-08-19T00:00:00.000Z",
+          status: "present",
+        },
+        {
+          itemId: "item-2",
+          relativePath: "Books/Missing.pdf",
+          bytes: 10,
+          sha256: "def",
+          format: "pdf",
+          timestamp: "2026-08-19T00:00:00.000Z",
+          status: "missing",
+        },
+      ]}
+      inventoryLoading={false}
       selectedDestination={destination}
       selectedDestinationId={destination.id}
       convertIfNeeded={true}
       onToggleConvertIfNeeded={() => undefined}
       onEject={async () => undefined}
       onRefresh={async () => undefined}
+      onReconcile={async () => undefined}
       onSelectDestination={() => undefined}
       onSelectPreferredFormat={() => undefined}
     />,
@@ -43,7 +65,12 @@ test("shows connection status first and keeps explicit format and device managem
   expect(markup).toContain('type="checkbox" checked=""');
   expect(markup).toContain("Takio can create a compatible copy before sending.");
   expect(markup).toContain("Check for readers");
+  expect(markup).toContain("Recheck deliveries");
   expect(markup).toContain("Eject Kindle");
+  expect(markup).toContain("1 present");
+  expect(markup).toContain("1 missing");
+  expect(markup).toContain("0 changed");
+  expect(markup).toContain("Books/Title.epub");
   expect(markup).toContain('<option value="epub">EPUB</option>');
   expect(markup).toContain('<option value="pdf">PDF</option>');
 });
@@ -56,12 +83,15 @@ test("turns an empty reader state into one clear next action", () => {
       destinationsLoading={false}
       pendingAction={null}
       preferredFormat={null}
+      inventoryEntries={[]}
+      inventoryLoading={false}
       selectedDestination={null}
       selectedDestinationId={null}
       convertIfNeeded={true}
       onToggleConvertIfNeeded={() => undefined}
       onEject={async () => undefined}
       onRefresh={async () => undefined}
+      onReconcile={async () => undefined}
       onSelectDestination={() => undefined}
       onSelectPreferredFormat={() => undefined}
     />,

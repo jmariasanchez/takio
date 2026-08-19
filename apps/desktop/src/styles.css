@@ -64,6 +64,14 @@ h2 { font-size: 20px; letter-spacing: -.6px; margin-bottom: 0; }
 .reader-format-preference { display: grid; gap: 4px; }
 .reader-format-preference > span { color: #c8cbce; font-size: 10px; font-weight: 600; }
 .reader-format-preference-help { color: #92969a; font-size: 10px; max-width: 220px; }
+.reader-inventory { border-top: 1px solid #292b2d; display: grid; flex: 1 1 100%; gap: 8px; padding-top: 12px; }
+.reader-inventory__summary { color: #c8cbce; display: flex; flex-wrap: wrap; font-size: 11px; font-weight: 700; gap: 8px; }
+.reader-inventory__summary span { background: #1b1c1d; border: 1px solid #343638; border-radius: 999px; padding: 3px 8px; }
+.reader-inventory__list { display: grid; gap: 6px; list-style: none; margin: 0; max-width: 560px; padding: 0; }
+.reader-inventory__list li { align-items: baseline; display: grid; gap: 8px; grid-template-columns: 70px minmax(0, 1fr) auto; }
+.reader-inventory__list strong { color: #d9ff72; font-size: 10px; letter-spacing: .6px; text-transform: uppercase; }
+.reader-inventory__list span { color: #eeeef0; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.reader-inventory__list small { color: #92969a; font-size: 10px; white-space: nowrap; }
 .jobs-section { margin-top: 27px; }
 .jobs-heading { align-items: center; display: flex; gap: 24px; justify-content: space-between; margin-bottom: 13px; }
 .jobs-controls { align-items: center; display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }

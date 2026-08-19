@@ -33,6 +33,28 @@ export type DesktopDestinationEjectResult =
     }
   | DestinationFailure;
 
+export type DestinationInventoryStatus = "present" | "missing" | "changed";
+
+export type DestinationInventoryEntry = {
+  readonly itemId: string;
+  readonly relativePath: string;
+  readonly bytes: number;
+  readonly sha256: string;
+  readonly format: string;
+  readonly timestamp: string;
+  readonly status: DestinationInventoryStatus;
+};
+
+export type DesktopDestinationInventoryResult =
+  | {
+      readonly ok: true;
+      readonly value: {
+        readonly destinationId: string;
+        readonly entries: readonly DestinationInventoryEntry[];
+      };
+    }
+  | DestinationFailure;
+
 export type DestinationInvoker = <T>(
   command: string,
   args?: Record<string, unknown>,
@@ -63,6 +85,72 @@ export function ejectDestination(
   return invokeCommand("destination_eject", { destinationPath });
 }
 
+function isInventoryStatus(value: unknown): value is DestinationInventoryStatus {
+  return value === "present" || value === "missing" || value === "changed";
+}
+
+export function decodeDestinationInventoryEntry(value: unknown): DestinationInventoryEntry | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  const candidate = value as Record<string, unknown>;
+  return typeof candidate.itemId === "string" &&
+    typeof candidate.relativePath === "string" &&
+    typeof candidate.bytes === "number" &&
+    Number.isFinite(candidate.bytes) &&
+    typeof candidate.sha256 === "string" &&
+    typeof candidate.format === "string" &&
+    typeof candidate.timestamp === "string" &&
+    isInventoryStatus(candidate.status)
+    ? {
+        itemId: candidate.itemId,
+        relativePath: candidate.relativePath,
+        bytes: candidate.bytes,
+        sha256: candidate.sha256,
+        format: candidate.format,
+        timestamp: candidate.timestamp,
+        status: candidate.status,
+      }
+    : null;
+}
+
+export function decodeDestinationInventoryResult(value: unknown): DesktopDestinationInventoryResult {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return { ok: false, error: { code: "protocol-error" } };
+  }
+  const result = value as { ok?: unknown; value?: unknown; error?: unknown };
+  if (result.ok === false) {
+    const error = result.error as { code?: unknown } | null;
+    return typeof error?.code === "string"
+      ? { ok: false, error: { code: error.code } }
+      : { ok: false, error: { code: "protocol-error" } };
+  }
+  const payload = result.value as { destinationId?: unknown; entries?: unknown } | null;
+  if (result.ok !== true || typeof payload?.destinationId !== "string" || !Array.isArray(payload.entries)) {
+    return { ok: false, error: { code: "protocol-error" } };
+  }
+  const entries = payload.entries.map(decodeDestinationInventoryEntry);
+  return entries.every((entry): entry is DestinationInventoryEntry => entry !== null)
+    ? { ok: true, value: { destinationId: payload.destinationId, entries } }
+    : { ok: false, error: { code: "protocol-error" } };
+}
+
+export async function inventoryDestination(
+  destinationPath: string,
+  invokeCommand: DestinationInvoker = invokeDesktop,
+): Promise<DesktopDestinationInventoryResult> {
+  return decodeDestinationInventoryResult(
+    await invokeCommand("destination_inventory", { destinationPath }),
+  );
+}
+
+export async function reconcileDestination(
+  destinationPath: string,
+  invokeCommand: DestinationInvoker = invokeDesktop,
+): Promise<DesktopDestinationInventoryResult> {
+  return decodeDestinationInventoryResult(
+    await invokeCommand("destination_reconcile", { destinationPath }),
+  );
+}
+
 export function describeDestinationError(code: string): string {
   switch (code) {
     case "invalid-arguments":
@@ -87,10 +175,10 @@ export function describeDestinationError(code: string): string {
       return "The copied file could not be verified.";
     case "copy-failed":
       return "The file could not be copied to that reader.";
-    case "engine-unavailable":
-      return "The local library engine is unavailable.";
     case "protocol-error":
       return "The local library returned an invalid response.";
+    case "engine-unavailable":
+      return "The local library engine is unavailable.";
     case "invalid-stored-data":
       return "The library contains data Takio cannot read.";
     case "storage-unavailable":

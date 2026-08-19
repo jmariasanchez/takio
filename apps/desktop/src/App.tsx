@@ -91,8 +91,11 @@ import {
   describeDestinationError,
   describeUnexpectedDestinationError,
   ejectDestination,
+  inventoryDestination,
   listDestinations,
+  reconcileDestination,
   sendLibraryItem,
+  type DestinationInventoryEntry,
 } from "./lib/destinations";
 import {
   cancelConversionJob,
@@ -299,6 +302,8 @@ export default function App() {
   const [jobsState, setJobsState] = useState<JobsState>("loading");
   const [conversionRunning, setConversionRunning] = useState(false);
   const [selectedDestinationId, setSelectedDestinationId] = useState<string | null>(null);
+  const [destinationInventoryEntries, setDestinationInventoryEntries] = useState<readonly DestinationInventoryEntry[]>([]);
+  const [destinationInventoryLoading, setDestinationInventoryLoading] = useState(false);
   const [preferredFormatsByDestinationPath, setPreferredFormatsByDestinationPath] =
     useState<SessionDeviceFormatPreferences>({});
   const [convertIfNeeded, setConvertIfNeeded] = useState(true);
@@ -319,6 +324,7 @@ export default function App() {
   const duplicateRequestSequence = useRef(0);
   const duplicatePageOffsetRef = useRef(0);
   const destinationRequestSequence = useRef(0);
+  const destinationInventoryRequestSequence = useRef(0);
   const jobRequestSequence = useRef(0);
   const autoDrainBlocked = useRef(false);
   const conversionWorkerPending = useRef(false);
@@ -403,6 +409,7 @@ export default function App() {
     librarySelection.selectedItemIds.length,
     pendingAction,
   ]);
+
 
   const commitLibraryQuery = useCallback((next: LibraryQueryState): void => {
     libraryQueryRef.current = next;
@@ -659,6 +666,54 @@ export default function App() {
       }
     }
   }, []);
+
+  const loadDestinationInventory = useCallback(
+    async (destination: Destination, mode: "inventory" | "reconcile" = "inventory"): Promise<boolean> => {
+      const request = ++destinationInventoryRequestSequence.current;
+      setDestinationInventoryEntries([]);
+      setDestinationInventoryLoading(true);
+      try {
+        const result = mode === "reconcile"
+          ? await reconcileDestination(destination.path)
+          : await inventoryDestination(destination.path);
+        if (request !== destinationInventoryRequestSequence.current) {
+          return false;
+        }
+        if (!result.ok) {
+          setNotice({ kind: "error", text: describeDestinationError(result.error.code) });
+          return false;
+        }
+        if (result.value.destinationId !== destination.id) {
+          setNotice({ kind: "error", text: describeDestinationError("protocol-error") });
+          return false;
+        }
+        setDestinationInventoryEntries(result.value.entries);
+        return true;
+      } catch (error) {
+        if (request !== destinationInventoryRequestSequence.current) {
+          return false;
+        }
+        setNotice({ kind: "error", text: describeUnexpectedDestinationError(error) });
+        return false;
+      } finally {
+        if (request === destinationInventoryRequestSequence.current) {
+          setDestinationInventoryLoading(false);
+        }
+      }
+    },
+    [],
+  );
+
+  useEffect(() => {
+    const destination = destinations.find(({ id }) => id === selectedDestinationId);
+    if (!destination) {
+      destinationInventoryRequestSequence.current += 1;
+      setDestinationInventoryEntries([]);
+      setDestinationInventoryLoading(false);
+      return;
+    }
+    void loadDestinationInventory(destination);
+  }, [destinations, loadDestinationInventory, selectedDestinationId]);
 
   const loadJobs = useCallback(async (showLoading = true): Promise<boolean> => {
     const request = ++jobRequestSequence.current;
@@ -1834,8 +1889,19 @@ export default function App() {
 
   async function refreshDestinations() {
     setNotice(null);
+    destinationInventoryRequestSequence.current += 1;
+    setDestinationInventoryEntries([]);
+    setDestinationInventoryLoading(false);
     if (await loadDestinations()) {
       setNotice({ kind: "status", text: "Reader list refreshed." });
+    }
+  }
+
+  async function reconcileSelectedDestination() {
+    if (!selectedDestination) return;
+    setNotice(null);
+    if (await loadDestinationInventory(selectedDestination, "reconcile")) {
+      setNotice({ kind: "status", text: "Delivery status refreshed." });
     }
   }
 
@@ -2969,12 +3035,20 @@ export default function App() {
                   convertIfNeeded={convertIfNeeded}
                   pendingAction={pendingAction}
                   preferredFormat={preferredDeviceFormat}
+                  inventoryEntries={destinationInventoryEntries}
+                  inventoryLoading={destinationInventoryLoading}
                   selectedDestination={selectedDestination}
                   selectedDestinationId={selectedDestinationId}
                   onToggleConvertIfNeeded={setConvertIfNeeded}
                   onEject={ejectSelectedDestination}
                   onRefresh={refreshDestinations}
-                  onSelectDestination={setSelectedDestinationId}
+                  onReconcile={reconcileSelectedDestination}
+                  onSelectDestination={(id) => {
+                    destinationInventoryRequestSequence.current += 1;
+                    setDestinationInventoryEntries([]);
+                    setDestinationInventoryLoading(false);
+                    setSelectedDestinationId(id);
+                  }}
                   onSelectPreferredFormat={selectPreferredDeviceFormat}
                 />
               </section>

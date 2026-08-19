@@ -2,9 +2,12 @@ import { expect, test } from "bun:test";
 
 import {
   describeDestinationError,
+  decodeDestinationInventoryResult,
   describeUnexpectedDestinationError,
   ejectDestination,
+  inventoryDestination,
   listDestinations,
+  reconcileDestination,
   sendLibraryItem,
   type DestinationInvoker,
 } from "./destinations";
@@ -19,6 +22,8 @@ test("uses only the fixed desktop destination commands and argument names", asyn
   await listDestinations(invokeCommand);
   await sendLibraryItem("item-1", "pdf", "/Volumes/Reader", true, invokeCommand);
   await ejectDestination("/Volumes/Reader", invokeCommand);
+  await inventoryDestination("/Volumes/Reader", invokeCommand);
+  await reconcileDestination("/Volumes/Reader", invokeCommand);
 
   expect(calls).toEqual([
     { command: "destination_list", args: undefined },
@@ -30,7 +35,59 @@ test("uses only the fixed desktop destination commands and argument names", asyn
       command: "destination_eject",
       args: { destinationPath: "/Volumes/Reader" },
     },
+    {
+      command: "destination_inventory",
+      args: { destinationPath: "/Volumes/Reader" },
+    },
+    {
+      command: "destination_reconcile",
+      args: { destinationPath: "/Volumes/Reader" },
+    },
   ]);
+});
+
+test("strictly decodes reader inventory entries", () => {
+  expect(
+    decodeDestinationInventoryResult({
+      ok: true,
+      value: {
+        destinationId: "Reader",
+        entries: [
+          {
+            itemId: "item-1",
+            relativePath: "Books/Title.epub",
+            bytes: 12,
+            sha256: "abc",
+            format: "epub",
+            timestamp: "2026-08-19T00:00:00.000Z",
+            status: "present",
+          },
+        ],
+      },
+    }),
+  ).toEqual({
+    ok: true,
+    value: {
+      destinationId: "Reader",
+      entries: [
+        {
+          itemId: "item-1",
+          relativePath: "Books/Title.epub",
+          bytes: 12,
+          sha256: "abc",
+          format: "epub",
+          timestamp: "2026-08-19T00:00:00.000Z",
+          status: "present",
+        },
+      ],
+    },
+  });
+  expect(
+    decodeDestinationInventoryResult({
+      ok: true,
+      value: { destinationId: "Reader", entries: [{ itemId: "item-1", status: "removed" }] },
+    }),
+  ).toEqual({ ok: false, error: { code: "protocol-error" } });
 });
 
 test("keeps reader collision, availability, format, verification, and eject failures distinct", () => {

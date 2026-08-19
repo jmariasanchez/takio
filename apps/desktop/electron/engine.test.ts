@@ -115,6 +115,23 @@ describe("Electron engine boundary", () => {
     expect(await buildEngineArguments("library_health_backup", { destinationPath: " " })).toBeNull();
   });
 
+  test("maps destination inventory and reconcile to fixed non-destructive sidecar arguments", async () => {
+    expect(await buildEngineArguments("destination_inventory", { destinationPath: "/Volumes/Reader" })).toEqual([
+      "destination",
+      "inventory",
+      "--dest",
+      "/Volumes/Reader",
+    ]);
+    expect(await buildEngineArguments("destination_reconcile", { destinationPath: "/Volumes/Reader" })).toEqual([
+      "destination",
+      "reconcile",
+      "--dest",
+      "/Volumes/Reader",
+    ]);
+    expect(await buildEngineArguments("destination_inventory", { destinationPath: " " })).toBeNull();
+    expect(await buildEngineArguments("destination_remove", { destinationPath: "/Volumes/Reader", id: "item-1" })).toBeNull();
+  });
+
   test("accepts only protocol records consistent with the process exit code", () => {
     expect(
       parseEngineRecord(
