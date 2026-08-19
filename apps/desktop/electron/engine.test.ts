@@ -62,6 +62,24 @@ describe("Electron engine boundary", () => {
     ).toBeNull();
   });
 
+  test("maps library health commands to fixed sidecar arguments", async () => {
+    expect(await buildEngineArguments("library_health_location", undefined)).toEqual([
+      "library",
+      "path",
+    ]);
+    expect(await buildEngineArguments("library_health_verify", undefined)).toEqual([
+      "library",
+      "verify",
+    ]);
+    expect(await buildEngineArguments("library_health_backup", { destinationPath: "/Backups/takio" })).toEqual([
+      "library",
+      "backup",
+      "--dest",
+      "/Backups/takio",
+    ]);
+    expect(await buildEngineArguments("library_health_backup", { destinationPath: " " })).toBeNull();
+  });
+
   test("accepts only protocol records consistent with the process exit code", () => {
     expect(
       parseEngineRecord(

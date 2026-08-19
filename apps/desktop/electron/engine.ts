@@ -61,6 +61,14 @@ export async function buildEngineArguments(
   switch (command) {
     case "app_report_library_usable":
       return [];
+    case "library_health_location":
+      return ["library", "path"];
+    case "library_health_verify":
+      return ["library", "verify"];
+    case "library_health_backup":
+      return nonempty(input.destinationPath)
+        ? ["library", "backup", "--dest", input.destinationPath]
+        : null;
     case "library_list":
       return ["library", "list"];
     case "library_get":

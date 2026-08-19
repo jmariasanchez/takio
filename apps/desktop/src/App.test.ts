@@ -10,6 +10,7 @@ const closedDialogs = {
   bulkTags: false,
   bulkMetadata: false,
   bulkExport: false,
+  health: false,
 };
 
 test("blocks background entry points while the export dialog owns focus", () => {

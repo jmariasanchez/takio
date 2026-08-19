@@ -48,6 +48,14 @@ export const LIBRARY_EXPORT_METADATA_STATES = [
   "backend-unavailable",
 ] as const;
 export const LIBRARY_EXPORT_FILE_NAME_TEMPLATES = ["title", "author-title"] as const;
+export const LIBRARY_HEALTH_ERROR_CODES = [
+  "invalid-arguments",
+  "storage-unavailable",
+  "incompatible-schema",
+  "integrity-failed",
+  "destination-exists",
+  "backup-failed",
+] as const;
 
 export const LIBRARY_QUERY_SORT_FIELDS = [
   "title",
@@ -663,6 +671,87 @@ export type LibraryImportReport = z.infer<typeof libraryImportReportSchema>;
 export type ExportLibraryItemsRequest = z.infer<typeof exportLibraryItemsRequestSchema>;
 export type LibraryExportEntryOutcome = z.infer<typeof libraryExportEntryOutcomeSchema>;
 export type LibraryExportReport = z.infer<typeof libraryExportReportSchema>;
+
+export const libraryIntegrityReportSchema = z
+  .object({
+    schemaVersion: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
+    items: z
+      .object({
+        total: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
+        active: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
+        trashed: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
+      })
+      .strict()
+      .readonly(),
+    formats: z
+      .object({
+        total: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
+        managed: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
+        referenced: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
+      })
+      .strict()
+      .readonly(),
+  })
+  .strict()
+  .superRefine((report, context) => {
+    if (report.items.active + report.items.trashed !== report.items.total) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["items", "total"],
+        message: "Item counts must add up to the total.",
+      });
+    }
+    if (report.formats.managed + report.formats.referenced !== report.formats.total) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["formats", "total"],
+        message: "Format counts must add up to the total.",
+      });
+    }
+  })
+  .readonly();
+
+export const libraryHealthLocationSchema = z
+  .object({
+    rootPath: z.string().min(1),
+    databasePath: z.string().min(1),
+  })
+  .strict()
+  .readonly();
+
+export const libraryHealthVerifyValueSchema = z
+  .object({ report: libraryIntegrityReportSchema })
+  .strict()
+  .readonly();
+
+export const libraryHealthBackupRequestSchema = z
+  .object({ destinationPath: z.string().trim().min(1) })
+  .strict()
+  .readonly();
+
+export const libraryHealthBackupValueSchema = z
+  .object({
+    backup: z
+      .object({
+        path: z.string().min(1),
+        report: libraryIntegrityReportSchema,
+      })
+      .strict()
+      .readonly(),
+  })
+  .strict()
+  .readonly();
+
+export type LibraryHealthErrorCode = (typeof LIBRARY_HEALTH_ERROR_CODES)[number];
+export type LibraryIntegrityReport = z.infer<typeof libraryIntegrityReportSchema>;
+export type LibraryHealthLocation = z.infer<typeof libraryHealthLocationSchema>;
+export type LibraryHealthBackupRequest = z.infer<typeof libraryHealthBackupRequestSchema>;
+export type LibraryHealthWireResult<T> =
+  | { readonly ok: true; readonly value: T }
+  | { readonly ok: false; readonly error: { readonly code: LibraryHealthErrorCode } };
+export type LibraryHealthLocationWireResult = LibraryHealthWireResult<LibraryHealthLocation>;
+export type LibraryHealthVerifyWireResult = LibraryHealthWireResult<z.infer<typeof libraryHealthVerifyValueSchema>>;
+export type LibraryHealthBackupWireResult = LibraryHealthWireResult<z.infer<typeof libraryHealthBackupValueSchema>>;
 
 export const LIBRARY_STORE_ERROR_CODES = [
   "duplicate-id",

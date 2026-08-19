@@ -17,6 +17,8 @@ import type {
   DuplicateCandidate,
   KeepDuplicatePairRequest,
   LibraryFacetCounts,
+  LibraryHealthLocation,
+  LibraryIntegrityReport,
   LibraryImportReport,
   LibraryImportMode,
   LibraryMetadataPatch,
@@ -39,6 +41,10 @@ import {
   type SessionDeviceFormatPreferences,
 } from "./components/DeviceControls";
 import { JobsPanel } from "./components/JobsPanel";
+import {
+  backupDirectoryName,
+  LibraryHealthDialog,
+} from "./components/LibraryHealthDialog";
 import {
   LibraryDuplicateReviewDialog,
   type DuplicateReviewDisposition,
@@ -67,6 +73,7 @@ import {
 import {
   confirmDialog as confirm,
   droppedFilePath,
+  joinPath,
   onMenuAction,
   openDialog as open,
 } from "./lib/desktop";
@@ -97,6 +104,12 @@ import {
   runNextConversionJob,
   type ConversionJob,
 } from "./lib/jobs";
+import {
+  backUpLibrary,
+  describeLibraryHealthError,
+  getLibraryHealthLocation,
+  verifyLibraryHealth,
+} from "./lib/library-health";
 import {
   attachLibraryFormat,
   describeLibraryError,
@@ -173,6 +186,7 @@ type LibraryModalState = {
   readonly bulkTags: boolean;
   readonly bulkMetadata: boolean;
   readonly bulkExport: boolean;
+  readonly health: boolean;
 };
 
 export function hasOpenLibraryModal(state: LibraryModalState): boolean {
@@ -265,6 +279,17 @@ export default function App() {
   const [bulkMetadataDialogError, setBulkMetadataDialogError] = useState<string | null>(null);
   const [bulkExportDialogOpen, setBulkExportDialogOpen] = useState(false);
   const [bulkExportItemIds, setBulkExportItemIds] = useState<readonly string[]>([]);
+  const [healthDialogOpen, setHealthDialogOpen] = useState(false);
+  const [healthLocation, setHealthLocation] = useState<LibraryHealthLocation | null>(null);
+  const [healthLocationLoading, setHealthLocationLoading] = useState(false);
+  const [lastHealthVerification, setLastHealthVerification] =
+    useState<{ readonly checkedAt: string; readonly report: LibraryIntegrityReport } | null>(null);
+  const [healthVerificationError, setHealthVerificationError] = useState<string | null>(null);
+  const [healthBackupResult, setHealthBackupResult] =
+    useState<{ readonly path: string; readonly report: LibraryIntegrityReport } | null>(null);
+  const [healthBackupError, setHealthBackupError] = useState<string | null>(null);
+  const [healthPendingAction, setHealthPendingAction] =
+    useState<"verify" | "backup" | null>(null);
   const [searchPending, setSearchPending] = useState(false);
   const [draft, setDraft] = useState<MetadataDraft | null>(null);
   const [conversionDraft, setConversionDraft] = useState<ConversionDraft | null>(null);
@@ -285,6 +310,7 @@ export default function App() {
     bulkTags: bulkTagsDialogOpen,
     bulkMetadata: bulkMetadataDialogOpen,
     bulkExport: bulkExportDialogOpen,
+    health: healthDialogOpen,
   });
   const savedViewsRequestSequence = useRef(0);
   const trashRequestSequence = useRef(0);
@@ -2745,6 +2771,79 @@ export default function App() {
     });
   }
 
+  async function loadHealthLocation(): Promise<void> {
+    setHealthLocationLoading(true);
+    try {
+      const result = await getLibraryHealthLocation();
+      if (result.ok) {
+        setHealthLocation(result.value);
+      } else {
+        setHealthVerificationError(describeLibraryHealthError(result.error.code));
+      }
+    } catch (error) {
+      setHealthVerificationError(describeUnexpectedLibraryError(error));
+    } finally {
+      setHealthLocationLoading(false);
+    }
+  }
+
+  async function verifyHealthNow(): Promise<void> {
+    if (healthPendingAction) return;
+    setHealthPendingAction("verify");
+    setHealthVerificationError(null);
+    setHealthBackupError(null);
+    try {
+      const result = await verifyLibraryHealth();
+      if (result.ok) {
+        setLastHealthVerification({ checkedAt: new Date().toISOString(), report: result.value.report });
+        setNotice({ kind: "status", text: "Library integrity verified." });
+      } else {
+        setHealthVerificationError(describeLibraryHealthError(result.error.code));
+      }
+    } catch (error) {
+      setHealthVerificationError(describeUnexpectedLibraryError(error));
+    } finally {
+      setHealthPendingAction(null);
+    }
+  }
+
+  async function backUpHealthNow(): Promise<void> {
+    if (healthPendingAction) return;
+    setHealthBackupError(null);
+    setHealthVerificationError(null);
+    const parent = await open({
+      title: "Choose where to create the Takio library backup",
+      directory: true,
+    });
+    if (typeof parent !== "string") return;
+
+    setHealthPendingAction("backup");
+    try {
+      const destinationPath = await joinPath(parent, backupDirectoryName());
+      const result = await backUpLibrary({ destinationPath });
+      if (result.ok) {
+        setHealthBackupResult(result.value.backup);
+        setLastHealthVerification({
+          checkedAt: new Date().toISOString(),
+          report: result.value.backup.report,
+        });
+        setNotice({ kind: "status", text: `Library backup created at ${result.value.backup.path}.` });
+      } else {
+        setHealthBackupError(describeLibraryHealthError(result.error.code));
+      }
+    } catch (error) {
+      setHealthBackupError(describeUnexpectedLibraryError(error));
+    } finally {
+      setHealthPendingAction(null);
+    }
+  }
+
+  useEffect(() => {
+    if (healthDialogOpen && !healthLocation && !healthLocationLoading) {
+      void loadHealthLocation();
+    }
+  }, [healthDialogOpen, healthLocation, healthLocationLoading]);
+
   menuActionHandlers.current = {
     libraryModalOpen,
     openImport: openImportDialog,
@@ -2847,6 +2946,18 @@ export default function App() {
               ) : null}
             </summary>
             <div className="utility-menu__panel">
+              <section id="library-health">
+                <h2>Library</h2>
+                <button
+                  type="button"
+                  className="secondary-button"
+                  aria-haspopup="dialog"
+                  aria-expanded={healthDialogOpen}
+                  onClick={() => setHealthDialogOpen(true)}
+                >
+                  Library Health
+                </button>
+              </section>
               <section id="readers">
                 <DeviceControls
                   actionsPending={actionsPending}
@@ -3040,6 +3151,20 @@ export default function App() {
           onModeChange={setImportMode}
         />
       </section>
+
+      <LibraryHealthDialog
+        open={healthDialogOpen}
+        location={healthLocation}
+        loadingLocation={healthLocationLoading}
+        lastVerification={lastHealthVerification}
+        verificationError={healthVerificationError}
+        backupResult={healthBackupResult}
+        backupError={healthBackupError}
+        pendingAction={healthPendingAction}
+        onClose={() => setHealthDialogOpen(false)}
+        onVerify={verifyHealthNow}
+        onBackup={backUpHealthNow}
+      />
     </main>
   );
 }

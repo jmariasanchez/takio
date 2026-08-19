@@ -1,0 +1,76 @@
+.library-health-dialog {
+  width: min(760px, calc(100vw - 48px));
+  max-height: calc(100vh - 48px);
+  overflow: auto;
+  border-radius: 24px;
+  background: var(--panel, #fffaf0);
+  box-shadow: 0 24px 80px rgb(47 37 24 / 28%);
+  padding: 24px;
+}
+
+.library-health-dialog > header,
+.library-health-dialog > footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.library-health-dialog h2,
+.library-health-dialog h3,
+.library-health-dialog p {
+  margin-top: 0;
+}
+
+.library-health-dialog__section {
+  margin-top: 20px;
+  border: 1px solid rgb(86 68 43 / 16%);
+  border-radius: 18px;
+  padding: 16px;
+  background: rgb(255 255 255 / 52%);
+}
+
+.library-health-dialog__paths div,
+.library-health-dialog__counts div {
+  display: grid;
+  grid-template-columns: minmax(130px, 0.35fr) 1fr;
+  gap: 12px;
+  margin: 8px 0;
+}
+
+.library-health-dialog dt {
+  font-weight: 700;
+  color: var(--muted-text, #665b4f);
+}
+
+.library-health-dialog dd {
+  margin: 0;
+}
+
+.library-health-dialog code {
+  overflow-wrap: anywhere;
+}
+
+.library-health-dialog__counts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 8px 16px;
+}
+
+.library-health-dialog__counts div {
+  grid-template-columns: 1fr auto;
+}
+
+.library-health-dialog__fact {
+  color: var(--muted-text, #665b4f);
+}
+
+.library-health-dialog__success {
+  border-color: rgb(42 122 79 / 32%);
+  background: rgb(235 249 241 / 72%);
+}
+
+.library-health-dialog [role="alert"] {
+  color: var(--danger, #9d2b22);
+  font-weight: 700;
+}

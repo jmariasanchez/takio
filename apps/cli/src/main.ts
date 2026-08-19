@@ -1902,6 +1902,26 @@ export function createProgram(
     .description("Manage a durable local library");
   program.addCommand(library);
 
+  storageCommand(library.command("path").helpOption(false), writeError)
+    .description("Print the current library storage paths")
+    .option("--db <path>", "database path")
+    .action((options: { db?: string }, command: Command) => {
+      let paths: LibraryPaths;
+      try {
+        paths = libraryPaths(options.db, selectedLibraryName(command, options.db));
+      } catch {
+        command.error("", { exitCode: 1, code: "invalid-arguments" });
+      }
+
+      write(JSON.stringify({
+        ok: true,
+        value: {
+          rootPath: dirname(paths.databasePath),
+          databasePath: paths.databasePath,
+        },
+      }));
+    });
+
   storageCommand(library.command("verify").helpOption(false), writeError)
     .description("Verify the database and managed library files without changing them")
     .option("--db <path>", "database path")
