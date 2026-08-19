@@ -16,6 +16,7 @@ export const MAX_LIBRARY_QUERY_PAGE_SIZE = 100;
 export const MAX_LIBRARY_IMPORT_ROOTS = 256;
 export const MAX_LIBRARY_EXPORT_ITEMS = 256;
 export const MAX_SAVED_LIBRARY_VIEW_NAME_LENGTH = 120;
+export const LIBRARY_IMPORT_MODES = ["copy", "move"] as const;
 export const DUPLICATE_REVIEW_DISPOSITIONS = ["unreviewed", "kept-both"] as const;
 export const LIBRARY_IMPORT_SKIPPED_REASONS = [
   "unsupported-format",
@@ -420,6 +421,7 @@ export const importLibraryItemsRequestSchema = z
       .min(1)
       .max(MAX_LIBRARY_IMPORT_ROOTS)
       .readonly(),
+    mode: z.enum(LIBRARY_IMPORT_MODES).optional(),
   })
   .strict()
   .readonly();
@@ -429,6 +431,7 @@ const importedLibraryEntrySchema = z
     status: z.literal("imported"),
     sourcePath: libraryImportPathSchema,
     item: libraryItemSchema,
+    sourceCleanupPending: z.boolean().optional(),
   })
   .strict();
 
@@ -452,6 +455,7 @@ const duplicateLibraryImportEntrySchema = z
       .strict()
       .readonly(),
     reason: z.enum(LIBRARY_IMPORT_DUPLICATE_REASONS),
+    sourceCleanupPending: z.boolean().optional(),
   })
   .strict();
 
@@ -688,7 +692,12 @@ export type OpenLibraryRequest = Readonly<{ config: LibraryStoreConfig }>;
 export type ListLibraryItemsRequest = Readonly<Record<string, never>>;
 export type GetLibraryItemRequest = Readonly<{ id: string }>;
 export type AddLibraryItemRequest = Readonly<{ item: LibraryItem }>;
-export type ImportLibraryItemRequest = Readonly<{ sourcePath: string; title?: string }>;
+export type LibraryImportMode = (typeof LIBRARY_IMPORT_MODES)[number];
+export type ImportLibraryItemRequest = Readonly<{
+  sourcePath: string;
+  title?: string;
+}>;
+export type AdoptLibraryItemRequest = Readonly<{ sourcePath: string; title?: string }>;
 export type LibraryFormatArtifact = Readonly<{
   bytes: number;
   sha256: string;
@@ -809,6 +818,10 @@ export type ListLibraryItemsResult = LibraryStoreResult<readonly LibraryItem[]>;
 export type GetLibraryItemResult = LibraryStoreResult<LibraryItem | null>;
 export type AddLibraryItemResult = LibraryStoreResult<LibraryItem>;
 export type ImportLibraryItemResult = LibraryStoreResult<LibraryItem>;
+export type AdoptLibraryItemResult = LibraryStoreResult<{
+  readonly item: LibraryItem;
+  readonly sourceCleanupPending: boolean;
+}>;
 export type ImportLibraryItemsResult = LibraryStoreResult<LibraryImportReport>;
 export type ExportLibraryItemsResult = LibraryStoreResult<LibraryExportReport>;
 export type AttachLibraryFormatResult = LibraryStoreResult<LibraryItem | null>;
@@ -911,6 +924,10 @@ export interface LibraryFormatReplacementStore {
 
 export interface LibraryBatchImportStore {
   importMany(request: ImportLibraryItemsRequest): Promise<ImportLibraryItemsResult>;
+}
+
+export interface LibraryAdoptionStore {
+  adopt(request: AdoptLibraryItemRequest): Promise<AdoptLibraryItemResult>;
 }
 
 export interface LibraryExportStore {

@@ -102,6 +102,51 @@
   overflow: auto;
 }
 
+.library-import-dialog__mode {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 14px 18px;
+  border: 0;
+  border-bottom: 1px solid #e4e7ec;
+}
+
+.library-import-dialog__mode legend {
+  padding: 0;
+  color: #344054;
+  font-size: 0.8125rem;
+  font-weight: 700;
+}
+
+.library-import-dialog__mode label {
+  display: flex;
+  gap: 9px;
+  padding: 9px 10px;
+  border: 1px solid #e4e7ec;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.library-import-dialog__mode input {
+  margin-top: 2px;
+}
+
+.library-import-dialog__mode span {
+  display: grid;
+  gap: 2px;
+}
+
+.library-import-dialog__mode strong {
+  color: #344054;
+  font-size: 0.75rem;
+}
+
+.library-import-dialog__mode small {
+  color: #667085;
+  font-size: 0.6875rem;
+  line-height: 1.4;
+}
+
 .library-import-dialog__roots,
 .library-import-dialog__report {
   display: grid;

@@ -38,6 +38,30 @@ describe("Electron engine boundary", () => {
     ]);
   });
 
+  test("maps explicit copy and move import modes without widening the command surface", async () => {
+    expect(
+      await buildEngineArguments("library_import_many", {
+        sourcePaths: ["/Books/A.epub", "/Books/B.pdf"],
+        mode: "move",
+      }),
+    ).toEqual([
+      "library",
+      "import-many",
+      "--source-path",
+      "/Books/A.epub",
+      "--source-path",
+      "/Books/B.pdf",
+      "--mode",
+      "move",
+    ]);
+    expect(
+      await buildEngineArguments("library_import_many", {
+        sourcePaths: ["/Books/A.epub"],
+        mode: "link",
+      }),
+    ).toBeNull();
+  });
+
   test("accepts only protocol records consistent with the process exit code", () => {
     expect(
       parseEngineRecord(

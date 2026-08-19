@@ -1,5 +1,6 @@
 import {
   MAX_LIBRARY_IMPORT_ROOTS,
+  type LibraryImportMode,
   type LibraryImportEntryOutcome,
   type LibraryImportReport,
 } from "@takio/library-contract";
@@ -11,12 +12,14 @@ export type LibraryImportDialogProps = {
   readonly open: boolean;
   readonly selectedRootPaths: readonly string[];
   readonly pending: boolean;
+  readonly mode: LibraryImportMode;
   readonly report: LibraryImportReport | null;
   readonly error: string | null;
   readonly onClose: () => void;
   readonly onChooseFiles: () => void;
   readonly onChooseFolders: () => void;
   readonly onImport: () => void;
+  readonly onModeChange: (mode: LibraryImportMode) => void;
 };
 
 const focusableSelector = [
@@ -82,6 +85,12 @@ function outcomeDetails(outcome: LibraryImportEntryOutcome): ReactNode {
             <dt>Book</dt>
             <dd>{outcome.item.title}</dd>
           </div>
+          {outcome.sourceCleanupPending === undefined ? null : (
+            <div>
+              <dt>Original</dt>
+              <dd>{outcome.sourceCleanupPending ? "cleanup pending" : "removed"}</dd>
+            </div>
+          )}
         </>
       );
     case "skipped":
@@ -112,6 +121,12 @@ function outcomeDetails(outcome: LibraryImportEntryOutcome): ReactNode {
             <dt>Existing</dt>
             <dd>{outcome.existing.itemId} · {outcome.existing.format.toUpperCase()}</dd>
           </div>
+          {outcome.sourceCleanupPending === undefined ? null : (
+            <div>
+              <dt>Original</dt>
+              <dd>{outcome.sourceCleanupPending ? "cleanup pending" : "removed"}</dd>
+            </div>
+          )}
         </>
       );
     case "failed":
@@ -134,12 +149,14 @@ export function LibraryImportDialog({
   open,
   selectedRootPaths,
   pending,
+  mode,
   report,
   error,
   onClose,
   onChooseFiles,
   onChooseFolders,
   onImport,
+  onModeChange,
 }: LibraryImportDialogProps) {
   const instanceId = useId();
   const titleId = `${instanceId}-title`;
@@ -264,6 +281,38 @@ export function LibraryImportDialog({
         ) : null}
 
         <div className="library-import-dialog__body">
+          <fieldset className="library-import-dialog__mode" disabled={pending}>
+            <legend>What should Takio do with the originals?</legend>
+            <label>
+              <input
+                type="radio"
+                name={`${instanceId}-mode`}
+                value="copy"
+                checked={mode === "copy"}
+                onChange={() => onModeChange("copy")}
+              />
+              <span>
+                <strong>Keep originals</strong>
+                <small>Copy books into Takio and leave the selected files where they are.</small>
+              </span>
+            </label>
+            <label>
+              <input
+                type="radio"
+                name={`${instanceId}-mode`}
+                value="move"
+                checked={mode === "move"}
+                onChange={() => onModeChange("move")}
+              />
+              <span>
+                <strong>Organize into Takio</strong>
+                <small>
+                  Takio removes each original only after its managed copy is verified.
+                </small>
+              </span>
+            </label>
+          </fieldset>
+
           <section className="library-import-dialog__roots" aria-labelledby={`${instanceId}-roots`}>
             <div className="library-import-dialog__section-heading">
               <div>

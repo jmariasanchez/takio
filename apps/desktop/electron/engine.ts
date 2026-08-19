@@ -71,10 +71,23 @@ export async function buildEngineArguments(
         : null;
     case "library_import_many": {
       const roots = input.sourcePaths;
-      if (!Array.isArray(roots) || roots.length < 1 || roots.length > 256 || !roots.every(nonempty)) {
+      const mode = input.mode;
+      if (
+        !Array.isArray(roots) ||
+        roots.length < 1 ||
+        roots.length > 256 ||
+        !roots.every(nonempty) ||
+        (mode !== "copy" && mode !== "move")
+      ) {
         return null;
       }
-      return ["library", "import-many", ...roots.flatMap((root) => ["--source-path", root])];
+      return [
+        "library",
+        "import-many",
+        ...roots.flatMap((root) => ["--source-path", root]),
+        "--mode",
+        mode,
+      ];
     }
     case "library_export_many":
       return jsonCommand(["library", "export-many"], request);

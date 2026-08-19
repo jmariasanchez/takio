@@ -19,7 +19,10 @@ compatible while runtimes adopt them.
 
 `LibraryBatchImportStore` adds recursive multi-root import without changing the
 single-file `LibraryStore.import` contract. Requests contain 1–256 nonblank root
-paths. Roots are visited in caller order; directory entries are traversed depth
+paths and an optional explicit `copy` or `move` mode. `copy` preserves callers'
+sources. `move` publishes verified managed copies before source cleanup and
+reports `sourceCleanupPending` on imported or duplicate outcomes when cleanup
+must be retried. Roots are visited in caller order; directory entries are traversed depth
 first in raw code-unit name order. Directories do not produce outcomes. Symbolic
 links are never followed, including root symlinks, and are reported as skipped.
 Unsupported regular formats and other unsupported file types are also skipped;

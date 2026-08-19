@@ -90,8 +90,11 @@ external runtime dependency for metadata extraction, polishing, and conversion.
 
 ## Library storage and schema v9
 
-Importing a library item or attaching a format as a copy leaves the selected
-source in place and creates a Takio-managed copy. Attaching a reference records
+Importing with the default `copy` mode or attaching a format as a copy leaves
+the selected source in place and creates a Takio-managed copy. Importing with `--mode move`
+organizes the source into Takio: it publishes and verifies the managed copy
+before removing the original. If original-file cleanup fails, Takio records the
+obligation and retries it when the library is next opened. Attaching a reference records
 the external file without copying it. Removing a format or item deletes only
 Takio-managed copies; referenced files remain caller-owned and are never
 deleted. If immediate managed-file cleanup fails, Takio records the obligation
@@ -156,7 +159,7 @@ The command surface is grouped by workflow:
 | `takio library verify` | Audit database structure and every managed format fingerprint without creating, migrating, or repairing the library. |
 | `takio library backup`, `restore-backup` | Create and restore verified, non-overwriting snapshots of the catalogue and Takio-owned files. |
 | `takio library portable-export`, `rebuild` | Export active books as verified OPF directories and reconstruct them into a new self-contained library. |
-| `takio library import`, `import-many`, `import-calibre`, `import-watch` | Import once, recursively import roots, import a read-only Calibre library rooted at `metadata.db`, or rescan roots in a bounded/stoppable foreground loop. |
+| `takio library import`, `import-many`, `import-calibre`, `import-watch` | Copy or explicitly move imports into Takio, recursively import roots, import a read-only Calibre library rooted at `metadata.db`, or rescan roots in a bounded/stoppable foreground loop. |
 | `takio library list`, `get`, `open`, `search`, `query` | Read the catalogue through simple or structured queries. |
 | `takio library catalog` | Publish a non-overwriting JSON, CSV, or HTML catalog without local source paths. |
 | `takio library content-search` | Search literal text by extracting bounded temporary TXT through Calibre; no persistent index is created. |

@@ -18,6 +18,7 @@ import type {
   KeepDuplicatePairRequest,
   LibraryFacetCounts,
   LibraryImportReport,
+  LibraryImportMode,
   LibraryMetadataPatch,
   LibraryQueryFilters,
   LibraryQuerySort,
@@ -228,6 +229,7 @@ export default function App() {
   const [importRootPaths, setImportRootPaths] = useState<readonly string[]>([]);
   const [importReport, setImportReport] = useState<LibraryImportReport | null>(null);
   const [importDialogError, setImportDialogError] = useState<string | null>(null);
+  const [importMode, setImportMode] = useState<LibraryImportMode>("copy");
   const [trashDialogOpen, setTrashDialogOpen] = useState(false);
   const [trashItems, setTrashItems] = useState<readonly LibraryItem[]>([]);
   const [trashTotal, setTrashTotal] = useState(0);
@@ -1346,7 +1348,7 @@ export default function App() {
       setImportDialogError(null);
       setNotice(null);
       try {
-        const result = await importLibraryItems(roots);
+        const result = await importLibraryItems(roots, importMode);
         if (!result.ok) {
           const error = describeLibraryError(result.error.code);
           setImportDialogError(error);
@@ -1384,7 +1386,7 @@ export default function App() {
         setPendingAction(null);
       }
     },
-    [duplicateDialogOpen, loadLibrary, pendingAction],
+    [duplicateDialogOpen, importMode, loadLibrary, pendingAction],
   );
 
   async function importDroppedPaths(paths: readonly string[]): Promise<void> {
@@ -1396,7 +1398,6 @@ export default function App() {
     setImportReport(null);
     setImportDialogError(null);
     setImportDialogOpen(true);
-    await importPaths(roots);
   }
 
   async function saveMetadata(item: LibraryItem, patch: LibraryMetadataPatch) {
@@ -3029,12 +3030,14 @@ export default function App() {
           open={importDialogOpen}
           selectedRootPaths={importRootPaths}
           pending={pendingAction === "import"}
+          mode={importMode}
           report={importReport}
           error={importDialogError}
           onClose={closeImportDialog}
           onChooseFiles={chooseImportFiles}
           onChooseFolders={chooseImportFolders}
           onImport={() => void importPaths(importRootPaths)}
+          onModeChange={setImportMode}
         />
       </section>
     </main>

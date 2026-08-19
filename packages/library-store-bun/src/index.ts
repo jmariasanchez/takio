@@ -36,6 +36,8 @@ import {
 import type {
   AddLibraryItemRequest,
   AddLibraryItemResult,
+  AdoptLibraryItemRequest,
+  AdoptLibraryItemResult,
   AttachLibraryFormatRequest,
   AttachLibraryFormatResult,
   DuplicateCandidate,
@@ -51,6 +53,7 @@ import type {
   KeepDuplicatePairRequest,
   KeepDuplicatePairResult,
   LibraryBatchImportStore,
+  LibraryAdoptionStore,
   LibraryDuplicateReviewStore,
   LibraryExportEntryOutcome,
   LibraryExportStore,
@@ -174,6 +177,11 @@ type StoredAuthor = { name: unknown; sortName: unknown; position: unknown };
 type StoredLanguage = { language: unknown; position: unknown };
 type StoredIdentifier = { scheme: unknown; value: unknown };
 type StoredCustomMetadata = { name: unknown; value: unknown };
+type StoredSourceCleanup = {
+  sourcePath: string;
+  contentBytes: number;
+  contentSha256: string;
+};
 type StoredItemFormat = StoredPositionedBookFormat & { libraryItemId: string };
 type StoredItemTag = StoredTag & { libraryItemId: string; position: unknown };
 type StoredItemAuthor = StoredAuthor & { libraryItemId: string };
@@ -1370,6 +1378,99 @@ function ensureManagedCleanupTable(database: Database): void {
   }
 }
 
+function ensureSourceCleanupTable(database: Database): void {
+  database.run(`
+    CREATE TABLE IF NOT EXISTS source_file_cleanup (
+      source_path TEXT PRIMARY KEY,
+      content_bytes INTEGER NOT NULL CHECK (content_bytes >= 0),
+      content_sha256 TEXT NOT NULL CHECK (
+        length(content_sha256) = 64 AND content_sha256 NOT GLOB '*[^0-9a-f]*'
+      )
+    ) STRICT
+  `);
+}
+
+function sourceCleanupPending(
+  database: Database,
+  sourcePath: string,
+  artifact: ExpectedArtifact,
+): boolean {
+  let entry: ReturnType<typeof lstatSync>;
+  try {
+    entry = lstatSync(sourcePath);
+  } catch (error) {
+    if (typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT") {
+      database.run("DELETE FROM source_file_cleanup WHERE source_path = ?", [sourcePath]);
+      return false;
+    }
+    return true;
+  }
+  if (entry.isSymbolicLink() || !entry.isFile()) return true;
+  try {
+    lifecycleTestSeam.beforeSourceFileCleanup?.(sourcePath);
+  } catch {
+    return true;
+  }
+  try {
+    entry = lstatSync(sourcePath);
+  } catch {
+    return true;
+  }
+  if (entry.isSymbolicLink() || !entry.isFile()) return true;
+  const current = fingerprintFile(sourcePath, entry);
+  if (
+    !current.ok ||
+    current.value.bytes !== artifact.bytes ||
+    current.value.sha256 !== artifact.sha256
+  ) {
+    return true;
+  }
+  try {
+    unlinkSync(sourcePath);
+    database.run("DELETE FROM source_file_cleanup WHERE source_path = ?", [sourcePath]);
+    return false;
+  } catch (error) {
+    if (typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT") {
+      database.run("DELETE FROM source_file_cleanup WHERE source_path = ?", [sourcePath]);
+      return false;
+    }
+    return true;
+  }
+}
+
+function queueSourceFileCleanup(
+  database: Database,
+  sourcePath: string,
+  artifact: ExpectedArtifact,
+): boolean {
+  database.run(
+    `INSERT INTO source_file_cleanup (source_path, content_bytes, content_sha256)
+      VALUES (?, ?, ?)
+      ON CONFLICT(source_path) DO UPDATE SET
+        content_bytes = excluded.content_bytes,
+        content_sha256 = excluded.content_sha256`,
+    [sourcePath, artifact.bytes, artifact.sha256],
+  );
+  return sourceCleanupPending(database, sourcePath, artifact);
+}
+
+function retrySourceFileCleanup(database: Database): void {
+  const pending = database
+    .query<StoredSourceCleanup, []>(`
+      SELECT source_path AS sourcePath, content_bytes AS contentBytes,
+        content_sha256 AS contentSha256
+      FROM source_file_cleanup
+      ORDER BY source_path
+    `)
+    .all();
+  for (const row of pending) {
+    sourceCleanupPending(database, row.sourcePath, {
+      bytes: row.contentBytes,
+      sha256: row.contentSha256,
+    });
+  }
+}
+
 function verifyV1Backup(path: string): void {
   using backup = new Database(path, { strict: true });
   const version = backup.query<{ user_version: number }, []>("PRAGMA user_version").get()
@@ -2403,7 +2504,16 @@ export function createLibraryBackup(
     database.run("PRAGMA foreign_keys = ON");
     database.run("BEGIN");
     verifyV8Database(database, join(sourceRoot, "covers"), join(sourceRoot, "items"));
-    writeFileSync(join(temporaryRoot, "library.sqlite"), database.serialize(), { mode: 0o600 });
+    const snapshotPath = join(temporaryRoot, "library.sqlite");
+    writeFileSync(snapshotPath, database.serialize(), { mode: 0o600 });
+    const snapshot = new Database(snapshotPath, { strict: true });
+    const hasSourceCleanup = snapshot
+      .query<{ present: number }, []>(
+        "SELECT 1 AS present FROM sqlite_schema WHERE type = 'table' AND name = 'source_file_cleanup'",
+      )
+      .get();
+    if (hasSourceCleanup) snapshot.run("DELETE FROM source_file_cleanup");
+    snapshot.close();
     const ownedPaths = copyOwnedLibraryArtifacts(database, sourceRoot, temporaryRoot);
     database.run("ROLLBACK");
     database.close();
@@ -3456,6 +3566,7 @@ function parseSavedLibraryView(row: StoredSavedLibraryView): LibraryStoreResult<
 export class BunSqliteLibraryStore
   implements
     LibraryStore,
+    LibraryAdoptionStore,
     LibraryBatchImportStore,
     LibraryDuplicateReviewStore,
     LibraryExportStore,
@@ -3532,6 +3643,7 @@ export class BunSqliteLibraryStore
           createLibraryTrashIndex(database!);
           createManagedFingerprintIndex(database!);
           createDuplicatePairReviewsTable(database!);
+          ensureSourceCleanupTable(database!);
           verifyV9Database(database!, this.#coversDirectory, this.#itemsDirectory);
           database!.run(`PRAGMA user_version = ${SCHEMA_VERSION}`);
         } else if (version === 1) {
@@ -3636,9 +3748,11 @@ export class BunSqliteLibraryStore
           throw incompatibleSchema;
         }
         ensureManagedCleanupTable(database!);
+        ensureSourceCleanupTable(database!);
       }).immediate();
 
       retryOwnedFileCleanup(database, this.#coversDirectory, this.#itemsDirectory);
+      retrySourceFileCleanup(database);
       this.#database = database;
       return success(null);
     } catch (error) {
@@ -3911,6 +4025,7 @@ export class BunSqliteLibraryStore
     format: FormatId,
     normalizedTitle: string,
     artifact: ExpectedArtifact,
+    sourceCleanupPath?: string,
   ): { result: ImportLibraryItemResult; failureCode?: BatchImportFailure } {
     if (!this.#database) {
       return { result: failure("storage-unavailable"), failureCode: "storage-unavailable" };
@@ -3973,6 +4088,13 @@ export class BunSqliteLibraryStore
             VALUES (?, ?, ?, NULL, NULL, NULL, NULL)`,
           [id, normalizedTitle, addedAt],
         );
+        if (sourceCleanupPath) {
+          this.#database!.run(
+            `INSERT INTO source_file_cleanup (source_path, content_bytes, content_sha256)
+              VALUES (?, ?, ?)`,
+            [sourceCleanupPath, artifact.bytes, artifact.sha256],
+          );
+        }
         this.#database!.run(
           `INSERT INTO library_item_formats
             (library_item_id, format, source_path, added_at, provenance, position,
@@ -4024,6 +4146,69 @@ export class BunSqliteLibraryStore
       normalizedTitle,
       artifact.value,
     ).result;
+  }
+
+  async adopt({ sourcePath, title }: AdoptLibraryItemRequest): Promise<AdoptLibraryItemResult> {
+    if (!this.#database) return failure("storage-unavailable");
+    const source = readSource(sourcePath);
+    const normalizedTitle =
+      title === undefined && source
+        ? basename(source.path, extname(source.path)).trim()
+        : typeof title === "string"
+          ? title.trim()
+          : "";
+    if (!source || normalizedTitle.length === 0) return failure("invalid-arguments");
+    const managedRelativePath = relative(this.#itemsDirectory, source.path);
+    if (
+      managedRelativePath === "" ||
+      (!managedRelativePath.startsWith(`..${sep}`) &&
+        managedRelativePath !== ".." &&
+        !isAbsolute(managedRelativePath))
+    ) {
+      return failure("invalid-arguments");
+    }
+    const artifact = fingerprintFile(source.path);
+    if (!artifact.ok) {
+      return failure(artifact.code === "source-changed" ? "invalid-arguments" : "storage-unavailable");
+    }
+    const duplicate = this.#database
+      .query<{ itemId: string }, [number, string]>(`
+        SELECT library_item_id AS itemId
+        FROM library_item_formats
+        WHERE provenance = 'managed' AND content_bytes = ? AND content_sha256 = ?
+        ORDER BY library_item_id, position
+        LIMIT 1
+      `)
+      .get(artifact.value.bytes, artifact.value.sha256);
+    if (duplicate) {
+      const existing = readStoredItem(
+        this.#database,
+        this.#coversDirectory,
+        this.#itemsDirectory,
+        duplicate.itemId,
+      );
+      if (!existing.ok || !existing.value) return failure("invalid-stored-data");
+      return success({
+        item: existing.value,
+        sourceCleanupPending: queueSourceFileCleanup(
+          this.#database,
+          source.path,
+          artifact.value,
+        ),
+      });
+    }
+    const imported = this.#importFingerprinted(
+      source.path,
+      source.format,
+      normalizedTitle,
+      artifact.value,
+      source.path,
+    ).result;
+    if (!imported.ok) return imported;
+    return success({
+      item: imported.value,
+      sourceCleanupPending: sourceCleanupPending(this.#database, source.path, artifact.value),
+    });
   }
 
   async importMany(request: ImportLibraryItemsRequest): Promise<ImportLibraryItemsResult> {
@@ -4095,6 +4280,7 @@ export class BunSqliteLibraryStore
         return;
       }
       const key = `${fingerprint.value.bytes}:${fingerprint.value.sha256}`;
+      const moveSource = parsedRequest.data.mode === "move" ? realpathSync(sourcePath) : undefined;
       const earlier = encountered.get(key);
       if (earlier) {
         outcomes.push({
@@ -4102,6 +4288,15 @@ export class BunSqliteLibraryStore
           sourcePath,
           existing: earlier,
           reason: "earlier-in-request",
+          ...(moveSource
+            ? {
+                sourceCleanupPending: queueSourceFileCleanup(
+                  this.#database!,
+                  moveSource,
+                  fingerprint.value,
+                ),
+              }
+            : {}),
         });
         return;
       }
@@ -4136,15 +4331,25 @@ export class BunSqliteLibraryStore
           sourcePath,
           existing,
           reason: "existing-library",
+          ...(moveSource
+            ? {
+                sourceCleanupPending: queueSourceFileCleanup(
+                  this.#database!,
+                  moveSource,
+                  fingerprint.value,
+                ),
+              }
+            : {}),
         });
         return;
       }
 
       const imported = this.#importFingerprinted(
-        sourcePath,
+        moveSource ?? sourcePath,
         format,
         normalizedTitle,
         fingerprint.value,
+        moveSource,
       );
       if (!imported.result.ok) {
         fail(sourcePath, imported.failureCode ?? "storage-unavailable");
@@ -4152,7 +4357,20 @@ export class BunSqliteLibraryStore
       }
       const importedReference = { itemId: imported.result.value.id, format };
       encountered.set(key, importedReference);
-      outcomes.push({ status: "imported", sourcePath, item: imported.result.value });
+      outcomes.push({
+        status: "imported",
+        sourcePath,
+        item: imported.result.value,
+        ...(moveSource
+          ? {
+              sourceCleanupPending: sourceCleanupPending(
+                this.#database!,
+                moveSource,
+                fingerprint.value,
+              ),
+            }
+          : {}),
+      });
     };
 
     for (const root of parsedRequest.data.roots) {

@@ -36,6 +36,7 @@ const report = {
       status: "imported",
       sourcePath: "/books/left-hand.epub",
       item: importedItem,
+      sourceCleanupPending: false,
     },
     {
       status: "skipped",
@@ -65,12 +66,14 @@ function render(
       open
       selectedRootPaths={["/books", "/downloads/new.epub"]}
       pending={false}
+      mode="copy"
       report={null}
       error={null}
       onClose={() => undefined}
       onChooseFiles={() => undefined}
       onChooseFolders={() => undefined}
       onImport={() => undefined}
+      onModeChange={() => undefined}
       {...overrides}
     />,
   );
@@ -95,6 +98,9 @@ test("renders an accessible recursive-import modal with controlled root paths", 
   expect(markup).toContain("2 selected roots");
   expect(markup).toContain('<button type="button">Choose files…</button>');
   expect(markup).toContain('<button type="button">Choose folders…</button>');
+  expect(markup).toContain('value="move"');
+  expect(markup).toContain("Organize into Takio");
+  expect(markup).toContain("removes each original only after its managed copy is verified");
   expect(markup).toContain('<button type="button" class="library-import-dialog__import">Import</button>');
 });
 
@@ -138,6 +144,7 @@ test("renders exact counts and every ordered outcome discriminant", () => {
     expect(markup).toContain(`<code>${status}</code>`);
   }
   expect(markup).toContain("The Left Hand of Darkness");
+  expect(markup).toContain("<dt>Original</dt><dd>removed</dd>");
   expect(markup).toContain("<code>unsupported-format</code>");
   expect(markup).toContain("<code>earlier-in-request</code>");
   expect(markup).toContain("item-1 · EPUB");

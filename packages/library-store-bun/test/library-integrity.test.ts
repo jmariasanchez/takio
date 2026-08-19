@@ -10,6 +10,7 @@ import {
   restoreLibraryBackup,
   verifyLibraryIntegrity,
 } from "../src/index.js";
+import { lifecycleTestSeam } from "../src/lifecycle-test-seam.js";
 
 describe("library integrity verification", () => {
   let root: string;
@@ -21,6 +22,7 @@ describe("library integrity verification", () => {
   });
 
   afterEach(async () => {
+    delete lifecycleTestSeam.beforeSourceFileCleanup;
     await rm(root, { recursive: true, force: true });
   });
 
@@ -152,6 +154,52 @@ describe("library integrity verification", () => {
     expect(
       restoreLibraryBackup(backupPath, join(root, "second-restore", "library.sqlite")),
     ).toEqual({ ok: false, error: { code: "invalid-backup" } });
+  });
+
+  it("does not restore operational source cleanup obligations", async () => {
+    const sourceRoot = join(root, "source-library");
+    await mkdir(sourceRoot);
+    databasePath = join(sourceRoot, "library.sqlite");
+    const originalPath = join(root, "pending-original.epub");
+    await Bun.write(originalPath, "pending original contents");
+    const store = new BunSqliteLibraryStore(databasePath);
+    await store.open({ config: {} });
+    lifecycleTestSeam.beforeSourceFileCleanup = () => {
+      throw new Error("leave cleanup pending");
+    };
+    expect(await store.adopt({ sourcePath: originalPath })).toMatchObject({
+      ok: true,
+      value: { sourceCleanupPending: true },
+    });
+    store.close();
+
+    const backupPath = join(root, "pending-backup");
+    expect(createLibraryBackup(databasePath, backupPath).ok).toBe(true);
+    using backup = new Database(join(backupPath, "library.sqlite"), { readonly: true });
+    expect(backup.query("SELECT * FROM source_file_cleanup").all()).toEqual([]);
+
+    delete lifecycleTestSeam.beforeSourceFileCleanup;
+    const restoredPath = join(root, "pending-restored", "library.sqlite");
+    expect(restoreLibraryBackup(backupPath, restoredPath).ok).toBe(true);
+    const restored = new BunSqliteLibraryStore(restoredPath);
+    expect(await restored.open({ config: {} })).toEqual({ ok: true, value: null });
+    expect(await Bun.file(originalPath).exists()).toBe(true);
+    restored.close();
+  });
+
+  it("backs up a schema-v9 library created before source cleanup tracking", async () => {
+    const sourceRoot = join(root, "legacy-v9-library");
+    await mkdir(sourceRoot);
+    databasePath = join(sourceRoot, "library.sqlite");
+    const store = new BunSqliteLibraryStore(databasePath);
+    await store.open({ config: {} });
+    store.close();
+    using database = new Database(databasePath, { strict: true });
+    database.run("DROP TABLE source_file_cleanup");
+
+    expect(createLibraryBackup(databasePath, join(root, "legacy-v9-backup"))).toMatchObject({
+      ok: true,
+    });
   });
 
   it("never overwrites a backup or an existing restore destination", async () => {

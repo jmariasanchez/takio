@@ -46,6 +46,15 @@ as `managed`, while a `reference` source is recorded as `referenced` without
 being copied. A referenced file is never deleted by format or item removal,
 even if its path is inside the managed root.
 
+`adopt` and batch import `move` mode first copy and fingerprint the managed
+artifact, then publish the catalogue record and a durable source-cleanup
+obligation in one transaction. Exact duplicates reuse the existing book and
+remove only the redundant source. Cleanup deletes a source only while it still
+matches the imported byte count and SHA-256. Failures remain pending and are
+retried on the next open. Backup snapshots intentionally clear these operational
+obligations so restoring a backup cannot delete files outside the restored
+library.
+
 `removeFormat` refuses to remove the last format. Removing another format
 promotes the next stored format when necessary and updates the legacy primary
 aliases. `removeFormat` schedules only the removed format when it is `managed`.

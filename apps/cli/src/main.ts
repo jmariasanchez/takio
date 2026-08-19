@@ -33,6 +33,7 @@ import {
 import {
   exportLibraryItemsRequestSchema,
   importLibraryItemsRequestSchema,
+  LIBRARY_IMPORT_MODES,
   keepDuplicatePairRequestSchema,
   libraryMetadataPatchSchema,
   listDuplicateCandidatesRequestSchema,
@@ -2140,27 +2141,53 @@ export function createProgram(
     .option("--db <path>", "database path")
     .requiredOption("--source-path <path>", "source document path")
     .option("--title <title>", "library item title")
+    .option("--mode <mode>", "copy the source or move it into Takio: copy, move", "copy")
     .action(
       async (
-        options: { db?: string; sourcePath: string; title?: string },
+        options: { db?: string; sourcePath: string; title?: string; mode: string },
         command: Command,
       ) => {
+        if (!LIBRARY_IMPORT_MODES.includes(options.mode as (typeof LIBRARY_IMPORT_MODES)[number])) {
+          command.error("", { exitCode: 1, code: "invalid-arguments" });
+        }
         const { store } = await openLibraryStore(options.db, command);
         try {
-          const result = await store.import({
-            sourcePath: options.sourcePath,
-            title: options.title,
-          });
-          if (!result.ok) {
-            command.error("", { exitCode: 1, code: result.error.code });
+          const organized = options.mode === "move";
+          let importedItem: LibraryItem;
+          let sourceCleanupPending: boolean | undefined;
+          if (organized) {
+            const result = await store.adopt({
+              sourcePath: options.sourcePath,
+              title: options.title,
+            });
+            if (!result.ok) {
+              command.error("", { exitCode: 1, code: result.error.code });
+            }
+            importedItem = result.value.item;
+            sourceCleanupPending = result.value.sourceCleanupPending;
+          } else {
+            const result = await store.import({
+              sourcePath: options.sourcePath,
+              title: options.title,
+            });
+            if (!result.ok) {
+              command.error("", { exitCode: 1, code: result.error.code });
+            }
+            importedItem = result.value;
           }
           const [outcome] = await enrichImportedLibraryOutcomes(
             store,
-            [{ status: "imported", sourcePath: options.sourcePath, item: result.value }],
+            [{ status: "imported", sourcePath: options.sourcePath, item: importedItem }],
             { titleOverride: options.title },
           );
-          const item = outcome?.status === "imported" ? outcome.item : result.value;
-          write(JSON.stringify({ ok: true, value: { item } }));
+          const item = outcome?.status === "imported" ? outcome.item : importedItem;
+          write(JSON.stringify({
+            ok: true,
+            value: {
+              item,
+              ...(organized ? { sourceCleanupPending } : {}),
+            },
+          }));
         } finally {
           store.close();
         }
@@ -2177,13 +2204,15 @@ export function createProgram(
         sourcePath,
       ],
     )
+    .option("--mode <mode>", "copy sources or move them into Takio: copy, move", "copy")
     .action(
       async (
-        options: { db?: string; sourcePath: string[] },
+        options: { db?: string; sourcePath: string[]; mode: string },
         command: Command,
       ) => {
         const parsedRequest = importLibraryItemsRequestSchema.safeParse({
           roots: options.sourcePath,
+          mode: options.mode,
         });
         if (!parsedRequest.success) {
           command.error("", { exitCode: 1, code: "invalid-arguments" });

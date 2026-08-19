@@ -312,7 +312,7 @@ test("uses only the fixed desktop library commands and argument names", async ()
   await listLibraryItems(invokeCommand);
   await getLibraryItem("item-1", invokeCommand);
   await importLibraryItem("/Books/A title.epub", invokeCommand);
-  await importLibraryItems(["/Books", "/Incoming/A title.epub"], invokeCommand);
+  await importLibraryItems(["/Books", "/Incoming/A title.epub"], "move", invokeCommand);
   await exportLibraryItems(exportRequest, invokeCommand);
   await attachLibraryFormat(
     "item-1",
@@ -347,7 +347,7 @@ test("uses only the fixed desktop library commands and argument names", async ()
     { command: "library_import", args: { sourcePath: "/Books/A title.epub" } },
     {
       command: "library_import_many",
-      args: { sourcePaths: ["/Books", "/Incoming/A title.epub"] },
+      args: { sourcePaths: ["/Books", "/Incoming/A title.epub"], mode: "move" },
     },
     { command: "library_export_many", args: { request: exportRequest } },
     {
@@ -674,7 +674,7 @@ test("passes an exact recursive import report through", async () => {
   const result = { ok: true, value: batchImportReport } as const;
 
   expect(
-    await importLibraryItems(["/Books"], async () => result as never),
+    await importLibraryItems(["/Books"], "copy", async () => result as never),
   ).toBe(result);
 });
 
@@ -719,7 +719,7 @@ test("rejects malformed or inconsistently counted recursive import reports", asy
 
   for (const report of malformedReports) {
     expect(
-      await importLibraryItems(["/Books"], async () => ({
+      await importLibraryItems(["/Books"], "copy", async () => ({
         ok: true,
         value: report,
       }) as never),

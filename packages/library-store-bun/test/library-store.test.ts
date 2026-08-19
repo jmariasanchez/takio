@@ -97,6 +97,7 @@ afterEach(async () => {
   delete initializationTestSeam.duringV2ToV3Migration;
   delete initializationTestSeam.duringV4ToV5Migration;
   delete lifecycleTestSeam.beforeManagedFileCleanup;
+  delete lifecycleTestSeam.beforeSourceFileCleanup;
   delete lifecycleTestSeam.duringManagedItemRemoval;
 
   const closeErrors: unknown[] = [];
@@ -171,6 +172,108 @@ async function createSqlFixture(filename: string): Promise<void> {
 }
 
 describe("BunSqliteLibraryStore", () => {
+  it("adopts one source into managed storage without retaining a duplicate", async () => {
+    const sourcePath = join(directory, "adopt-me.epub");
+    await writeFile(sourcePath, "adopted contents");
+    const store = createStore();
+    expect(await store.open({ config: {} })).toEqual({ ok: true, value: null });
+
+    const adopted = await store.adopt({ sourcePath });
+
+    expect(adopted).toMatchObject({
+      ok: true,
+      value: {
+        item: { title: "adopt-me", format: "epub", formats: [{ provenance: "managed" }] },
+        sourceCleanupPending: false,
+      },
+    });
+    expect(await Bun.file(sourcePath).exists()).toBe(false);
+    if (!adopted.ok) throw new Error("Expected adoption to succeed");
+    expect(await readFile(adopted.value.item.sourcePath)).toEqual(Buffer.from("adopted contents"));
+  });
+
+  it("adopts an exact duplicate by removing only the redundant original", async () => {
+    const firstPath = join(directory, "first.epub");
+    const duplicatePath = join(directory, "duplicate.epub");
+    await writeFile(firstPath, "same contents");
+    await writeFile(duplicatePath, "same contents");
+    const store = createStore();
+    await store.open({ config: {} });
+    const first = await store.import({ sourcePath: firstPath });
+    if (!first.ok) throw new Error("Expected the first import");
+
+    const adopted = await store.adopt({ sourcePath: duplicatePath });
+
+    expect(adopted).toMatchObject({
+      ok: true,
+      value: { item: { id: first.value.id }, sourceCleanupPending: false },
+    });
+    expect(await Bun.file(duplicatePath).exists()).toBe(false);
+    expect(await store.list({})).toMatchObject({ ok: true, value: [{ id: first.value.id }] });
+  });
+
+  it("persists failed source cleanup and retries it when the library reopens", async () => {
+    const sourcePath = join(directory, "cleanup-later.epub");
+    await writeFile(sourcePath, "cleanup later contents");
+    const store = createStore();
+    expect(await store.open({ config: {} })).toEqual({ ok: true, value: null });
+    lifecycleTestSeam.beforeSourceFileCleanup = () => {
+      throw new Error("injected source cleanup failure");
+    };
+
+    const adopted = await store.adopt({ sourcePath });
+
+    expect(adopted).toMatchObject({ ok: true, value: { sourceCleanupPending: true } });
+    expect(await Bun.file(sourcePath).exists()).toBe(true);
+    using database = new Database(databasePath, { strict: true });
+    expect(database.query("SELECT source_path FROM source_file_cleanup").all()).toEqual([
+      { source_path: await realpath(sourcePath) },
+    ]);
+
+    delete lifecycleTestSeam.beforeSourceFileCleanup;
+    store.close();
+    const reopened = createStore();
+    expect(await reopened.open({ config: {} })).toEqual({ ok: true, value: null });
+    expect(await Bun.file(sourcePath).exists()).toBe(false);
+    expect(database.query("SELECT * FROM source_file_cleanup").all()).toEqual([]);
+  });
+
+  it("adopts a zero-byte source and removes the original", async () => {
+    const sourcePath = join(directory, "empty.epub");
+    await writeFile(sourcePath, "");
+    const store = createStore();
+    expect(await store.open({ config: {} })).toEqual({ ok: true, value: null });
+
+    const adopted = await store.adopt({ sourcePath });
+
+    expect(adopted).toMatchObject({
+      ok: true,
+      value: { sourceCleanupPending: false },
+    });
+    expect(await Bun.file(sourcePath).exists()).toBe(false);
+  });
+
+  it("persists and retries failed cleanup for a zero-byte source", async () => {
+    const sourcePath = join(directory, "empty-cleanup-later.epub");
+    await writeFile(sourcePath, "");
+    const store = createStore();
+    expect(await store.open({ config: {} })).toEqual({ ok: true, value: null });
+    lifecycleTestSeam.beforeSourceFileCleanup = () => {
+      throw new Error("injected source cleanup failure");
+    };
+
+    const adopted = await store.adopt({ sourcePath });
+
+    expect(adopted).toMatchObject({ ok: true, value: { sourceCleanupPending: true } });
+    expect(await Bun.file(sourcePath).exists()).toBe(true);
+
+    delete lifecycleTestSeam.beforeSourceFileCleanup;
+    store.close();
+    const reopened = createStore();
+    expect(await reopened.open({ config: {} })).toEqual({ ok: true, value: null });
+    expect(await Bun.file(sourcePath).exists()).toBe(false);
+  });
+
   it("persists add, get, list, and remove across injected-path reopenings at schema v9", async () => {
     const first = createStore();
     expect(await first.open({ config: {} })).toEqual({ ok: true, value: null });
@@ -1918,6 +2021,7 @@ describe("BunSqliteLibraryStore", () => {
       { name: "library_items", type: "table" },
       { name: "managed_file_cleanup", type: "table" },
       { name: "saved_library_views", type: "table" },
+      { name: "source_file_cleanup", type: "table" },
       { name: "tags", type: "table" },
     ]);
   });

@@ -7,6 +7,7 @@ import {
   DUPLICATE_REVIEW_DISPOSITIONS,
   LIBRARY_IMPORT_DUPLICATE_REASONS,
   LIBRARY_IMPORT_FAILURE_CODES,
+  LIBRARY_IMPORT_MODES,
   LIBRARY_IMPORT_SKIPPED_REASONS,
   LIBRARY_EXPORT_FAILURE_CODES,
   LIBRARY_EXPORT_FILE_NAME_TEMPLATES,
@@ -123,6 +124,35 @@ const duplicateItem = {
 const duplicateReviewToken = "a".repeat(64);
 
 describe("LibraryStore", () => {
+  it("defines an explicit organize import mode and cleanup status", () => {
+    expect(LIBRARY_IMPORT_MODES).toEqual(["copy", "move"]);
+    expect(
+      importLibraryItemsRequestSchema.parse({
+        roots: ["/external/books"],
+        mode: "move",
+      }),
+    ).toEqual({ roots: ["/external/books"], mode: "move" });
+    expect(
+      libraryImportEntryOutcomeSchema.parse({
+        status: "imported",
+        sourcePath: "/external/books/left-hand.epub",
+        item: canonicalItem,
+        sourceCleanupPending: false,
+      }),
+    ).toEqual({
+      status: "imported",
+      sourcePath: "/external/books/left-hand.epub",
+      item: canonicalItem,
+      sourceCleanupPending: false,
+    });
+    expect(
+      importLibraryItemsRequestSchema.safeParse({
+        roots: ["/external/books"],
+        mode: "link",
+      }).success,
+    ).toBe(false);
+  });
+
   it("defines strict recursive import requests and exactly accounted outcomes", async () => {
     const request: ImportLibraryItemsRequest = {
       roots: ["/external/books", "/external/standalone.epub"],

@@ -163,6 +163,32 @@ describe("BunSqliteLibraryStore recursive import", () => {
     expect(readdir(join(directory, "items"))).resolves.toHaveLength(1);
   });
 
+  it("organizes recursively imported files into managed storage", async () => {
+    const store = await openStore();
+    const root = join(directory, "organize");
+    await mkdir(root);
+    const epubPath = join(root, "first.epub");
+    const pdfPath = join(root, "second.pdf");
+    await writeFile(epubPath, "first organized contents");
+    await writeFile(pdfPath, "second organized contents");
+
+    const result = await store.importMany({ roots: [root], mode: "move" });
+
+    expect(result).toMatchObject({
+      ok: true,
+      value: {
+        counts: { total: 2, imported: 2, skipped: 0, duplicates: 0, failed: 0 },
+        outcomes: [
+          { status: "imported", sourcePath: epubPath, sourceCleanupPending: false },
+          { status: "imported", sourcePath: pdfPath, sourceCleanupPending: false },
+        ],
+      },
+    });
+    expect(await Bun.file(epubPath).exists()).toBe(false);
+    expect(await Bun.file(pdfPath).exists()).toBe(false);
+    expect(await readdir(join(directory, "items"))).toHaveLength(2);
+  });
+
   it("rejects malformed requests at the outer result boundary", async () => {
     const store = await openStore();
     for (const request of [{ roots: [] }, { roots: ["   "] }, { roots: [directory], extra: true }]) {

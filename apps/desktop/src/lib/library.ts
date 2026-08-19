@@ -31,6 +31,7 @@ import type {
   LibraryDuplicateMergeWireResult,
   LibraryExportWireResult,
   LibraryImportWireResult,
+  LibraryImportMode,
   LibraryListWireResult,
   LibraryMetadataPatch,
   LibraryQueryWireResult,
@@ -294,10 +295,12 @@ export async function importLibraryItem(
 
 export async function importLibraryItems(
   sourcePaths: readonly string[],
+  mode: LibraryImportMode = "copy",
   invokeCommand: LibraryInvoker = invokeDesktop,
 ): Promise<DesktopLibraryBatchImportResult> {
   const result = await invokeCommand<unknown>("library_import_many", {
     sourcePaths: [...sourcePaths],
+    mode,
   });
   return decodeLibraryResult<LibraryBatchImportWireResult>(
     result,

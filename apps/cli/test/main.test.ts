@@ -2292,6 +2292,32 @@ describe("takio CLI", () => {
       ).toBe(result.value.item.sourcePath);
     });
 
+    it("organizes an original into the library through the public import command", async () => {
+      const sourcePath = join(directory!, "organize.epub");
+      await Bun.write(sourcePath, "organized contents");
+
+      const organized = await invoke([
+        "library",
+        "import",
+        "--db",
+        databasePath!,
+        "--source-path",
+        sourcePath,
+        "--mode",
+        "move",
+      ]);
+
+      expect(organized.exitCode).toBeUndefined();
+      expect(parseOutput(organized.output)).toMatchObject({
+        ok: true,
+        value: {
+          item: { format: "epub", formats: [{ provenance: "managed" }] },
+          sourceCleanupPending: false,
+        },
+      });
+      expect(await Bun.file(sourcePath).exists()).toBe(false);
+    });
+
     it("rejects unsupported, missing, and non-file import sources before adding rows", async () => {
       const unsupportedPath = join(directory!, "book.xyz");
       const directoryPath = join(directory!, "folder.epub");
