@@ -108,3 +108,23 @@ The review was exercised against the real packaged macOS application, not only s
 Distribution verification completed deep signature validation but failed the final Gatekeeper assessment: `Takio.app: rejected`. The current local bundle is runnable and structurally valid, but this artifact is not ready for normal external macOS distribution.
 
 **Fix:** Produce the release artifact through the intended Developer ID signing, hardened-runtime, notarization, and stapling workflow, then rerun `scripts/verify-macos-bundle.sh --distribution` until Gatekeeper accepts it.
+
+## Whole-Result Revalidation
+
+The complete critique, technical audit, packaged application, and published report were rechecked together after the acceptance criteria were finalized.
+
+| Requirement / public output | Check rerun over the whole result | Observed result |
+|---|---|---|
+| Heuristic critique | Re-read all ten scored heuristics against the current source and the relaunched packaged empty-library, import, reader, and queue surfaces. | The 27/40 score and five prioritized UX findings remain supported. The live empty state still exposes three inert panes and `0 of 0`; import and device utilities remain separate from the library canvas. |
+| Technical accessibility | Rechecked the shipped muted color and recalculated WCAG contrast. | `#86868b` remains in ten `styles.css` locations and measures 3.62:1 on white and 3.33:1 on `#f5f5f7`, below 4.5:1 for small text. Component tests covering labels, focus traps, focus restoration, live states, and keyboard navigation passed. |
+| Responsiveness and maintainability | Recounted literals and searched current CSS constraints. | The source still contains 698 CSS color literals, including 242 in `styles.css`; `min-width: 720px` remains in two rules. The layered-theme and compact-layout concerns remain valid. |
+| Performance risk | Rechecked blur effects in current CSS. | Six `backdrop-filter` declarations remain, including 24px and 30px blur effects. This remains a profiling recommendation rather than a measured runtime regression. |
+| Deterministic Impeccable scan | Reran `detect.mjs --json apps/desktop/src`. | Returned `[]` with a successful exit, confirming no detector-recognized anti-patterns. |
+| Public desktop code boundary | Reran the package `check` script. | TypeScript project check exited successfully. |
+| Main and edge-case behavior | Reran the complete desktop test suite. | 195 tests across 34 files passed with 1,046 expectations and zero failures, including engine protocol validation, query races, modal focus containment, import limits, sorting, selection, retries, cancellation, destructive safeguards, and native menu dispatch. |
+| End-user packaged workflow | Relaunched `release/mac-arm64/Takio.app`; exercised Add books, the native file picker, picker cancellation, Escape modal closure, Devices & activity, reader rediscovery, and queue refresh. | The app launched without a crash. The picker opened through the native macOS boundary; cancellation preserved zero selected roots and disabled Import. Reader retry returned `No reader connected`; queue refresh returned `0 queued · 0 total` and `No conversions queued.` No user data was changed. |
+| Local packaging integration | Reran `verify-macos-bundle.sh` in local mode. | Passed bundle shape, executable presence, arm64 agreement, minimum OS compatibility, and portable dynamic-library checks. |
+| Distribution acceptance | Reran `verify-macos-bundle.sh --distribution`. | Deep signature validation passed and the bundle satisfied its designated requirement, but Gatekeeper again rejected it. The distribution P1 is reproduced and remains open. |
+| Published critique | Compared the committed report with commit `ae56947`, then added this traceability record. | The original report was unchanged before revalidation, correctly prioritized the evidenced findings, and did not claim the Gatekeeper-blocked artifact was distribution-ready. |
+
+**Feedback-loop verdict:** The review accurately describes the current packaged application and its source-level risks. Its recommendations are actionable, the local product workflows are stable under the exercised empty and recovery states, and the sole acceptance failure reproduced by the full loop is external macOS distribution readiness. Populated-library and physically connected-reader behavior are covered by the passing public component/engine tests but were not live-tested because this non-mutating review had no imported book fixture or attached reader.
