@@ -56,6 +56,13 @@ ownership, usable offline, and available through both desktop and CLI contracts.
 - A newly packaged macOS app imported a real EPUB, saved a title edit, quit,
   relaunched against the same isolated library, saved a second edit, and exposed
   the final title through the public one-shot CLI after shutdown.
+- Trash, restore, and permanent purge now share the persistent library service
+  with metadata updates. Public service tests execute all three in order through
+  one process and verify final absence without deleting the caller-owned source.
+- Packaged macOS acceptance restored a trashed book through the visible Trash UI,
+  permanently deleted it through the explicit confirmation UI, removed only the
+  managed library copy, preserved the original EPUB, and reopened and quit cleanly
+  with an empty library.
 - Full physical Kindle acceptance remains open because no device was available.
 
 ## Program rules
@@ -204,7 +211,8 @@ Electron, and desktop import surfaces be switched to the new semantics.
 
 This slice is complete. The coordinated service has landed its first production
 vertical slice for desktop metadata updates and passed restart, competing-writer,
-packaging, and end-user persistence acceptance. The next service slice should move
-the remaining desktop library mutations behind the same owner. In parallel, the
-Kindle milestone continues with safe tracked removal, rooted transport
-presentation, and physical-device acceptance.
+packaging, and end-user persistence acceptance. Trash, restore, and purge are now
+also coordinated and packaged-acceptance validated. The next service slice should
+move format and cover mutations behind the same owner. In parallel, the Kindle
+milestone continues with safe tracked removal, rooted transport presentation, and
+physical-device acceptance.
