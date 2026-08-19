@@ -57,6 +57,7 @@ type DeviceControlsProps = {
   readonly onEject: () => Promise<void>;
   readonly onRefresh: () => Promise<void>;
   readonly onReconcile: () => Promise<void>;
+  readonly onRemoveDelivery: (entry: DestinationInventoryEntry) => Promise<void>;
   readonly onSelectDestination: (id: string | null) => void;
   readonly onSelectPreferredFormat: (format: FormatId | null) => void;
 };
@@ -76,6 +77,7 @@ export function DeviceControls({
   onEject,
   onRefresh,
   onReconcile,
+  onRemoveDelivery,
   onSelectDestination,
   onSelectPreferredFormat,
 }: DeviceControlsProps) {
@@ -232,6 +234,25 @@ export function DeviceControls({
                   <strong>{entry.status}</strong>
                   <span>{entry.relativePath}</span>
                   <small>{entry.format.toUpperCase()} · {formatFileSize(entry.bytes)}</small>
+                  {entry.status === "present" ? (
+                    <button
+                      type="button"
+                      className="quiet-button"
+                      disabled={actionsPending || inventoryLoading}
+                      aria-label={`Remove unchanged tracked copy ${entry.relativePath}`}
+                      onClick={() => void onRemoveDelivery(entry)}
+                    >
+                      {pendingAction === `reader-remove:${entry.itemId}`
+                        ? "Removing…"
+                        : "Remove tracked copy"}
+                    </button>
+                  ) : (
+                    <small>
+                      {entry.status === "changed"
+                        ? "Changed file protected"
+                        : "File already missing"}
+                    </small>
+                  )}
                 </li>
               ))}
             </ul>

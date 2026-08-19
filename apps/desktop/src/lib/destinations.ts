@@ -57,6 +57,16 @@ export type DesktopDestinationInventoryResult =
     }
   | DestinationFailure;
 
+export type DesktopDestinationRemoveResult =
+  | {
+      readonly ok: true;
+      readonly value: {
+        readonly destinationId: string;
+        readonly removed: Omit<DestinationInventoryEntry, "status">;
+      };
+    }
+  | DestinationFailure;
+
 export type DestinationInvoker = <T>(
   command: string,
   args?: Record<string, unknown>,
@@ -108,6 +118,9 @@ const inventoryEntryKeys = [
 ].sort();
 const inventoryResultKeys = ["ok", "value"].sort();
 const inventoryResultValueKeys = ["destinationId", "entries"].sort();
+const removeResultKeys = ["ok", "value"].sort();
+const removeResultValueKeys = ["destinationId", "removed"].sort();
+const manifestRecordKeys = inventoryEntryKeys.filter((key) => key !== "status");
 const sendResultKeys = ["ok", "value"].sort();
 const sendResultValueKeys = ["bytes", "converted", "destinationId", "format", "itemId", "path", "sha256"].sort();
 const knownFormats = new Set(FORMAT_CATALOG.map(({ id }) => id));
@@ -203,6 +216,58 @@ export function decodeDestinationInventoryEntry(value: unknown): DestinationInve
     : null;
 }
 
+function decodeDestinationManifestRecord(
+  value: unknown,
+): Omit<DestinationInventoryEntry, "status"> | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  const candidate = value as Record<string, unknown>;
+  return hasOnlyKeys(candidate, manifestRecordKeys) &&
+    nonemptyString(candidate.itemId) &&
+    safeRelativePath(candidate.relativePath) &&
+    typeof candidate.bytes === "number" &&
+    Number.isSafeInteger(candidate.bytes) &&
+    candidate.bytes >= 0 &&
+    typeof candidate.sha256 === "string" && /^[a-f0-9]{64}$/.test(candidate.sha256) &&
+    typeof candidate.format === "string" && knownFormats.has(candidate.format as FormatId) &&
+    validTimestamp(candidate.timestamp)
+    ? {
+        itemId: candidate.itemId,
+        relativePath: candidate.relativePath,
+        bytes: candidate.bytes,
+        sha256: candidate.sha256,
+        format: candidate.format,
+        timestamp: candidate.timestamp,
+      }
+    : null;
+}
+
+export function decodeDestinationRemoveResult(value: unknown): DesktopDestinationRemoveResult {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return { ok: false, error: { code: "protocol-error" } };
+  }
+  const result = value as { ok?: unknown; value?: unknown; error?: unknown };
+  if (result.ok === false) {
+    const error = result.error as { code?: unknown } | null;
+    return typeof error?.code === "string"
+      ? { ok: false, error: { code: error.code } }
+      : { ok: false, error: { code: "protocol-error" } };
+  }
+  const payload = result.value as Record<string, unknown> | null;
+  const removed = typeof payload === "object" && payload !== null
+    ? decodeDestinationManifestRecord(payload.removed)
+    : null;
+  return result.ok === true &&
+    hasOnlyKeys(result as Record<string, unknown>, removeResultKeys) &&
+    typeof payload === "object" &&
+    payload !== null &&
+    !Array.isArray(payload) &&
+    hasOnlyKeys(payload, removeResultValueKeys) &&
+    nonemptyString(payload.destinationId) &&
+    removed
+    ? { ok: true, value: { destinationId: payload.destinationId, removed } }
+    : { ok: false, error: { code: "protocol-error" } };
+}
+
 export function decodeDestinationInventoryResult(value: unknown): DesktopDestinationInventoryResult {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     return { ok: false, error: { code: "protocol-error" } };
@@ -249,6 +314,22 @@ export async function reconcileDestination(
   return decodeDestinationInventoryResult(
     await invokeCommand("destination_reconcile", { destinationPath }),
   );
+}
+
+export async function removeDestinationDelivery(
+  destinationPath: string,
+  itemId: string,
+  invokeCommand: DestinationInvoker = invokeDesktop,
+): Promise<DesktopDestinationRemoveResult> {
+  if (!nonemptyString(destinationPath) || !nonemptyString(itemId)) {
+    return { ok: false, error: { code: "invalid-arguments" } };
+  }
+  const result = decodeDestinationRemoveResult(
+    await invokeCommand("destination_remove", { destinationPath, itemId }),
+  );
+  return result.ok && result.value.removed.itemId !== itemId
+    ? { ok: false, error: { code: "protocol-error" } }
+    : result;
 }
 
 export function describeDestinationError(code: string): string {

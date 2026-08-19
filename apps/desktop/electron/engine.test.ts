@@ -143,7 +143,7 @@ describe("Electron engine boundary", () => {
     expect(await buildEngineArguments("library_health_backup", { destinationPath: " " })).toBeNull();
   });
 
-  test("maps destination inventory and reconcile to fixed non-destructive sidecar arguments", async () => {
+  test("maps destination inventory, reconcile, and safe removal to fixed sidecar arguments", async () => {
     expect(await buildEngineArguments("destination_inventory", { destinationPath: "/Volumes/Reader" })).toEqual([
       "destination",
       "inventory",
@@ -157,6 +157,17 @@ describe("Electron engine boundary", () => {
       "/Volumes/Reader",
     ]);
     expect(await buildEngineArguments("destination_inventory", { destinationPath: " " })).toBeNull();
+    expect(await buildEngineArguments("destination_remove", {
+      destinationPath: "/Volumes/Reader",
+      itemId: "item-1",
+    })).toEqual([
+      "destination",
+      "remove",
+      "--dest",
+      "/Volumes/Reader",
+      "--id",
+      "item-1",
+    ]);
     expect(await buildEngineArguments("destination_remove", { destinationPath: "/Volumes/Reader", id: "item-1" })).toBeNull();
   });
 

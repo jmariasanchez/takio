@@ -94,6 +94,7 @@ import {
   inventoryDestination,
   listDestinations,
   reconcileDestination,
+  removeDestinationDelivery,
   sendLibraryItem,
   type DestinationInventoryEntry,
 } from "./lib/destinations";
@@ -1905,6 +1906,59 @@ export default function App() {
     }
   }
 
+  async function removeTrackedDelivery(entry: DestinationInventoryEntry) {
+    if (!selectedDestination || entry.status !== "present") return;
+    let approved: boolean;
+    try {
+      approved = await confirm(
+        `Remove the unchanged Takio-tracked copy “${entry.relativePath}” from ${selectedDestination.name}?`,
+        {
+          title: "Remove reader copy",
+          kind: "warning",
+          okLabel: "Remove copy",
+          cancelLabel: "Cancel",
+        },
+      );
+    } catch (error) {
+      setNotice({ kind: "error", text: describeUnexpectedDestinationError(error) });
+      return;
+    }
+    if (!approved) return;
+
+    setPendingAction(`reader-remove:${entry.itemId}`);
+    setNotice(null);
+    try {
+      const result = await removeDestinationDelivery(
+        selectedDestination.path,
+        entry.itemId,
+      );
+      if (!result.ok) {
+        setNotice({
+          kind: "error",
+          text: result.error.code === "verification-failed"
+            ? "Takio did not remove the reader file because it changed after delivery."
+            : describeDestinationError(result.error.code),
+        });
+        await loadDestinationInventory(selectedDestination);
+        return;
+      }
+      if (
+        result.value.destinationId !== selectedDestination.id ||
+        result.value.removed.relativePath !== entry.relativePath
+      ) {
+        setNotice({ kind: "error", text: describeDestinationError("protocol-error") });
+        await loadDestinationInventory(selectedDestination);
+        return;
+      }
+      await loadDestinationInventory(selectedDestination);
+      setNotice({ kind: "status", text: `Removed “${entry.relativePath}” from ${selectedDestination.name}.` });
+    } catch (error) {
+      setNotice({ kind: "error", text: describeUnexpectedDestinationError(error) });
+    } finally {
+      setPendingAction(null);
+    }
+  }
+
   async function enqueueConversion(event: FormEvent, item: LibraryItem): Promise<void> {
     event.preventDefault();
     const requested = conversionDraft;
@@ -3048,6 +3102,7 @@ export default function App() {
                   onEject={ejectSelectedDestination}
                   onRefresh={refreshDestinations}
                   onReconcile={reconcileSelectedDestination}
+                  onRemoveDelivery={removeTrackedDelivery}
                   onSelectDestination={(id) => {
                     destinationInventoryRequestSequence.current += 1;
                     setDestinationInventoryEntries([]);

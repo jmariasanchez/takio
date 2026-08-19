@@ -201,6 +201,10 @@ export async function buildEngineArguments(
       return nonempty(input.destinationPath)
         ? ["destination", "reconcile", "--dest", input.destinationPath]
         : null;
+    case "destination_remove":
+      return nonempty(input.destinationPath) && nonempty(input.itemId)
+        ? ["destination", "remove", "--dest", input.destinationPath, "--id", input.itemId]
+        : null;
     case "jobs_list":
       return ["jobs", "list"];
     case "jobs_enqueue": {

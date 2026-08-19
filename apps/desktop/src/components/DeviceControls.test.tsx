@@ -42,6 +42,15 @@ test("shows connection status first and keeps explicit format and device managem
           timestamp: "2026-08-19T00:00:00.000Z",
           status: "missing",
         },
+        {
+          itemId: "item-3",
+          relativePath: "Books/Changed.epub",
+          bytes: 11,
+          sha256: "ghi",
+          format: "epub",
+          timestamp: "2026-08-19T00:00:00.000Z",
+          status: "changed",
+        },
       ]}
       inventoryLoading={false}
       selectedDestination={destination}
@@ -51,6 +60,7 @@ test("shows connection status first and keeps explicit format and device managem
       onEject={async () => undefined}
       onRefresh={async () => undefined}
       onReconcile={async () => undefined}
+      onRemoveDelivery={async () => undefined}
       onSelectDestination={() => undefined}
       onSelectPreferredFormat={() => undefined}
     />,
@@ -69,8 +79,11 @@ test("shows connection status first and keeps explicit format and device managem
   expect(markup).toContain("Eject Kindle");
   expect(markup).toContain("1 present");
   expect(markup).toContain("1 missing");
-  expect(markup).toContain("0 changed");
+  expect(markup).toContain("1 changed");
   expect(markup).toContain("Books/Title.epub");
+  expect(markup).toContain("Remove tracked copy");
+  expect(markup).toContain("File already missing");
+  expect(markup).toContain("Changed file protected");
   expect(markup).toContain('<option value="epub">EPUB</option>');
   expect(markup).toContain('<option value="pdf">PDF</option>');
 });
@@ -92,6 +105,7 @@ test("turns an empty reader state into one clear next action", () => {
       onEject={async () => undefined}
       onRefresh={async () => undefined}
       onReconcile={async () => undefined}
+      onRemoveDelivery={async () => undefined}
       onSelectDestination={() => undefined}
       onSelectPreferredFormat={() => undefined}
     />,
