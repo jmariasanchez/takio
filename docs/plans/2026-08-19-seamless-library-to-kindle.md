@@ -30,6 +30,24 @@ ownership, usable offline, and available through both desktop and CLI contracts.
 - Managed files have hashes, ownership provenance, integrity verification,
   migration backups, portable export, and deferred cleanup journals.
 
+## Verified progress on 2026-08-19
+
+- Packaged macOS drag/drop imported a real EPUB through the public dialog, kept
+  the source under copy ownership, created the managed copy, found the title by
+  search, and closed cleanly under an isolated profile.
+- Same-device move imports now use a durable adoption journal, atomic rename,
+  fingerprint checks, directory synchronization, deterministic recovery, and
+  explicit cross-device rejection.
+- Desktop reader delivery supports single and bounded bulk convert-if-needed
+  sends. Responses are strictly decoded and correlated to the requested item and
+  format before the UI counts a success.
+- Desktop reader inventory reports present, missing, and changed Takio-tracked
+  deliveries without exposing destructive removal.
+- Public CLI acceptance delivered an attached PDF and converted a real EPUB to
+  PDF before verified delivery to an isolated Kindle-shaped destination. Both
+  appeared as present in the destination manifest inventory.
+- Full physical Kindle acceptance remains open because no device was available.
+
 ## Program rules
 
 - Preserve the local-first and no-lock-in model. No core workflow requires an
@@ -173,3 +191,7 @@ schema migration. It must begin with deterministic tests for recovery before and
 after atomic rename, fingerprint mismatch, duplicate discovery, and `EXDEV`.
 Only after those tests drive the store state machine should the existing CLI,
 Electron, and desktop import surfaces be switched to the new semantics.
+
+This slice is complete. The next implementation slice is the coordinated library
+service, while the Kindle milestone continues with safe tracked removal, rooted
+transport presentation, and physical-device acceptance.
