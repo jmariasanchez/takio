@@ -1,4 +1,4 @@
-import { join, tempDir } from "@tauri-apps/api/path";
+import { joinPath, tempDirectory } from "./desktop";
 
 export type ConversionOutputDependencies = {
   readonly getTempDirectory: () => Promise<string>;
@@ -7,8 +7,8 @@ export type ConversionOutputDependencies = {
 };
 
 const defaultDependencies: ConversionOutputDependencies = {
-  getTempDirectory: tempDir,
-  joinPath: join,
+  getTempDirectory: tempDirectory,
+  joinPath,
   randomUuid: () => crypto.randomUUID(),
 };
 

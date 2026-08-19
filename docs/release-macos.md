@@ -26,9 +26,7 @@ must have permission to submit software for notarization.
 
 ## Release
 
-1. Set the same version in `package.json`, `apps/desktop/package.json`,
-   `apps/desktop/src-tauri/tauri.conf.json`, and the `[package]` section of
-   `apps/desktop/src-tauri/Cargo.toml`.
+1. Set the same version in `package.json` and `apps/desktop/package.json`.
 2. Run `bash scripts/verify-release-version.sh vX.Y.Z` and the normal CI suite.
 3. Back up a representative library with
    `takio library backup --dest /path/to/new-backup-directory` and keep the

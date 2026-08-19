@@ -85,13 +85,13 @@ jobs:
 
       - name: Build ad-hoc signed app
         env:
-          APPLE_SIGNING_IDENTITY: "-"
-        run: bun run --filter '@takio/desktop' tauri build --bundles app -- --locked
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+        run: bun run --filter '@takio/desktop' package:dir
 
       - name: Verify and launch packaged app
         shell: bash
         run: |
-          app="apps/desktop/src-tauri/target/release/bundle/macos/Takio.app"
+          app="apps/desktop/release/mac-arm64/Takio.app"
           bun run verify:bundle:macos -- "$app"
 
           data_directory="$(mktemp -d "${RUNNER_TEMP}/takio-startup.XXXXXX")"

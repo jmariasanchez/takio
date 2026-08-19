@@ -20,14 +20,14 @@ source code is not copied, translated, or incorporated into Takio.
 
 It is a Bun monorepo with two deliberate product surfaces:
 
-- **Desktop (`@takio/desktop`)** — a native Tauri application for people who want a calm, local-first library and conversion workspace.
+- **Desktop (`@takio/desktop`)** — a secure Electron application for people who want a calm, local-first library and conversion workspace.
 - **CLI (`@takio/cli`)** — a structured, scriptable interface intended for AI agents, skills, automations, and power users.
 
 The domain package (`@takio/core`) is shared by both surfaces, so a conversion request means the same thing whether it originates in the desktop app, a shell, or an agent skill.
 
 ## Current milestone
 
-The workspace currently includes a polished Tauri/React desktop app and a
+The workspace currently includes an Electron/React desktop app and a
 durable local library with multi-format books, rich metadata, recursive import,
 search and facets, saved views, duplicate review, covers, trash/restore, and
 bulk export with title or author-title filename presets. The CLI can also transfer books to mounted macOS volumes and eject
@@ -45,7 +45,7 @@ a caller-owned file.
 ## Requirements
 
 - [Bun](https://bun.sh/) 1.3+ for development and source execution
-- Rust/Cargo plus Xcode Command Line Tools for Tauri desktop builds
+- Xcode Command Line Tools on macOS for Electron packaging and sidecar verification
 - [Calibre](https://calibre-ebook.com/download_osx) 9.9.0 or newer (optional for native EPUB-to-KEPUB; required for embedded and online metadata, delivery materialization, and the remaining ebook conversions)
 
 ## Quick start
@@ -77,6 +77,9 @@ bun run takio serve
 
 # Native desktop app
 bun run desktop
+
+# Package an unpacked desktop app for smoke testing
+bun run --filter '@takio/desktop' package:dir
 ```
 
 To produce a checksummed standalone executable for the current macOS or Linux
@@ -250,7 +253,7 @@ daemon, or browser reader.
 ## Workspace
 
 ```text
-apps/desktop       Tauri v2 + React minimalist native UI
+apps/desktop       Electron + React local-first desktop UI
 apps/cli           Bun-powered CLI for agents and scripts
 packages/core      Shared formats, request validation, device planner
 docs/              Architecture and implementation records

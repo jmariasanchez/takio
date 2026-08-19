@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "./desktop";
 import { FORMAT_IDS, libraryItemSchema, normalizeTags } from "@takio/core";
 import type { FormatId, LibraryItem } from "@takio/core";
 import {
@@ -129,7 +129,7 @@ export type LibraryInvoker = <T>(
 ) => Promise<T>;
 export type LibraryFormatAttachMode = "copy" | "reference";
 
-const invokeTauri: LibraryInvoker = (command, args) => invoke(command, args);
+const invokeDesktop: LibraryInvoker = (command, args) => invoke(command, args);
 
 function protocolError(): LibraryBridgeFailure {
   return { ok: false, error: { code: "protocol-error" } };
@@ -264,7 +264,7 @@ function decodeLibraryResult<T>(
 }
 
 export async function listLibraryItems(
-  invokeCommand: LibraryInvoker = invokeTauri,
+  invokeCommand: LibraryInvoker = invokeDesktop,
 ): Promise<DesktopLibraryListResult> {
   const result = await invokeCommand<unknown>("library_list");
   return decodeLibraryResult<LibraryListWireResult>(result, isItemsValue);
@@ -272,7 +272,7 @@ export async function listLibraryItems(
 
 export async function getLibraryItem(
   id: string,
-  invokeCommand: LibraryInvoker = invokeTauri,
+  invokeCommand: LibraryInvoker = invokeDesktop,
 ): Promise<DesktopLibraryGetResult> {
   if (id.trim() === "") {
     return invalidArguments();
@@ -284,7 +284,7 @@ export async function getLibraryItem(
 
 export async function importLibraryItem(
   sourcePath: string,
-  invokeCommand: LibraryInvoker = invokeTauri,
+  invokeCommand: LibraryInvoker = invokeDesktop,
 ): Promise<DesktopLibraryImportResult> {
   const result = await invokeCommand<unknown>("library_import", { sourcePath });
   return decodeLibraryResult<LibraryImportWireResult>(result, (value) =>
@@ -294,7 +294,7 @@ export async function importLibraryItem(
 
 export async function importLibraryItems(
   sourcePaths: readonly string[],
-  invokeCommand: LibraryInvoker = invokeTauri,
+  invokeCommand: LibraryInvoker = invokeDesktop,
 ): Promise<DesktopLibraryBatchImportResult> {
   const result = await invokeCommand<unknown>("library_import_many", {
     sourcePaths: [...sourcePaths],
@@ -307,7 +307,7 @@ export async function importLibraryItems(
 
 export async function exportLibraryItems(
   request: ExportLibraryItemsRequest,
-  invokeCommand: LibraryInvoker = invokeTauri,
+  invokeCommand: LibraryInvoker = invokeDesktop,
 ): Promise<DesktopLibraryExportResult> {
   if (!exportLibraryItemsRequestSchema.safeParse(request).success) {
     return invalidArguments();
@@ -333,7 +333,7 @@ export async function attachLibraryFormat(
   id: string,
   sourcePath: string,
   mode: LibraryFormatAttachMode,
-  invokeCommand: LibraryInvoker = invokeTauri,
+  invokeCommand: LibraryInvoker = invokeDesktop,
 ): Promise<DesktopLibraryAttachFormatResult> {
   const result = await invokeCommand<unknown>("library_attach_format", {
     id,
@@ -349,7 +349,7 @@ export async function attachLibraryFormat(
 export async function removeLibraryFormat(
   id: string,
   format: FormatId,
-  invokeCommand: LibraryInvoker = invokeTauri,
+  invokeCommand: LibraryInvoker = invokeDesktop,
 ): Promise<DesktopLibraryRemoveFormatResult> {
   const result = await invokeCommand<unknown>("library_remove_format", { id, format });
   return decodeLibraryResult<LibraryRemoveWireResult>(result, isRemoveValue);
@@ -358,7 +358,7 @@ export async function removeLibraryFormat(
 export async function updateLibraryItem(
   id: string,
   patch: LibraryMetadataPatch,
-  invokeCommand: LibraryInvoker = invokeTauri,
+  invokeCommand: LibraryInvoker = invokeDesktop,
 ): Promise<DesktopLibraryUpdateResult> {
   const result = await invokeCommand<unknown>("library_update", { id, patch });
   return decodeLibraryResult<LibraryUpdateWireResult>(result, (value) =>
@@ -368,7 +368,7 @@ export async function updateLibraryItem(
 
 export async function searchLibraryItems(
   query: string,
-  invokeCommand: LibraryInvoker = invokeTauri,
+  invokeCommand: LibraryInvoker = invokeDesktop,
 ): Promise<DesktopLibrarySearchResult> {
   const result = await invokeCommand<unknown>("library_search", { query });
   return decodeLibraryResult<LibrarySearchWireResult>(result, isItemsValue);
@@ -376,7 +376,7 @@ export async function searchLibraryItems(
 
 export async function queryLibraryItems(
   request: QueryLibraryItemsRequest,
-  invokeCommand: LibraryInvoker = invokeTauri,
+  invokeCommand: LibraryInvoker = invokeDesktop,
 ): Promise<DesktopLibraryQueryResult> {
   if (!queryLibraryItemsRequestSchema.safeParse(request).success) {
     return invalidArguments();
@@ -395,7 +395,7 @@ export async function queryLibraryItems(
 
 export async function listDuplicateCandidates(
   request: ListDuplicateCandidatesRequest,
-  invokeCommand: LibraryInvoker = invokeTauri,
+  invokeCommand: LibraryInvoker = invokeDesktop,
 ): Promise<DesktopLibraryDuplicateCandidatesResult> {
   if (!listDuplicateCandidatesRequestSchema.safeParse(request).success) {
     return invalidArguments();
@@ -414,7 +414,7 @@ export async function listDuplicateCandidates(
 
 export async function keepDuplicatePair(
   request: KeepDuplicatePairRequest,
-  invokeCommand: LibraryInvoker = invokeTauri,
+  invokeCommand: LibraryInvoker = invokeDesktop,
 ): Promise<DesktopLibraryDuplicateDispositionResult> {
   if (!keepDuplicatePairRequestSchema.safeParse(request).success) {
     return invalidArguments();
@@ -429,7 +429,7 @@ export async function keepDuplicatePair(
 
 export async function reopenDuplicatePair(
   request: ReopenDuplicatePairRequest,
-  invokeCommand: LibraryInvoker = invokeTauri,
+  invokeCommand: LibraryInvoker = invokeDesktop,
 ): Promise<DesktopLibraryDuplicateDispositionResult> {
   if (!reopenDuplicatePairRequestSchema.safeParse(request).success) {
     return invalidArguments();
@@ -444,7 +444,7 @@ export async function reopenDuplicatePair(
 
 export async function mergeDuplicatePair(
   request: MergeDuplicatePairRequest,
-  invokeCommand: LibraryInvoker = invokeTauri,
+  invokeCommand: LibraryInvoker = invokeDesktop,
 ): Promise<DesktopLibraryDuplicateMergeResult> {
   if (!mergeDuplicatePairRequestSchema.safeParse(request).success) {
     return invalidArguments();
@@ -458,7 +458,7 @@ export async function mergeDuplicatePair(
 
 export async function listLibraryTrash(
   request: ListLibraryTrashRequest,
-  invokeCommand: LibraryInvoker = invokeTauri,
+  invokeCommand: LibraryInvoker = invokeDesktop,
 ): Promise<DesktopLibraryTrashListResult> {
   if (!listLibraryTrashRequestSchema.safeParse(request).success) {
     return invalidArguments();
@@ -477,7 +477,7 @@ export async function listLibraryTrash(
 
 export async function trashLibraryItem(
   request: TrashLibraryItemRequest,
-  invokeCommand: LibraryInvoker = invokeTauri,
+  invokeCommand: LibraryInvoker = invokeDesktop,
 ): Promise<DesktopLibraryTrashResult> {
   if (!trashLibraryItemRequestSchema.safeParse(request).success) {
     return invalidArguments();
@@ -489,7 +489,7 @@ export async function trashLibraryItem(
 
 export async function restoreLibraryItem(
   request: RestoreLibraryItemRequest,
-  invokeCommand: LibraryInvoker = invokeTauri,
+  invokeCommand: LibraryInvoker = invokeDesktop,
 ): Promise<DesktopLibraryRestoreResult> {
   if (!restoreLibraryItemRequestSchema.safeParse(request).success) {
     return invalidArguments();
@@ -501,7 +501,7 @@ export async function restoreLibraryItem(
 
 export async function purgeLibraryItem(
   request: PurgeLibraryItemRequest,
-  invokeCommand: LibraryInvoker = invokeTauri,
+  invokeCommand: LibraryInvoker = invokeDesktop,
 ): Promise<DesktopLibraryPurgeResult> {
   if (!purgeLibraryItemRequestSchema.safeParse(request).success) {
     return invalidArguments();
@@ -512,7 +512,7 @@ export async function purgeLibraryItem(
 }
 
 export async function listSavedLibraryViews(
-  invokeCommand: LibraryInvoker = invokeTauri,
+  invokeCommand: LibraryInvoker = invokeDesktop,
 ): Promise<DesktopLibrarySavedViewsResult> {
   const result = await invokeCommand<unknown>("library_saved_views_list");
   return decodeLibraryResult<LibrarySavedViewsWireResult>(result, isSavedViewsValue);
@@ -520,7 +520,7 @@ export async function listSavedLibraryViews(
 
 export async function saveSavedLibraryView(
   request: SaveSavedLibraryViewRequest,
-  invokeCommand: LibraryInvoker = invokeTauri,
+  invokeCommand: LibraryInvoker = invokeDesktop,
 ): Promise<DesktopLibrarySavedViewResult> {
   if (!saveSavedLibraryViewRequestSchema.safeParse(request).success) {
     return invalidArguments();
@@ -534,7 +534,7 @@ export async function saveSavedLibraryView(
 
 export async function removeSavedLibraryView(
   request: RemoveSavedLibraryViewRequest,
-  invokeCommand: LibraryInvoker = invokeTauri,
+  invokeCommand: LibraryInvoker = invokeDesktop,
 ): Promise<DesktopLibrarySavedViewResult> {
   if (!removeSavedLibraryViewRequestSchema.safeParse(request).success) {
     return invalidArguments();
@@ -549,7 +549,7 @@ export async function removeSavedLibraryView(
 export async function setLibraryCover(
   id: string,
   sourcePath: string,
-  invokeCommand: LibraryInvoker = invokeTauri,
+  invokeCommand: LibraryInvoker = invokeDesktop,
 ): Promise<DesktopLibraryCoverResult> {
   const result = await invokeCommand<unknown>("library_cover_set", {
     id,
@@ -562,7 +562,7 @@ export async function setLibraryCover(
 
 export async function removeLibraryCover(
   id: string,
-  invokeCommand: LibraryInvoker = invokeTauri,
+  invokeCommand: LibraryInvoker = invokeDesktop,
 ): Promise<DesktopLibraryCoverResult> {
   const result = await invokeCommand<unknown>("library_cover_remove", { id });
   return decodeLibraryResult<LibraryCoverWireResult>(result, (value) =>
@@ -573,7 +573,7 @@ export async function removeLibraryCover(
 export async function openLibraryItem(
   id: string,
   format: FormatId,
-  invokeCommand: LibraryInvoker = invokeTauri,
+  invokeCommand: LibraryInvoker = invokeDesktop,
 ): Promise<DesktopLibraryOpenResult> {
   const result = await invokeCommand<unknown>("library_open", { id, format });
   return decodeLibraryResult<DesktopLibraryOpenResult>(result, (value) =>

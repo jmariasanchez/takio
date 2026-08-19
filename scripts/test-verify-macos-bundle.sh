@@ -22,12 +22,12 @@ trap cleanup EXIT
 
 tool_dir="$test_root/tools"
 bundle_path="$test_root/Fixture Bundle.app"
-mkdir -p "$tool_dir" "$bundle_path/Contents/MacOS"
+mkdir -p "$tool_dir" "$bundle_path/Contents/MacOS" "$bundle_path/Contents/Resources/bin"
 touch "$bundle_path/Contents/Info.plist"
 touch "$bundle_path/Contents/MacOS/takio"
-touch "$bundle_path/Contents/MacOS/takio-library-engine"
+touch "$bundle_path/Contents/Resources/bin/takio-library-engine"
 chmod +x "$bundle_path/Contents/MacOS/takio"
-chmod +x "$bundle_path/Contents/MacOS/takio-library-engine"
+chmod +x "$bundle_path/Contents/Resources/bin/takio-library-engine"
 
 cat > "$tool_dir/fake-tool" <<'EOF'
 #!/usr/bin/env bash

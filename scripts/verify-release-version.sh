@@ -10,18 +10,9 @@ fi
 tag_version="${1#v}"
 root_version="$(bun -p 'require("./package.json").version')"
 desktop_version="$(bun -p 'require("./apps/desktop/package.json").version')"
-tauri_version="$(bun -p 'require("./apps/desktop/src-tauri/tauri.conf.json").version')"
-cargo_version="$(awk '
-  /^\[package\]$/ { in_package = 1; next }
-  /^\[/ { in_package = 0 }
-  in_package && /^version = / { gsub(/^version = "|"$/, ""); print; exit }
-' apps/desktop/src-tauri/Cargo.toml)"
-
 for version_source in \
   "package.json:$root_version" \
-  "apps/desktop/package.json:$desktop_version" \
-  "apps/desktop/src-tauri/tauri.conf.json:$tauri_version" \
-  "apps/desktop/src-tauri/Cargo.toml:$cargo_version"; do
+  "apps/desktop/package.json:$desktop_version"; do
   source_path="${version_source%%:*}"
   source_version="${version_source#*:}"
   if [[ "$source_version" != "$tag_version" ]]; then

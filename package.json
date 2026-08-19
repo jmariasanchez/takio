@@ -24,7 +24,7 @@
     "test:performance:library": "TAKIO_LIBRARY_QUERY_BENCHMARK=enforce bun test packages/library-store-bun/test/library-query-performance.test.ts",
     "test:performance:native:macos": "bun scripts/benchmark-native-startup-macos.ts",
     "takio": "bun run --filter '@takio/cli' start",
-    "desktop": "bun run --filter '@takio/desktop' tauri dev"
+    "desktop": "bun run --filter '@takio/desktop' dev"
   },
   "overrides": {
     "postcss": "8.5.26"

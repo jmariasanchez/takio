@@ -73,7 +73,7 @@ case "$executable_name" in
 esac
 
 main_executable="$bundle_path/Contents/MacOS/$executable_name"
-sidecar_executable="$bundle_path/Contents/MacOS/takio-library-engine"
+sidecar_executable="$bundle_path/Contents/Resources/bin/takio-library-engine"
 
 if ! bundle_minimum_version="$("$plutil_command" -extract LSMinimumSystemVersion raw -o - "$info_plist")"; then
   fail "could not read LSMinimumSystemVersion from $info_plist"

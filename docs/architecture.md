@@ -4,7 +4,7 @@
 
 Takio replaces the heavyweight, application-centric Calibre workflow with a focused local-first product:
 
-1. A **minimal Tauri desktop UI** for browsing a small library, choosing a document, and following conversions.
+1. A **secure Electron desktop UI** for browsing a local library, managing metadata, delivering books, and following conversions.
 2. A **TypeScript CLI**, runnable from Bun during development or as a standalone compiled executable, designed as a dependable interface for humans, AI agents, skills, and automations.
 3. A **shared TypeScript domain package** so both interfaces produce identical, validated conversion jobs.
 
@@ -14,7 +14,7 @@ Takio replaces the heavyweight, application-centric Calibre workflow with a focu
 | --- | --- | --- |
 | `@takio/core` | Format catalogue, detection, request validation, device-aware planning | Implemented |
 | `@takio/cli` | Structured commands for tools and agents | Implemented: planning, six proven local conversion pairs, durable foreground jobs, and device-aware convert-and-send |
-| `@takio/desktop` | Tauri v2 native shell and minimalist React interface | Implemented: library, destinations, and conversion queue |
+| `@takio/desktop` | Electron shell, context-isolated preload, and React interface | Implemented: library, destinations, conversion queue, native menus, dialogs, and packaging |
 | Converter adapters | Declare supported pairs and invoke a real engine safely | Implemented: native EPUB-to-KEPUB plus local `ebook-convert` for five synchronous conversion pairs and four output profiles |
 | Controller/queue | Persist local jobs and run one foreground job at a time | Implemented: separate `jobs.sqlite` queue |
 | Destination transfer | Detect mounted USB mass-storage recipients and copy verified library files; optionally upload to a caller-specified rooted Kindle SSH target | Implemented: macOS USB mass storage plus gated rooted Kindle SSH/SCP |

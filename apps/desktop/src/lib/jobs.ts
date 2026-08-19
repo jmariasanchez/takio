@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "./desktop";
 import { FORMAT_IDS, type FormatId } from "@takio/core";
 
 export const JOB_STATUSES = ["queued", "running", "completed", "failed", "canceled"] as const;
@@ -66,7 +66,7 @@ export type JobInvoker = <T>(
   args?: Record<string, unknown>,
 ) => Promise<T>;
 
-const invokeTauri: JobInvoker = (command, args) => invoke(command, args);
+const invokeDesktop: JobInvoker = (command, args) => invoke(command, args);
 const protocolFailure = { ok: false, error: { code: "protocol-error" } } as const;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -224,7 +224,7 @@ function readJob(value: unknown): ConversionJob | null {
 }
 
 export async function listConversionJobs(
-  invokeCommand: JobInvoker = invokeTauri,
+  invokeCommand: JobInvoker = invokeDesktop,
 ): Promise<DesktopJobListResult> {
   const result: unknown = await invokeCommand("jobs_list");
   if (isFailure(result)) {
@@ -261,7 +261,7 @@ async function invokeJobMutation(
 
 export function enqueueConversionJob(
   request: EnqueueConversionJobRequest,
-  invokeCommand: JobInvoker = invokeTauri,
+  invokeCommand: JobInvoker = invokeDesktop,
 ): Promise<DesktopJobResult> {
   const args =
     "libraryItemId" in request
@@ -280,7 +280,7 @@ export function enqueueConversionJob(
 }
 
 export async function runNextConversionJob(
-  invokeCommand: JobInvoker = invokeTauri,
+  invokeCommand: JobInvoker = invokeDesktop,
 ): Promise<DesktopJobRunNextResult> {
   const result: unknown = await invokeCommand("jobs_run_next");
   if (isFailure(result)) {
@@ -298,14 +298,14 @@ export async function runNextConversionJob(
 
 export function cancelConversionJob(
   id: string,
-  invokeCommand: JobInvoker = invokeTauri,
+  invokeCommand: JobInvoker = invokeDesktop,
 ): Promise<DesktopJobResult> {
   return invokeJobMutation("jobs_cancel", { id }, invokeCommand);
 }
 
 export function retryConversionJob(
   id: string,
-  invokeCommand: JobInvoker = invokeTauri,
+  invokeCommand: JobInvoker = invokeDesktop,
 ): Promise<DesktopJobResult> {
   return invokeJobMutation("jobs_retry", { id }, invokeCommand);
 }

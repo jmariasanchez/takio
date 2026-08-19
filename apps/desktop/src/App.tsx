@@ -6,10 +6,6 @@ import {
   useState,
   type FormEvent,
 } from "react";
-import { isTauri } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
-import { getCurrentWindow } from "@tauri-apps/api/window";
-import { confirm, open } from "@tauri-apps/plugin-dialog";
 import {
   FORMAT_CATALOG,
   type BookFormat,
@@ -66,6 +62,12 @@ import {
   readActiveSavedViewId,
   writeActiveSavedViewId,
 } from "./lib/active-saved-view";
+import {
+  confirmDialog as confirm,
+  droppedFilePath,
+  onMenuAction,
+  openDialog as open,
+} from "./lib/desktop";
 import { reportLibraryUsable } from "./lib/startup";
 import {
   applyBulkTagOperation,
@@ -2759,76 +2761,56 @@ export default function App() {
   };
 
   useEffect(() => {
-    let disposed = false;
-    let unlisten: (() => void) | undefined;
-
-    void listen<string>(
-      "takio://menu-action",
-      ({ payload }) => {
+    try {
+      return onMenuAction((payload) => {
         const handlers = menuActionHandlers.current;
-        if (!handlers) {
-          return;
-        }
-
-        dispatchLibraryMenuAction(payload, handlers);
-      },
-      { target: { kind: "WebviewWindow", label: "main" } },
-    )
-      .then((stopListening) => {
-        if (disposed) {
-          stopListening();
-        } else {
-          unlisten = stopListening;
-        }
-      })
-      .catch((error) => {
-        if (!disposed) {
-          setNotice({ kind: "error", text: describeUnexpectedLibraryError(error) });
+        if (handlers) {
+          dispatchLibraryMenuAction(payload, handlers);
         }
       });
-
-    return () => {
-      disposed = true;
-      unlisten?.();
-    };
+    } catch (error) {
+      setNotice({ kind: "error", text: describeUnexpectedLibraryError(error) });
+      return undefined;
+    }
   }, []);
 
   useEffect(() => {
-    if (!isTauri()) {
-      return;
-    }
-
-    let disposed = false;
-    let unlisten: (() => void) | undefined;
-
-    void getCurrentWindow()
-      .onDragDropEvent(({ payload }) => {
-        if (payload.type === "enter" || payload.type === "over") {
-          setDropActive(true);
-          return;
-        }
-
+    const showDropTarget = (event: DragEvent) => {
+      event.preventDefault();
+      if (event.dataTransfer?.types.includes("Files")) {
+        setDropActive(true);
+      }
+    };
+    const hideDropTarget = (event: DragEvent) => {
+      event.preventDefault();
+      if (event.relatedTarget === null) {
         setDropActive(false);
-        if (payload.type === "drop") {
-          void menuActionHandlers.current?.importPaths(payload.paths);
+      }
+    };
+    const importDrop = (event: DragEvent) => {
+      event.preventDefault();
+      setDropActive(false);
+      try {
+        const paths = [...(event.dataTransfer?.files ?? [])]
+          .map(droppedFilePath)
+          .filter((path) => path.length > 0);
+        if (paths.length > 0) {
+          void menuActionHandlers.current?.importPaths(paths);
         }
-      })
-      .then((stopListening) => {
-        if (disposed) {
-          stopListening();
-        } else {
-          unlisten = stopListening;
-        }
-      })
-      .catch((error) => {
-        if (!disposed) {
-          setNotice({ kind: "error", text: describeUnexpectedLibraryError(error) });
-        }
-      });
+      } catch (error) {
+        setNotice({ kind: "error", text: describeUnexpectedLibraryError(error) });
+      }
+    };
 
+    window.addEventListener("dragenter", showDropTarget);
+    window.addEventListener("dragover", showDropTarget);
+    window.addEventListener("dragleave", hideDropTarget);
+    window.addEventListener("drop", importDrop);
     return () => {
-      disposed = true;
-      unlisten?.();
+      window.removeEventListener("dragenter", showDropTarget);
+      window.removeEventListener("dragover", showDropTarget);
+      window.removeEventListener("dragleave", hideDropTarget);
+      window.removeEventListener("drop", importDrop);
     };
   }, []);
 
@@ -2841,67 +2823,76 @@ export default function App() {
       )}
       <aside className="sidebar">
         <div className="brand">
-          <span className="brand-mark">T</span>
-          <span>takio</span>
+          <span className="brand-mark" aria-hidden="true">T</span>
+          <span><strong>takio</strong><small>personal library</small></span>
         </div>
         <nav aria-label="Main navigation">
-          <span className="nav-item active"><span aria-hidden="true">⌘</span>Library</span>
+          <a className="nav-item active" href="#library"><span aria-hidden="true">01</span>Library</a>
+          <a className="nav-item" href="#readers"><span aria-hidden="true">02</span>Readers</a>
+          <a className="nav-item" href="#conversions"><span aria-hidden="true">03</span>Conversions</a>
         </nav>
-        <div className="sidebar-footer">Stored locally on this device</div>
+        <div className="sidebar-footer"><i aria-hidden="true" /> Stored locally on this device</div>
       </aside>
 
-      <section className="content">
+      <section className="content" id="library">
         <header className="topbar">
           <div>
-            <p className="eyebrow">LIBRARY</p>
-            <h1>Your local library.</h1>
-          </div>
-        </header>
-
-        <section className="hero-card" aria-labelledby="import-heading">
-          <div>
-            <p className="eyebrow">IMPORT</p>
-            <h2 id="import-heading">Add a book or document</h2>
-            <p>Add a supported file to your local Takio library.</p>
+            <p className="eyebrow">LOCAL LIBRARY / {cataloguePage?.total ?? 0} TITLES</p>
+            <h1>Books, ready when you are.</h1>
+            <p className="topbar-copy">Organize, convert, and send your collection without giving up your files.</p>
           </div>
           <button
             ref={importButton}
-            className="primary-button"
+            className="primary-button topbar-import"
             disabled={actionsPending}
             aria-haspopup="dialog"
             aria-expanded={importDialogOpen}
             onClick={openImportDialog}
           >
-            {pendingAction === "import" ? "Importing…" : "Import books…"}
+            {pendingAction === "import" ? "Importing..." : "+ Import books"}
           </button>
+        </header>
+
+        <section className="hero-card" aria-labelledby="import-heading">
+          <p className="hero-index" aria-hidden="true">DROP</p>
+          <div>
+            <p className="eyebrow">QUICK CAPTURE</p>
+            <h2 id="import-heading">Drop books anywhere in this window.</h2>
+            <p>EPUB, PDF, KEPUB, AZW3, MOBI, DOCX, HTML, and text are recognized automatically.</p>
+          </div>
+          <span className="hero-shortcut">CMD + SHIFT + I</span>
         </section>
 
-        <DeviceControls
-          actionsPending={actionsPending}
-          destinations={destinations}
-          destinationsLoading={destinationsLoading}
-          pendingAction={pendingAction}
-          preferredFormat={preferredDeviceFormat}
-          selectedDestination={selectedDestination}
-          selectedDestinationId={selectedDestinationId}
-          onEject={ejectSelectedDestination}
-          onRefresh={refreshDestinations}
-          onSelectDestination={setSelectedDestinationId}
-          onSelectPreferredFormat={selectPreferredDeviceFormat}
-        />
+        <section id="readers">
+          <DeviceControls
+            actionsPending={actionsPending}
+            destinations={destinations}
+            destinationsLoading={destinationsLoading}
+            pendingAction={pendingAction}
+            preferredFormat={preferredDeviceFormat}
+            selectedDestination={selectedDestination}
+            selectedDestinationId={selectedDestinationId}
+            onEject={ejectSelectedDestination}
+            onRefresh={refreshDestinations}
+            onSelectDestination={setSelectedDestinationId}
+            onSelectPreferredFormat={selectPreferredDeviceFormat}
+          />
+        </section>
 
-        <JobsPanel
-          actionsPending={actionsPending}
-          items={items}
-          jobs={jobs}
-          jobsState={jobsState}
-          conversionRunning={conversionRunning}
-          pendingAction={pendingAction}
-          onCancel={cancelJob}
-          onRefresh={refreshJobs}
-          onRetry={retryJob}
-          onRunNext={runNextJob}
-        />
+        <section id="conversions">
+          <JobsPanel
+            actionsPending={actionsPending}
+            items={items}
+            jobs={jobs}
+            jobsState={jobsState}
+            conversionRunning={conversionRunning}
+            pendingAction={pendingAction}
+            onCancel={cancelJob}
+            onRefresh={refreshJobs}
+            onRetry={retryJob}
+            onRunNext={runNextJob}
+          />
+        </section>
 
         {notice ? (
           <p className={`notice ${notice.kind}`} role={notice.kind === "error" ? "alert" : "status"}>

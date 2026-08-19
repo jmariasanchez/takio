@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "./desktop";
 
 export type StartupInvoker = <T>(command: string) => Promise<T>;
 

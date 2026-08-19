@@ -21,14 +21,14 @@ Local unsigned app:
 bun run package:macos
 ```
 
-`package:macos` builds the `.app` with Tauri, verifies it, creates the DMG with Tauri's generated `bundle_dmg.sh --skip-jenkins` path, verifies the DMG with `hdiutil imageinfo`, `hdiutil verify`, a read-only attach, mounted bundle checks, and writes the `.sha256` sidecar. The `--skip-jenkins` path deliberately avoids Finder AppleScript because headless or busy macOS sessions can time out with `Finder got an error: AppleEvent timed out. (-1712)` after leaving only `rw.*.dmg` intermediates. If DMG verification fails, the script exits non-zero after creating a verified `Takio.app.tar.gz` fallback and checksum, which must not be treated as full DMG release success.
+`package:macos` builds the `.app` and DMG with Electron Builder, verifies the app bundle, verifies the DMG with `hdiutil imageinfo`, `hdiutil verify`, a read-only attach, and mounted bundle checks, then writes the `.sha256` sidecar.
 
 Distribution app with Apple credentials available:
 
 ```sh
-bash scripts/verify-macos-bundle.sh --distribution apps/desktop/src-tauri/target/release/bundle/macos/Takio.app
-xcrun stapler validate apps/desktop/src-tauri/target/release/bundle/dmg/*.dmg
-(cd apps/desktop/src-tauri/target/release/bundle/dmg && shasum -a 256 ./*.dmg > Takio.dmg.sha256)
+bash scripts/verify-macos-bundle.sh --distribution apps/desktop/release/mac-arm64/Takio.app
+xcrun stapler validate apps/desktop/release/*.dmg
+(cd apps/desktop/release && shasum -a 256 ./*.dmg > Takio.dmg.sha256)
 ```
 
 The verifier rejects architecture mismatches, executable minimum-macOS drift above the bundle declaration, non-system absolute dynamic-library dependencies such as `/nix/store`, and invalid signatures. Distribution mode additionally requires a signing team, hardened runtime, matching team IDs, and a Gatekeeper assessment.
@@ -37,7 +37,7 @@ The verifier rejects architecture mismatches, executable minimum-macOS drift abo
 
 Because there is no live updater, acceptance is file based:
 
-1. The tag must match `package.json`, `apps/desktop/package.json`, `apps/desktop/src-tauri/tauri.conf.json`, and the Tauri Cargo package version via `scripts/verify-release-version.sh`.
+1. The tag must match `package.json` and `apps/desktop/package.json` via `scripts/verify-release-version.sh`.
 2. The release workflow must upload exactly the CLI archives, DMG, and matching `.sha256` files, then verify every checksum before creating the draft release.
 3. A user can update by downloading the new DMG, verifying the published checksum, and replacing the installed app.
 4. A user can roll back by downloading the previous release DMG, verifying its checksum, and replacing the installed app. User data is outside the app bundle, so app replacement does not intentionally modify libraries or preferences.

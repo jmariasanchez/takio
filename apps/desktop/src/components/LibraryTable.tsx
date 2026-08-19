@@ -1,9 +1,9 @@
-import { convertFileSrc } from "@tauri-apps/api/core";
 import type { LibraryItem } from "@takio/core";
 import type { LibraryQuerySort } from "@takio/library-contract";
 import { useEffect, useRef, type KeyboardEvent } from "react";
 
 import { libraryPageSelectionState } from "../lib/library-selection";
+import { coverFileSource } from "../lib/desktop";
 
 import "./LibraryTable.css";
 
@@ -379,7 +379,7 @@ export function LibraryTable({
                     {item.coverPath ? (
                       <img
                         className="library-table__cover"
-                        src={convertFileSrc(item.coverPath)}
+                        src={coverFileSource(item.coverPath)}
                         alt={`Cover of ${item.title}`}
                       />
                     ) : (

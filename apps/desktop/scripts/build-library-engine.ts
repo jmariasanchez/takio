@@ -11,7 +11,7 @@ function commandOutput(bytes: Uint8Array): string {
   return new TextDecoder().decode(bytes).trim();
 }
 
-function assertPortableMacOsDependencies(executablePath: string, label: string): void {
+function macOsDependencies(executablePath: string, label: string): readonly string[] {
   const result = Bun.spawnSync({
     cmd: ["/usr/bin/otool", "-L", executablePath],
     stdout: "pipe",
@@ -23,7 +23,11 @@ function assertPortableMacOsDependencies(executablePath: string, label: string):
     );
   }
 
-  const nonportableDependencies = nonportableMacOsDependencies(commandOutput(result.stdout));
+  return nonportableMacOsDependencies(commandOutput(result.stdout));
+}
+
+function assertPortableMacOsDependencies(executablePath: string, label: string): void {
+  const nonportableDependencies = macOsDependencies(executablePath, label);
   if (nonportableDependencies.length > 0) {
     throw new Error(
       [
@@ -56,23 +60,37 @@ function verifyBunVersion(executablePath: string): void {
   assertMatchingBunVersion(expectedVersion, actualVersion);
 }
 
-const triples: Record<string, string> = {
-  "darwin-arm64": "aarch64-apple-darwin",
-  "darwin-x64": "x86_64-apple-darwin",
-  "linux-arm64": "aarch64-unknown-linux-gnu",
-  "linux-x64": "x86_64-unknown-linux-gnu",
-  "win32-arm64": "aarch64-pc-windows-msvc",
-  "win32-x64": "x86_64-pc-windows-msvc",
-};
-const triple = triples[`${process.platform}-${process.arch}`];
-if (!triple) {
+const supportedTargets = new Set([
+  "darwin-arm64",
+  "darwin-x64",
+  "linux-arm64",
+  "linux-x64",
+  "win32-arm64",
+  "win32-x64",
+]);
+if (!supportedTargets.has(`${process.platform}-${process.arch}`)) {
   throw new Error(`Unsupported desktop target: ${process.platform}-${process.arch}`);
 }
 
-const binariesDirectory = join(import.meta.dir, "../src-tauri/binaries");
+const binariesDirectory = join(import.meta.dir, "../resources/bin");
 const extension = process.platform === "win32" ? ".exe" : "";
-const outputPath = join(binariesDirectory, `takio-library-engine-${triple}${extension}`);
-const compileExecutableOverride = process.env.TAKIO_BUN_COMPILE_EXECUTABLE;
+const outputPath = join(binariesDirectory, `takio-library-engine${extension}`);
+let compileExecutableOverride = process.env.TAKIO_BUN_COMPILE_EXECUTABLE;
+if (
+  process.platform === "darwin" &&
+  !compileExecutableOverride &&
+  macOsDependencies(process.execPath, "Bun compile executable").length > 0
+) {
+  const bootstrap = Bun.spawnSync({
+    cmd: [process.execPath, join(import.meta.dir, "../../../scripts/bootstrap-official-bun.ts")],
+    stdout: "pipe",
+    stderr: "inherit",
+  });
+  if (bootstrap.exitCode !== 0) {
+    throw new Error("Could not bootstrap the portable Bun compile runtime.");
+  }
+  compileExecutableOverride = commandOutput(bootstrap.stdout);
+}
 const compileExecutablePath = resolve(compileExecutableOverride ?? process.execPath);
 
 if (compileExecutableOverride) {

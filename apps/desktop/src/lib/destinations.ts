@@ -1,5 +1,5 @@
 import type { Destination, FormatId } from "@takio/core";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "./desktop";
 
 export type DestinationFailure = {
   readonly ok: false;
@@ -38,10 +38,10 @@ export type DestinationInvoker = <T>(
   args?: Record<string, unknown>,
 ) => Promise<T>;
 
-const invokeTauri: DestinationInvoker = (command, args) => invoke(command, args);
+const invokeDesktop: DestinationInvoker = (command, args) => invoke(command, args);
 
 export function listDestinations(
-  invokeCommand: DestinationInvoker = invokeTauri,
+  invokeCommand: DestinationInvoker = invokeDesktop,
 ): Promise<DesktopDestinationListResult> {
   return invokeCommand("destination_list");
 }
@@ -50,14 +50,14 @@ export function sendLibraryItem(
   id: string,
   format: FormatId,
   destinationPath: string,
-  invokeCommand: DestinationInvoker = invokeTauri,
+  invokeCommand: DestinationInvoker = invokeDesktop,
 ): Promise<DesktopDestinationSendResult> {
   return invokeCommand("destination_send", { id, format, destinationPath });
 }
 
 export function ejectDestination(
   destinationPath: string,
-  invokeCommand: DestinationInvoker = invokeTauri,
+  invokeCommand: DestinationInvoker = invokeDesktop,
 ): Promise<DesktopDestinationEjectResult> {
   return invokeCommand("destination_eject", { destinationPath });
 }

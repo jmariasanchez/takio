@@ -132,10 +132,10 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          CSC_NAME: ${{ secrets.APPLE_SIGNING_IDENTITY }}
         shell: bash
         run: |
-          export SDKROOT="$(xcrun --sdk macosx --show-sdk-path)"
-          export CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER=/usr/bin/clang
           export TAKIO_BUN_COMPILE_EXECUTABLE="$(bun scripts/bootstrap-official-bun.ts)"
           echo "Using official Bun compile executable: $TAKIO_BUN_COMPILE_EXECUTABLE"
           if [[ -n "${APPLE_SIGNING_IDENTITY:-}" && -n "${APPLE_ID:-}" && -n "${APPLE_PASSWORD:-}" && -n "${APPLE_TEAM_ID:-}" ]]; then
@@ -143,26 +143,27 @@ jobs:
           else
             echo "Apple signing and notarization credentials are absent. Building unsigned local DMG and skipping distribution-only gates truthfully."
           fi
-          bun run --filter '@takio/desktop' tauri build --bundles dmg -- --locked
+          if [[ -z "${CSC_NAME:-}" ]]; then export CSC_IDENTITY_AUTO_DISCOVERY=false; fi
+          bun run --filter '@takio/desktop' package
 
       - name: Verify distribution bundle
         if: ${{ secrets.APPLE_SIGNING_IDENTITY != '' && secrets.APPLE_ID != '' && secrets.APPLE_PASSWORD != '' && secrets.APPLE_TEAM_ID != '' }}
         shell: bash
         run: |
-          bash scripts/verify-macos-bundle.sh --distribution apps/desktop/src-tauri/target/release/bundle/macos/Takio.app
-          xcrun stapler validate apps/desktop/src-tauri/target/release/bundle/dmg/*.dmg
+          bash scripts/verify-macos-bundle.sh --distribution apps/desktop/release/mac-arm64/Takio.app
+          xcrun stapler validate apps/desktop/release/*.dmg
 
       - name: Verify local unsigned bundle
         if: ${{ !(secrets.APPLE_SIGNING_IDENTITY != '' && secrets.APPLE_ID != '' && secrets.APPLE_PASSWORD != '' && secrets.APPLE_TEAM_ID != '') }}
         shell: bash
         run: |
-          bash scripts/verify-macos-bundle.sh apps/desktop/src-tauri/target/release/bundle/macos/Takio.app
+          bash scripts/verify-macos-bundle.sh apps/desktop/release/mac-arm64/Takio.app
           echo "Skipped distribution signing, notarization, stapler, and Gatekeeper gates because Apple credentials were not provided."
 
       - name: Checksum notarized DMG
         shell: bash
         run: |
-          cd apps/desktop/src-tauri/target/release/bundle/dmg
+          cd apps/desktop/release
           shasum -a 256 ./*.dmg > Takio.dmg.sha256
 
       - name: Upload notarized DMG
@@ -170,8 +171,8 @@ jobs:
         with:
           name: takio-desktop-macos
           path: |
-            apps/desktop/src-tauri/target/release/bundle/dmg/*.dmg
-            apps/desktop/src-tauri/target/release/bundle/dmg/*.sha256
+            apps/desktop/release/*.dmg
+            apps/desktop/release/*.sha256
           if-no-files-found: error
 
   publish:
