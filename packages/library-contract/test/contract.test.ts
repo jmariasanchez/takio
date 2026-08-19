@@ -221,6 +221,7 @@ describe("LibraryStore", () => {
       "not-found",
       "unreadable",
       "source-changed",
+      "cross-device-move",
       "storage-unavailable",
       "invalid-title",
     ]);
@@ -963,6 +964,7 @@ describe("LibraryStore", () => {
       "storage-unavailable",
       "incompatible-schema",
       "invalid-arguments",
+      "cross-device-move",
       "duplicate-format",
       "last-format",
       "format-changed",

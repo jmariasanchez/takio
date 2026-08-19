@@ -127,10 +127,9 @@ export function decodeDestinationInventoryEntry(value: unknown): DestinationInve
     nonemptyString(candidate.itemId) &&
     safeRelativePath(candidate.relativePath) &&
     typeof candidate.bytes === "number" &&
-    Number.isFinite(candidate.bytes) &&
-    Number.isInteger(candidate.bytes) &&
+    Number.isSafeInteger(candidate.bytes) &&
     candidate.bytes >= 0 &&
-    typeof candidate.sha256 === "string" && /^[a-f0-9]{64}$/i.test(candidate.sha256) &&
+    typeof candidate.sha256 === "string" && /^[a-f0-9]{64}$/.test(candidate.sha256) &&
     typeof candidate.format === "string" && knownFormats.has(candidate.format as FormatId) &&
     validTimestamp(candidate.timestamp) &&
     isInventoryStatus(candidate.status)
