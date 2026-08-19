@@ -31,6 +31,7 @@ export const LIBRARY_IMPORT_FAILURE_CODES = [
   "not-found",
   "unreadable",
   "source-changed",
+  "cross-device-move",
   "storage-unavailable",
   "invalid-title",
 ] as const;
@@ -759,6 +760,7 @@ export const LIBRARY_STORE_ERROR_CODES = [
   "storage-unavailable",
   "incompatible-schema",
   "invalid-arguments",
+  "cross-device-move",
   "duplicate-format",
   "last-format",
   "format-changed",

@@ -97,6 +97,11 @@ afterEach(async () => {
   delete initializationTestSeam.duringV2ToV3Migration;
   delete initializationTestSeam.duringV4ToV5Migration;
   delete lifecycleTestSeam.beforeManagedFileCleanup;
+  delete lifecycleTestSeam.afterAdoptionJournalPlanned;
+  delete lifecycleTestSeam.afterAdoptionFinalizing;
+  delete lifecycleTestSeam.afterAdoptionRenamed;
+  delete lifecycleTestSeam.beforeAdoptionRename;
+  delete lifecycleTestSeam.sameDevicePreflight;
   delete lifecycleTestSeam.beforeSourceFileCleanup;
   delete lifecycleTestSeam.duringManagedItemRemoval;
 
@@ -203,6 +208,128 @@ describe("BunSqliteLibraryStore", () => {
     expect(await Bun.file(sourcePath).exists()).toBe(false);
     if (!adopted.ok) throw new Error("Expected adoption to succeed");
     expect(await readFile(adopted.value.item.sourcePath)).toEqual(Buffer.from("adopted contents"));
+    using database = new Database(databasePath, { strict: true });
+    expect(database.query("SELECT * FROM library_adoptions").all()).toEqual([]);
+  });
+
+  it("fails cross-device adoption without copy-delete fallback", async () => {
+    const sourcePath = join(directory, "cross-device.epub");
+    await writeFile(sourcePath, "cross device contents");
+    const store = createStore();
+    expect(await store.open({ config: {} })).toEqual({ ok: true, value: null });
+    lifecycleTestSeam.sameDevicePreflight = () => false;
+
+    expect(await store.adopt({ sourcePath })).toMatchObject({ ok: false, error: { code: "cross-device-move" } });
+
+    expect(await Bun.file(sourcePath).exists()).toBe(true);
+    expect(await readFile(sourcePath)).toEqual(Buffer.from("cross device contents"));
+    expect(await readdir(join(directory, "items"))).toEqual([]);
+    using database = new Database(databasePath, { strict: true });
+    expect(database.query("SELECT * FROM library_adoptions").all()).toEqual([]);
+  });
+
+  it("keeps the source when a rename race reports EXDEV after the journal is planned", async () => {
+    const sourcePath = join(directory, "race-cross-device.epub");
+    await writeFile(sourcePath, "race cross device contents");
+    const store = createStore();
+    expect(await store.open({ config: {} })).toEqual({ ok: true, value: null });
+    lifecycleTestSeam.beforeAdoptionRename = () => {
+      const error = new Error("cross-device link not permitted") as NodeJS.ErrnoException;
+      error.code = "EXDEV";
+      throw error;
+    };
+
+    expect(await store.adopt({ sourcePath })).toMatchObject({ ok: false, error: { code: "cross-device-move" } });
+
+    expect(await Bun.file(sourcePath).exists()).toBe(true);
+    using database = new Database(databasePath, { strict: true });
+    expect(database.query("SELECT * FROM library_adoptions").all()).toEqual([]);
+  });
+
+  it("recovers an adoption interrupted while pending rename", async () => {
+    const sourcePath = join(directory, "planned.epub");
+    await writeFile(sourcePath, "planned contents");
+    const store = createStore();
+    expect(await store.open({ config: {} })).toEqual({ ok: true, value: null });
+    lifecycleTestSeam.afterAdoptionJournalPlanned = () => {
+      throw new Error("interrupt after plan");
+    };
+
+    expect(await store.adopt({ sourcePath })).toMatchObject({ ok: false, error: { code: "storage-unavailable" } });
+    expect(await Bun.file(sourcePath).exists()).toBe(true);
+
+    delete lifecycleTestSeam.afterAdoptionJournalPlanned;
+    store.close();
+    const reopened = createStore();
+    expect(await reopened.open({ config: {} })).toEqual({ ok: true, value: null });
+    expect(await Bun.file(sourcePath).exists()).toBe(false);
+    const listed = await reopened.list({});
+    expect(listed).toMatchObject({ ok: true, value: [{ title: "planned" }] });
+    using database = new Database(databasePath, { strict: true });
+    expect(database.query("SELECT * FROM library_adoptions").all()).toEqual([]);
+  });
+
+  it("recovers an adoption interrupted after durable rename", async () => {
+    const sourcePath = join(directory, "renamed.epub");
+    await writeFile(sourcePath, "renamed contents");
+    const store = createStore();
+    expect(await store.open({ config: {} })).toEqual({ ok: true, value: null });
+    lifecycleTestSeam.afterAdoptionRenamed = () => {
+      throw new Error("interrupt after rename");
+    };
+
+    expect(await store.adopt({ sourcePath })).toMatchObject({ ok: false, error: { code: "storage-unavailable" } });
+    expect(await Bun.file(sourcePath).exists()).toBe(false);
+
+    delete lifecycleTestSeam.afterAdoptionRenamed;
+    store.close();
+    const reopened = createStore();
+    expect(await reopened.open({ config: {} })).toEqual({ ok: true, value: null });
+    const listed = await reopened.list({});
+    expect(listed).toMatchObject({ ok: true, value: [{ title: "renamed" }] });
+    using database = new Database(databasePath, { strict: true });
+    expect(database.query("SELECT * FROM library_adoptions").all()).toEqual([]);
+  });
+
+  it("recovers an adoption interrupted while finalizing library rows", async () => {
+    const sourcePath = join(directory, "finalizing.epub");
+    await writeFile(sourcePath, "finalizing contents");
+    const store = createStore();
+    expect(await store.open({ config: {} })).toEqual({ ok: true, value: null });
+    lifecycleTestSeam.afterAdoptionFinalizing = () => {
+      throw new Error("interrupt while finalizing");
+    };
+
+    expect(await store.adopt({ sourcePath })).toMatchObject({ ok: false, error: { code: "storage-unavailable" } });
+
+    delete lifecycleTestSeam.afterAdoptionFinalizing;
+    store.close();
+    const reopened = createStore();
+    expect(await reopened.open({ config: {} })).toEqual({ ok: true, value: null });
+    const listed = await reopened.list({});
+    expect(listed).toMatchObject({ ok: true, value: [{ title: "finalizing" }] });
+    using database = new Database(databasePath, { strict: true });
+    expect(database.query("SELECT * FROM library_adoptions").all()).toEqual([]);
+  });
+
+  it("reports cross-device failures for batch move imports without deleting the source", async () => {
+    const sourcePath = join(directory, "batch-cross-device.epub");
+    await writeFile(sourcePath, "batch cross device contents");
+    const store = createStore();
+    expect(await store.open({ config: {} })).toEqual({ ok: true, value: null });
+    lifecycleTestSeam.sameDevicePreflight = () => false;
+
+    const imported = await store.importMany({ roots: [sourcePath], mode: "move" });
+
+    expect(imported).toMatchObject({
+      ok: true,
+      value: {
+        outcomes: [{ status: "failed", sourcePath, code: "cross-device-move" }],
+        counts: { failed: 1, imported: 0 },
+      },
+    });
+    expect(await Bun.file(sourcePath).exists()).toBe(true);
+    expect(await readFile(sourcePath)).toEqual(Buffer.from("batch cross device contents"));
   });
 
   it("adopts an exact duplicate by removing only the redundant original", async () => {
@@ -225,7 +352,37 @@ describe("BunSqliteLibraryStore", () => {
     expect(await store.list({})).toMatchObject({ ok: true, value: [{ id: first.value.id }] });
   });
 
-  it("persists failed source cleanup and retries it when the library reopens", async () => {
+  it("persists duplicate adoption source cleanup and retries it when the library reopens", async () => {
+    const firstPath = join(directory, "duplicate-original.epub");
+    const duplicatePath = join(directory, "duplicate-cleanup-later.epub");
+    await writeFile(firstPath, "same retry contents");
+    await writeFile(duplicatePath, "same retry contents");
+    const store = createStore();
+    expect(await store.open({ config: {} })).toEqual({ ok: true, value: null });
+    const first = await store.import({ sourcePath: firstPath });
+    if (!first.ok) throw new Error("Expected the first import");
+    lifecycleTestSeam.beforeSourceFileCleanup = () => {
+      throw new Error("injected duplicate source cleanup failure");
+    };
+
+    const adopted = await store.adopt({ sourcePath: duplicatePath });
+
+    expect(adopted).toMatchObject({ ok: true, value: { item: { id: first.value.id }, sourceCleanupPending: true } });
+    expect(await Bun.file(duplicatePath).exists()).toBe(true);
+    using database = new Database(databasePath, { strict: true });
+    expect(database.query("SELECT source_path FROM source_file_cleanup").all()).toEqual([
+      { source_path: await realpath(duplicatePath) },
+    ]);
+
+    delete lifecycleTestSeam.beforeSourceFileCleanup;
+    store.close();
+    const reopened = createStore();
+    expect(await reopened.open({ config: {} })).toEqual({ ok: true, value: null });
+    expect(await Bun.file(duplicatePath).exists()).toBe(false);
+    expect(database.query("SELECT * FROM source_file_cleanup").all()).toEqual([]);
+  });
+
+  it("moves nonduplicate adoption atomically without source-cleanup retry", async () => {
     const sourcePath = join(directory, "cleanup-later.epub");
     await writeFile(sourcePath, "cleanup later contents");
     const store = createStore();
@@ -236,12 +393,10 @@ describe("BunSqliteLibraryStore", () => {
 
     const adopted = await store.adopt({ sourcePath });
 
-    expect(adopted).toMatchObject({ ok: true, value: { sourceCleanupPending: true } });
-    expect(await Bun.file(sourcePath).exists()).toBe(true);
+    expect(adopted).toMatchObject({ ok: true, value: { sourceCleanupPending: false } });
+    expect(await Bun.file(sourcePath).exists()).toBe(false);
     using database = new Database(databasePath, { strict: true });
-    expect(database.query("SELECT source_path FROM source_file_cleanup").all()).toEqual([
-      { source_path: await realpath(sourcePath) },
-    ]);
+    expect(database.query("SELECT * FROM source_file_cleanup").all()).toEqual([]);
 
     delete lifecycleTestSeam.beforeSourceFileCleanup;
     store.close();
@@ -266,7 +421,7 @@ describe("BunSqliteLibraryStore", () => {
     expect(await Bun.file(sourcePath).exists()).toBe(false);
   });
 
-  it("persists and retries failed cleanup for a zero-byte source", async () => {
+  it("moves a zero-byte source atomically without source-cleanup retry", async () => {
     const sourcePath = join(directory, "empty-cleanup-later.epub");
     await writeFile(sourcePath, "");
     const store = createStore();
@@ -277,8 +432,8 @@ describe("BunSqliteLibraryStore", () => {
 
     const adopted = await store.adopt({ sourcePath });
 
-    expect(adopted).toMatchObject({ ok: true, value: { sourceCleanupPending: true } });
-    expect(await Bun.file(sourcePath).exists()).toBe(true);
+    expect(adopted).toMatchObject({ ok: true, value: { sourceCleanupPending: false } });
+    expect(await Bun.file(sourcePath).exists()).toBe(false);
 
     delete lifecycleTestSeam.beforeSourceFileCleanup;
     store.close();

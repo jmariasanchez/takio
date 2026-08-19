@@ -213,6 +213,7 @@ type BatchImportFailure =
   | FingerprintFailure
   | "not-found"
   | "storage-unavailable"
+  | "cross-device-move"
   | "invalid-title";
 
 const managedLeafPattern =
@@ -874,6 +875,137 @@ function installManagedFile(
       });
     }
     throw error;
+  }
+}
+
+type StoredAdoption = {
+  id: string;
+  libraryItemId: string;
+  title: string;
+  sourcePath: string;
+  targetPath: string;
+  format: FormatId;
+  contentBytes: number;
+  contentSha256: string;
+  state: "pending-rename" | "renamed" | "finalizing";
+};
+
+function fsyncPath(path: string): void {
+  const descriptor = openSync(path, constants.O_RDONLY);
+  try {
+    fsyncSync(descriptor);
+  } finally {
+    closeSync(descriptor);
+  }
+}
+
+function fsyncDirectory(path: string): void {
+  const descriptor = openSync(path, constants.O_RDONLY);
+  try {
+    fsyncSync(descriptor);
+  } finally {
+    closeSync(descriptor);
+  }
+}
+
+function adoptionMatches(path: string, adoption: StoredAdoption): boolean {
+  const fingerprint = fingerprintFile(path);
+  return (
+    fingerprint.ok &&
+    fingerprint.value.bytes === adoption.contentBytes &&
+    fingerprint.value.sha256 === adoption.contentSha256
+  );
+}
+
+function sameDeviceAdoptionPreflight(sourcePath: string, itemsDirectory: string): boolean {
+  const seam = lifecycleTestSeam.sameDevicePreflight?.(sourcePath, itemsDirectory);
+  if (seam !== undefined) return seam;
+  return statSync(sourcePath).dev === statSync(itemsDirectory).dev;
+}
+
+function finalizeAdoption(database: Database, itemsDirectory: string, adoption: StoredAdoption): LibraryItem {
+  if (!adoptionMatches(adoption.targetPath, adoption)) throw installedArtifactMismatch;
+  const existing = readStoredItem(database, "", itemsDirectory, adoption.libraryItemId);
+  if (existing.ok && existing.value) {
+    database.run("DELETE FROM library_adoptions WHERE id = ?", [adoption.id]);
+    return existing.value;
+  }
+  const addedAt = new Date().toISOString();
+  if (adoption.state !== "finalizing") {
+    database.run("UPDATE library_adoptions SET state = 'finalizing', updated_at = ? WHERE id = ?", [
+      addedAt,
+      adoption.id,
+    ]);
+  }
+  lifecycleTestSeam.afterAdoptionFinalizing?.();
+  database.transaction(() => {
+    database.run(
+      `INSERT INTO library_items
+        (id, title, added_at, author, description, cover_path, updated_at)
+        VALUES (?, ?, ?, NULL, NULL, NULL, NULL)`,
+      [adoption.libraryItemId, adoption.title, addedAt],
+    );
+    database.run(
+      `INSERT INTO library_item_formats
+        (library_item_id, format, source_path, added_at, provenance, position,
+          content_bytes, content_sha256)
+        VALUES (?, ?, ?, ?, 'managed', 0, ?, ?)`,
+      [
+        adoption.libraryItemId,
+        adoption.format,
+        basename(adoption.targetPath),
+        addedAt,
+        adoption.contentBytes,
+        adoption.contentSha256,
+      ],
+    );
+    database.run("DELETE FROM library_adoptions WHERE id = ?", [adoption.id]);
+  }).immediate();
+  const item = readStoredItem(database, "", itemsDirectory, adoption.libraryItemId);
+  if (!item.ok || !item.value) throw invalidStoredExport;
+  return item.value;
+}
+
+function recoverLibraryAdoptions(database: Database, itemsDirectory: string): void {
+  const rows = database
+    .query<{
+      id: string;
+      libraryItemId: string;
+      title: string;
+      sourcePath: string;
+      targetPath: string;
+      format: unknown;
+      contentBytes: number;
+      contentSha256: string;
+      state: StoredAdoption["state"];
+    }, []>(`
+      SELECT id, library_item_id AS libraryItemId, title, source_path AS sourcePath,
+        target_path AS targetPath, format, content_bytes AS contentBytes,
+        content_sha256 AS contentSha256, state
+      FROM library_adoptions
+      ORDER BY updated_at, id
+    `)
+    .all();
+  for (const row of rows) {
+    if (!FORMAT_IDS.includes(row.format as FormatId)) continue;
+    const adoption = { ...row, format: row.format as FormatId };
+    if (adoption.state === "pending-rename") {
+      if (existsSync(adoption.targetPath)) {
+        if (!adoptionMatches(adoption.targetPath, adoption)) continue;
+      } else {
+        if (!adoptionMatches(adoption.sourcePath, adoption)) continue;
+        renameSync(adoption.sourcePath, adoption.targetPath);
+        fsyncPath(adoption.targetPath);
+        fsyncDirectory(itemsDirectory);
+        const sourceDirectory = dirname(adoption.sourcePath);
+        if (sourceDirectory !== itemsDirectory) fsyncDirectory(sourceDirectory);
+      }
+      database.run("UPDATE library_adoptions SET state = 'renamed', updated_at = ? WHERE id = ?", [
+        new Date().toISOString(),
+        adoption.id,
+      ]);
+    }
+    finalizeAdoption(database, itemsDirectory, adoption);
   }
 }
 
@@ -3890,6 +4022,7 @@ export class BunSqliteLibraryStore
       }).immediate();
 
       retryOwnedFileCleanup(database, this.#coversDirectory, this.#itemsDirectory);
+      recoverLibraryAdoptions(database, this.#itemsDirectory);
       retrySourceFileCleanup(database);
       this.#database = database;
       return success(null);
@@ -4335,18 +4468,68 @@ export class BunSqliteLibraryStore
         ),
       });
     }
-    const imported = this.#importFingerprinted(
-      source.path,
-      source.format,
-      normalizedTitle,
-      artifact.value,
-      source.path,
-    ).result;
-    if (!imported.ok) return imported;
-    return success({
-      item: imported.value,
-      sourceCleanupPending: sourceCleanupPending(this.#database, source.path, artifact.value),
-    });
+    const id = crypto.randomUUID();
+    const adoptionId = crypto.randomUUID();
+    const targetStoredPath = `${id}.${source.format}`;
+    const targetPath = resolveManagedFormatPath(this.#itemsDirectory, targetStoredPath, source.format, false);
+    const now = new Date().toISOString();
+    const adoption: StoredAdoption = {
+      id: adoptionId,
+      libraryItemId: id,
+      title: normalizedTitle,
+      sourcePath: source.path,
+      targetPath,
+      format: source.format,
+      contentBytes: artifact.value.bytes,
+      contentSha256: artifact.value.sha256,
+      state: "pending-rename",
+    };
+    try {
+      mkdirSync(this.#itemsDirectory, { recursive: true });
+      validateManagedRoot(this.#itemsDirectory);
+      if (!sameDeviceAdoptionPreflight(source.path, this.#itemsDirectory)) {
+        return failure("cross-device-move");
+      }
+      this.#database.run(
+        `INSERT INTO library_adoptions
+          (id, library_item_id, title, source_path, target_path, format,
+            content_bytes, content_sha256, state, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending-rename', ?, ?)`,
+        [
+          adoption.id,
+          adoption.libraryItemId,
+          adoption.title,
+          adoption.sourcePath,
+          adoption.targetPath,
+          adoption.format,
+          adoption.contentBytes,
+          adoption.contentSha256,
+          now,
+          now,
+        ],
+      );
+      lifecycleTestSeam.afterAdoptionJournalPlanned?.();
+      lifecycleTestSeam.beforeAdoptionRename?.(source.path, targetPath);
+      renameSync(source.path, targetPath);
+      fsyncPath(targetPath);
+      fsyncDirectory(this.#itemsDirectory);
+      const sourceDirectory = dirname(source.path);
+      if (sourceDirectory !== this.#itemsDirectory) fsyncDirectory(sourceDirectory);
+      adoption.state = "renamed";
+      this.#database.run("UPDATE library_adoptions SET state = 'renamed', updated_at = ? WHERE id = ?", [
+        new Date().toISOString(),
+        adoption.id,
+      ]);
+      lifecycleTestSeam.afterAdoptionRenamed?.();
+      const item = finalizeAdoption(this.#database, this.#itemsDirectory, adoption);
+      return success({ item, sourceCleanupPending: false });
+    } catch (error) {
+      if (typeof error === "object" && error !== null && "code" in error && error.code === "EXDEV") {
+        this.#database.run("DELETE FROM library_adoptions WHERE id = ?", [adoption.id]);
+        return failure("cross-device-move");
+      }
+      return failure(error === installedArtifactMismatch ? "invalid-arguments" : "storage-unavailable");
+    }
   }
 
   async importMany(request: ImportLibraryItemsRequest): Promise<ImportLibraryItemsResult> {
@@ -4363,7 +4546,7 @@ export class BunSqliteLibraryStore
     const fail = (sourcePath: string, code: BatchImportFailure) => {
       outcomes.push({ status: "failed", sourcePath, code });
     };
-    const visit = (sourcePath: string): void => {
+    const visit = async (sourcePath: string): Promise<void> => {
       let entry: ReturnType<typeof lstatSync>;
       try {
         entry = lstatSync(sourcePath);
@@ -4393,7 +4576,7 @@ export class BunSqliteLibraryStore
           return;
         }
         for (const name of names) {
-          visit(join(sourcePath, name));
+          await visit(join(sourcePath, name));
         }
         return;
       }
@@ -4482,12 +4665,28 @@ export class BunSqliteLibraryStore
         return;
       }
 
+      if (moveSource) {
+        const adopted = await this.adopt({ sourcePath: moveSource, title: normalizedTitle });
+        if (!adopted.ok) {
+          fail(sourcePath, adopted.error.code === "cross-device-move" ? "cross-device-move" : "storage-unavailable");
+          return;
+        }
+        const importedReference = { itemId: adopted.value.item.id, format };
+        encountered.set(key, importedReference);
+        outcomes.push({
+          status: "imported",
+          sourcePath,
+          item: adopted.value.item,
+          sourceCleanupPending: adopted.value.sourceCleanupPending,
+        });
+        return;
+      }
+
       const imported = this.#importFingerprinted(
-        moveSource ?? sourcePath,
+        sourcePath,
         format,
         normalizedTitle,
         fingerprint.value,
-        moveSource,
       );
       if (!imported.result.ok) {
         fail(sourcePath, imported.failureCode ?? "storage-unavailable");
@@ -4499,20 +4698,11 @@ export class BunSqliteLibraryStore
         status: "imported",
         sourcePath,
         item: imported.result.value,
-        ...(moveSource
-          ? {
-              sourceCleanupPending: sourceCleanupPending(
-                this.#database!,
-                moveSource,
-                fingerprint.value,
-              ),
-            }
-          : {}),
       });
     };
 
     for (const root of parsedRequest.data.roots) {
-      visit(root);
+      await visit(root);
     }
     return success({
       outcomes,
