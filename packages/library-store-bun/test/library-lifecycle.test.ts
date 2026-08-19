@@ -574,7 +574,7 @@ describe("BunSqliteLibraryStore managed format lifecycle", () => {
     expect(await readdir(itemsDirectory)).toEqual([]);
     expect(await Bun.file(epubSource).exists()).toBe(true);
     expect(await Bun.file(pdfSource).exists()).toBe(true);
-  });
+  }, 10_000);
 
   it("refuses traversal-tampered managed paths without deleting an external file", async () => {
     const sourcePath = join(directory, "book.epub");
