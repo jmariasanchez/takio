@@ -144,6 +144,7 @@ const sourceChanged = Symbol("source-changed");
 const installedArtifactMismatch = Symbol("installed-artifact-mismatch");
 const duplicateMergeRollback = Symbol("duplicate-merge-rollback");
 const invalidStoredExport = Symbol("invalid-stored-export");
+const formatIdSqlList = FORMAT_IDS.map((format) => `'${format}'`).join(", ");
 
 type StoredLibraryItem = {
   id: unknown;
@@ -1366,9 +1367,11 @@ function createLibraryAdoptionsTable(database: Database): void {
   database.run(`
     CREATE TABLE library_adoptions (
       id TEXT PRIMARY KEY CHECK (length(id) > 0),
+      library_item_id TEXT NOT NULL UNIQUE CHECK (length(library_item_id) > 0),
+      title TEXT NOT NULL CHECK (length(title) > 0),
       source_path TEXT NOT NULL CHECK (length(source_path) > 0),
-      target_path TEXT NOT NULL CHECK (length(target_path) > 0),
-      format TEXT NOT NULL CHECK (format IN ('epub', 'pdf', 'mobi', 'azw3', 'txt')),
+      target_path TEXT NOT NULL UNIQUE CHECK (length(target_path) > 0),
+      format TEXT NOT NULL CHECK (format IN (${formatIdSqlList})),
       content_bytes INTEGER NOT NULL CHECK (content_bytes >= 0),
       content_sha256 TEXT NOT NULL CHECK (
         length(content_sha256) = 64 AND content_sha256 NOT GLOB '*[^0-9a-f]*'
@@ -2181,6 +2184,8 @@ function verifyV10Database(
     .query<
       {
         id: unknown;
+        libraryItemId: unknown;
+        title: unknown;
         sourcePath: unknown;
         targetPath: unknown;
         format: unknown;
@@ -2192,7 +2197,8 @@ function verifyV10Database(
       },
       []
     >(`
-      SELECT id, source_path AS sourcePath, target_path AS targetPath, format,
+      SELECT id, library_item_id AS libraryItemId, title,
+        source_path AS sourcePath, target_path AS targetPath, format,
         content_bytes AS contentBytes, content_sha256 AS contentSha256,
         state, created_at AS createdAt, updated_at AS updatedAt
       FROM library_adoptions
@@ -2204,6 +2210,10 @@ function verifyV10Database(
       (row) =>
         typeof row.id !== "string" ||
         row.id.length === 0 ||
+        typeof row.libraryItemId !== "string" ||
+        row.libraryItemId.length === 0 ||
+        typeof row.title !== "string" ||
+        row.title.length === 0 ||
         typeof row.sourcePath !== "string" ||
         row.sourcePath.length === 0 ||
         typeof row.targetPath !== "string" ||

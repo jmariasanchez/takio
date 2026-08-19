@@ -4,7 +4,7 @@ import { mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/pro
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 
-import type { LibraryItem } from "@takio/core";
+import { FORMAT_IDS, type LibraryItem } from "@takio/core";
 
 import { initializationTestSeam } from "../src/initialization-test-seam.js";
 import { BunSqliteLibraryStore } from "../src/index.js";
@@ -358,10 +358,13 @@ describe("BunSqliteLibraryStore", () => {
     expect(database.query("SELECT * FROM library_adoptions").all()).toEqual([]);
     database.run(
       `INSERT INTO library_adoptions
-        (id, source_path, target_path, format, content_bytes, content_sha256, state, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        (id, library_item_id, title, source_path, target_path, format,
+          content_bytes, content_sha256, state, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         "adoption-1",
+        "preallocated-book-1",
+        "Custom adoption title",
         join(directory, "source.epub"),
         join(directory, "items", "target.epub"),
         "epub",
@@ -372,14 +375,97 @@ describe("BunSqliteLibraryStore", () => {
         "2026-08-19T22:00:00.000Z",
       ],
     );
+    expect(
+      database
+        .query<
+          { libraryItemId: string; title: string; targetPath: string },
+          []
+        >(`
+          SELECT library_item_id AS libraryItemId, title, target_path AS targetPath
+          FROM library_adoptions
+        `)
+        .get(),
+    ).toEqual({
+      libraryItemId: "preallocated-book-1",
+      title: "Custom adoption title",
+      targetPath: join(directory, "items", "target.epub"),
+    });
     expect(() =>
       database.run(
         `INSERT INTO library_adoptions
-          (id, source_path, target_path, format, content_bytes, content_sha256, state, created_at, updated_at)
-          VALUES ('bad', 'a', 'b', 'epub', 1, ?, 'unknown', 'now', 'now')`,
+          (id, library_item_id, title, source_path, target_path, format,
+            content_bytes, content_sha256, state, created_at, updated_at)
+          VALUES ('bad-state', 'item-bad-state', 'Bad state', 'a', 'b', 'epub', 1, ?, 'unknown', 'now', 'now')`,
         ["b".repeat(64)],
       ),
     ).toThrow();
+  });
+
+  it("accepts every catalogue format and rejects invalid formats and duplicate targets", async () => {
+    await createSchemaV9Fixture();
+    const store = createStore();
+    expect(await store.open({ config: {} })).toEqual({ ok: true, value: null });
+    store.close();
+    const database = new Database(databasePath, { strict: true });
+    const insertSql = `
+      INSERT INTO library_adoptions
+        (id, library_item_id, title, source_path, target_path, format,
+          content_bytes, content_sha256, state, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `;
+
+    try {
+      for (const format of FORMAT_IDS) {
+        database.run(insertSql, [
+          `adoption-${format}`,
+          `item-${format}`,
+          `Title ${format}`,
+          join(directory, `source.${format}`),
+          join(directory, "items", `target.${format}`),
+          format,
+          1,
+          "c".repeat(64),
+          "pending-rename",
+          "2026-08-19T22:00:00.000Z",
+          "2026-08-19T22:00:00.000Z",
+        ]);
+      }
+      expect(
+        database.query<{ count: number }, []>("SELECT COUNT(*) AS count FROM library_adoptions").get(),
+      ).toEqual({ count: FORMAT_IDS.length });
+      expect(() =>
+        database.run(insertSql, [
+          "bad-format",
+          "item-bad-format",
+          "Bad format",
+          join(directory, "bad.input"),
+          join(directory, "items", "bad.output"),
+          "lit",
+          1,
+          "d".repeat(64),
+          "pending-rename",
+          "2026-08-19T22:00:00.000Z",
+          "2026-08-19T22:00:00.000Z",
+        ]),
+      ).toThrow();
+      expect(() =>
+        database.run(insertSql, [
+          "duplicate-target",
+          "item-duplicate-target",
+          "Duplicate target",
+          join(directory, "different.epub"),
+          join(directory, "items", `target.${FORMAT_IDS[0]}`),
+          FORMAT_IDS[0],
+          1,
+          "e".repeat(64),
+          "pending-rename",
+          "2026-08-19T22:00:00.000Z",
+          "2026-08-19T22:00:00.000Z",
+        ]),
+      ).toThrow();
+    } finally {
+      database.close();
+    }
   });
 
   it("rolls back schema v10 migration when the adoption journal collides", async () => {
