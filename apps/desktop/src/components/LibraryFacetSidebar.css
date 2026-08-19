@@ -42,6 +42,7 @@
 
 .library-facets__all,
 .library-facets__saved-view,
+.library-facets__chip,
 .library-facets__remove,
 .library-facets__group-heading button {
   background: transparent;
@@ -81,6 +82,49 @@
 
 .library-facets__group {
   margin-top: 16px;
+}
+
+.library-facets__active {
+  margin-top: 14px;
+  padding: 8px;
+  border: 1px solid #dbe4ff;
+  border-radius: 8px;
+  background: #eef2ff;
+}
+
+.library-facets__active .library-facets__group-heading h2 {
+  margin-left: 0;
+}
+
+.library-facets__chips {
+  display: flex !important;
+  flex-wrap: wrap;
+  gap: 6px !important;
+  margin-top: 8px !important;
+}
+
+.library-facets__chip {
+  display: inline-flex;
+  min-height: 26px;
+  max-width: 100%;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 7px;
+  border-radius: 999px;
+  background: #fff;
+  color: #3730a3;
+  font-size: 0.6875rem;
+  font-weight: 650;
+}
+
+.library-facets__chip:hover {
+  background: #dfe7ff;
+}
+
+.library-facets__chip span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .library-facets__group h2 {

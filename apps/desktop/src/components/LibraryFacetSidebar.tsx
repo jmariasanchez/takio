@@ -66,6 +66,20 @@ function displayValue(key: FacetKey, value: string): string {
   return key === "formats" ? value.toUpperCase() : value;
 }
 
+function removeFilter(
+  filters: LibraryQueryFilters,
+  key: FacetKey,
+  value: string,
+): LibraryQueryFilters {
+  const comparison = comparisonValue(key, value);
+  return {
+    ...filters,
+    [key]: (filters[key] as readonly string[]).filter(
+      (candidate) => comparisonValue(key, candidate) !== comparison,
+    ),
+  } as LibraryQueryFilters;
+}
+
 export function LibraryFacetSidebar({
   facets,
   filters,
@@ -77,6 +91,10 @@ export function LibraryFacetSidebar({
   onSaveSavedView,
   onRemoveSavedView,
 }: LibraryFacetSidebarProps) {
+  const activeFilters = facetGroups.flatMap(({ key, label }) =>
+    (filters[key] as readonly string[]).map((value) => ({ key, label, value })),
+  );
+
   return (
     <nav className="library-facets" aria-label="Library filters and saved views">
       <div className="library-facets__heading">
@@ -96,6 +114,40 @@ export function LibraryFacetSidebar({
           <span>All books</span>
           <span aria-hidden="true">Clear</span>
         </button>
+
+        {activeFilters.length > 0 ? (
+          <section
+            className="library-facets__active"
+            aria-labelledby="library-active-filters-heading"
+          >
+            <div className="library-facets__group-heading">
+              <h2 id="library-active-filters-heading">Active filters</h2>
+              <button type="button" onClick={onClearAll}>
+                Clear all
+              </button>
+            </div>
+            <ul className="library-facets__chips">
+              {activeFilters.map(({ key, label, value }) => {
+                const visibleValue = displayValue(key, value);
+                return (
+                  <li key={`${key}:${value}`}>
+                    <button
+                      type="button"
+                      className="library-facets__chip"
+                      aria-label={`Remove ${label} filter ${visibleValue}`}
+                      onClick={() => onChangeFilters(removeFilter(filters, key, value))}
+                    >
+                      <span>
+                        {label}: {visibleValue}
+                      </span>
+                      <span aria-hidden="true">×</span>
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          </section>
+        ) : null}
 
         <section
           className="library-facets__group library-facets__saved"

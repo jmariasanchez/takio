@@ -148,6 +148,7 @@ export type LibraryWorkspaceProps = {
     focusControlId: string,
   ) => Promise<void>;
   readonly onOpenDuplicateReview: (disposition: DuplicateReviewDisposition) => void;
+  readonly onOpenImport?: () => void;
   readonly onOpenSaveView: () => void;
   readonly onOpenTrash: () => void;
   readonly onRemoveFormat: (
@@ -178,6 +179,10 @@ function formatLabel(format: FormatId): string {
 
 function metadataDraft(item: LibraryItem): MetadataDraft {
   return { id: item.id, ...metadataDraftFor(item) };
+}
+
+function hasActiveFilters(filters: LibraryQueryFilters): boolean {
+  return Object.values(filters).some((values) => values.length > 0);
 }
 
 export { conversionControlId } from "./LibraryInspector";
@@ -554,6 +559,7 @@ export function LibraryWorkspace({
   onClearCover,
   onEnqueueConversion,
   onOpenDuplicateReview,
+  onOpenImport,
   onOpenItem,
   onOpenSaveView,
   onOpenTrash,
@@ -576,6 +582,8 @@ export function LibraryWorkspace({
   const selectedItem = items.find(({ id }) => id === selectedItemId) ?? null;
   const busy = libraryState === "loading" || searchPending;
   const interactionsDisabled = busy || actionsPending;
+  const filtered = query.trim() !== "" || hasActiveFilters(filters);
+  const firstUse = libraryState === "ready" && !busy && total === 0 && !filtered;
 
   useEffect(() => {
     if (conversionDraft !== null) {
@@ -639,6 +647,117 @@ export function LibraryWorkspace({
     />
   );
 
+  const toolbar = (
+    <div className="library-workspace__toolbar">
+      <div className="library-workspace__title">
+        <div>
+          <span>Library</span>
+          <h2>All books</h2>
+        </div>
+        <span className="library-workspace__count">
+          {busy
+            ? "Updating…"
+            : `${total.toLocaleString()} ${total === 1 ? "book" : "books"}`}
+        </span>
+      </div>
+      <div className="library-workspace__toolbar-actions">
+        <label className="library-workspace__search" htmlFor="library-search">
+          <span className="visually-hidden">Search library</span>
+          <input
+            ref={searchInput}
+            id="library-search"
+            type="search"
+            value={query}
+            disabled={actionsPending || firstUse}
+            placeholder="Search your library"
+            onChange={(event) => onChangeSearch(event.currentTarget.value)}
+          />
+        </label>
+        <details className="library-workspace__more">
+          <summary aria-label="Library tools">Library tools</summary>
+          <div className="library-workspace__maintenance-actions">
+            <button
+              id="library-duplicates-trigger"
+              className="library-workspace__maintenance-button"
+              type="button"
+              aria-haspopup="dialog"
+              disabled={actionsPending}
+              onClick={() => openDuplicateReviewDialog("unreviewed", onOpenDuplicateReview)}
+            >
+              Review duplicates…
+            </button>
+            <button
+              id="library-kept-duplicates-trigger"
+              className="library-workspace__maintenance-button"
+              type="button"
+              aria-haspopup="dialog"
+              disabled={actionsPending}
+              onClick={() => openDuplicateReviewDialog("kept-both", onOpenDuplicateReview)}
+            >
+              Kept separate…
+            </button>
+            <button
+              id="library-trash-trigger"
+              className="library-workspace__maintenance-button"
+              type="button"
+              aria-haspopup="dialog"
+              disabled={actionsPending}
+              onClick={() => openTrashDialog(onOpenTrash)}
+            >
+              Trash
+            </button>
+          </div>
+        </details>
+      </div>
+    </div>
+  );
+
+  if (firstUse) {
+    return (
+      <div className="library-workspace" aria-busy={busy}>
+        {toolbar}
+        <main className="library-workspace__first-use" aria-labelledby="library-first-use-title">
+          <div className="library-workspace__first-use-card">
+            <span className="library-workspace__first-use-kicker">Start your library</span>
+            <h2 id="library-first-use-title">Add your first books to Takio</h2>
+            <p>
+              Bring in ebooks and documents, then browse, search, edit metadata, and send
+              them to your reader from one catalogue.
+            </p>
+            <button
+              type="button"
+              className="library-workspace__first-use-action"
+              disabled={actionsPending || !onOpenImport}
+              onClick={onOpenImport}
+            >
+              Add books
+            </button>
+            <div className="library-workspace__first-use-drop">
+              <strong>Drop files anywhere in this window</strong>
+              <span>Takio will import supported files and skip anything it cannot read.</span>
+            </div>
+            <dl className="library-workspace__first-use-facts">
+              <div>
+                <dt>Formats</dt>
+                <dd>
+                  EPUB, PDF, MOBI, AZW3, CBZ, CBR, TXT, HTML, and common ebook
+                  documents.
+                </dd>
+              </div>
+              <div>
+                <dt>Your files</dt>
+                <dd>
+                  Copy into Takio, move into the library, or keep references to files
+                  where they are.
+                </dd>
+              </div>
+            </dl>
+          </div>
+        </main>
+      </div>
+    );
+  }
+
   return (
     <>
       <div className="library-workspace" aria-busy={busy}>
@@ -646,74 +765,7 @@ export function LibraryWorkspace({
           facets={facetSidebar}
           inspector={inspector}
           openPane={openPane}
-          toolbar={
-            <div className="library-workspace__toolbar">
-              <div className="library-workspace__title">
-                <div>
-                  <span>Library</span>
-                  <h2>All books</h2>
-                </div>
-                <span className="library-workspace__count">
-                  {busy
-                    ? "Updating…"
-                    : `${total.toLocaleString()} ${total === 1 ? "book" : "books"}`}
-                </span>
-              </div>
-              <div className="library-workspace__toolbar-actions">
-                <label className="library-workspace__search" htmlFor="library-search">
-                  <span className="visually-hidden">Search library</span>
-                  <input
-                    ref={searchInput}
-                    id="library-search"
-                    type="search"
-                    value={query}
-                    disabled={actionsPending}
-                    placeholder="Search your library"
-                    onChange={(event) => onChangeSearch(event.currentTarget.value)}
-                  />
-                </label>
-                <details className="library-workspace__more">
-                  <summary aria-label="More library actions">•••</summary>
-                  <div className="library-workspace__maintenance-actions">
-                    <button
-                      id="library-duplicates-trigger"
-                      className="library-workspace__maintenance-button"
-                      type="button"
-                      aria-haspopup="dialog"
-                      disabled={actionsPending}
-                      onClick={() =>
-                        openDuplicateReviewDialog("unreviewed", onOpenDuplicateReview)
-                      }
-                    >
-                      Review duplicates…
-                    </button>
-                    <button
-                      id="library-kept-duplicates-trigger"
-                      className="library-workspace__maintenance-button"
-                      type="button"
-                      aria-haspopup="dialog"
-                      disabled={actionsPending}
-                      onClick={() =>
-                        openDuplicateReviewDialog("kept-both", onOpenDuplicateReview)
-                      }
-                    >
-                      Kept separate…
-                    </button>
-                    <button
-                      id="library-trash-trigger"
-                      className="library-workspace__maintenance-button"
-                      type="button"
-                      aria-haspopup="dialog"
-                      disabled={actionsPending}
-                      onClick={() => openTrashDialog(onOpenTrash)}
-                    >
-                      Trash
-                    </button>
-                  </div>
-                </details>
-              </div>
-            </div>
-          }
+          toolbar={toolbar}
           table={
             <>
               {bulkActions ? (
@@ -754,12 +806,15 @@ export function LibraryWorkspace({
               ) : null}
               {libraryState === "ready" && !busy && items.length === 0 ? (
                 <div className="library-workspace__state">
-                  <strong>{query === "" ? "No books yet" : "No matches"}</strong>
+                  <strong>No matches</strong>
                   <span>
-                    {query === ""
-                      ? "Import a supported book or document to begin."
-                      : "Try a different search or clear the active filters."}
+                    Try a different search or clear the active filters.
                   </span>
+                  {filtered ? (
+                    <button type="button" onClick={onClearAll}>
+                      Clear search and filters
+                    </button>
+                  ) : null}
                 </div>
               ) : null}
               {libraryState !== "error" ? (

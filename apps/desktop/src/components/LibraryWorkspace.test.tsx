@@ -259,6 +259,67 @@ test("composes authoritative facets, table query state, selection, and inspector
   expect(markup).toContain("Title");
 });
 
+test("renders a first-use experience instead of the catalogue when the ready library is empty", () => {
+  const emptyFilters: LibraryQueryFilters = {
+    authors: [],
+    tags: [],
+    series: [],
+    languages: [],
+    formats: [],
+  };
+  const markup = renderWorkspace({
+    filters: emptyFilters,
+    items: [],
+    query: "",
+    selectedItemId: null,
+    selectedItemIds: [],
+    total: 0,
+    onOpenImport: () => undefined,
+  });
+
+  expect(markup).toContain("Add your first books to Takio");
+  expect(markup).toContain(">Add books</button>");
+  expect(markup).toContain("Drop files anywhere in this window");
+  expect(markup).toContain("EPUB, PDF, MOBI, AZW3, CBZ, CBR, TXT, HTML");
+  expect(markup).toContain("Copy into Takio, move into the library, or keep references");
+  expect(markup).not.toContain('aria-label="Library workspace"');
+  expect(markup).not.toContain('class="library-table"');
+});
+
+test("keeps no-results recovery distinct from the first-use state", () => {
+  const emptyFilters: LibraryQueryFilters = {
+    authors: [],
+    tags: [],
+    series: [],
+    languages: [],
+    formats: [],
+  };
+  const markup = renderWorkspace({
+    filters: emptyFilters,
+    items: [],
+    query: "missing",
+    selectedItemId: null,
+    selectedItemIds: [],
+    total: 0,
+  });
+
+  expect(markup).toContain("No matches");
+  expect(markup).toContain("Clear search and filters");
+  expect(markup).not.toContain("Add your first books to Takio");
+  expect(markup).toContain('aria-label="Library workspace"');
+});
+
+test("surfaces library tools and active filter chips with removal labels", () => {
+  const markup = renderWorkspace();
+
+  expect(markup).toContain('aria-label="Library tools"');
+  expect(markup).toContain(">Library tools</summary>");
+  expect(markup).toContain("Active filters");
+  expect(markup).toContain('aria-label="Remove Authors filter Author"');
+  expect(markup).toContain("Authors: Author");
+  expect(markup).toContain(">Clear all</button>");
+});
+
 test("threads controlled multi-selection state into the library table", () => {
   const markup = renderWorkspace();
 
