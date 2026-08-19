@@ -42,6 +42,39 @@ immediately or through a durable local queue, but always runs in the foreground.
 Each stored format is recorded as either a Takio-managed copy or a reference to
 a caller-owned file.
 
+## How library management works
+
+Takio keeps one searchable SQLite catalogue for titles, authors, formats,
+metadata, covers, saved views, trash, and duplicate-review state. Book bytes are
+handled separately and every format has explicit ownership:
+
+- **Keep originals (`copy`)** creates a verified Takio-managed copy and leaves
+  the selected file where it is.
+- **Organize into Takio (`move`)** creates and verifies the managed copy before
+  removing the original. Exact byte-for-byte duplicates reuse the existing book
+  instead of creating another logical copy.
+- **Reference** stores the external path without copying the file. Takio can
+  detach the reference, but never deletes the caller-owned file.
+
+This makes the database the place to browse and search, while ownership rules
+decide whether the actual book remains in its existing folder or is organized
+under Takio. If source cleanup is interrupted, Takio retains the obligation and
+retries it safely when the library next opens.
+
+### Takio compared with Calibre
+
+| | Takio | Calibre |
+| --- | --- | --- |
+| Primary role | Local-first library workflow and automation control plane | Full ebook suite with library UI, reader, editor, conversion, and plugins |
+| File ownership | Explicit managed copies or caller-owned references | Normally imports books into a Calibre-managed library copy |
+| Organization | Can keep originals, safely move them into Takio, or retain external references | Organizes imported copies inside Calibre's library structure |
+| Automation | Stable JSON CLI and desktop sidecar designed for agents and scripts | Broad command-line toolkit primarily serving the Calibre ecosystem |
+| Interoperability | Imports Calibre metadata read-only and can use public Calibre tools as optional backends | Owns and operates its native library directly |
+
+Takio does not replace Calibre's reader, editor, conversion engine, or plugin
+ecosystem. It offers a narrower ownership-aware library workflow and can use
+Calibre as an optional conversion and metadata backend.
+
 ## Requirements
 
 - [Bun](https://bun.sh/) 1.3+ for development and source execution
