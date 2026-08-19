@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, expect, test } from "bun:test";
+import { expect, test } from "bun:test";
 import type { LibraryQuerySort } from "@takio/library-contract";
 import { renderToStaticMarkup } from "react-dom/server";
 
@@ -10,28 +10,6 @@ import {
   nextLibrarySort,
   rowNavigationTarget,
 } from "./LibraryTable";
-
-const originalWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
-
-beforeAll(() => {
-  Object.defineProperty(globalThis, "window", {
-    configurable: true,
-    value: {
-      __TAURI_INTERNALS__: {
-        convertFileSrc: (filePath: string, protocol: string) =>
-          `${protocol}://localhost/${encodeURIComponent(filePath)}`,
-      },
-    },
-  });
-});
-
-afterAll(() => {
-  if (originalWindow) {
-    Object.defineProperty(globalThis, "window", originalWindow);
-  } else {
-    Reflect.deleteProperty(globalThis, "window");
-  }
-});
 
 const items = [
   {

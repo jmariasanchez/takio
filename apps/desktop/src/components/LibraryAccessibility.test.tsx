@@ -19,10 +19,6 @@ function setCompactLayout(compact: boolean): void {
   Object.defineProperty(globalThis, "window", {
     configurable: true,
     value: {
-      __TAURI_INTERNALS__: {
-        convertFileSrc: (filePath: string, protocol: string) =>
-          `${protocol}://localhost/${encodeURIComponent(filePath)}`,
-      },
       matchMedia: (query: string) => ({
         matches: compact && query === "(max-width: 900px)",
         media: query,

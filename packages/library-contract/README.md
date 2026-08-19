@@ -84,5 +84,5 @@ on these codes, not driver messages. The trash capability additionally uses
 
 `LibraryStoreConfig` is intentionally empty until a runtime adapter establishes
 a real cross-runtime configuration need. Database paths, schema versions,
-migrations, and Bun or Tauri setup belong to runtime adapters rather than this
-contract.
+migrations, and runtime-specific desktop setup belong to adapters rather than
+this contract.
