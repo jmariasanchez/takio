@@ -155,7 +155,7 @@ export function DeviceControls({
               <small className="reader-format-preference-help" id="reader-format-preference-help">
                 Used when you choose Send. Takio can convert a book when needed.
               </small>
-              <label className="reader-convert-option">
+              <label className="reader-format-preference">
                 <input
                   type="checkbox"
                   checked={convertIfNeeded}
@@ -164,7 +164,7 @@ export function DeviceControls({
                 />
                 <span>Convert if needed</span>
               </label>
-              <small className="reader-convert-option-help">
+              <small className="reader-format-preference-help">
                 Takio can create a compatible copy before sending.
               </small>
               <button
