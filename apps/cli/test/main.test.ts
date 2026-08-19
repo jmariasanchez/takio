@@ -139,7 +139,7 @@ describe("takio CLI", () => {
           structuredInput: ["inline", "stdin", "file"],
           maxRequestBytes: 16 * 1024,
         },
-        library: { schemaVersion: 9, backupVersion: 1 },
+        library: { schemaVersion: 10, backupVersion: 1 },
         backends: { conversion: { name: "ebook-convert", available: true } },
         conversions: {
           available: true,
@@ -1686,7 +1686,7 @@ describe("takio CLI", () => {
           rebuild: {
             path: rebuiltDatabase,
             report: {
-              schemaVersion: 9,
+              schemaVersion: 10,
               items: { total: 1, active: 1, trashed: 0 },
               formats: { total: 2, managed: 2, referenced: 0 },
             },
