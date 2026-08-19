@@ -103,7 +103,7 @@ test("renders selected metadata and every real format without a reading surface"
   expect(markup).toContain("A novel of exile, identity, and trust.");
   expect(markup).toContain("EPUB");
   expect(markup).toContain("PDF");
-  expect(markup).toContain("2 owned");
+  expect(markup).toContain("2 formats");
   expect(markup).toContain("Managed copy");
   expect(markup).toContain("Linked file");
   expect(markup).toContain("Added");

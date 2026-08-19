@@ -190,7 +190,7 @@ export function LibraryInspector({
         <section className="library-inspector__section" aria-labelledby="inspector-formats-heading">
           <div className="library-inspector__section-heading">
             <h3 id="inspector-formats-heading">Formats</h3>
-            <span>{item.formats.length} owned</span>
+            <span>{item.formats.length} {item.formats.length === 1 ? "format" : "formats"}</span>
           </div>
           <ul className="library-inspector__formats">
             {item.formats.map((bookFormat) => {
