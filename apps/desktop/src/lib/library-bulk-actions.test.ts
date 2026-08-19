@@ -184,7 +184,7 @@ describe("bulk device-send planning", () => {
       bookFormat("mobi", "/Books/unavailable.mobi"),
     ]);
 
-    expect(planBulkDeviceSend([exact, convertible, unavailable], "pdf")).toEqual([
+    expect(planBulkDeviceSend([exact, convertible, unavailable], "pdf", true)).toEqual([
       { status: "eligible", item: exact, bookFormat: exact.formats[1] },
       {
         status: "convertible",
@@ -199,8 +199,18 @@ describe("bulk device-send planning", () => {
   test("does not infer conversion or use another attachment for an unsupported preference", () => {
     const epub = libraryItem("epub", [bookFormat("epub", "/Books/title.epub")]);
 
-    expect(planBulkDeviceSend([epub], "azw3")).toEqual([
+    expect(planBulkDeviceSend([epub], "azw3", true)).toEqual([
       { status: "unavailable", item: epub, preferred: "azw3" },
+    ]);
+  });
+
+  test("treats convertible items as unavailable when conversion is disabled", () => {
+    const convertible = libraryItem("convertible", [
+      bookFormat("epub", "/Books/convertible.epub"),
+    ]);
+
+    expect(planBulkDeviceSend([convertible], "pdf", false)).toEqual([
+      { status: "unavailable", item: convertible, preferred: "pdf" },
     ]);
   });
 
@@ -215,7 +225,7 @@ describe("bulk device-send planning", () => {
 
     expect(
       summarizeBulkDeviceSendPlan(
-        planBulkDeviceSend([exact, convertible, unavailable], "pdf"),
+        planBulkDeviceSend([exact, convertible, unavailable], "pdf", true),
       ),
     ).toEqual({ total: 3, eligible: 1, convertible: 1, unavailable: 1 });
   });

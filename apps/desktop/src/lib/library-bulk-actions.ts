@@ -203,6 +203,7 @@ export function planBulkPdfConversion(
 export function planBulkDeviceSend(
   items: readonly LibraryItem[],
   preferred: FormatId,
+  convertIfNeeded: boolean,
 ): readonly BulkDeviceSendPlanEntry[] {
   return items.map((item) => {
     const resolution = resolveDeviceFormatPreference(item.formats, preferred);
@@ -210,12 +211,14 @@ export function planBulkDeviceSend(
       case "attached":
         return { status: "eligible", item, bookFormat: resolution.bookFormat };
       case "convertible":
-        return {
-          status: "convertible",
-          item,
-          source: resolution.source,
-          target: resolution.target,
-        };
+        return convertIfNeeded
+          ? {
+              status: "convertible",
+              item,
+              source: resolution.source,
+              target: resolution.target,
+            }
+          : { status: "unavailable", item, preferred: resolution.target };
       case "unavailable":
         return { status: "unavailable", item, preferred: resolution.preferred };
     }

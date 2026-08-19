@@ -2716,31 +2716,36 @@ export default function App() {
         return;
       }
 
-      const plan = planBulkDeviceSend(hydrated.items, preferred);
+      const plan = planBulkDeviceSend(hydrated.items, preferred, convertIfNeeded);
       const planned = summarizeBulkDeviceSendPlan(plan);
-      const eligible = plan.flatMap((entry) =>
-        entry.status === "eligible" ? [entry] : [],
+      const sendable = plan.flatMap((entry) =>
+        entry.status === "eligible" || entry.status === "convertible" ? [entry] : [],
       );
       let sent = 0;
+      let converted = 0;
       let failed = 0;
       const completedIds = [
         ...hydrated.missingIds,
         ...plan.flatMap((entry) =>
-          entry.status === "eligible" ? [] : [entry.item.id],
+          entry.status === "eligible" || entry.status === "convertible" ? [] : [entry.item.id],
         ),
       ];
-      for (const entry of eligible) {
+      for (const entry of sendable) {
         try {
           const result = await sendLibraryItem(
             entry.item.id,
-            entry.bookFormat.format,
+            entry.status === "eligible" ? entry.bookFormat.format : entry.target,
             destination.path,
-            false,
+            entry.status === "convertible",
           );
           if (!result.ok) {
             failed += 1;
           } else {
-            sent += 1;
+            if (result.value.converted) {
+              converted += 1;
+            } else {
+              sent += 1;
+            }
             completedIds.push(entry.item.id);
           }
         } catch {
@@ -2751,7 +2756,7 @@ export default function App() {
       dispatchLibrarySelection({ type: "remove-items", ids: completedIds });
       restoreFocusIfBulkSelectionCleared(selectedIds, completedIds);
       const libraryLoaded = await loadLibrary(false);
-      const summary = `${sent} sent; ${planned.convertible} need conversion; ${planned.unavailable} unavailable; ${hydrated.missingIds.length} missing; ${failed} failed.${libraryLoaded ? "" : " Library refresh failed."}`;
+      const summary = `${sent} sent; ${converted} converted and sent; ${planned.unavailable} unavailable; ${hydrated.missingIds.length} missing; ${failed} failed.${libraryLoaded ? "" : " Library refresh failed."}`;
       setNotice({ kind: failed > 0 || !libraryLoaded ? "error" : "status", text: summary });
     } finally {
       deviceMutationPending.current = false;

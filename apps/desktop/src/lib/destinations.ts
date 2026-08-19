@@ -22,6 +22,8 @@ export type DesktopDestinationSendResult =
         readonly path: string;
         readonly bytes: number;
         readonly sha256: string;
+        readonly format: FormatId;
+        readonly converted: boolean;
       };
     }
   | DestinationFailure;
@@ -75,7 +77,8 @@ export function sendLibraryItem(
   convertIfNeeded: boolean,
   invokeCommand: DestinationInvoker = invokeDesktop,
 ): Promise<DesktopDestinationSendResult> {
-  return invokeCommand("destination_send", { id, format, destinationPath, convertIfNeeded });
+  return invokeCommand("destination_send", { id, format, destinationPath, convertIfNeeded })
+    .then(decodeDestinationSendResult);
 }
 
 export function ejectDestination(
@@ -100,6 +103,8 @@ const inventoryEntryKeys = [
 ].sort();
 const inventoryResultKeys = ["ok", "value"].sort();
 const inventoryResultValueKeys = ["destinationId", "entries"].sort();
+const sendResultKeys = ["ok", "value"].sort();
+const sendResultValueKeys = ["bytes", "converted", "destinationId", "format", "itemId", "path", "sha256"].sort();
 const knownFormats = new Set(FORMAT_CATALOG.map(({ id }) => id));
 
 function hasOnlyKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
@@ -118,6 +123,54 @@ function safeRelativePath(value: unknown): value is string {
 
 function validTimestamp(value: unknown): value is string {
   return nonemptyString(value) && !Number.isNaN(Date.parse(value));
+}
+
+export function decodeDestinationSendResult(value: unknown): DesktopDestinationSendResult {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return { ok: false, error: { code: "protocol-error" } };
+  }
+  const result = value as { ok?: unknown; value?: unknown; error?: unknown };
+  if (result.ok === false) {
+    const error = result.error as { code?: unknown } | null;
+    return typeof error?.code === "string"
+      ? { ok: false, error: { code: error.code } }
+      : { ok: false, error: { code: "protocol-error" } };
+  }
+  const payload = result.value as Record<string, unknown> | null;
+  if (
+    result.ok !== true ||
+    !hasOnlyKeys(result as Record<string, unknown>, sendResultKeys) ||
+    typeof payload !== "object" ||
+    payload === null ||
+    Array.isArray(payload) ||
+    !hasOnlyKeys(payload, sendResultValueKeys) ||
+    !nonemptyString(payload.itemId) ||
+    !nonemptyString(payload.destinationId) ||
+    !nonemptyString(payload.path) ||
+    typeof payload.format !== "string" ||
+    !knownFormats.has(payload.format as FormatId) ||
+    typeof payload.converted !== "boolean" ||
+    typeof payload.bytes !== "number" ||
+    !Number.isSafeInteger(payload.bytes) ||
+    payload.bytes < 0 ||
+    typeof payload.sha256 !== "string" ||
+    !/^[a-f0-9]{64}$/.test(payload.sha256)
+  ) {
+    return { ok: false, error: { code: "protocol-error" } };
+  }
+
+  return {
+    ok: true,
+    value: {
+      itemId: payload.itemId,
+      destinationId: payload.destinationId,
+      path: payload.path,
+      bytes: payload.bytes,
+      sha256: payload.sha256,
+      format: payload.format as FormatId,
+      converted: payload.converted,
+    },
+  };
 }
 
 export function decodeDestinationInventoryEntry(value: unknown): DestinationInventoryEntry | null {

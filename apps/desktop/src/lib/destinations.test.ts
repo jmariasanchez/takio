@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 
 import {
   describeDestinationError,
+  decodeDestinationSendResult,
   decodeDestinationInventoryResult,
   describeUnexpectedDestinationError,
   ejectDestination,
@@ -118,6 +119,52 @@ test("strictly decodes reader inventory entries", () => {
     { ok: true, value: { destinationId: "Reader", entries: [validEntry] }, extra: true },
   ]) {
     expect(decodeDestinationInventoryResult(result)).toEqual({
+      ok: false,
+      error: { code: "protocol-error" },
+    });
+  }
+});
+
+test("strictly decodes reader send results", () => {
+  const sha256 = "b".repeat(64);
+  expect(decodeDestinationSendResult({
+    ok: true,
+    value: {
+      itemId: "item-1",
+      destinationId: "Reader",
+      path: "/Volumes/Reader/Books/Title.pdf",
+      bytes: 42,
+      sha256,
+      format: "pdf",
+      converted: true,
+    },
+  })).toEqual({
+    ok: true,
+    value: {
+      itemId: "item-1",
+      destinationId: "Reader",
+      path: "/Volumes/Reader/Books/Title.pdf",
+      bytes: 42,
+      sha256,
+      format: "pdf",
+      converted: true,
+    },
+  });
+
+  for (const result of [
+    { ok: true, value: { itemId: "", destinationId: "Reader", path: "/p", bytes: 1, sha256, format: "pdf", converted: false } },
+    { ok: true, value: { itemId: "item-1", destinationId: "", path: "/p", bytes: 1, sha256, format: "pdf", converted: false } },
+    { ok: true, value: { itemId: "item-1", destinationId: "Reader", path: "", bytes: 1, sha256, format: "pdf", converted: false } },
+    { ok: true, value: { itemId: "item-1", destinationId: "Reader", path: "/p", bytes: -1, sha256, format: "pdf", converted: false } },
+    { ok: true, value: { itemId: "item-1", destinationId: "Reader", path: "/p", bytes: 1.5, sha256, format: "pdf", converted: false } },
+    { ok: true, value: { itemId: "item-1", destinationId: "Reader", path: "/p", bytes: 1, sha256: "B".repeat(64), format: "pdf", converted: false } },
+    { ok: true, value: { itemId: "item-1", destinationId: "Reader", path: "/p", bytes: 1, sha256, format: "unknown", converted: false } },
+    { ok: true, value: { itemId: "item-1", destinationId: "Reader", path: "/p", bytes: 1, sha256, format: "pdf", converted: "true" } },
+    { ok: true, value: { itemId: "item-1", destinationId: "Reader", path: "/p", bytes: 1, sha256, format: "pdf" } },
+    { ok: true, value: { itemId: "item-1", destinationId: "Reader", path: "/p", bytes: 1, sha256, format: "pdf", converted: false, extra: true } },
+    { ok: true, value: { itemId: "item-1", destinationId: "Reader", path: "/p", bytes: 1, sha256, format: "pdf", converted: false }, extra: true },
+  ]) {
+    expect(decodeDestinationSendResult(result)).toEqual({
       ok: false,
       error: { code: "protocol-error" },
     });
