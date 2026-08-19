@@ -138,4 +138,14 @@ The packaged app was relaunched with `TAKIO_DATA_DIR` pointing to a new Jcode sc
 - Move to Trash opened a native confirmation reading `Move “Acceptance Book” to Trash? You can restore it later.` Cancelling preserved the book, confirming the reviewed consequence-first safeguard and user-control path.
 - The isolated application quit cleanly with exit code 0. No real user-library files or records were touched.
 
-**Feedback-loop verdict:** The review accurately describes the current packaged application and its source-level risks. Its recommendations are actionable, and the production import → populated library → inspect path, duplicate edge case, destructive-action cancellation, empty/recovery states, native dialogs, engine storage boundaries, tests, and local packaging all behaved consistently with the report. Gatekeeper distribution readiness remains a reproduced P1 failure. A physically connected reader was not available, so device detection's empty/retry state was live-tested while successful hardware transfer remains covered by the passing public component and engine tests rather than claimed as live acceptance.
+### Isolated mounted-reader acceptance
+
+A disposable HFS+ disk image was mounted at `/Volumes/Kindle-Acceptance` with Kindle-compatible `documents` and `system` directories. This exercised production discovery and transfer without requiring or modifying physical hardware.
+
+- Takio discovered `Kindle-Acceptance`, classified it as a reader, and reported its available capacity.
+- The send action initially displayed `Choose format`, reproducing the critique's disconnected prerequisite. Opening Devices & activity → Options and selecting EPUB changed the point-of-action label to `Send EPUB`.
+- Sending through the inspector created `documents/Takio QA - Acceptance Book.epub` and `.takio/deliveries.json` on the mounted volume.
+- The manifest recorded the library item ID, relative destination path, EPUB format, byte count, timestamp, and SHA-256. The destination file's SHA-256 exactly matched the manifest value, validating the copy-and-verification boundary. Its bytes differed from the stored source because the production send path embedded current metadata before delivery.
+- Takio's `Eject Kindle-Acceptance` action unmounted the volume. The filesystem path disappeared and the UI returned to `No reader connected` with `Check again` available. The app then quit with exit code 0.
+
+**Feedback-loop verdict:** The review accurately describes the current packaged application and its source-level risks. Its recommendations are actionable, and the production import → populated library → inspect → configure reader → send → verify → eject path, duplicate edge case, destructive-action cancellation, empty/recovery states, native dialogs, renderer/Electron/engine/SQLite/filesystem boundaries, tests, and local packaging all behaved consistently with the report. The full functional acceptance path is now exercised without touching user data. Gatekeeper distribution readiness remains the sole reproduced acceptance failure and open P1 blocker.
