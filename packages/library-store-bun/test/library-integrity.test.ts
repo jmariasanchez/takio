@@ -160,10 +160,13 @@ describe("library integrity verification", () => {
     const sourceRoot = join(root, "source-library");
     await mkdir(sourceRoot);
     databasePath = join(sourceRoot, "library.sqlite");
+    const managedSourcePath = join(root, "managed-original.epub");
     const originalPath = join(root, "pending-original.epub");
+    await Bun.write(managedSourcePath, "pending original contents");
     await Bun.write(originalPath, "pending original contents");
     const store = new BunSqliteLibraryStore(databasePath);
     await store.open({ config: {} });
+    expect(await store.import({ sourcePath: managedSourcePath })).toMatchObject({ ok: true });
     lifecycleTestSeam.beforeSourceFileCleanup = () => {
       throw new Error("leave cleanup pending");
     };
