@@ -3,6 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 
 import {
   backupDirectoryName,
+  healthDialogFocusTarget,
   LibraryHealthDialog,
 } from "./LibraryHealthDialog";
 
@@ -66,4 +67,13 @@ test("does not render while closed and creates stable absent-destination names",
   expect(backupDirectoryName(new Date("2026-08-19T21:00:00.123Z"))).toBe(
     "takio-library-backup-2026-08-19T21-00-00-123Z",
   );
+});
+
+test("wraps keyboard focus within the modal dialog", () => {
+  expect(healthDialogFocusTarget(-1, 3, false)).toBe(0);
+  expect(healthDialogFocusTarget(-1, 3, true)).toBe(2);
+  expect(healthDialogFocusTarget(0, 3, true)).toBe(2);
+  expect(healthDialogFocusTarget(2, 3, false)).toBe(0);
+  expect(healthDialogFocusTarget(1, 3, false)).toBeNull();
+  expect(healthDialogFocusTarget(0, 0, false)).toBeNull();
 });
