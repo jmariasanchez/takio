@@ -141,24 +141,37 @@ describe("rooted Kindle SSH transport", () => {
     expect(parsed.value.transports.sendToKindle).toMatchObject({ available: false, gated: true, code: "unsupported-transport" });
   });
 
-  test("CLI command is JSON-only and uses the injected process boundary", async () => {
+  test("CLI command resolves an existing library format and uses the injected process boundary", async () => {
     const { root, source, content } = await tempFile();
+    const dataRoot = join(root, "data");
     const output: string[] = [];
+    const previousDataDir = process.env.TAKIO_DATA_DIR;
+    process.env.TAKIO_DATA_DIR = dataRoot;
     try {
+      const importOutput: string[] = [];
+      await createProgram((line) => importOutput.push(line), (line) => importOutput.push(line)).parseAsync([
+        "bun", "takio", "library", "import", "--source-path", source,
+      ]);
+      const itemId = JSON.parse(importOutput[0]!).value.item.id;
       const expectedHash = createHash("sha256").update(content).digest("hex");
       const runner: KindleSshRunner = async (argv) => argv.includes("sha256sum") ? { exitCode: 0, stdout: `${expectedHash} remote\n` } : { exitCode: 0 };
       await createProgram((line) => output.push(line), (line) => output.push(line), undefined, undefined, undefined, undefined, undefined, undefined, runner).parseAsync([
         "bun", "takio", "destination", "rooted-kindle-send",
-        "--source", source,
-        "--id", "cli-id",
+        "--id", itemId,
+        "--format", "epub",
         "--host", "kindle.local",
         "--user", "root",
         "--remote-root", "/mnt/us/documents/koreader",
+        "--identity-file", "/Users/test/.ssh/kindle",
+        "--port", "22",
+        "--timeout-ms", "5000",
       ]);
       const parsed = JSON.parse(output[0]!);
       expect(parsed.ok).toBe(true);
-      expect(parsed.value).toMatchObject({ itemId: "cli-id", transport: "kindle-ssh" });
+      expect(parsed.value).toMatchObject({ itemId, transport: "kindle-ssh" });
     } finally {
+      if (previousDataDir === undefined) delete process.env.TAKIO_DATA_DIR;
+      else process.env.TAKIO_DATA_DIR = previousDataDir;
       await rm(root, { recursive: true, force: true });
     }
   });
@@ -168,11 +181,14 @@ describe("rooted Kindle SSH transport", () => {
     try {
       await createProgram((line) => output.push(line), (line) => output.push(line)).parseAsync([
         "bun", "takio", "destination", "rooted-kindle-send",
-        "--source", "missing.epub",
         "--id", "bad",
+        "--format", "epub",
         "--host", "-oProxyCommand=x",
         "--user", "root",
         "--remote-root", "/mnt/us/documents/koreader",
+        "--identity-file", "/Users/test/.ssh/kindle",
+        "--port", "22",
+        "--timeout-ms", "5000",
       ]);
       throw new Error("expected failure");
     } catch (error) {

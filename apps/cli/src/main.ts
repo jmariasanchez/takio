@@ -117,7 +117,7 @@ import {
   type KernelReport,
 } from "./kernel.js";
 import { JOB_STATUSES, JobStore, type ConversionJob, type JobStatus } from "./job-store.js";
-import { sendToKindleSsh, type KindleSshRunner } from "./kindle-ssh.js";
+import { sendToKindleSsh, validateKindleSshDestination, type KindleSshRunner } from "./kindle-ssh.js";
 import {
   CalibreImportError,
   enrichImportedLibraryOutcomes,
@@ -1673,51 +1673,69 @@ export function createProgram(
   program.addCommand(destination);
 
   storageCommand(destination.command("rooted-kindle-send").helpOption(false), writeError)
-    .description("Opt-in upload to a rooted Kindle over SSH/SCP for KOReader paths")
-    .requiredOption("--source <path>", "local file to upload")
-    .requiredOption("--id <id>", "library or caller item ID")
+    .description("Explicit opt-in upload of one existing library format to a rooted Kindle over SSH/SCP")
+    .requiredOption("--id <id>", "library item ID")
+    .requiredOption("--format <format>", `existing library format: ${FORMAT_IDS.join(", ")}`)
     .requiredOption("--host <host>", "Kindle SSH host; no passwords are handled")
     .requiredOption("--user <user>", "Kindle SSH user")
     .requiredOption("--remote-root <path>", "absolute /mnt/us/.../documents or KOReader directory")
-    .option("--port <port>", "SSH port", "22")
-    .option("--identity-file <path>", "absolute private key path")
-    .option("--file-name <name>", "published remote file name")
-    .option("--timeout-ms <milliseconds>", "bounded per-command timeout", "30000")
-    .option("--accept-new-host-key", "allow OpenSSH accept-new instead of strict known-host matching")
+    .requiredOption("--identity-file <path>", "absolute private key path")
+    .requiredOption("--port <port>", "SSH port")
+    .requiredOption("--timeout-ms <milliseconds>", "bounded per-command timeout")
     .action(async (
       options: {
-        source: string;
         id: string;
+        format: string;
         host: string;
         user: string;
         remoteRoot: string;
         port: string;
-        identityFile?: string;
-        fileName?: string;
+        identityFile: string;
         timeoutMs: string;
-        acceptNewHostKey?: boolean;
       },
       command: Command,
     ) => {
       const port = Number(options.port);
       const timeoutMs = Number(options.timeoutMs);
-      if (options.id.trim() === "" || !Number.isSafeInteger(port) || !Number.isSafeInteger(timeoutMs)) {
+      if (
+        options.id.trim() === "" ||
+        !FORMAT_IDS.includes(options.format as FormatId) ||
+        !Number.isSafeInteger(port) ||
+        !Number.isSafeInteger(timeoutMs)
+      ) {
         command.error("", { exitCode: 1, code: "invalid-arguments" });
       }
+      const destinationConfig = {
+        host: options.host,
+        user: options.user,
+        port,
+        remoteRoot: options.remoteRoot,
+        identityFile: options.identityFile,
+        strictHostKeyChecking: true,
+        timeoutMs,
+      };
       try {
+        validateKindleSshDestination(destinationConfig);
+      } catch (error) {
+        if (error instanceof DestinationTransferError) {
+          command.error("", { exitCode: 1, code: error.code });
+        }
+        throw error;
+      }
+      const { store } = await openLibraryStore(undefined, command);
+      try {
+        const found = await store.get({ id: options.id });
+        if (!found.ok) command.error("", { exitCode: 1, code: found.error.code });
+        if (!found.value) command.error("", { exitCode: 1, code: "not-found" });
+        const source = found.value!.formats.find(({ format }) => format === options.format);
+        if (!source) command.error("", { exitCode: 1, code: "format-not-found" });
+        if (detectFormat(source!.sourcePath) !== options.format) {
+          command.error("", { exitCode: 1, code: "format-mismatch" });
+        }
         const result = await sendToKindleSsh({
           itemId: options.id,
-          sourcePath: options.source,
-          fileName: options.fileName,
-          destination: {
-            host: options.host,
-            user: options.user,
-            port,
-            remoteRoot: options.remoteRoot,
-            identityFile: options.identityFile,
-            strictHostKeyChecking: !options.acceptNewHostKey,
-            timeoutMs,
-          },
+          sourcePath: source!.sourcePath,
+          destination: destinationConfig,
           runner: kindleSshRunner,
         });
         write(JSON.stringify({ ok: true, value: result }));
@@ -1726,6 +1744,8 @@ export function createProgram(
           command.error("", { exitCode: 1, code: error.code });
         }
         throw error;
+      } finally {
+        store.close();
       }
     });
 
