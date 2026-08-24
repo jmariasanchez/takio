@@ -40,6 +40,7 @@ import {
   setSessionDeviceFormatPreference,
   type SessionDeviceFormatPreferences,
 } from "./components/DeviceControls";
+import { RootedKindlePanel, type RootedKindlePanelDraft } from "./components/RootedKindlePanel";
 import { JobsPanel } from "./components/JobsPanel";
 import {
   backupDirectoryName,
@@ -154,6 +155,17 @@ import {
   librarySelectionReducer,
 } from "./lib/library-selection";
 import "./styles.css";
+
+const defaultRootedKindleDraft: RootedKindlePanelDraft = {
+  enabled: false,
+  host: "",
+  user: "",
+  remoteRoot: "",
+  identityFile: "",
+  port: "",
+  timeoutMs: "",
+  format: "",
+};
 
 const supportedExtensions = FORMAT_CATALOG.flatMap((format) =>
   format.extensions.map((extension) => extension.slice(1)),
@@ -308,6 +320,7 @@ export default function App() {
   const [preferredFormatsByDestinationPath, setPreferredFormatsByDestinationPath] =
     useState<SessionDeviceFormatPreferences>({});
   const [convertIfNeeded, setConvertIfNeeded] = useState(true);
+  const [rootedKindleDraft, setRootedKindleDraft] = useState<RootedKindlePanelDraft>(defaultRootedKindleDraft);
   const [dropActive, setDropActive] = useState(false);
   const libraryModalOpen = hasOpenLibraryModal({
     saveView: saveViewDialogOpen,
@@ -3110,6 +3123,13 @@ export default function App() {
                     setSelectedDestinationId(id);
                   }}
                   onSelectPreferredFormat={selectPreferredDeviceFormat}
+                />
+                <RootedKindlePanel
+                  selectedItem={selectedItem}
+                  draft={rootedKindleDraft}
+                  pending={actionsPending}
+                  onDraftChange={setRootedKindleDraft}
+                  onNotice={(kind, text) => setNotice({ kind, text })}
                 />
               </section>
               <section id="conversions">
