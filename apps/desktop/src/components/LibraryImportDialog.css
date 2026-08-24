@@ -106,9 +106,8 @@
   display: grid;
   gap: 8px;
   margin: 0;
-  padding: 14px 18px;
+  padding: 12px 0 0;
   border: 0;
-  border-bottom: 1px solid #e4e7ec;
 }
 
 .library-import-dialog__mode legend {
@@ -145,6 +144,25 @@
   color: #667085;
   font-size: 0.6875rem;
   line-height: 1.4;
+}
+
+.library-import-dialog__advanced {
+  padding: 0 18px 14px;
+  border-bottom: 1px solid #e4e7ec;
+}
+
+.library-import-dialog__advanced summary {
+  color: #344054;
+  cursor: pointer;
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+
+.library-import-dialog__advanced summary small {
+  margin-left: 6px;
+  color: #667085;
+  font-size: 0.6875rem;
+  font-weight: 400;
 }
 
 .library-import-dialog__roots,
@@ -375,6 +393,10 @@
   .library-import-dialog__roots,
   .library-import-dialog__report,
   .library-import-dialog__actions {
+    padding-inline: 12px;
+  }
+
+  .library-import-dialog__advanced {
     padding-inline: 12px;
   }
 

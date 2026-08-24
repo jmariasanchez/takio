@@ -281,39 +281,6 @@ export function LibraryImportDialog({
         ) : null}
 
         <div className="library-import-dialog__body">
-          <fieldset className="library-import-dialog__mode" disabled={pending}>
-            <legend>What should Takio do with the originals?</legend>
-            <label>
-              <input
-                type="radio"
-                name={`${instanceId}-mode`}
-                value="copy"
-                checked={mode === "copy"}
-                onChange={() => onModeChange("copy")}
-              />
-              <span>
-                <strong>Keep originals</strong>
-                <small>Copy books into Takio and leave the selected files where they are.</small>
-              </span>
-            </label>
-            <label>
-              <input
-                type="radio"
-                name={`${instanceId}-mode`}
-                value="move"
-                checked={mode === "move"}
-                onChange={() => onModeChange("move")}
-              />
-              <span>
-                <strong>Organize into Takio</strong>
-                <small>
-                  Takio atomically moves books on the same drive. Books on another drive stay in
-                  place and are reported instead of being copied and deleted.
-                </small>
-              </span>
-            </label>
-          </fieldset>
-
           <section className="library-import-dialog__roots" aria-labelledby={`${instanceId}-roots`}>
             <div className="library-import-dialog__section-heading">
               <div>
@@ -339,6 +306,45 @@ export function LibraryImportDialog({
               </ol>
             )}
           </section>
+
+          <details className="library-import-dialog__advanced">
+            <summary>
+              <span>Advanced file handling</span>
+              <small>{mode === "copy" ? "Copy originals (recommended)" : "Move originals"}</small>
+            </summary>
+            <fieldset className="library-import-dialog__mode" disabled={pending}>
+              <legend>What should Takio do with the originals?</legend>
+              <label>
+                <input
+                  type="radio"
+                  name={`${instanceId}-mode`}
+                  value="copy"
+                  checked={mode === "copy"}
+                  onChange={() => onModeChange("copy")}
+                />
+                <span>
+                  <strong>Copy into Takio (recommended)</strong>
+                  <small>Keep the selected files where they are.</small>
+                </span>
+              </label>
+              <label>
+                <input
+                  type="radio"
+                  name={`${instanceId}-mode`}
+                  value="move"
+                  checked={mode === "move"}
+                  onChange={() => onModeChange("move")}
+                />
+                <span>
+                  <strong>Move originals into Takio</strong>
+                  <small>
+                    Takio atomically moves books on the same drive. Books on another drive stay in
+                    place and are reported instead of being copied and deleted.
+                  </small>
+                </span>
+              </label>
+            </fieldset>
+          </details>
 
           {report !== null ? (
             <section className="library-import-dialog__report" aria-labelledby={`${instanceId}-report`}>
@@ -378,7 +384,7 @@ export function LibraryImportDialog({
             disabled={!canImport}
             onClick={onImport}
           >
-            {pending ? "Importing…" : "Import"}
+            {pending ? "Importing…" : "Import into Takio"}
           </button>
         </footer>
       </section>

@@ -98,11 +98,15 @@ test("renders an accessible recursive-import modal with controlled root paths", 
   expect(markup).toContain("2 selected roots");
   expect(markup).toContain('<button type="button">Choose files…</button>');
   expect(markup).toContain('<button type="button">Choose folders…</button>');
+  expect(markup).toContain("Advanced file handling");
+  expect(markup).toContain("Copy originals (recommended)");
   expect(markup).toContain('value="move"');
-  expect(markup).toContain("Organize into Takio");
+  expect(markup).toContain("Move originals into Takio");
   expect(markup).toContain("atomically moves books on the same drive");
   expect(markup).toContain("another drive stay in place");
-  expect(markup).toContain('<button type="button" class="library-import-dialog__import">Import</button>');
+  expect(markup).toContain(
+    '<button type="button" class="library-import-dialog__import">Import into Takio</button>',
+  );
 });
 
 test("does not render dialog controls while closed", () => {
