@@ -28,12 +28,37 @@ export type DesktopDestinationSendResult =
     }
   | DestinationFailure;
 
+export type DesktopRootedKindleSendResult =
+  | {
+      readonly ok: true;
+      readonly value: {
+        readonly itemId: string;
+        readonly transport: "kindle-ssh";
+        readonly path: string;
+        readonly bytes: number;
+        readonly sha256: string;
+        readonly verification: "sha256" | "size";
+      };
+    }
+  | DestinationFailure;
+
 export type DesktopDestinationEjectResult =
   | {
       readonly ok: true;
       readonly value: { readonly destinationId: string };
     }
   | DestinationFailure;
+
+export type RootedKindleSendRequest = {
+  readonly id: string;
+  readonly format: FormatId;
+  readonly host: string;
+  readonly user: string;
+  readonly remoteRoot: string;
+  readonly identityFile: string;
+  readonly port: number;
+  readonly timeoutMs: number;
+};
 
 export type DestinationInventoryStatus = "present" | "missing" | "changed";
 
@@ -96,6 +121,19 @@ export function sendLibraryItem(
     );
 }
 
+export function sendRootedKindle(
+  request: RootedKindleSendRequest,
+  invokeCommand: DestinationInvoker = invokeDesktop,
+): Promise<DesktopRootedKindleSendResult> {
+  return invokeCommand("destination_rooted_kindle_send", request)
+    .then(decodeRootedKindleSendResult)
+    .then((result) =>
+      result.ok && result.value.itemId !== request.id
+        ? { ok: false as const, error: { code: "protocol-error" } }
+        : result,
+    );
+}
+
 export function ejectDestination(
   destinationPath: string,
   invokeCommand: DestinationInvoker = invokeDesktop,
@@ -123,6 +161,7 @@ const removeResultValueKeys = ["destinationId", "removed"].sort();
 const manifestRecordKeys = inventoryEntryKeys.filter((key) => key !== "status");
 const sendResultKeys = ["ok", "value"].sort();
 const sendResultValueKeys = ["bytes", "converted", "destinationId", "format", "itemId", "path", "sha256"].sort();
+const rootedKindleResultValueKeys = ["bytes", "itemId", "path", "sha256", "transport", "verification"].sort();
 const knownFormats = new Set(FORMAT_CATALOG.map(({ id }) => id));
 
 function hasOnlyKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
@@ -187,6 +226,50 @@ export function decodeDestinationSendResult(value: unknown): DesktopDestinationS
       sha256: payload.sha256,
       format: payload.format as FormatId,
       converted: payload.converted,
+    },
+  };
+}
+
+export function decodeRootedKindleSendResult(value: unknown): DesktopRootedKindleSendResult {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return { ok: false, error: { code: "protocol-error" } };
+  }
+  const result = value as { ok?: unknown; value?: unknown; error?: unknown };
+  if (result.ok === false) {
+    const error = result.error as { code?: unknown } | null;
+    return typeof error?.code === "string"
+      ? { ok: false, error: { code: error.code } }
+      : { ok: false, error: { code: "protocol-error" } };
+  }
+  const payload = result.value as Record<string, unknown> | null;
+  if (
+    result.ok !== true ||
+    !hasOnlyKeys(result as Record<string, unknown>, sendResultKeys) ||
+    typeof payload !== "object" ||
+    payload === null ||
+    Array.isArray(payload) ||
+    !hasOnlyKeys(payload, rootedKindleResultValueKeys) ||
+    !nonemptyString(payload.itemId) ||
+    payload.transport !== "kindle-ssh" ||
+    !nonemptyString(payload.path) ||
+    (payload.verification !== "sha256" && payload.verification !== "size") ||
+    typeof payload.bytes !== "number" ||
+    !Number.isSafeInteger(payload.bytes) ||
+    payload.bytes < 0 ||
+    typeof payload.sha256 !== "string" ||
+    !/^[a-f0-9]{64}$/.test(payload.sha256)
+  ) {
+    return { ok: false, error: { code: "protocol-error" } };
+  }
+  return {
+    ok: true,
+    value: {
+      itemId: payload.itemId,
+      transport: "kindle-ssh",
+      path: payload.path,
+      bytes: payload.bytes,
+      sha256: payload.sha256,
+      verification: payload.verification,
     },
   };
 }

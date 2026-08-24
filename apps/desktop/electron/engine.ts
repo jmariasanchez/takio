@@ -194,6 +194,44 @@ export async function buildEngineArguments(
       const sendArgs = ["send", "--id", id, "--format", format, "--dest", input.destinationPath];
       return input.convertIfNeeded ? [...sendArgs, "--convert"] : sendArgs;
     }
+    case "destination_rooted_kindle_send": {
+      const port = input.port;
+      const timeoutMs = input.timeoutMs;
+      if (
+        !nonempty(id) ||
+        !nonempty(format) ||
+        !nonempty(input.host) ||
+        !nonempty(input.user) ||
+        !nonempty(input.remoteRoot) ||
+        !nonempty(input.identityFile) ||
+        typeof port !== "number" ||
+        !Number.isSafeInteger(port) ||
+        typeof timeoutMs !== "number" ||
+        !Number.isSafeInteger(timeoutMs)
+      ) {
+        return null;
+      }
+      return [
+        "destination",
+        "rooted-kindle-send",
+        "--id",
+        id,
+        "--format",
+        format,
+        "--host",
+        input.host,
+        "--user",
+        input.user,
+        "--remote-root",
+        input.remoteRoot,
+        "--identity-file",
+        input.identityFile,
+        "--port",
+        String(port),
+        "--timeout-ms",
+        String(timeoutMs),
+      ];
+    }
     case "destination_eject":
       return nonempty(input.destinationPath)
         ? ["destination", "eject", "--dest", input.destinationPath]

@@ -5,12 +5,14 @@ import {
   decodeDestinationRemoveResult,
   decodeDestinationSendResult,
   decodeDestinationInventoryResult,
+  decodeRootedKindleSendResult,
   describeUnexpectedDestinationError,
   ejectDestination,
   inventoryDestination,
   listDestinations,
   reconcileDestination,
   removeDestinationDelivery,
+  sendRootedKindle,
   sendLibraryItem,
   type DestinationInvoker,
 } from "./destinations";
@@ -28,6 +30,16 @@ test("uses only the fixed desktop destination commands and argument names", asyn
   await inventoryDestination("/Volumes/Reader", invokeCommand);
   await reconcileDestination("/Volumes/Reader", invokeCommand);
   await removeDestinationDelivery("/Volumes/Reader", "item-1", invokeCommand);
+  await sendRootedKindle({
+    id: "item-1",
+    format: "epub",
+    host: "kindle.local",
+    user: "root",
+    remoteRoot: "/mnt/us/documents/koreader",
+    identityFile: "/Users/me/.ssh/kindle",
+    port: 22,
+    timeoutMs: 30000,
+  }, invokeCommand);
 
   expect(calls).toEqual([
     { command: "destination_list", args: undefined },
@@ -51,7 +63,60 @@ test("uses only the fixed desktop destination commands and argument names", asyn
       command: "destination_remove",
       args: { destinationPath: "/Volumes/Reader", itemId: "item-1" },
     },
+    {
+      command: "destination_rooted_kindle_send",
+      args: {
+        id: "item-1",
+        format: "epub",
+        host: "kindle.local",
+        user: "root",
+        remoteRoot: "/mnt/us/documents/koreader",
+        identityFile: "/Users/me/.ssh/kindle",
+        port: 22,
+        timeoutMs: 30000,
+      },
+    },
   ]);
+});
+
+test("strictly decodes and correlates rooted Kindle send results", async () => {
+  const response = {
+    ok: true,
+    value: {
+      itemId: "item-1",
+      transport: "kindle-ssh",
+      path: "/mnt/us/documents/koreader/Title.epub",
+      bytes: 42,
+      sha256: "d".repeat(64),
+      verification: "sha256",
+    },
+  } as const;
+  expect(decodeRootedKindleSendResult(response)).toEqual(response);
+  const invokeCommand: DestinationInvoker = async () => response as never;
+  const request = {
+    id: "item-1",
+    format: "epub" as const,
+    host: "kindle.local",
+    user: "root",
+    remoteRoot: "/mnt/us/documents/koreader",
+    identityFile: "/Users/me/.ssh/kindle",
+    port: 22,
+    timeoutMs: 30000,
+  };
+  await expect(sendRootedKindle(request, invokeCommand)).resolves.toEqual(response);
+  await expect(sendRootedKindle({ ...request, id: "other" }, invokeCommand)).resolves.toEqual({ ok: false, error: { code: "protocol-error" } });
+
+  for (const invalid of [
+    { ...response, value: { ...response.value, itemId: "" } },
+    { ...response, value: { ...response.value, transport: "scp" } },
+    { ...response, value: { ...response.value, bytes: -1 } },
+    { ...response, value: { ...response.value, sha256: "D".repeat(64) } },
+    { ...response, value: { ...response.value, verification: "none" } },
+    { ...response, value: { ...response.value, extra: true } },
+    { ...response, extra: true },
+  ]) {
+    expect(decodeRootedKindleSendResult(invalid)).toEqual({ ok: false, error: { code: "protocol-error" } });
+  }
 });
 
 test("strictly decodes and correlates safe tracked delivery removal", async () => {
