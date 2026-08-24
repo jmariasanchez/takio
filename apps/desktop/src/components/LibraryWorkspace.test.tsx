@@ -281,7 +281,8 @@ test("renders a first-use experience instead of the catalogue when the ready lib
   expect(markup).toContain(">Add books</button>");
   expect(markup).toContain("Drop files anywhere in this window");
   expect(markup).toContain("EPUB, PDF, MOBI, AZW3, CBZ, CBR, TXT, HTML");
-  expect(markup).toContain("Copy into Takio, move into the library, or keep references");
+  expect(markup).toContain("Takio copies imported books into its managed library");
+  expect(markup).toContain("Advanced file handling is available during import");
   expect(markup).not.toContain('aria-label="Library workspace"');
   expect(markup).not.toContain('class="library-table"');
 });

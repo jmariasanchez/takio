@@ -747,8 +747,8 @@ export function LibraryWorkspace({
               <div>
                 <dt>Your files</dt>
                 <dd>
-                  Copy into Takio, move into the library, or keep references to files
-                  where they are.
+                  Takio copies imported books into its managed library. Advanced file handling is
+                  available during import.
                 </dd>
               </div>
             </dl>
