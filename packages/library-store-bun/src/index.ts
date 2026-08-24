@@ -4587,6 +4587,10 @@ export class BunSqliteLibraryStore
         return;
       }
 
+      if (basename(sourcePath).startsWith("._")) {
+        outcomes.push({ status: "skipped", sourcePath, reason: "unsupported-format" });
+        return;
+      }
       const format = detectFormat(sourcePath);
       if (!format) {
         outcomes.push({ status: "skipped", sourcePath, reason: "unsupported-format" });

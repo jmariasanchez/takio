@@ -163,6 +163,27 @@ describe("BunSqliteLibraryStore recursive import", () => {
     expect(readdir(join(directory, "items"))).resolves.toHaveLength(1);
   });
 
+  it("ignores macOS AppleDouble files that retain ebook extensions", async () => {
+    const store = await openStore();
+    const root = join(directory, "kindle");
+    await mkdir(root);
+    await writeFile(join(root, "._book.mobi"), "finder metadata");
+    await writeFile(join(root, "book.mobi"), "book contents");
+
+    const result = await store.importMany({ roots: [root] });
+
+    expect(result).toMatchObject({
+      ok: true,
+      value: {
+        counts: { total: 2, imported: 1, skipped: 1, duplicates: 0, failed: 0 },
+        outcomes: [
+          { status: "skipped", sourcePath: join(root, "._book.mobi"), reason: "unsupported-format" },
+          { status: "imported", sourcePath: join(root, "book.mobi") },
+        ],
+      },
+    });
+  });
+
   it("organizes recursively imported files into managed storage", async () => {
     const store = await openStore();
     const root = join(directory, "organize");
