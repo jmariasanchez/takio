@@ -358,7 +358,9 @@ fn calibre_import_contains_malicious_paths_symlinks_and_custom_columns() {
             "INSERT INTO books VALUES (2,'Traversal','../outside',NULL,NULL);
              INSERT INTO books VALUES (3,'Absolute','{}',NULL,NULL);
              INSERT INTO books VALUES (4,'Symlink','linked-book',NULL,NULL);
-             INSERT INTO data VALUES (3,2,'EPUB','Escape'),(4,3,'EPUB','Escape'),(5,4,'EPUB','Escape');
+             INSERT INTO books VALUES (5,'Filename traversal','Author/Calibre Title (1)',NULL,NULL);
+             INSERT INTO data VALUES (3,2,'EPUB','Escape'),(4,3,'EPUB','Escape'),(5,4,'EPUB','Escape'),
+                                     (6,5,'EPUB','../../../outside/Escape');
              INSERT INTO custom_columns VALUES (2,'custom_column_1; DROP TABLE books','unsafe'),
                                                (3,'custom_column_2','9invalid'),
                                                (4,'custom_column_3','blob_value');
@@ -387,6 +389,7 @@ fn calibre_import_contains_malicious_paths_symlinks_and_custom_columns() {
         value["outcomes"][0]["item"]["customMetadata"],
         serde_json::json!({"reading_state":"planned"})
     );
+    assert!(!value.to_string().contains("outside/Escape.epub"));
     assert!(outside.join("Escape.epub").is_file());
 }
 

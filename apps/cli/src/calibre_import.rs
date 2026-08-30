@@ -242,7 +242,15 @@ fn read_books(database: &Connection, root: &Path) -> rusqlite::Result<Vec<Calibr
         };
         let mut book_formats = Vec::new();
         for (format_name, name) in formats.get(&id).into_iter().flatten() {
-            let path = book_dir.join(format!("{name}.{}", format_name.to_lowercase()));
+            let leaf = format!("{name}.{}", format_name.to_lowercase());
+            let leaf_path = Path::new(&leaf);
+            if leaf_path.is_absolute()
+                || leaf_path.components().count() != 1
+                || !matches!(leaf_path.components().next(), Some(Component::Normal(_)))
+            {
+                continue;
+            }
+            let path = book_dir.join(leaf_path);
             if let Some(format) = detect_format(&path) {
                 book_formats.push(CalibreFormat { format, path });
             }
