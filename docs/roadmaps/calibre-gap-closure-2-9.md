@@ -54,6 +54,8 @@ use public Calibre executables where they remain the strongest bounded backend.
 
 #### A1. Duplicate review and merge
 
+Status: delivered in `3afc154`.
+
 Deliver:
 
 - Conservative signals for same content, identifier, and normalized title/author.
@@ -68,6 +70,16 @@ Accept when:
 - CLI integration tests cover list, keep, reopen, merge, stale tokens, rollback,
   and managed versus referenced file ownership.
 - `capabilities` no longer lists `library duplicates` as unavailable.
+
+Evidence:
+
+- Rust unit and CLI integration tests cover stable scans, keep/reopen,
+  stale-review rejection, atomic merge rollback, service envelopes, and managed
+  file ownership after the merged source is purged.
+- The release binary completed an end-to-end duplicate workflow through both the
+  direct CLI and persistent library service, including metadata and format merge.
+- Full workspace formatting, linting, tests, and builds pass with the Rust sidecar
+  advertising duplicate support.
 
 #### A2. Complete existing migration and recovery commands
 
