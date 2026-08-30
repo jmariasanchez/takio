@@ -407,8 +407,9 @@ fn calibre_import_preserves_metadata_formats_cover_duplicates_and_source_databas
         .expect("import Calibre library");
     assert!(
         first.status.success(),
-        "{}",
-        String::from_utf8_lossy(&first.stdout)
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&first.stdout),
+        String::from_utf8_lossy(&first.stderr)
     );
     assert!(first.stderr.is_empty());
     assert_eq!(String::from_utf8_lossy(&first.stdout).lines().count(), 1);
@@ -490,6 +491,12 @@ fn calibre_import_uses_stable_top_level_errors_without_writing_the_source() {
     let unreadable = run_calibre_import(temp.path().join("library.sqlite"), unreadable_root);
     assert_failure_code(&unreadable, "unreadable");
 
+    let malformed_root = temp.path().join("malformed");
+    fs::create_dir(&malformed_root).expect("create malformed fixture");
+    Connection::open(malformed_root.join("metadata.db")).expect("create valid SQLite database");
+    let malformed = run_calibre_import(temp.path().join("library.sqlite"), malformed_root);
+    assert_failure_code(&malformed, "storage-unavailable");
+
     let calibre_root = temp.path().join("calibre");
     fs::create_dir(&calibre_root).expect("create Calibre fixture");
     let metadata_db = calibre_root.join("metadata.db");
@@ -503,6 +510,20 @@ fn calibre_import_uses_stable_top_level_errors_without_writing_the_source() {
         after.modified().expect("after mtime"),
         before.modified().expect("before mtime")
     );
+
+    let nested_database = calibre_root.join("takio/library.sqlite");
+    let nested = run_calibre_import(nested_database, calibre_root.clone());
+    assert_failure_code(&nested, "invalid-arguments");
+    assert!(!calibre_root.join("takio").exists());
+
+    let hardlink_root = temp.path().join("hardlink-target");
+    fs::create_dir(&hardlink_root).expect("create hardlink destination");
+    let hardlink_database = hardlink_root.join("library.sqlite");
+    fs::hard_link(&metadata_db, &hardlink_database).expect("hard-link source database");
+    let hardlink = run_calibre_import(hardlink_database, calibre_root.clone());
+    assert_failure_code(&hardlink, "invalid-arguments");
+    assert!(!hardlink_root.join("items").exists());
+    assert!(!hardlink_root.join("covers").exists());
 
     let blocked_root = temp.path().join("blocked");
     fs::write(&blocked_root, b"not a directory").expect("create storage blocker");
@@ -528,7 +549,10 @@ fn calibre_import_contains_malicious_paths_symlinks_and_custom_columns() {
     let outside = temp.path().join("outside");
     fs::create_dir(&outside).expect("create outside directory");
     fs::write(outside.join("Escape.epub"), b"outside bytes").expect("write outside ebook");
+    fs::write(outside.join("Escape.mobi"), b"outside mobi").expect("write outside extra ebook");
     symlink(&outside, calibre_root.join("linked-book")).expect("create source symlink");
+    symlink(outside.join("Escape.mobi"), safe_dir.join("External.mobi"))
+        .expect("create extra-format symlink");
 
     let database = Connection::open(&metadata_db).expect("open fixture for malicious rows");
     database
@@ -538,7 +562,7 @@ fn calibre_import_contains_malicious_paths_symlinks_and_custom_columns() {
              INSERT INTO books VALUES (4,'Symlink','linked-book',NULL,NULL);
              INSERT INTO books VALUES (5,'Filename traversal','Author/Calibre Title (1)',NULL,NULL);
              INSERT INTO data VALUES (3,2,'EPUB','Escape'),(4,3,'EPUB','Escape'),(5,4,'EPUB','Escape'),
-                                     (6,5,'EPUB','../../../outside/Escape');
+                                     (6,5,'EPUB','../../../outside/Escape'),(7,1,'MOBI','External');
              INSERT INTO custom_columns VALUES (2,'custom_column_1; DROP TABLE books','unsafe'),
                                                (3,'custom_column_2','9invalid'),
                                                (4,'custom_column_3','blob_value');
@@ -567,8 +591,114 @@ fn calibre_import_contains_malicious_paths_symlinks_and_custom_columns() {
         value["outcomes"][0]["item"]["customMetadata"],
         serde_json::json!({"reading_state":"planned"})
     );
+    assert_eq!(
+        value["outcomes"][0]["item"]["formats"]
+            .as_array()
+            .expect("managed formats")
+            .len(),
+        2
+    );
     assert!(!value.to_string().contains("outside/Escape.epub"));
     assert!(outside.join("Escape.epub").is_file());
+}
+
+#[test]
+fn calibre_import_snapshots_live_wal_metadata_without_writing_the_source() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let calibre_root = temp.path().join("calibre");
+    fs::create_dir(&calibre_root).expect("create Calibre root");
+    let metadata_db = calibre_root.join("metadata.db");
+    create_calibre_fixture(&metadata_db);
+    let book_dir = calibre_root.join("Author/Calibre Title (1)");
+    fs::create_dir_all(&book_dir).expect("create book directory");
+    fs::write(book_dir.join("Calibre Title - Ada.epub"), b"epub").expect("write epub");
+    fs::write(book_dir.join("Calibre Title - Ada.pdf"), b"pdf").expect("write pdf");
+
+    let writer = Connection::open(&metadata_db).expect("open live Calibre database");
+    writer
+        .pragma_update(None, "journal_mode", "WAL")
+        .expect("enable WAL");
+    writer
+        .pragma_update(None, "wal_autocheckpoint", 0)
+        .expect("disable automatic checkpoint");
+    writer
+        .execute("UPDATE books SET title='Live WAL Title' WHERE id=1", [])
+        .expect("write live WAL metadata");
+    let wal = metadata_db.with_file_name("metadata.db-wal");
+    let database_before = fs::metadata(&metadata_db).expect("database metadata before");
+    let wal_before = fs::metadata(&wal).expect("WAL metadata before");
+
+    let output = run_calibre_import(temp.path().join("takio/library.sqlite"), calibre_root);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let value = success_value(&output.stdout);
+    assert_eq!(value["outcomes"][0]["item"]["title"], "Live WAL Title");
+    let database_after = fs::metadata(&metadata_db).expect("database metadata after");
+    let wal_after = fs::metadata(&wal).expect("WAL metadata after");
+    assert_eq!(database_after.len(), database_before.len());
+    assert_eq!(wal_after.len(), wal_before.len());
+    assert_eq!(
+        database_after.modified().ok(),
+        database_before.modified().ok()
+    );
+    assert_eq!(wal_after.modified().ok(), wal_before.modified().ok());
+    drop(writer);
+}
+
+#[test]
+fn calibre_import_sanitizes_invalid_fields_and_processes_all_bounded_custom_rows() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let calibre_root = temp.path().join("calibre");
+    fs::create_dir(&calibre_root).expect("create Calibre root");
+    let metadata_db = calibre_root.join("metadata.db");
+    create_calibre_fixture(&metadata_db);
+    let book_dir = calibre_root.join("Author/Calibre Title (1)");
+    fs::create_dir_all(&book_dir).expect("create book directory");
+    fs::write(book_dir.join("Calibre Title - Ada.epub"), b"epub").expect("write epub");
+    fs::write(book_dir.join("Calibre Title - Ada.pdf"), b"pdf").expect("write pdf");
+
+    let database = Connection::open(&metadata_db).expect("open Calibre fixture");
+    database
+        .execute_batch(
+            "UPDATE ratings SET rating=99 WHERE id=1;
+             INSERT INTO languages VALUES (2,'en_US'),(3,'en-US');
+             INSERT INTO books_languages_link VALUES (2,1,2,1),(3,1,3,2);
+             DELETE FROM custom_column_1;
+             WITH RECURSIVE sequence(value) AS (
+               SELECT 1 UNION ALL SELECT value + 1 FROM sequence WHERE value < 10001
+             )
+             INSERT INTO custom_column_1(id,book,value)
+             SELECT value,1,CASE WHEN value=10001 THEN 'after_limit' ELSE 'planned' END FROM sequence;
+             CREATE TABLE custom_column_2 (id INTEGER PRIMARY KEY, book INTEGER, value TEXT);
+             INSERT INTO custom_columns VALUES (2,'custom_column_2','oversized');",
+        )
+        .expect("add invalid and high-cardinality metadata");
+    database
+        .execute(
+            "INSERT INTO custom_column_2 VALUES (1,1,?1)",
+            ["x".repeat(16 * 1024 + 1)],
+        )
+        .expect("insert oversized custom value");
+    drop(database);
+
+    let output = run_calibre_import(temp.path().join("takio/library.sqlite"), calibre_root);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let item = &success_value(&output.stdout)["outcomes"][0]["item"];
+    assert_eq!(item["title"], "Calibre Title");
+    assert_eq!(item["authors"][0]["name"], "Ada Lovelace");
+    assert!(item.get("rating").is_none());
+    assert_eq!(item["languages"], serde_json::json!(["en", "en-US"]));
+    assert_eq!(
+        item["customMetadata"],
+        serde_json::json!({"reading_state":"after_limit"})
+    );
 }
 
 fn run_calibre_import(

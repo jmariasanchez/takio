@@ -12,9 +12,8 @@ use crate::output::{AppError, AppResult};
 use crate::paths::LibraryPaths;
 use crate::store::LibraryStore;
 
-const MAX_CUSTOM_COLUMNS: i64 = 64;
-const MAX_CUSTOM_ROWS_PER_COLUMN: i64 = 10_000;
-const MAX_CUSTOM_VALUE_BYTES: usize = 64 * 1024;
+const MAX_CUSTOM_FIELDS_PER_BOOK: usize = 64;
+const MAX_CUSTOM_VALUE_BYTES: usize = 16 * 1024;
 
 #[derive(Debug)]
 struct CalibreFormat {
@@ -46,16 +45,9 @@ pub fn import_calibre_library(paths: LibraryPaths, library_root: &Path) -> AppRe
         .join("metadata.db")
         .canonicalize()
         .map_err(|_| AppError::new("unreadable"))?;
-    if paths.database.exists()
-        && paths
-            .database
-            .canonicalize()
-            .is_ok_and(|target| target == database_path)
-    {
-        return Err(AppError::new("invalid-arguments"));
-    }
-    let database = open_database(&database_path)?;
-    let books = read_books(&database, &root).map_err(|_| AppError::new("unreadable"))?;
+    validate_destination(&paths, &root, &database_path)?;
+    let (_snapshot, database) = open_database(&database_path)?;
+    let books = read_books(&database, &root).map_err(|_| AppError::new("storage-unavailable"))?;
     drop(database);
     let mut store = LibraryStore::open(paths, true)?;
     let original_ids = store
@@ -179,31 +171,106 @@ fn validate_root(root: &Path) -> AppResult<PathBuf> {
     Ok(root)
 }
 
-fn open_database(path: &Path) -> AppResult<Connection> {
-    let flags = OpenFlags::SQLITE_OPEN_READ_ONLY
-        | OpenFlags::SQLITE_OPEN_URI
-        | OpenFlags::SQLITE_OPEN_NO_MUTEX;
-    let encoded = path
-        .to_string_lossy()
-        .bytes()
-        .map(|byte| {
-            if byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b'-' | b'_' | b'.' | b'~') {
-                char::from(byte).to_string()
-            } else {
-                format!("%{byte:02X}")
-            }
-        })
-        .collect::<String>();
-    let uri = format!("file:{encoded}?mode=ro&immutable=1");
-    let connection =
-        Connection::open_with_flags(uri, flags).map_err(|_| AppError::new("unreadable"))?;
-    connection
+fn open_database(path: &Path) -> AppResult<(tempfile::TempDir, Connection)> {
+    let source = Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .map_err(|_| AppError::new("unreadable"))?;
+    source
         .pragma_update(None, "query_only", "ON")
         .map_err(|_| AppError::new("unreadable"))?;
-    connection
+    source
         .busy_timeout(std::time::Duration::from_millis(250))
         .map_err(|_| AppError::new("unreadable"))?;
-    Ok(connection)
+    source
+        .pragma_query_value(None, "schema_version", |row| row.get::<_, i64>(0))
+        .map_err(|_| AppError::new("unreadable"))?;
+
+    let snapshot = tempfile::tempdir().map_err(|_| AppError::new("storage-unavailable"))?;
+    let snapshot_path = snapshot.path().join("metadata.db");
+    let mut database = Connection::open(&snapshot_path).map_err(|_| AppError::new("unreadable"))?;
+    let backup = rusqlite::backup::Backup::new(&source, &mut database)
+        .map_err(|_| AppError::new("unreadable"))?;
+    backup
+        .run_to_completion(64, std::time::Duration::from_millis(5), None)
+        .map_err(|_| AppError::new("unreadable"))?;
+    drop(backup);
+    drop(source);
+    database
+        .pragma_update(None, "query_only", "ON")
+        .map_err(|_| AppError::new("unreadable"))?;
+    Ok((snapshot, database))
+}
+
+fn validate_destination(paths: &LibraryPaths, root: &Path, database: &Path) -> AppResult<()> {
+    let destination_root = resolve_for_creation(&paths.root)?;
+    if destination_root == root || destination_root.starts_with(root) {
+        return Err(AppError::new("invalid-arguments"));
+    }
+    if paths.database.exists() && same_file(&paths.database, database)? {
+        return Err(AppError::new("invalid-arguments"));
+    }
+    Ok(())
+}
+
+fn resolve_for_creation(path: &Path) -> AppResult<PathBuf> {
+    let normalized = normalize_absolute(path)?;
+    let mut ancestor = normalized.as_path();
+    let mut suffix = Vec::new();
+    while !ancestor.exists() {
+        suffix.push(
+            ancestor
+                .file_name()
+                .ok_or_else(|| AppError::new("invalid-arguments"))?
+                .to_owned(),
+        );
+        ancestor = ancestor
+            .parent()
+            .ok_or_else(|| AppError::new("invalid-arguments"))?;
+    }
+    let mut resolved = ancestor
+        .canonicalize()
+        .map_err(|_| AppError::new("storage-unavailable"))?;
+    for component in suffix.into_iter().rev() {
+        resolved.push(component);
+    }
+    Ok(resolved)
+}
+
+fn normalize_absolute(path: &Path) -> AppResult<PathBuf> {
+    if !path.is_absolute() {
+        return Err(AppError::new("invalid-arguments"));
+    }
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
+            Component::RootDir => normalized.push(component.as_os_str()),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            Component::Normal(value) => normalized.push(value),
+        }
+    }
+    Ok(normalized)
+}
+
+fn same_file(left: &Path, right: &Path) -> AppResult<bool> {
+    if left.canonicalize().ok() == right.canonicalize().ok() {
+        return Ok(true);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+
+        let left = fs::metadata(left).map_err(|_| AppError::new("storage-unavailable"))?;
+        let right = fs::metadata(right).map_err(|_| AppError::new("unreadable"))?;
+        Ok(left.dev() == right.dev() && left.ino() == right.ino())
+    }
+    #[cfg(not(unix))]
+    Ok(false)
 }
 
 fn read_books(database: &Connection, root: &Path) -> rusqlite::Result<Vec<CalibreBook>> {
@@ -252,7 +319,11 @@ fn read_books(database: &Connection, root: &Path) -> rusqlite::Result<Vec<Calibr
             }
             let path = book_dir.join(leaf_path);
             if let Some(format) = detect_format(&path) {
-                book_formats.push(CalibreFormat { format, path });
+                if book_formats.is_empty() {
+                    book_formats.push(CalibreFormat { format, path });
+                } else if let Some(path) = safe_existing_file(root, &path) {
+                    book_formats.push(CalibreFormat { format, path });
+                }
             }
         }
         if book_formats.is_empty() {
@@ -402,11 +473,19 @@ fn language_rows(database: &Connection) -> rusqlite::Result<HashMap<i64, Vec<Str
     Ok(raw
         .into_iter()
         .map(|(book, values)| {
-            let values = values
+            let mut normalized = Vec::new();
+            for value in values
                 .into_iter()
                 .filter_map(|value| normalize_language(&value))
-                .collect();
-            (book, values)
+            {
+                if !normalized
+                    .iter()
+                    .any(|existing: &String| existing.eq_ignore_ascii_case(&value))
+                {
+                    normalized.push(value);
+                }
+            }
+            (book, normalized)
         })
         .collect())
 }
@@ -465,9 +544,8 @@ fn format_rows(database: &Connection) -> rusqlite::Result<HashMap<i64, Vec<(Stri
 
 fn custom_rows(database: &Connection) -> rusqlite::Result<HashMap<i64, BTreeMap<String, String>>> {
     let mut result = HashMap::new();
-    let mut statement =
-        database.prepare("SELECT name,label FROM custom_columns ORDER BY label LIMIT ?1")?;
-    let columns = statement.query_map([MAX_CUSTOM_COLUMNS], |row| {
+    let mut statement = database.prepare("SELECT name,label FROM custom_columns ORDER BY label")?;
+    let columns = statement.query_map([], |row| {
         Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
     })?;
     let safe_table = Regex::new(r"^custom_column_\d+$").expect("valid regex");
@@ -492,13 +570,12 @@ fn custom_rows(database: &Connection) -> rusqlite::Result<HashMap<i64, BTreeMap<
         if !safe_key.is_match(&key) {
             continue;
         }
-        let mut values = match database.prepare(&format!(
-            "SELECT book,value FROM {table} ORDER BY book LIMIT ?1"
-        )) {
-            Ok(values) => values,
-            Err(_) => continue,
-        };
-        let rows = values.query_map([MAX_CUSTOM_ROWS_PER_COLUMN], |row| {
+        let mut values =
+            match database.prepare(&format!("SELECT book,value FROM {table} ORDER BY book,id")) {
+                Ok(values) => values,
+                Err(_) => continue,
+            };
+        let rows = values.query_map([], |row| {
             let book = row.get::<_, i64>(0)?;
             let value = row.get_ref(1)?;
             let value = match value {
@@ -513,16 +590,20 @@ fn custom_rows(database: &Connection) -> rusqlite::Result<HashMap<i64, BTreeMap<
             };
             Ok((
                 book,
-                (value.len() <= MAX_CUSTOM_VALUE_BYTES).then(|| maybe_json(&value)),
+                (value.len() <= MAX_CUSTOM_VALUE_BYTES)
+                    .then(|| maybe_json(&value))
+                    .filter(|value| {
+                        value.len() <= MAX_CUSTOM_VALUE_BYTES && !value.trim().is_empty()
+                    }),
             ))
         })?;
         for row in rows {
             let (book, value) = row?;
             if let Some(value) = value {
-                result
-                    .entry(book)
-                    .or_insert_with(BTreeMap::new)
-                    .insert(key.clone(), value);
+                let fields = result.entry(book).or_insert_with(BTreeMap::new);
+                if fields.len() < MAX_CUSTOM_FIELDS_PER_BOOK || fields.contains_key(&key) {
+                    fields.insert(key.clone(), value);
+                }
             }
         }
     }
@@ -541,7 +622,10 @@ fn patch_for(book: &CalibreBook) -> LibraryPatch {
         identifiers: (!book.identifiers.is_empty()).then(|| book.identifiers.clone()),
         custom_metadata: (!book.custom_metadata.is_empty()).then(|| book.custom_metadata.clone()),
         published_date: book.published_date.clone().map(Some),
-        rating: book.rating.map(Some),
+        rating: book
+            .rating
+            .filter(|rating| rating.is_finite() && (0.0..=10.0).contains(rating))
+            .map(Some),
         description: book.description.clone().map(Some),
         tags: Some(book.tags.clone()),
     }
