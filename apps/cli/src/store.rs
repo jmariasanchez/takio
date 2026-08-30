@@ -149,6 +149,8 @@ pub struct MergeDuplicatePairResult {
     pub cleanup_pending: bool,
 }
 
+const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
+
 impl LibraryStore {
     pub fn open(paths: LibraryPaths, create: bool) -> AppResult<Self> {
         if !create && !paths.database.is_file() {
@@ -658,6 +660,10 @@ impl LibraryStore {
             "DELETE FROM duplicate_pair_reviews WHERE left_id=?1 AND right_id=?2",
             params![left_id, right_id],
         )?;
+        let target = read_item_from(&transaction, &request.target_id)?
+            .ok_or_else(|| AppError::new("storage-unavailable"))?;
+        let trashed_source = read_item_from(&transaction, &request.source_id)?
+            .ok_or_else(|| AppError::new("storage-unavailable"))?;
         transaction.commit()?;
 
         let cleanup_pending = if let Some(old) = target_cover
@@ -668,12 +674,6 @@ impl LibraryStore {
         } else {
             false
         };
-        let target = self
-            .read_item(&request.target_id)?
-            .ok_or_else(|| AppError::new("storage-unavailable"))?;
-        let trashed_source = self
-            .read_item(&request.source_id)?
-            .ok_or_else(|| AppError::new("storage-unavailable"))?;
         Ok(MergeDuplicatePairResult {
             target,
             trashed_source,
@@ -722,7 +722,9 @@ impl LibraryStore {
             params![id, stored.position],
         )?;
         transaction.commit()?;
-        if stored.provenance == Provenance::Managed {
+        if stored.provenance == Provenance::Managed
+            && !self.path_is_referenced(&stored.path.to_string_lossy())?
+        {
             cleanup_managed(&self.paths.items, &stored.path, stored.fingerprint.as_ref())?;
         }
         self.read_item(id)?
@@ -794,7 +796,10 @@ impl LibraryStore {
             }
             return Err(error.into());
         }
-        if old.provenance == Provenance::Managed && old.path != stored_path {
+        if old.provenance == Provenance::Managed
+            && old.path != stored_path
+            && !self.path_is_referenced(&old.path.to_string_lossy())?
+        {
             cleanup_managed(&self.paths.items, &old.path, old.fingerprint.as_ref())?;
         }
         self.read_item(id)?
@@ -1546,6 +1551,9 @@ fn scan_duplicate_candidates_in(
             let bytes = bytes
                 .and_then(|value| u64::try_from(value).ok())
                 .ok_or_else(|| AppError::new("invalid-stored-data"))?;
+            if bytes > MAX_SAFE_INTEGER {
+                return Err(AppError::new("invalid-stored-data"));
+            }
             let sha = sha
                 .filter(|value| valid_review_token(value))
                 .ok_or_else(|| AppError::new("invalid-stored-data"))?;
@@ -1555,6 +1563,9 @@ fn scan_duplicate_candidates_in(
             match hash_file(Path::new(&path)) {
                 Ok(value) => {
                     files_hashed += 1;
+                    if value.0 > MAX_SAFE_INTEGER {
+                        return Err(AppError::new("invalid-stored-data"));
+                    }
                     Some(value)
                 }
                 Err(_) => {
@@ -1679,7 +1690,9 @@ fn scan_duplicate_candidates_in(
     let mut candidates = Vec::new();
     for ((left_id, right_id), signal_map) in signals {
         let mut pair_signals = signal_map.into_values().collect::<Vec<_>>();
-        pair_signals.sort_by_key(signal_sort_key);
+        pair_signals.sort_by(|left, right| {
+            compare_duplicate_strings(&signal_sort_key(left), &signal_sort_key(right))
+        });
         let bytes = serde_json::to_vec(&DuplicateReviewSeed {
             version: 1,
             left_id: &left_id,
@@ -1702,22 +1715,24 @@ fn scan_duplicate_candidates_in(
         });
     }
     candidates.sort_by(|left, right| {
-        signal_sort_key(&left.signals[0])
-            .cmp(&signal_sort_key(&right.signals[0]))
-            .then_with(|| {
-                compare_duplicate_strings(
-                    &normalize_duplicate_text(&left.left.title),
-                    &normalize_duplicate_text(&right.left.title),
-                )
-            })
-            .then_with(|| {
-                compare_duplicate_strings(
-                    &normalize_duplicate_text(&left.right.title),
-                    &normalize_duplicate_text(&right.right.title),
-                )
-            })
-            .then_with(|| compare_duplicate_strings(&left.left.id, &right.left.id))
-            .then_with(|| compare_duplicate_strings(&left.right.id, &right.right.id))
+        compare_duplicate_strings(
+            &signal_sort_key(&left.signals[0]),
+            &signal_sort_key(&right.signals[0]),
+        )
+        .then_with(|| {
+            compare_duplicate_strings(
+                &normalize_duplicate_text(&left.left.title),
+                &normalize_duplicate_text(&right.left.title),
+            )
+        })
+        .then_with(|| {
+            compare_duplicate_strings(
+                &normalize_duplicate_text(&left.right.title),
+                &normalize_duplicate_text(&right.right.title),
+            )
+        })
+        .then_with(|| compare_duplicate_strings(&left.left.id, &right.left.id))
+        .then_with(|| compare_duplicate_strings(&left.right.id, &right.right.id))
     });
     Ok((
         candidates,
@@ -1765,10 +1780,12 @@ fn apply_duplicate_metadata(item: &mut LibraryItem, metadata: &Value) -> AppResu
         item.authors = if value.is_null() {
             Vec::new()
         } else {
-            normalize_authors(
-                serde_json::from_value::<Vec<BookAuthor>>(value.clone())
-                    .map_err(|_| AppError::new("invalid-arguments"))?,
-            )?
+            let authors = serde_json::from_value::<Vec<BookAuthor>>(value.clone())
+                .map_err(|_| AppError::new("invalid-arguments"))?;
+            if authors.is_empty() {
+                return Err(AppError::new("invalid-arguments"));
+            }
+            normalize_authors(authors)?
         };
         item.author = (!item.authors.is_empty()).then(|| {
             item.authors
@@ -1796,10 +1813,12 @@ fn apply_duplicate_metadata(item: &mut LibraryItem, metadata: &Value) -> AppResu
         item.languages = if value.is_null() {
             Vec::new()
         } else {
-            normalize_texts(
-                serde_json::from_value(value.clone())
-                    .map_err(|_| AppError::new("invalid-arguments"))?,
-            )?
+            let languages = serde_json::from_value::<Vec<String>>(value.clone())
+                .map_err(|_| AppError::new("invalid-arguments"))?;
+            if languages.is_empty() {
+                return Err(AppError::new("invalid-arguments"));
+            }
+            normalize_texts(languages)?
         };
     }
     if let Some(value) = object.get("identifiers") {
@@ -2732,5 +2751,279 @@ mod tests {
         store.purge(&source.id).unwrap();
         assert_eq!(fs::read(transferred_pdf).unwrap(), b"transferred pdf");
         assert_eq!(fs::read(transferred_cover).unwrap(), b"source cover");
+    }
+
+    #[test]
+    fn duplicate_merge_rolls_back_when_result_hydration_fails() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = LibraryPaths::resolve(None, Some(&temp.path().join("library.sqlite"))).unwrap();
+        let target_path = temp.path().join("target.epub");
+        let source_path = temp.path().join("source.pdf");
+        fs::write(&target_path, b"target").unwrap();
+        fs::write(&source_path, b"source").unwrap();
+        let mut store = LibraryStore::open(paths, true).unwrap();
+        let target = store.import(&target_path, Some("Target"), false).unwrap();
+        let source = store.import(&source_path, Some("Source"), false).unwrap();
+        for id in [&target.id, &source.id] {
+            store
+                .update(
+                    id,
+                    LibraryPatch {
+                        identifiers: Some(BTreeMap::from([(
+                            "isbn".to_owned(),
+                            "shared".to_owned(),
+                        )])),
+                        ..LibraryPatch::default()
+                    },
+                )
+                .unwrap();
+        }
+        let candidate = store
+            .list_duplicate_candidates(&ListDuplicateCandidatesRequest {
+                page: DuplicatePageRequest {
+                    limit: 100,
+                    offset: 0,
+                },
+                disposition: "unreviewed".to_owned(),
+            })
+            .unwrap()
+            .candidates
+            .remove(0);
+        store
+            .connection
+            .execute_batch(&format!(
+                "CREATE TRIGGER delete_merged_source AFTER UPDATE OF trashed_at ON library_items
+                 WHEN NEW.id='{}' BEGIN DELETE FROM library_items WHERE id=NEW.id; END;",
+                source.id
+            ))
+            .unwrap();
+        let error = store
+            .merge_duplicate_pair(&MergeDuplicatePairRequest {
+                target_id: target.id.clone(),
+                source_id: source.id.clone(),
+                review_token: candidate.review_token,
+                metadata: serde_json::json!({"title":"Merged"}),
+                add_source_formats: vec![FormatId::Pdf],
+                cover: "none".to_owned(),
+            })
+            .unwrap_err();
+        assert_eq!(error.code(), "storage-unavailable");
+        let unchanged = store.get(&target.id).unwrap().unwrap();
+        assert_eq!(unchanged.title, "Target");
+        assert_eq!(unchanged.formats.len(), 1);
+        assert!(store.get(&source.id).unwrap().is_some());
+    }
+
+    #[test]
+    fn shared_merged_formats_survive_target_remove_and_replace() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = LibraryPaths::resolve(None, Some(&temp.path().join("library.sqlite"))).unwrap();
+        let target_path = temp.path().join("target.epub");
+        let source_path = temp.path().join("source.mobi");
+        let source_pdf = temp.path().join("source.pdf");
+        fs::write(&target_path, b"target").unwrap();
+        fs::write(&source_path, b"source").unwrap();
+        fs::write(&source_pdf, b"shared pdf").unwrap();
+        let mut store = LibraryStore::open(paths, true).unwrap();
+        let target = store.import(&target_path, Some("Target"), false).unwrap();
+        let source = store.import(&source_path, Some("Source"), false).unwrap();
+        for id in [&target.id, &source.id] {
+            store
+                .update(
+                    id,
+                    LibraryPatch {
+                        identifiers: Some(BTreeMap::from([(
+                            "isbn".to_owned(),
+                            "shared".to_owned(),
+                        )])),
+                        ..LibraryPatch::default()
+                    },
+                )
+                .unwrap();
+        }
+        let source = store.attach_format(&source.id, &source_pdf, true).unwrap();
+        let shared_path = source
+            .formats
+            .iter()
+            .find(|format| format.format == FormatId::Pdf)
+            .unwrap()
+            .source_path
+            .clone();
+        let request = ListDuplicateCandidatesRequest {
+            page: DuplicatePageRequest {
+                limit: 100,
+                offset: 0,
+            },
+            disposition: "unreviewed".to_owned(),
+        };
+        let merge = |store: &mut LibraryStore| {
+            let token = store
+                .list_duplicate_candidates(&request)
+                .unwrap()
+                .candidates
+                .remove(0)
+                .review_token;
+            store
+                .merge_duplicate_pair(&MergeDuplicatePairRequest {
+                    target_id: target.id.clone(),
+                    source_id: source.id.clone(),
+                    review_token: token,
+                    metadata: serde_json::json!({"title":"Merged"}),
+                    add_source_formats: vec![FormatId::Pdf],
+                    cover: "none".to_owned(),
+                })
+                .unwrap();
+        };
+        merge(&mut store);
+        store.remove_format(&target.id, FormatId::Pdf).unwrap();
+        assert_eq!(fs::read(&shared_path).unwrap(), b"shared pdf");
+
+        store.restore(&source.id).unwrap();
+        merge(&mut store);
+        let current = store
+            .get(&target.id)
+            .unwrap()
+            .unwrap()
+            .formats
+            .into_iter()
+            .find(|format| format.format == FormatId::Pdf)
+            .unwrap();
+        let replacement = temp.path().join("replacement.pdf");
+        fs::write(&replacement, b"replacement").unwrap();
+        store
+            .replace_format(
+                &target.id,
+                FormatId::Pdf,
+                &serde_json::json!({
+                    "sourcePath":current.source_path,
+                    "addedAt":current.added_at,
+                    "provenance":current.provenance
+                }),
+                &replacement,
+                true,
+            )
+            .unwrap();
+        assert_eq!(fs::read(shared_path).unwrap(), b"shared pdf");
+    }
+
+    #[test]
+    fn duplicate_signals_use_javascript_string_order_and_safe_numbers() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = LibraryPaths::resolve(None, Some(&temp.path().join("library.sqlite"))).unwrap();
+        let left_path = temp.path().join("left.epub");
+        let right_path = temp.path().join("right.pdf");
+        fs::write(&left_path, b"left").unwrap();
+        fs::write(&right_path, b"right").unwrap();
+        let mut store = LibraryStore::open(paths, true).unwrap();
+        let left = store.import(&left_path, Some("Left"), false).unwrap();
+        let right = store.import(&right_path, Some("Right"), false).unwrap();
+        let identifiers = BTreeMap::from([
+            ("\u{1f600}".to_owned(), "shared-emoji".to_owned()),
+            ("\u{e000}".to_owned(), "shared-private".to_owned()),
+        ]);
+        for id in [&left.id, &right.id] {
+            store
+                .update(
+                    id,
+                    LibraryPatch {
+                        identifiers: Some(identifiers.clone()),
+                        ..LibraryPatch::default()
+                    },
+                )
+                .unwrap();
+        }
+        let page = store
+            .list_duplicate_candidates(&ListDuplicateCandidatesRequest {
+                page: DuplicatePageRequest {
+                    limit: 100,
+                    offset: 0,
+                },
+                disposition: "unreviewed".to_owned(),
+            })
+            .unwrap();
+        assert!(matches!(
+            &page.candidates[0].signals[0],
+            DuplicateSignal::SameIdentifier { scheme, .. } if scheme == "\u{1f600}"
+        ));
+        store
+            .connection
+            .execute(
+                "UPDATE library_item_formats SET content_bytes=?2 WHERE library_item_id=?1",
+                params![left.id, i64::try_from(MAX_SAFE_INTEGER + 1).unwrap()],
+            )
+            .unwrap();
+        assert_eq!(
+            store
+                .list_duplicate_candidates(&ListDuplicateCandidatesRequest {
+                    page: DuplicatePageRequest {
+                        limit: 100,
+                        offset: 0,
+                    },
+                    disposition: "unreviewed".to_owned(),
+                })
+                .unwrap_err()
+                .code(),
+            "invalid-stored-data"
+        );
+    }
+
+    #[test]
+    fn duplicate_merge_rejects_empty_contract_arrays() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = LibraryPaths::resolve(None, Some(&temp.path().join("library.sqlite"))).unwrap();
+        let left_path = temp.path().join("left.epub");
+        let right_path = temp.path().join("right.pdf");
+        fs::write(&left_path, b"left").unwrap();
+        fs::write(&right_path, b"right").unwrap();
+        let mut store = LibraryStore::open(paths, true).unwrap();
+        let left = store.import(&left_path, Some("Shared"), false).unwrap();
+        let right = store.import(&right_path, Some("Shared"), false).unwrap();
+        for id in [&left.id, &right.id] {
+            store
+                .update(
+                    id,
+                    LibraryPatch {
+                        authors: Some(vec![BookAuthor {
+                            name: "Author".to_owned(),
+                            sort_name: None,
+                        }]),
+                        ..LibraryPatch::default()
+                    },
+                )
+                .unwrap();
+        }
+        let token = store
+            .list_duplicate_candidates(&ListDuplicateCandidatesRequest {
+                page: DuplicatePageRequest {
+                    limit: 100,
+                    offset: 0,
+                },
+                disposition: "unreviewed".to_owned(),
+            })
+            .unwrap()
+            .candidates
+            .remove(0)
+            .review_token;
+        for metadata in [
+            serde_json::json!({"authors":[]}),
+            serde_json::json!({"languages":[]}),
+        ] {
+            assert_eq!(
+                store
+                    .merge_duplicate_pair(&MergeDuplicatePairRequest {
+                        target_id: left.id.clone(),
+                        source_id: right.id.clone(),
+                        review_token: token.clone(),
+                        metadata,
+                        add_source_formats: vec![FormatId::Pdf],
+                        cover: "none".to_owned(),
+                    })
+                    .unwrap_err()
+                    .code(),
+                "invalid-arguments"
+            );
+        }
+        assert_eq!(store.get(&left.id).unwrap().unwrap().formats.len(), 1);
+        assert!(store.get(&right.id).unwrap().is_some());
     }
 }
