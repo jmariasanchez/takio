@@ -25,7 +25,7 @@ fn capabilities_identify_the_native_tui() {
     assert_eq!(value["features"]["metadata"], true);
     assert_eq!(value["features"]["contentServer"], true);
     assert!(
-        value["unsupportedCommands"]
+        !value["unsupportedCommands"]
             .as_array()
             .expect("unsupported commands")
             .contains(&serde_json::json!("library duplicates"))
@@ -233,6 +233,97 @@ fn library_service_correlates_mutations_with_request_ids() {
     assert_eq!(response["id"], "request-7");
     assert_eq!(response["ok"], true);
     assert_eq!(response["value"]["item"]["title"], "A Wizard of Earthsea");
+}
+
+#[test]
+fn duplicate_review_commands_match_desktop_envelopes_through_cli_and_service() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let database = temp.path().join("library.sqlite");
+    let left = temp.path().join("left.epub");
+    let right = temp.path().join("right.pdf");
+    fs::write(&left, b"left").expect("write left ebook");
+    fs::write(&right, b"right").expect("write right ebook");
+    let import = |path: &std::path::Path| {
+        let output = cargo_bin_cmd!("takio")
+            .args(["library", "import", "--db"])
+            .arg(&database)
+            .args(["--source-path"])
+            .arg(path)
+            .output()
+            .expect("import duplicate candidate");
+        success_value(&output.stdout)["item"]["id"]
+            .as_str()
+            .expect("item id")
+            .to_owned()
+    };
+    let left_id = import(&left);
+    let right_id = import(&right);
+    for id in [&left_id, &right_id] {
+        let output = cargo_bin_cmd!("takio")
+            .args(["library", "update", "--db"])
+            .arg(&database)
+            .args([
+                "--id",
+                id,
+                "--patch-json",
+                r#"{"identifiers":{"isbn":"desktop-shared"}}"#,
+            ])
+            .output()
+            .expect("add duplicate identifier");
+        assert!(output.status.success());
+    }
+    let list_request = serde_json::json!({
+        "page":{"limit":20,"offset":0},
+        "disposition":"unreviewed"
+    });
+    let listed = cargo_bin_cmd!("takio")
+        .args(["library", "duplicates", "list", "--db"])
+        .arg(&database)
+        .args(["--request-json", &list_request.to_string()])
+        .output()
+        .expect("list duplicate candidates");
+    assert!(listed.status.success());
+    let page = success_value(&listed.stdout);
+    assert_eq!(page["total"], 1);
+    assert_eq!(page["page"], list_request["page"]);
+    assert_eq!(page["scan"]["fingerprintsReused"], 2);
+    let candidate = &page["candidates"][0];
+    let review = serde_json::json!({
+        "leftId":candidate["left"]["id"],
+        "rightId":candidate["right"]["id"],
+        "reviewToken":candidate["reviewToken"]
+    });
+    let requests = [
+        serde_json::json!({"id":"keep-1","command":"library_duplicates_keep","args":review}),
+        serde_json::json!({"id":"kept-page","command":"library_duplicates_list","args":{"page":{"limit":20,"offset":0},"disposition":"kept-both"}}),
+        serde_json::json!({"id":"reopen-1","command":"library_duplicates_reopen","args":review}),
+    ];
+    let input = requests
+        .iter()
+        .map(Value::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
+    let service = cargo_bin_cmd!("takio")
+        .args(["library", "service", "--db"])
+        .arg(&database)
+        .write_stdin(format!("{input}\n"))
+        .output()
+        .expect("run duplicate service requests");
+    assert!(service.status.success());
+    let responses = String::from_utf8(service.stdout)
+        .expect("UTF-8 responses")
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).expect("service response"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        responses[0],
+        serde_json::json!({"id":"keep-1","ok":true,"value":null})
+    );
+    assert_eq!(responses[1]["value"]["total"], 1);
+    assert_eq!(
+        responses[2],
+        serde_json::json!({"id":"reopen-1","ok":true,"value":null})
+    );
 }
 
 #[test]

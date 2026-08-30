@@ -1,13 +1,14 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs::{self, File, OpenOptions};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use chrono::Utc;
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
-use serde::Serialize;
-use serde_json::Value;
+use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
+use unicode_normalization::UnicodeNormalization;
 use uuid::Uuid;
 
 use crate::conversion::{FormatId, detect_format};
@@ -58,6 +59,94 @@ pub struct SavedView {
     pub definition: Value,
     pub created_at: String,
     pub updated_at: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum DuplicateSignal {
+    SameContent {
+        #[serde(rename = "leftFormat")]
+        left_format: FormatId,
+        #[serde(rename = "rightFormat")]
+        right_format: FormatId,
+        bytes: u64,
+        sha256: String,
+    },
+    SameIdentifier {
+        scheme: String,
+        value: String,
+    },
+    SameTitleAuthor {
+        title: String,
+        author: String,
+    },
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DuplicateCandidate {
+    pub left: LibraryItem,
+    pub right: LibraryItem,
+    pub signals: Vec<DuplicateSignal>,
+    pub review_token: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DuplicateScanSummary {
+    pub files_hashed: u64,
+    pub fingerprints_reused: u64,
+    pub unreadable_formats: u64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DuplicateCandidatePage {
+    pub candidates: Vec<DuplicateCandidate>,
+    pub total: usize,
+    pub page: DuplicatePageRequest,
+    pub scan: DuplicateScanSummary,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct DuplicatePageRequest {
+    pub limit: usize,
+    pub offset: usize,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ListDuplicateCandidatesRequest {
+    pub page: DuplicatePageRequest,
+    pub disposition: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DuplicatePairReviewRequest {
+    pub left_id: String,
+    pub right_id: String,
+    pub review_token: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct MergeDuplicatePairRequest {
+    pub target_id: String,
+    pub source_id: String,
+    pub review_token: String,
+    pub metadata: Value,
+    pub add_source_formats: Vec<FormatId>,
+    pub cover: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MergeDuplicatePairResult {
+    pub target: LibraryItem,
+    pub trashed_source: LibraryItem,
+    pub cleanup_pending: bool,
 }
 
 impl LibraryStore {
@@ -356,6 +445,262 @@ impl LibraryStore {
         Ok((total, items))
     }
 
+    pub fn list_duplicate_candidates(
+        &self,
+        request: &ListDuplicateCandidatesRequest,
+    ) -> AppResult<DuplicateCandidatePage> {
+        validate_duplicate_page(request)?;
+        let (candidates, scan) = self.scan_duplicate_candidates()?;
+        let mut reviews = HashMap::new();
+        let mut statement = self
+            .connection
+            .prepare("SELECT left_id,right_id,review_token FROM duplicate_pair_reviews")?;
+        for row in statement.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })? {
+            let (left, right, token) = row?;
+            if !valid_pair(&left, &right) || !valid_review_token(&token) {
+                return Err(AppError::new("invalid-stored-data"));
+            }
+            reviews.insert((left, right), token);
+        }
+        let matching = candidates
+            .into_iter()
+            .filter(|candidate| {
+                let reviewed = reviews
+                    .get(&(candidate.left.id.clone(), candidate.right.id.clone()))
+                    == Some(&candidate.review_token);
+                (request.disposition == "kept-both") == reviewed
+            })
+            .collect::<Vec<_>>();
+        let total = matching.len();
+        let candidates = matching
+            .into_iter()
+            .skip(request.page.offset)
+            .take(request.page.limit)
+            .collect();
+        Ok(DuplicateCandidatePage {
+            candidates,
+            total,
+            page: request.page,
+            scan,
+        })
+    }
+
+    pub fn keep_duplicate_pair(&mut self, request: &DuplicatePairReviewRequest) -> AppResult<()> {
+        validate_pair_request(request)?;
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let candidate = scan_duplicate_candidates_in(&transaction)?
+            .0
+            .into_iter()
+            .find(|candidate| {
+                candidate.left.id == request.left_id && candidate.right.id == request.right_id
+            })
+            .filter(|candidate| candidate.review_token == request.review_token)
+            .ok_or_else(|| AppError::new("stale-review"))?;
+        transaction.execute(
+            "INSERT INTO duplicate_pair_reviews (left_id,right_id,review_token,reviewed_at)
+             VALUES (?1,?2,?3,?4)
+             ON CONFLICT(left_id,right_id) DO UPDATE SET review_token=excluded.review_token,reviewed_at=excluded.reviewed_at",
+            params![candidate.left.id, candidate.right.id, candidate.review_token, Utc::now().to_rfc3339()],
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub fn reopen_duplicate_pair(&mut self, request: &DuplicatePairReviewRequest) -> AppResult<()> {
+        validate_pair_request(request)?;
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let current = scan_duplicate_candidates_in(&transaction)?
+            .0
+            .into_iter()
+            .find(|candidate| {
+                candidate.left.id == request.left_id && candidate.right.id == request.right_id
+            })
+            .filter(|candidate| candidate.review_token == request.review_token)
+            .ok_or_else(|| AppError::new("stale-review"))?;
+        let stored: Option<String> = transaction
+            .query_row(
+                "SELECT review_token FROM duplicate_pair_reviews WHERE left_id=?1 AND right_id=?2",
+                params![current.left.id, current.right.id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if stored.as_deref() != Some(&request.review_token) {
+            return Err(AppError::new("stale-review"));
+        }
+        transaction.execute(
+            "DELETE FROM duplicate_pair_reviews WHERE left_id=?1 AND right_id=?2",
+            params![request.left_id, request.right_id],
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub fn merge_duplicate_pair(
+        &mut self,
+        request: &MergeDuplicatePairRequest,
+    ) -> AppResult<MergeDuplicatePairResult> {
+        validate_merge_request(request)?;
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let (left_id, right_id) = canonical_pair(&request.target_id, &request.source_id);
+        let candidate = scan_duplicate_candidates_in(&transaction)?
+            .0
+            .into_iter()
+            .find(|candidate| candidate.left.id == left_id && candidate.right.id == right_id)
+            .filter(|candidate| candidate.review_token == request.review_token)
+            .ok_or_else(|| AppError::new("stale-review"))?;
+        let mut target = if candidate.left.id == request.target_id {
+            candidate.left.clone()
+        } else {
+            candidate.right.clone()
+        };
+        apply_duplicate_metadata(&mut target, &request.metadata)?;
+        target.updated_at = Some(Utc::now().to_rfc3339());
+
+        let target_formats = target
+            .formats
+            .iter()
+            .map(|format| format.format.as_str())
+            .collect::<Vec<_>>();
+        let mut source_rows =
+            HashMap::<String, (String, String, String, Option<i64>, Option<String>)>::new();
+        let mut statement = transaction.prepare(
+            "SELECT format,source_path,added_at,provenance,content_bytes,content_sha256
+             FROM library_item_formats WHERE library_item_id=?1 ORDER BY position",
+        )?;
+        for row in statement.query_map([&request.source_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, Option<i64>>(4)?,
+                row.get::<_, Option<String>>(5)?,
+            ))
+        })? {
+            let row = row?;
+            source_rows.insert(row.0.clone(), (row.1, row.2, row.3, row.4, row.5));
+        }
+        drop(statement);
+        let mut selected = Vec::new();
+        for format in &request.add_source_formats {
+            let key = format.as_str();
+            if target_formats.contains(&key)
+                || selected.contains(&key)
+                || !source_rows.contains_key(key)
+            {
+                return Err(AppError::new("invalid-arguments"));
+            }
+            selected.push(key);
+        }
+
+        let (target_cover, source_cover): (Option<String>, Option<String>) = transaction
+            .query_row(
+                "SELECT (SELECT cover_path FROM library_items WHERE id=?1),
+                    (SELECT cover_path FROM library_items WHERE id=?2)",
+                params![request.target_id, request.source_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+        let selected_cover = match request.cover.as_str() {
+            "target" => target_cover.clone(),
+            "source" => Some(
+                source_cover
+                    .clone()
+                    .ok_or_else(|| AppError::new("invalid-arguments"))?,
+            ),
+            "none" => None,
+            _ => return Err(AppError::new("invalid-arguments")),
+        };
+        if let Some(path) = &selected_cover
+            && !Path::new(path).starts_with(&self.paths.covers)
+        {
+            return Err(AppError::new("invalid-stored-data"));
+        }
+
+        write_duplicate_metadata(&transaction, &target)?;
+        let next_position =
+            i64::try_from(target.formats.len()).map_err(|_| AppError::new("invalid-arguments"))?;
+        for (index, format) in request.add_source_formats.iter().enumerate() {
+            let (path, added_at, provenance, bytes, sha) = source_rows
+                .get(format.as_str())
+                .ok_or_else(|| AppError::new("invalid-arguments"))?;
+            transaction.execute(
+                "INSERT INTO library_item_formats
+                 (library_item_id,format,source_path,added_at,provenance,position,content_bytes,content_sha256)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+                params![request.target_id, format.as_str(), path, added_at, provenance,
+                    next_position + i64::try_from(index).map_err(|_| AppError::new("invalid-arguments"))?, bytes, sha],
+            )?;
+        }
+        transaction.execute(
+            "UPDATE library_items SET cover_path=?2 WHERE id=?1",
+            params![request.target_id, selected_cover],
+        )?;
+        let changed = transaction.execute(
+            "UPDATE library_items SET trashed_at=?2,updated_at=?2 WHERE id=?1 AND trashed_at IS NULL",
+            params![request.source_id, target.updated_at],
+        )?;
+        if changed != 1 {
+            return Err(AppError::new("stale-review"));
+        }
+        transaction.execute(
+            "DELETE FROM duplicate_pair_reviews WHERE left_id=?1 AND right_id=?2",
+            params![left_id, right_id],
+        )?;
+        transaction.commit()?;
+
+        let cleanup_pending = if let Some(old) = target_cover
+            && Some(&old) != selected_cover.as_ref()
+            && !self.path_is_referenced(&old)?
+        {
+            fs::remove_file(old).is_err()
+        } else {
+            false
+        };
+        let target = self
+            .read_item(&request.target_id)?
+            .ok_or_else(|| AppError::new("storage-unavailable"))?;
+        let trashed_source = self
+            .read_item(&request.source_id)?
+            .ok_or_else(|| AppError::new("storage-unavailable"))?;
+        Ok(MergeDuplicatePairResult {
+            target,
+            trashed_source,
+            cleanup_pending,
+        })
+    }
+
+    fn scan_duplicate_candidates(
+        &self,
+    ) -> AppResult<(Vec<DuplicateCandidate>, DuplicateScanSummary)> {
+        scan_duplicate_candidates_in(&self.connection)
+    }
+
+    fn path_is_referenced(&self, path: &str) -> AppResult<bool> {
+        let formats = count_with_param(
+            &self.connection,
+            "SELECT COUNT(*) FROM library_item_formats WHERE source_path=?1",
+            path,
+        )?;
+        let covers = count_with_param(
+            &self.connection,
+            "SELECT COUNT(*) FROM library_items WHERE cover_path=?1",
+            path,
+        )?;
+        Ok(formats + covers > 0)
+    }
+
     pub fn remove_format(&mut self, id: &str, format: FormatId) -> AppResult<LibraryItem> {
         let item = self
             .read_item(id)?
@@ -468,12 +813,15 @@ impl LibraryStore {
         self.connection
             .execute("DELETE FROM library_items WHERE id=?1", [id])?;
         for format in stored.into_iter().flatten() {
-            if format.provenance == Provenance::Managed {
+            if format.provenance == Provenance::Managed
+                && !self.path_is_referenced(&format.path.to_string_lossy())?
+            {
                 cleanup_managed(&self.paths.items, &format.path, format.fingerprint.as_ref())?;
             }
         }
         if let Some(path) = &item.cover_path
             && path.starts_with(&self.paths.covers)
+            && !self.path_is_referenced(&path.to_string_lossy())?
         {
             let _ = fs::remove_file(path);
         }
@@ -628,12 +976,15 @@ impl LibraryStore {
         self.connection
             .execute("DELETE FROM library_items WHERE id=?1", [id])?;
         for format in stored.into_iter().flatten() {
-            if format.provenance == Provenance::Managed {
+            if format.provenance == Provenance::Managed
+                && !self.path_is_referenced(&format.path.to_string_lossy())?
+            {
                 cleanup_managed(&self.paths.items, &format.path, format.fingerprint.as_ref())?;
             }
         }
         if let Some(path) = &item.cover_path
             && path.starts_with(&self.paths.covers)
+            && !self.path_is_referenced(&path.to_string_lossy())?
         {
             let _ = fs::remove_file(path);
         }
@@ -957,64 +1308,62 @@ impl LibraryStore {
     }
 
     fn read_item(&self, id: &str) -> AppResult<Option<LibraryItem>> {
-        let base = self
-            .connection
-            .query_row(
-                "SELECT title, added_at, author, series, series_index, publisher, published_date,
-             rating, description, cover_path, updated_at FROM library_items WHERE id=?1",
-                [id],
-                |row| {
-                    Ok(BaseRow {
-                        title: row.get(0)?,
-                        added_at: row.get(1)?,
-                        author: row.get(2)?,
-                        series: row.get(3)?,
-                        series_index: row.get(4)?,
-                        publisher: row.get(5)?,
-                        published_date: row.get(6)?,
-                        rating: row.get(7)?,
-                        description: row.get(8)?,
-                        cover_path: row.get::<_, Option<String>>(9)?.map(PathBuf::from),
-                        updated_at: row.get(10)?,
-                    })
-                },
-            )
-            .optional()?;
-        let Some(base) = base else {
-            return Ok(None);
-        };
-        let formats = read_formats(&self.connection, id)?;
-        let primary = formats
-            .first()
-            .ok_or_else(|| AppError::new("invalid-stored-data"))?;
-        Ok(Some(LibraryItem {
-            id: id.to_owned(),
-            title: base.title,
-            source_path: primary.source_path.clone(),
-            format: primary.format,
-            added_at: base.added_at,
-            formats,
-            author: base.author,
-            authors: read_authors(&self.connection, id)?,
-            series: base.series,
-            series_index: base.series_index,
-            publisher: base.publisher,
-            languages: read_values(&self.connection, "library_item_languages", "language", id)?,
-            identifiers: read_map(&self.connection, "library_item_identifiers", "scheme", id)?,
-            custom_metadata: read_map(
-                &self.connection,
-                "library_item_custom_metadata",
-                "name",
-                id,
-            )?,
-            published_date: base.published_date,
-            rating: base.rating,
-            description: base.description,
-            cover_path: base.cover_path,
-            tags: read_tags(&self.connection, id)?,
-            updated_at: base.updated_at,
-        }))
+        read_item_from(&self.connection, id)
     }
+}
+
+fn read_item_from(connection: &Connection, id: &str) -> AppResult<Option<LibraryItem>> {
+    let base = connection
+        .query_row(
+            "SELECT title, added_at, author, series, series_index, publisher, published_date,
+             rating, description, cover_path, updated_at FROM library_items WHERE id=?1",
+            [id],
+            |row| {
+                Ok(BaseRow {
+                    title: row.get(0)?,
+                    added_at: row.get(1)?,
+                    author: row.get(2)?,
+                    series: row.get(3)?,
+                    series_index: row.get(4)?,
+                    publisher: row.get(5)?,
+                    published_date: row.get(6)?,
+                    rating: row.get(7)?,
+                    description: row.get(8)?,
+                    cover_path: row.get::<_, Option<String>>(9)?.map(PathBuf::from),
+                    updated_at: row.get(10)?,
+                })
+            },
+        )
+        .optional()?;
+    let Some(base) = base else {
+        return Ok(None);
+    };
+    let formats = read_formats(connection, id)?;
+    let primary = formats
+        .first()
+        .ok_or_else(|| AppError::new("invalid-stored-data"))?;
+    Ok(Some(LibraryItem {
+        id: id.to_owned(),
+        title: base.title,
+        source_path: primary.source_path.clone(),
+        format: primary.format,
+        added_at: base.added_at,
+        formats,
+        author: base.author,
+        authors: read_authors(connection, id)?,
+        series: base.series,
+        series_index: base.series_index,
+        publisher: base.publisher,
+        languages: read_values(connection, "library_item_languages", "language", id)?,
+        identifiers: read_map(connection, "library_item_identifiers", "scheme", id)?,
+        custom_metadata: read_map(connection, "library_item_custom_metadata", "name", id)?,
+        published_date: base.published_date,
+        rating: base.rating,
+        description: base.description,
+        cover_path: base.cover_path,
+        tags: read_tags(connection, id)?,
+        updated_at: base.updated_at,
+    }))
 }
 
 struct BaseRow {
@@ -1035,6 +1384,505 @@ struct StoredFormat {
     provenance: Provenance,
     position: i64,
     fingerprint: Option<(u64, String)>,
+}
+
+fn normalize_duplicate_text(value: &str) -> String {
+    value
+        .nfkc()
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
+}
+
+fn compare_duplicate_strings(left: &str, right: &str) -> std::cmp::Ordering {
+    left.encode_utf16().cmp(right.encode_utf16())
+}
+
+fn canonical_pair(left: &str, right: &str) -> (String, String) {
+    if compare_duplicate_strings(left, right).is_lt() {
+        (left.to_owned(), right.to_owned())
+    } else {
+        (right.to_owned(), left.to_owned())
+    }
+}
+
+fn valid_pair(left: &str, right: &str) -> bool {
+    !left.is_empty() && compare_duplicate_strings(left, right).is_lt()
+}
+
+fn valid_review_token(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn validate_duplicate_page(request: &ListDuplicateCandidatesRequest) -> AppResult<()> {
+    if request.page.limit == 0
+        || request.page.limit > 100
+        || !matches!(request.disposition.as_str(), "unreviewed" | "kept-both")
+    {
+        return Err(AppError::new("invalid-arguments"));
+    }
+    Ok(())
+}
+
+fn validate_pair_request(request: &DuplicatePairReviewRequest) -> AppResult<()> {
+    if !valid_pair(&request.left_id, &request.right_id)
+        || !valid_review_token(&request.review_token)
+    {
+        return Err(AppError::new("invalid-arguments"));
+    }
+    Ok(())
+}
+
+fn validate_merge_request(request: &MergeDuplicatePairRequest) -> AppResult<()> {
+    if request.target_id.is_empty()
+        || request.source_id.is_empty()
+        || request.target_id == request.source_id
+        || !valid_review_token(&request.review_token)
+        || !request.metadata.is_object()
+        || request.metadata.as_object().is_some_and(Map::is_empty)
+        || !matches!(request.cover.as_str(), "target" | "source" | "none")
+    {
+        return Err(AppError::new("invalid-arguments"));
+    }
+    Ok(())
+}
+
+fn signal_sort_key(signal: &DuplicateSignal) -> String {
+    match signal {
+        DuplicateSignal::SameContent {
+            left_format,
+            right_format,
+            bytes,
+            sha256,
+        } => format!(
+            "0\0{}\0{}\0{bytes:016}\0{sha256}",
+            left_format.as_str(),
+            right_format.as_str()
+        ),
+        DuplicateSignal::SameIdentifier { scheme, value } => {
+            format!("1\0{}\0{value}", normalize_duplicate_text(scheme))
+        }
+        DuplicateSignal::SameTitleAuthor { title, author } => format!(
+            "2\0{}\0{}",
+            normalize_duplicate_text(title),
+            normalize_duplicate_text(author)
+        ),
+    }
+}
+
+fn add_duplicate_signal(
+    signals: &mut BTreeMap<(String, String), BTreeMap<String, DuplicateSignal>>,
+    left: &str,
+    right: &str,
+    signal: DuplicateSignal,
+) -> AppResult<()> {
+    if left == right {
+        return Ok(());
+    }
+    let pair = canonical_pair(left, right);
+    let key = serde_json::to_string(&signal).map_err(|_| AppError::new("invalid-stored-data"))?;
+    signals.entry(pair).or_default().insert(key, signal);
+    Ok(())
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DuplicateReviewSeed<'a> {
+    version: u8,
+    left_id: &'a str,
+    right_id: &'a str,
+    signals: &'a [DuplicateSignal],
+}
+
+fn scan_duplicate_candidates_in(
+    connection: &Connection,
+) -> AppResult<(Vec<DuplicateCandidate>, DuplicateScanSummary)> {
+    let mut ids = Vec::new();
+    let mut statement =
+        connection.prepare("SELECT id FROM library_items WHERE trashed_at IS NULL ORDER BY id")?;
+    for id in statement.query_map([], |row| row.get::<_, String>(0))? {
+        ids.push(id?);
+    }
+    drop(statement);
+    let mut items = HashMap::new();
+    for id in ids {
+        let item =
+            read_item_from(connection, &id)?.ok_or_else(|| AppError::new("invalid-stored-data"))?;
+        items.insert(id, item);
+    }
+
+    let mut signals = BTreeMap::<(String, String), BTreeMap<String, DuplicateSignal>>::new();
+    let mut fingerprints = HashMap::<(u64, String), Vec<(String, FormatId)>>::new();
+    let mut files_hashed = 0;
+    let mut fingerprints_reused = 0;
+    let mut unreadable_formats = 0;
+    let mut statement = connection.prepare(
+        "SELECT f.library_item_id,f.format,f.source_path,f.provenance,f.content_bytes,f.content_sha256
+         FROM library_item_formats f JOIN library_items i ON i.id=f.library_item_id
+         WHERE i.trashed_at IS NULL ORDER BY f.library_item_id,f.position",
+    )?;
+    let rows = statement.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, String>(3)?,
+            row.get::<_, Option<i64>>(4)?,
+            row.get::<_, Option<String>>(5)?,
+        ))
+    })?;
+    for row in rows {
+        let (item_id, format, path, provenance, bytes, sha) = row?;
+        let format = FormatId::ALL
+            .into_iter()
+            .find(|candidate| candidate.as_str() == format)
+            .ok_or_else(|| AppError::new("invalid-stored-data"))?;
+        let fingerprint = if provenance == "managed" {
+            let bytes = bytes
+                .and_then(|value| u64::try_from(value).ok())
+                .ok_or_else(|| AppError::new("invalid-stored-data"))?;
+            let sha = sha
+                .filter(|value| valid_review_token(value))
+                .ok_or_else(|| AppError::new("invalid-stored-data"))?;
+            fingerprints_reused += 1;
+            Some((bytes, sha))
+        } else if provenance == "referenced" {
+            match hash_file(Path::new(&path)) {
+                Ok(value) => {
+                    files_hashed += 1;
+                    Some(value)
+                }
+                Err(_) => {
+                    unreadable_formats += 1;
+                    None
+                }
+            }
+        } else {
+            return Err(AppError::new("invalid-stored-data"));
+        };
+        if let Some((bytes, sha)) = fingerprint
+            && bytes > 0
+        {
+            fingerprints
+                .entry((bytes, sha))
+                .or_default()
+                .push((item_id, format));
+        }
+    }
+    drop(statement);
+    for ((bytes, sha256), entries) in fingerprints {
+        for left_index in 0..entries.len() {
+            for right_index in (left_index + 1)..entries.len() {
+                let (left, right) = (&entries[left_index], &entries[right_index]);
+                let ((left_id, left_format), (right_id, right_format)) =
+                    if compare_duplicate_strings(&left.0, &right.0).is_lt() {
+                        (left, right)
+                    } else {
+                        (right, left)
+                    };
+                add_duplicate_signal(
+                    &mut signals,
+                    left_id,
+                    right_id,
+                    DuplicateSignal::SameContent {
+                        left_format: *left_format,
+                        right_format: *right_format,
+                        bytes,
+                        sha256: sha256.clone(),
+                    },
+                )?;
+            }
+        }
+    }
+
+    let mut identifiers = HashMap::<(String, String), Vec<(String, String, String)>>::new();
+    let mut titles = HashMap::<(String, String), Vec<(String, String, String)>>::new();
+    let mut item_ids = items.keys().cloned().collect::<Vec<_>>();
+    item_ids.sort_by(|left, right| compare_duplicate_strings(left, right));
+    for item_id in item_ids {
+        let item = items
+            .get(&item_id)
+            .ok_or_else(|| AppError::new("invalid-stored-data"))?;
+        for (scheme, value) in &item.identifiers {
+            let normalized_scheme = normalize_duplicate_text(scheme);
+            let value = value.trim();
+            if !normalized_scheme.is_empty() && !value.is_empty() {
+                identifiers
+                    .entry((normalized_scheme, value.to_owned()))
+                    .or_default()
+                    .push((item.id.clone(), scheme.trim().to_owned(), value.to_owned()));
+            }
+        }
+        let title = normalize_duplicate_text(&item.title);
+        let authors = if item.authors.is_empty() {
+            item.author.iter().cloned().collect::<Vec<_>>()
+        } else {
+            item.authors
+                .iter()
+                .map(|author| author.name.clone())
+                .collect()
+        };
+        let mut unique_authors = BTreeMap::new();
+        for author in authors {
+            let normalized = normalize_duplicate_text(&author);
+            if !normalized.is_empty() {
+                unique_authors
+                    .entry(normalized)
+                    .or_insert_with(|| author.trim().to_owned());
+            }
+        }
+        for (author_key, author) in unique_authors {
+            if !title.is_empty() {
+                titles
+                    .entry((title.clone(), author_key))
+                    .or_default()
+                    .push((item.id.clone(), item.title.trim().to_owned(), author));
+            }
+        }
+    }
+    for entries in identifiers.values() {
+        for left in 0..entries.len() {
+            for right in (left + 1)..entries.len() {
+                add_duplicate_signal(
+                    &mut signals,
+                    &entries[left].0,
+                    &entries[right].0,
+                    DuplicateSignal::SameIdentifier {
+                        scheme: entries[left].1.clone(),
+                        value: entries[left].2.clone(),
+                    },
+                )?;
+            }
+        }
+    }
+    for entries in titles.values() {
+        for left in 0..entries.len() {
+            for right in (left + 1)..entries.len() {
+                add_duplicate_signal(
+                    &mut signals,
+                    &entries[left].0,
+                    &entries[right].0,
+                    DuplicateSignal::SameTitleAuthor {
+                        title: entries[left].1.clone(),
+                        author: entries[left].2.clone(),
+                    },
+                )?;
+            }
+        }
+    }
+
+    let mut candidates = Vec::new();
+    for ((left_id, right_id), signal_map) in signals {
+        let mut pair_signals = signal_map.into_values().collect::<Vec<_>>();
+        pair_signals.sort_by_key(signal_sort_key);
+        let bytes = serde_json::to_vec(&DuplicateReviewSeed {
+            version: 1,
+            left_id: &left_id,
+            right_id: &right_id,
+            signals: &pair_signals,
+        })
+        .map_err(|_| AppError::new("invalid-stored-data"))?;
+        let review_token = hex::encode(Sha256::digest(bytes));
+        candidates.push(DuplicateCandidate {
+            left: items
+                .get(&left_id)
+                .cloned()
+                .ok_or_else(|| AppError::new("invalid-stored-data"))?,
+            right: items
+                .get(&right_id)
+                .cloned()
+                .ok_or_else(|| AppError::new("invalid-stored-data"))?,
+            signals: pair_signals,
+            review_token,
+        });
+    }
+    candidates.sort_by(|left, right| {
+        signal_sort_key(&left.signals[0])
+            .cmp(&signal_sort_key(&right.signals[0]))
+            .then_with(|| {
+                compare_duplicate_strings(
+                    &normalize_duplicate_text(&left.left.title),
+                    &normalize_duplicate_text(&right.left.title),
+                )
+            })
+            .then_with(|| {
+                compare_duplicate_strings(
+                    &normalize_duplicate_text(&left.right.title),
+                    &normalize_duplicate_text(&right.right.title),
+                )
+            })
+            .then_with(|| compare_duplicate_strings(&left.left.id, &right.left.id))
+            .then_with(|| compare_duplicate_strings(&left.right.id, &right.right.id))
+    });
+    Ok((
+        candidates,
+        DuplicateScanSummary {
+            files_hashed,
+            fingerprints_reused,
+            unreadable_formats,
+        },
+    ))
+}
+
+fn apply_duplicate_metadata(item: &mut LibraryItem, metadata: &Value) -> AppResult<()> {
+    let object = metadata
+        .as_object()
+        .filter(|object| !object.is_empty())
+        .ok_or_else(|| AppError::new("invalid-arguments"))?;
+    const FIELDS: &[&str] = &[
+        "title",
+        "author",
+        "authors",
+        "series",
+        "seriesIndex",
+        "publisher",
+        "languages",
+        "identifiers",
+        "customMetadata",
+        "publishedDate",
+        "rating",
+        "description",
+        "tags",
+    ];
+    if object.keys().any(|key| !FIELDS.contains(&key.as_str())) {
+        return Err(AppError::new("invalid-arguments"));
+    }
+    if let Some(value) = object.get("title") {
+        let title = value
+            .as_str()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| AppError::new("invalid-arguments"))?;
+        item.title = title.to_owned();
+    }
+    apply_nullable_text(object, "author", &mut item.author)?;
+    if let Some(value) = object.get("authors") {
+        item.authors = if value.is_null() {
+            Vec::new()
+        } else {
+            normalize_authors(
+                serde_json::from_value::<Vec<BookAuthor>>(value.clone())
+                    .map_err(|_| AppError::new("invalid-arguments"))?,
+            )?
+        };
+        item.author = (!item.authors.is_empty()).then(|| {
+            item.authors
+                .iter()
+                .map(|author| author.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        });
+    }
+    apply_nullable_text(object, "series", &mut item.series)?;
+    if let Some(value) = object.get("seriesIndex") {
+        item.series_index = if value.is_null() {
+            None
+        } else {
+            Some(
+                value
+                    .as_f64()
+                    .filter(|value| value.is_finite())
+                    .ok_or_else(|| AppError::new("invalid-arguments"))?,
+            )
+        };
+    }
+    apply_nullable_text(object, "publisher", &mut item.publisher)?;
+    if let Some(value) = object.get("languages") {
+        item.languages = if value.is_null() {
+            Vec::new()
+        } else {
+            normalize_texts(
+                serde_json::from_value(value.clone())
+                    .map_err(|_| AppError::new("invalid-arguments"))?,
+            )?
+        };
+    }
+    if let Some(value) = object.get("identifiers") {
+        item.identifiers = if value.is_null() {
+            BTreeMap::new()
+        } else {
+            normalize_map(
+                serde_json::from_value(value.clone())
+                    .map_err(|_| AppError::new("invalid-arguments"))?,
+            )?
+        };
+    }
+    if let Some(value) = object.get("customMetadata") {
+        item.custom_metadata = if value.is_null() {
+            BTreeMap::new()
+        } else {
+            normalize_map(
+                serde_json::from_value(value.clone())
+                    .map_err(|_| AppError::new("invalid-arguments"))?,
+            )?
+        };
+    }
+    apply_nullable_text(object, "publishedDate", &mut item.published_date)?;
+    if let Some(value) = object.get("rating") {
+        item.rating = if value.is_null() {
+            None
+        } else {
+            Some(
+                value
+                    .as_f64()
+                    .filter(|value| value.is_finite() && (0.0..=10.0).contains(value))
+                    .ok_or_else(|| AppError::new("invalid-arguments"))?,
+            )
+        };
+    }
+    apply_nullable_text(object, "description", &mut item.description)?;
+    if let Some(value) = object.get("tags") {
+        item.tags = normalize_texts(
+            serde_json::from_value(value.clone())
+                .map_err(|_| AppError::new("invalid-arguments"))?,
+        )?;
+    }
+    Ok(())
+}
+
+fn apply_nullable_text(
+    object: &Map<String, Value>,
+    key: &str,
+    target: &mut Option<String>,
+) -> AppResult<()> {
+    if let Some(value) = object.get(key) {
+        *target = if value.is_null() {
+            None
+        } else {
+            let text = value
+                .as_str()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| AppError::new("invalid-arguments"))?;
+            Some(text.to_owned())
+        };
+    }
+    Ok(())
+}
+
+fn write_duplicate_metadata(transaction: &Transaction<'_>, item: &LibraryItem) -> AppResult<()> {
+    transaction.execute(
+        "UPDATE library_items SET title=?2,author=?3,series=?4,series_index=?5,publisher=?6,
+         published_date=?7,rating=?8,description=?9,updated_at=?10 WHERE id=?1",
+        params![
+            item.id,
+            item.title,
+            item.author,
+            item.series,
+            item.series_index,
+            item.publisher,
+            item.published_date,
+            item.rating,
+            item.description,
+            item.updated_at
+        ],
+    )?;
+    replace_metadata(transaction, item)
 }
 
 fn create_schema(connection: &Connection) -> AppResult<()> {
@@ -1474,6 +2322,13 @@ fn count(connection: &Connection, sql: &str) -> AppResult<u64> {
     let value: i64 = connection.query_row(sql, [], |row| row.get(0))?;
     u64::try_from(value).map_err(|_| AppError::new("invalid-stored-data"))
 }
+
+fn count_with_param(connection: &Connection, sql: &str, value: &str) -> AppResult<u64> {
+    connection
+        .query_row(sql, [value], |row| row.get::<_, i64>(0))
+        .map_err(Into::into)
+        .and_then(|value| u64::try_from(value).map_err(|_| AppError::new("invalid-stored-data")))
+}
 fn as_i64(value: u64) -> AppResult<i64> {
     i64::try_from(value).map_err(|_| AppError::new("storage-unavailable"))
 }
@@ -1720,5 +2575,162 @@ mod tests {
             .find(|format| format.format == FormatId::Pdf)
             .unwrap();
         assert_eq!(hash_file(&pdf.source_path).unwrap(), expected);
+    }
+
+    #[test]
+    fn duplicate_reviews_are_stable_idempotent_and_reject_stale_evidence() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = LibraryPaths::resolve(None, Some(&temp.path().join("library.sqlite"))).unwrap();
+        let left_path = temp.path().join("left.epub");
+        let right_path = temp.path().join("right.pdf");
+        fs::write(&left_path, b"left duplicate bytes").unwrap();
+        fs::write(&right_path, b"right duplicate bytes").unwrap();
+        let mut store = LibraryStore::open(paths, true).unwrap();
+        let left = store.import(&left_path, Some("Dune"), false).unwrap();
+        let right = store.import(&right_path, Some(" dune "), false).unwrap();
+        for id in [&left.id, &right.id] {
+            store
+                .update(
+                    id,
+                    LibraryPatch {
+                        authors: Some(vec![BookAuthor {
+                            name: "Frank Herbert".to_owned(),
+                            sort_name: None,
+                        }]),
+                        identifiers: Some(BTreeMap::from([(
+                            "ISBN".to_owned(),
+                            "9780441172719".to_owned(),
+                        )])),
+                        ..LibraryPatch::default()
+                    },
+                )
+                .unwrap();
+        }
+        let request = ListDuplicateCandidatesRequest {
+            page: DuplicatePageRequest {
+                limit: 1,
+                offset: 0,
+            },
+            disposition: "unreviewed".to_owned(),
+        };
+        let first = store.list_duplicate_candidates(&request).unwrap();
+        let second = store.list_duplicate_candidates(&request).unwrap();
+        assert_eq!(first.total, 1);
+        assert_eq!(first.scan.fingerprints_reused, 2);
+        assert_eq!(
+            first.candidates[0].review_token,
+            second.candidates[0].review_token
+        );
+        assert_eq!(first.candidates[0].signals.len(), 2);
+        let candidate = &first.candidates[0];
+        let review = DuplicatePairReviewRequest {
+            left_id: candidate.left.id.clone(),
+            right_id: candidate.right.id.clone(),
+            review_token: candidate.review_token.clone(),
+        };
+        store.keep_duplicate_pair(&review).unwrap();
+        store.keep_duplicate_pair(&review).unwrap();
+        assert_eq!(store.list_duplicate_candidates(&request).unwrap().total, 0);
+        store.reopen_duplicate_pair(&review).unwrap();
+        assert_eq!(store.list_duplicate_candidates(&request).unwrap().total, 1);
+        store
+            .update(
+                &right.id,
+                LibraryPatch {
+                    title: Some("Dune revised".to_owned()),
+                    ..LibraryPatch::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            store.keep_duplicate_pair(&review).unwrap_err().code(),
+            "stale-review"
+        );
+    }
+
+    #[test]
+    fn duplicate_merge_rolls_back_and_purge_preserves_transferred_owned_files() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = LibraryPaths::resolve(None, Some(&temp.path().join("library.sqlite"))).unwrap();
+        let target_path = temp.path().join("target.epub");
+        let source_path = temp.path().join("source.mobi");
+        let source_pdf = temp.path().join("source.pdf");
+        let target_cover = temp.path().join("target.jpg");
+        let source_cover = temp.path().join("source.jpg");
+        fs::write(&target_path, b"target").unwrap();
+        fs::write(&source_path, b"source").unwrap();
+        fs::write(&source_pdf, b"transferred pdf").unwrap();
+        fs::write(&target_cover, b"target cover").unwrap();
+        fs::write(&source_cover, b"source cover").unwrap();
+        let mut store = LibraryStore::open(paths, true).unwrap();
+        let target = store.import(&target_path, Some("Target"), false).unwrap();
+        let source = store.import(&source_path, Some("Source"), false).unwrap();
+        for id in [&target.id, &source.id] {
+            store
+                .update(
+                    id,
+                    LibraryPatch {
+                        identifiers: Some(BTreeMap::from([(
+                            "isbn".to_owned(),
+                            "shared".to_owned(),
+                        )])),
+                        ..LibraryPatch::default()
+                    },
+                )
+                .unwrap();
+        }
+        let source = store.attach_format(&source.id, &source_pdf, true).unwrap();
+        store.set_cover(&target.id, &target_cover).unwrap();
+        let source = store.set_cover(&source.id, &source_cover).unwrap();
+        let transferred_pdf = source
+            .formats
+            .iter()
+            .find(|format| format.format == FormatId::Pdf)
+            .unwrap()
+            .source_path
+            .clone();
+        let transferred_cover = source.cover_path.clone().unwrap();
+        let page = store
+            .list_duplicate_candidates(&ListDuplicateCandidatesRequest {
+                page: DuplicatePageRequest {
+                    limit: 100,
+                    offset: 0,
+                },
+                disposition: "unreviewed".to_owned(),
+            })
+            .unwrap();
+        let token = page.candidates[0].review_token.clone();
+        let merge = MergeDuplicatePairRequest {
+            target_id: target.id.clone(),
+            source_id: source.id.clone(),
+            review_token: token.clone(),
+            metadata: serde_json::json!({"title":"Merged","tags":["reviewed"]}),
+            add_source_formats: vec![FormatId::Pdf],
+            cover: "source".to_owned(),
+        };
+        store
+            .connection
+            .execute_batch(
+                "CREATE TRIGGER reject_duplicate_merge BEFORE UPDATE OF trashed_at ON library_items
+                 WHEN NEW.id IS NOT NULL BEGIN SELECT RAISE(FAIL, 'rollback'); END;",
+            )
+            .unwrap();
+        assert_eq!(
+            store.merge_duplicate_pair(&merge).unwrap_err().code(),
+            "storage-unavailable"
+        );
+        assert_eq!(store.get(&target.id).unwrap().unwrap().formats.len(), 1);
+        store
+            .connection
+            .execute_batch("DROP TRIGGER reject_duplicate_merge")
+            .unwrap();
+        let merged = store.merge_duplicate_pair(&merge).unwrap();
+        assert_eq!(merged.target.title, "Merged");
+        assert_eq!(merged.target.formats.len(), 2);
+        assert_eq!(merged.trashed_source.id, source.id);
+        assert!(!merged.cleanup_pending);
+        store.purge(&source.id).unwrap();
+        assert_eq!(fs::read(transferred_pdf).unwrap(), b"transferred pdf");
+        assert_eq!(fs::read(transferred_cover).unwrap(), b"source cover");
     }
 }

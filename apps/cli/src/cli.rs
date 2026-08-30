@@ -18,7 +18,10 @@ use crate::metadata::{self, discover_ebook_meta, discover_fetch_ebook_metadata};
 use crate::model::LibraryPatch;
 use crate::output::{AppError, AppResult, print_success};
 use crate::paths::LibraryPaths;
-use crate::store::{LIBRARY_SCHEMA_VERSION, LibraryStore, VerifyReport};
+use crate::store::{
+    DuplicatePairReviewRequest, LIBRARY_SCHEMA_VERSION, LibraryStore,
+    ListDuplicateCandidatesRequest, MergeDuplicatePairRequest, VerifyReport,
+};
 
 #[derive(Parser)]
 #[command(
@@ -758,7 +761,7 @@ fn capabilities() -> AppResult<()> {
         Vec::new()
     };
     print_success(
-        json!({"protocolVersion":1,"implementation":"rust","tui":true,"limits":{"structuredJsonBytes":16384},"librarySchemaVersion":LIBRARY_SCHEMA_VERSION,"jobsSchemaVersion":4,"formats":FormatId::ALL,"conversionPairs":pairs,"backends":{"ebookConvert":backend,"ebookMeta":{"available":metadata_backend.is_some(),"path":metadata_backend},"fetchEbookMetadata":{"available":online_metadata_backend.is_some(),"path":online_metadata_backend},"ebookPolish":{"available":polish_backend.is_some(),"path":polish_backend}},"features":{"library":true,"jobs":true,"destinations":true,"metadata":true,"polish":true,"rootedKindleSsh":true,"contentServer":true,"contentServerRemoteTls":false,"nativeKepub":false},"unsupportedCommands":["library import-calibre","library import-watch","library portable-export","library rebuild","library duplicates"]}),
+        json!({"protocolVersion":1,"implementation":"rust","tui":true,"limits":{"structuredJsonBytes":16384},"librarySchemaVersion":LIBRARY_SCHEMA_VERSION,"jobsSchemaVersion":4,"formats":FormatId::ALL,"conversionPairs":pairs,"backends":{"ebookConvert":backend,"ebookMeta":{"available":metadata_backend.is_some(),"path":metadata_backend},"fetchEbookMetadata":{"available":online_metadata_backend.is_some(),"path":online_metadata_backend},"ebookPolish":{"available":polish_backend.is_some(),"path":polish_backend}},"features":{"library":true,"jobs":true,"destinations":true,"metadata":true,"polish":true,"rootedKindleSsh":true,"contentServer":true,"contentServerRemoteTls":false,"nativeKepub":false},"unsupportedCommands":["library import-calibre","library import-watch","library portable-export","library rebuild"]}),
     )
 }
 fn formats(as_json: bool) -> AppResult<()> {
@@ -1313,11 +1316,11 @@ fn library(command: LibraryCommand, library: Option<&str>) -> AppResult<()> {
             print_success(json!({"restore":LibraryStore::restore_backup(&source, paths)?}))
         }
         LibraryCommand::SavedViews(command) => library_saved_views(command, library),
+        LibraryCommand::Duplicates(command) => library_duplicates(command, library),
         LibraryCommand::ImportCalibre { .. }
         | LibraryCommand::ImportWatch { .. }
         | LibraryCommand::PortableExport { .. }
-        | LibraryCommand::Rebuild { .. }
-        | LibraryCommand::Duplicates(_) => Err(AppError::new("feature-unavailable")),
+        | LibraryCommand::Rebuild { .. } => Err(AppError::new("feature-unavailable")),
     }
 }
 
@@ -1348,6 +1351,48 @@ fn library_saved_views(command: SavedViewsCommand, library: Option<&str>) -> App
                 .ok_or_else(|| AppError::new("invalid-arguments"))?;
             let paths = LibraryPaths::resolve(library, db.as_deref())?;
             print_success(json!({"view":LibraryStore::open(paths, true)?.remove_view(id)?}))
+        }
+    }
+}
+
+fn library_duplicates(command: DuplicateCommand, library: Option<&str>) -> AppResult<()> {
+    match command {
+        DuplicateCommand::List { db, request_json } => {
+            let request =
+                serde_json::from_value::<ListDuplicateCandidatesRequest>(read_json(&request_json)?)
+                    .map_err(|_| AppError::new("invalid-arguments"))?;
+            let paths = LibraryPaths::resolve(library, db.as_deref())?;
+            let store = LibraryStore::open(paths, true)?;
+            print_success(
+                serde_json::to_value(store.list_duplicate_candidates(&request)?)
+                    .map_err(|_| AppError::new("storage-unavailable"))?,
+            )
+        }
+        DuplicateCommand::Keep { db, request_json } => {
+            let request =
+                serde_json::from_value::<DuplicatePairReviewRequest>(read_json(&request_json)?)
+                    .map_err(|_| AppError::new("invalid-arguments"))?;
+            let paths = LibraryPaths::resolve(library, db.as_deref())?;
+            LibraryStore::open(paths, true)?.keep_duplicate_pair(&request)?;
+            print_success(Value::Null)
+        }
+        DuplicateCommand::Reopen { db, request_json } => {
+            let request =
+                serde_json::from_value::<DuplicatePairReviewRequest>(read_json(&request_json)?)
+                    .map_err(|_| AppError::new("invalid-arguments"))?;
+            let paths = LibraryPaths::resolve(library, db.as_deref())?;
+            LibraryStore::open(paths, true)?.reopen_duplicate_pair(&request)?;
+            print_success(Value::Null)
+        }
+        DuplicateCommand::Merge { db, request_json } => {
+            let request =
+                serde_json::from_value::<MergeDuplicatePairRequest>(read_json(&request_json)?)
+                    .map_err(|_| AppError::new("invalid-arguments"))?;
+            let paths = LibraryPaths::resolve(library, db.as_deref())?;
+            let result = LibraryStore::open(paths, true)?.merge_duplicate_pair(&request)?;
+            print_success(
+                serde_json::to_value(result).map_err(|_| AppError::new("storage-unavailable"))?,
+            )
         }
     }
 }
@@ -1886,6 +1931,30 @@ fn service_request(store: &mut LibraryStore, request: &Value) -> AppResult<Value
         .get("args")
         .ok_or_else(|| AppError::new("invalid-arguments"))?;
     match command {
+        "library_duplicates_list" => {
+            let request = serde_json::from_value::<ListDuplicateCandidatesRequest>(args.clone())
+                .map_err(|_| AppError::new("invalid-arguments"))?;
+            serde_json::to_value(store.list_duplicate_candidates(&request)?)
+                .map_err(|_| AppError::new("storage-unavailable"))
+        }
+        "library_duplicates_keep" => {
+            let request = serde_json::from_value::<DuplicatePairReviewRequest>(args.clone())
+                .map_err(|_| AppError::new("invalid-arguments"))?;
+            store.keep_duplicate_pair(&request)?;
+            Ok(Value::Null)
+        }
+        "library_duplicates_reopen" => {
+            let request = serde_json::from_value::<DuplicatePairReviewRequest>(args.clone())
+                .map_err(|_| AppError::new("invalid-arguments"))?;
+            store.reopen_duplicate_pair(&request)?;
+            Ok(Value::Null)
+        }
+        "library_duplicates_merge" => {
+            let request = serde_json::from_value::<MergeDuplicatePairRequest>(args.clone())
+                .map_err(|_| AppError::new("invalid-arguments"))?;
+            serde_json::to_value(store.merge_duplicate_pair(&request)?)
+                .map_err(|_| AppError::new("storage-unavailable"))
+        }
         "library_update" => {
             let id = request_id(args)?;
             let patch = serde_json::from_value::<LibraryPatch>(
