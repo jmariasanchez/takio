@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::io::{BufRead, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -11,6 +12,9 @@ use crate::conversion::{
 };
 use crate::destinations::{self, DestinationKind};
 use crate::jobs::{JobStatus, JobStore};
+use crate::kindle_ssh::{self, KindleSshDestination};
+use crate::maintenance::{self, discover_ebook_polish};
+use crate::metadata::{self, discover_ebook_meta, discover_fetch_ebook_metadata};
 use crate::model::LibraryPatch;
 use crate::output::{AppError, AppResult, print_success};
 use crate::paths::LibraryPaths;
@@ -101,13 +105,36 @@ enum Command {
         volumes_root: PathBuf,
     },
     #[command(
-        about = "Metadata commands remain available through the desktop while the Rust adapter is completed"
+        subcommand,
+        about = "Inspect and review ebook metadata through Calibre"
     )]
-    Metadata,
-    #[command(about = "Calibre polish adapter is not yet available in the Rust binary")]
-    Polish,
-    #[command(about = "The read-only content server is not yet available in the Rust binary")]
-    Serve,
+    Metadata(MetadataCommand),
+    #[command(about = "Polish a new EPUB, KEPUB, or AZW3 artifact with Calibre")]
+    Polish {
+        #[arg(long)]
+        input: PathBuf,
+        #[arg(long)]
+        output: PathBuf,
+        #[arg(long = "operation", required = true)]
+        operations: Vec<String>,
+        #[arg(long, default_value_t = 300)]
+        timeout_seconds: u64,
+    },
+    #[command(about = "Serve authenticated read-only library access in the foreground")]
+    Serve {
+        #[arg(long)]
+        db: Option<PathBuf>,
+        #[arg(long, default_value = "127.0.0.1")]
+        host: String,
+        #[arg(long, default_value_t = 8787)]
+        port: u16,
+        #[arg(long)]
+        allow_remote: bool,
+        #[arg(long = "tls-cert")]
+        tls_cert: Option<PathBuf>,
+        #[arg(long = "tls-key")]
+        tls_key: Option<PathBuf>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -224,16 +251,122 @@ enum LibraryCommand {
         #[arg(long)]
         id: String,
     },
-    ImportCalibre,
-    ImportWatch,
-    Catalog,
-    ContentSearch,
-    Validate,
-    PortableExport,
-    Rebuild,
-    RestoreBackup,
-    Duplicates,
-    SavedViews,
+    ImportCalibre {
+        #[arg(long)]
+        db: Option<PathBuf>,
+        #[arg(long = "library-root")]
+        library_root: PathBuf,
+    },
+    ImportWatch {
+        #[arg(long)]
+        db: Option<PathBuf>,
+        #[arg(long = "source-path", required = true)]
+        source_paths: Vec<PathBuf>,
+        #[arg(long, default_value_t = 30)]
+        interval_seconds: u64,
+        #[arg(long)]
+        max_cycles: Option<u64>,
+    },
+    Catalog {
+        #[arg(long)]
+        db: Option<PathBuf>,
+        #[arg(long)]
+        format: String,
+        #[arg(long)]
+        output: PathBuf,
+    },
+    ContentSearch {
+        #[arg(long)]
+        db: Option<PathBuf>,
+        #[arg(long)]
+        query: String,
+        #[arg(long = "id")]
+        ids: Vec<String>,
+        #[arg(long, default_value_t = 256)]
+        limit: usize,
+        #[arg(long, default_value_t = 60)]
+        timeout_seconds: u64,
+    },
+    Validate {
+        #[arg(long)]
+        db: Option<PathBuf>,
+        #[arg(long = "id")]
+        ids: Vec<String>,
+        #[arg(long, default_value_t = 256)]
+        limit: usize,
+        #[arg(long, default_value_t = 60)]
+        timeout_seconds: u64,
+    },
+    PortableExport {
+        #[arg(long)]
+        db: Option<PathBuf>,
+        #[arg(long)]
+        dest: PathBuf,
+    },
+    Rebuild {
+        #[arg(long)]
+        db: PathBuf,
+        #[arg(long)]
+        source: PathBuf,
+    },
+    RestoreBackup {
+        #[arg(long)]
+        db: Option<PathBuf>,
+        #[arg(long)]
+        source: PathBuf,
+    },
+    #[command(subcommand)]
+    Duplicates(DuplicateCommand),
+    #[command(subcommand)]
+    SavedViews(SavedViewsCommand),
+}
+
+#[derive(Subcommand)]
+enum SavedViewsCommand {
+    List {
+        #[arg(long)]
+        db: Option<PathBuf>,
+    },
+    Save {
+        #[arg(long)]
+        db: Option<PathBuf>,
+        #[arg(long = "request-json")]
+        request_json: String,
+    },
+    Remove {
+        #[arg(long)]
+        db: Option<PathBuf>,
+        #[arg(long = "request-json")]
+        request_json: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum DuplicateCommand {
+    List {
+        #[arg(long)]
+        db: Option<PathBuf>,
+        #[arg(long = "request-json")]
+        request_json: String,
+    },
+    Keep {
+        #[arg(long)]
+        db: Option<PathBuf>,
+        #[arg(long = "request-json")]
+        request_json: String,
+    },
+    Reopen {
+        #[arg(long)]
+        db: Option<PathBuf>,
+        #[arg(long = "request-json")]
+        request_json: String,
+    },
+    Merge {
+        #[arg(long)]
+        db: Option<PathBuf>,
+        #[arg(long = "request-json")]
+        request_json: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -317,6 +450,64 @@ enum TrashCommand {
 }
 
 #[derive(Subcommand)]
+enum MetadataCommand {
+    Extract {
+        #[arg(long = "source-path")]
+        source_path: PathBuf,
+        #[arg(long, default_value_t = 15)]
+        timeout_seconds: u64,
+    },
+    Fetch {
+        #[arg(long)]
+        title: Option<String>,
+        #[arg(long = "author")]
+        authors: Vec<String>,
+        #[arg(long = "identifier")]
+        identifiers: Vec<String>,
+        #[arg(long = "cover-output")]
+        cover_output: Option<PathBuf>,
+        #[arg(long, default_value_t = 30)]
+        timeout_seconds: u64,
+    },
+    #[command(subcommand)]
+    Candidates(MetadataCandidatesCommand),
+}
+
+#[derive(Subcommand)]
+enum MetadataCandidatesCommand {
+    Filename {
+        #[arg(long = "source-path")]
+        source_path: PathBuf,
+        #[arg(long)]
+        id: Option<String>,
+        #[arg(long = "pattern")]
+        patterns: Vec<String>,
+    },
+    Item {
+        #[arg(long)]
+        db: Option<PathBuf>,
+        #[arg(long)]
+        id: String,
+        #[arg(long)]
+        include_online: bool,
+        #[arg(long, default_value_t = 30)]
+        timeout_seconds: u64,
+    },
+    Apply {
+        #[arg(long)]
+        db: Option<PathBuf>,
+        #[arg(long)]
+        id: String,
+        #[arg(long = "candidate-json")]
+        candidate_json: Option<String>,
+        #[arg(long = "patch-json")]
+        patch_json: Option<String>,
+        #[arg(long)]
+        provenance: String,
+    },
+}
+
+#[derive(Subcommand)]
 enum JobsCommand {
     Enqueue {
         #[arg(long)]
@@ -374,7 +565,12 @@ enum JobsCommand {
         #[arg(long, default_value_t = 300)]
         timeout_seconds: u64,
     },
-    RetryAttachment,
+    RetryAttachment {
+        #[arg(long)]
+        db: Option<PathBuf>,
+        #[arg(long)]
+        id: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -409,7 +605,24 @@ enum DestinationCommand {
         #[arg(long, default_value = "/Volumes")]
         volumes_root: PathBuf,
     },
-    RootedKindleSend,
+    RootedKindleSend {
+        #[arg(long)]
+        id: String,
+        #[arg(long)]
+        format: FormatId,
+        #[arg(long)]
+        host: String,
+        #[arg(long)]
+        user: String,
+        #[arg(long = "remote-root")]
+        remote_root: String,
+        #[arg(long = "identity-file")]
+        identity_file: PathBuf,
+        #[arg(long)]
+        port: u16,
+        #[arg(long = "timeout-ms")]
+        timeout_ms: u64,
+    },
 }
 
 pub fn run() -> AppResult<()> {
@@ -464,7 +677,7 @@ pub fn run() -> AppResult<()> {
         )?),
         Command::Library(command) => library(command, cli.library.as_deref()),
         Command::Jobs(command) => jobs(command, cli.library.as_deref()),
-        Command::Destination(command) => destination(command),
+        Command::Destination(command) => destination(command, cli.library.as_deref()),
         Command::Send {
             db,
             id,
@@ -486,8 +699,32 @@ pub fn run() -> AppResult<()> {
                 &volumes_root,
             )
         }
-        Command::Metadata | Command::Polish | Command::Serve => {
-            Err(AppError::new("feature-unavailable"))
+        Command::Metadata(command) => metadata_command(command, cli.library.as_deref()),
+        Command::Polish {
+            input,
+            output,
+            operations,
+            timeout_seconds,
+        } => print_success(json!({"job":maintenance::polish(
+            &input,
+            &output,
+            &operations,
+            Duration::from_secs(timeout_seconds),
+        )?})),
+        Command::Serve {
+            db,
+            host,
+            port,
+            allow_remote,
+            tls_cert,
+            tls_key,
+        } => {
+            if allow_remote || tls_cert.is_some() || tls_key.is_some() {
+                return Err(AppError::new("invalid-arguments"));
+            }
+            let paths = LibraryPaths::resolve(cli.library.as_deref(), db.as_deref())?;
+            let store = LibraryStore::open(paths, false)?;
+            crate::server::serve(&store, &host, port)
         }
     }
 }
@@ -512,13 +749,16 @@ fn doctor(human: bool) -> AppResult<()> {
 }
 fn capabilities() -> AppResult<()> {
     let backend = discover_ebook_convert();
+    let metadata_backend = discover_ebook_meta();
+    let online_metadata_backend = discover_fetch_ebook_metadata();
+    let polish_backend = discover_ebook_polish();
     let pairs = if backend.available {
         CALIBRE_CAPABILITIES.to_vec()
     } else {
         Vec::new()
     };
     print_success(
-        json!({"protocolVersion":1,"implementation":"rust","tui":true,"limits":{"structuredJsonBytes":16384},"librarySchemaVersion":LIBRARY_SCHEMA_VERSION,"jobsSchemaVersion":4,"formats":FormatId::ALL,"conversionPairs":pairs,"backends":{"ebookConvert":backend},"features":{"library":true,"jobs":true,"destinations":true,"metadata":false,"contentServer":false,"nativeKepub":false}}),
+        json!({"protocolVersion":1,"implementation":"rust","tui":true,"limits":{"structuredJsonBytes":16384},"librarySchemaVersion":LIBRARY_SCHEMA_VERSION,"jobsSchemaVersion":4,"formats":FormatId::ALL,"conversionPairs":pairs,"backends":{"ebookConvert":backend,"ebookMeta":{"available":metadata_backend.is_some(),"path":metadata_backend},"fetchEbookMetadata":{"available":online_metadata_backend.is_some(),"path":online_metadata_backend},"ebookPolish":{"available":polish_backend.is_some(),"path":polish_backend}},"features":{"library":true,"jobs":true,"destinations":true,"metadata":true,"polish":true,"rootedKindleSsh":true,"contentServer":true,"contentServerRemoteTls":false,"nativeKepub":false},"unsupportedCommands":["library import-calibre","library import-watch","library portable-export","library rebuild","library duplicates"]}),
     )
 }
 fn formats(as_json: bool) -> AppResult<()> {
@@ -540,6 +780,255 @@ fn formats(as_json: bool) -> AppResult<()> {
         }
         Ok(())
     }
+}
+
+fn metadata_command(command: MetadataCommand, library: Option<&str>) -> AppResult<()> {
+    match command {
+        MetadataCommand::Extract {
+            source_path,
+            timeout_seconds,
+        } => print_success(metadata::extract(
+            &source_path,
+            Duration::from_secs(timeout_seconds),
+        )?),
+        MetadataCommand::Fetch {
+            title,
+            authors,
+            identifiers,
+            cover_output,
+            timeout_seconds,
+        } => {
+            let identifiers = parse_identifiers(&identifiers)?;
+            print_success(metadata::fetch(
+                title.as_deref(),
+                &authors,
+                &identifiers,
+                cover_output.as_deref(),
+                Duration::from_secs(timeout_seconds),
+            )?)
+        }
+        MetadataCommand::Candidates(command) => metadata_candidates(command, library),
+    }
+}
+
+fn metadata_candidates(command: MetadataCandidatesCommand, library: Option<&str>) -> AppResult<()> {
+    match command {
+        MetadataCandidatesCommand::Filename {
+            source_path,
+            id,
+            patterns,
+        } => print_success(json!({
+            "candidates": filename_candidates(&source_path, id.as_deref(), &patterns)?
+        })),
+        MetadataCandidatesCommand::Item {
+            db,
+            id,
+            include_online,
+            timeout_seconds,
+        } => {
+            if id.trim().is_empty() || timeout_seconds == 0 {
+                return Err(AppError::new("invalid-arguments"));
+            }
+            let paths = LibraryPaths::resolve(library, db.as_deref())?;
+            let store = LibraryStore::open(paths, true)?;
+            let item = store
+                .get(&id)?
+                .ok_or_else(|| AppError::new("item-not-found"))?;
+            let mut candidates = filename_candidates(&item.source_path, Some(&item.id), &[])?;
+            if discover_ebook_meta().is_some()
+                && let Ok(extracted) =
+                    metadata::extract(&item.source_path, Duration::from_secs(timeout_seconds))
+                && let Some(candidate) = metadata_candidate(
+                    "embedded:1",
+                    "embedded",
+                    "high",
+                    extracted.metadata,
+                    json!({"generatedAt":"1970-01-01T00:00:00.000Z","itemId":item.id,"sourcePath":extracted.source_path,"backend":"ebook-meta"}),
+                )
+            {
+                candidates.push(candidate);
+            }
+            if include_online && discover_fetch_ebook_metadata().is_some() {
+                let authors = if item.authors.is_empty() {
+                    item.author.clone().into_iter().collect::<Vec<_>>()
+                } else {
+                    item.authors
+                        .iter()
+                        .map(|author| author.name.clone())
+                        .collect()
+                };
+                if let Ok(fetched) = metadata::fetch(
+                    Some(&item.title),
+                    &authors,
+                    &item.identifiers,
+                    None,
+                    Duration::from_secs(timeout_seconds),
+                ) && let Some(candidate) = metadata_candidate(
+                    "online:1",
+                    "online",
+                    "medium",
+                    fetched.metadata,
+                    json!({"generatedAt":"1970-01-01T00:00:00.000Z","itemId":item.id,"backend":"fetch-ebook-metadata"}),
+                ) {
+                    candidates.push(candidate);
+                }
+            }
+            candidates.truncate(8);
+            print_success(json!({"itemId":item.id,"candidates":candidates}))
+        }
+        MetadataCandidatesCommand::Apply {
+            db,
+            id,
+            candidate_json,
+            patch_json,
+            provenance,
+        } => {
+            if id.trim().is_empty()
+                || provenance.trim().is_empty()
+                || candidate_json.is_some() == patch_json.is_some()
+            {
+                return Err(AppError::new("invalid-arguments"));
+            }
+            let (patch_value, candidate_id, source) = if let Some(input) = candidate_json {
+                let candidate = read_json(&input)?;
+                if candidate.get("schemaVersion").and_then(Value::as_u64) != Some(1) {
+                    return Err(AppError::new("invalid-arguments"));
+                }
+                (
+                    candidate
+                        .get("patch")
+                        .cloned()
+                        .ok_or_else(|| AppError::new("invalid-arguments"))?,
+                    candidate.get("id").cloned().unwrap_or(Value::Null),
+                    candidate
+                        .get("source")
+                        .cloned()
+                        .unwrap_or_else(|| json!("manual")),
+                )
+            } else {
+                (
+                    read_json(patch_json.as_deref().unwrap_or_default())?,
+                    Value::Null,
+                    json!("manual"),
+                )
+            };
+            let patch: LibraryPatch = serde_json::from_value(patch_value)
+                .map_err(|_| AppError::new("invalid-arguments"))?;
+            let paths = LibraryPaths::resolve(library, db.as_deref())?;
+            let mut store = LibraryStore::open(paths, true)?;
+            let item = store.update(&id, patch)?;
+            print_success(
+                json!({"item":item,"applied":{"candidateId":candidate_id,"source":source,"provenance":provenance}}),
+            )
+        }
+    }
+}
+
+fn parse_identifiers(inputs: &[String]) -> AppResult<BTreeMap<String, String>> {
+    let mut values = BTreeMap::new();
+    for input in inputs {
+        let (kind, value) = input
+            .split_once(':')
+            .ok_or_else(|| AppError::new("invalid-arguments"))?;
+        let kind = kind.trim().to_ascii_lowercase();
+        let value = value.trim().to_owned();
+        if kind.is_empty() || value.is_empty() || values.insert(kind, value).is_some() {
+            return Err(AppError::new("invalid-arguments"));
+        }
+    }
+    Ok(values)
+}
+
+fn filename_candidates(
+    source: &Path,
+    item_id: Option<&str>,
+    custom_patterns: &[String],
+) -> AppResult<Vec<Value>> {
+    const BUILTINS: [&str; 4] = [
+        r"^(?<author>.+?) - (?<series>.+?) (?<seriesIndex>\d+(?:\.\d+)?) - (?<title>.+)$",
+        r"^(?<author>.+?) - (?<title>.+?) \((?<series>.+?) #(?<seriesIndex>\d+(?:\.\d+)?)\)$",
+        r"^(?<author>.+?) - (?<title>.+)$",
+        r"^(?<title>.+?) - (?<author>.+)$",
+    ];
+    if custom_patterns
+        .iter()
+        .any(|pattern| pattern.is_empty() || pattern.len() > 240)
+    {
+        return Err(AppError::new("invalid-arguments"));
+    }
+    let stem = source
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| AppError::new("invalid-arguments"))?;
+    let patterns = custom_patterns
+        .iter()
+        .map(String::as_str)
+        .chain(BUILTINS)
+        .collect::<Vec<_>>();
+    let mut candidates = Vec::new();
+    for pattern in patterns {
+        let expression =
+            regex::Regex::new(pattern).map_err(|_| AppError::new("invalid-arguments"))?;
+        let Some(captures) = expression.captures(stem) else {
+            continue;
+        };
+        let clean = |name: &str| {
+            captures.name(name).and_then(|value| {
+                let value = value
+                    .as_str()
+                    .replace(['.', '_'], " ")
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                (!value.is_empty()).then_some(value)
+            })
+        };
+        let Some(title) = clean("title") else {
+            continue;
+        };
+        let author = clean("author");
+        let series = clean("series");
+        let series_index = clean("seriesIndex").and_then(|value| value.parse::<f64>().ok());
+        let mut patch = json!({"title":title});
+        if let Some(object) = patch.as_object_mut() {
+            if let Some(author) = author {
+                object.insert("author".to_owned(), json!(author));
+                object.insert("authors".to_owned(), json!([{"name":author}]));
+            }
+            if let Some(series) = series {
+                object.insert("series".to_owned(), json!(series));
+            }
+            if let Some(series_index) = series_index {
+                object.insert("seriesIndex".to_owned(), json!(series_index));
+            }
+        }
+        let id = format!("filename:{}", candidates.len() + 1);
+        candidates.push(json!({
+            "schemaVersion":1,
+            "id":id,
+            "source":"filename",
+            "confidence":if custom_patterns.first().is_some_and(|value|value==pattern){"high"}else{"medium"},
+            "patch":patch,
+            "provenance":{"generatedAt":"1970-01-01T00:00:00.000Z","itemId":item_id,"sourcePath":source,"pattern":pattern}
+        }));
+        if candidates.len() == 8 {
+            break;
+        }
+    }
+    Ok(candidates)
+}
+
+fn metadata_candidate(
+    id: &str,
+    source: &str,
+    confidence: &str,
+    patch: Value,
+    provenance: Value,
+) -> Option<Value> {
+    patch
+        .as_object()
+        .is_some_and(|object| !object.is_empty())
+        .then(|| json!({"schemaVersion":1,"id":id,"source":source,"confidence":confidence,"patch":patch,"provenance":provenance}))
 }
 fn devices(as_json: bool) -> AppResult<()> {
     let backend = discover_ebook_convert();
@@ -776,8 +1265,450 @@ fn library(command: LibraryCommand, library: Option<&str>) -> AppResult<()> {
             let mut store = LibraryStore::open(paths, true)?;
             print_success(json!({"item":store.remove(&id)?,"cleanupPending":false}))
         }
-        _ => Err(AppError::new("feature-unavailable")),
+        LibraryCommand::Catalog { db, format, output } => {
+            let paths = LibraryPaths::resolve(library, db.as_deref())?;
+            let items = LibraryStore::open(paths, true)?.list(false)?;
+            print_success(json!({"catalog":write_catalog(&items, &format, &output)?}))
+        }
+        LibraryCommand::ContentSearch {
+            db,
+            query,
+            ids,
+            limit,
+            timeout_seconds,
+        } => {
+            if query.trim().is_empty() || !valid_selection(&ids, limit) || timeout_seconds == 0 {
+                return Err(AppError::new("invalid-arguments"));
+            }
+            let paths = LibraryPaths::resolve(library, db.as_deref())?;
+            let store = LibraryStore::open(paths, true)?;
+            print_success(content_search(
+                &store,
+                &query,
+                &ids,
+                limit,
+                Duration::from_secs(timeout_seconds),
+            )?)
+        }
+        LibraryCommand::Validate {
+            db,
+            ids,
+            limit,
+            timeout_seconds,
+        } => {
+            if !valid_selection(&ids, limit) || timeout_seconds == 0 {
+                return Err(AppError::new("invalid-arguments"));
+            }
+            let paths = LibraryPaths::resolve(library, db.as_deref())?;
+            let store = LibraryStore::open(paths, true)?;
+            print_success(validate_library_formats(
+                &store,
+                &ids,
+                limit,
+                Duration::from_secs(timeout_seconds),
+            )?)
+        }
+        LibraryCommand::RestoreBackup { db, source } => {
+            let paths = LibraryPaths::resolve(library, db.as_deref())?;
+            print_success(json!({"restore":LibraryStore::restore_backup(&source, paths)?}))
+        }
+        LibraryCommand::SavedViews(command) => library_saved_views(command, library),
+        LibraryCommand::ImportCalibre { .. }
+        | LibraryCommand::ImportWatch { .. }
+        | LibraryCommand::PortableExport { .. }
+        | LibraryCommand::Rebuild { .. }
+        | LibraryCommand::Duplicates(_) => Err(AppError::new("feature-unavailable")),
     }
+}
+
+fn library_saved_views(command: SavedViewsCommand, library: Option<&str>) -> AppResult<()> {
+    match command {
+        SavedViewsCommand::List { db } => {
+            let paths = LibraryPaths::resolve(library, db.as_deref())?;
+            print_success(json!({"views":LibraryStore::open(paths, true)?.list_saved_views()?}))
+        }
+        SavedViewsCommand::Save { db, request_json } => {
+            let request = read_json(&request_json)?;
+            let paths = LibraryPaths::resolve(library, db.as_deref())?;
+            print_success(json!({"view":LibraryStore::open(paths, true)?.save_view(&request)?}))
+        }
+        SavedViewsCommand::Remove { db, request_json } => {
+            let request = read_json(&request_json)?;
+            if request
+                .as_object()
+                .is_none_or(|object| object.len() != 1 || !object.contains_key("id"))
+            {
+                return Err(AppError::new("invalid-arguments"));
+            }
+            let id = request
+                .get("id")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|id| !id.is_empty())
+                .ok_or_else(|| AppError::new("invalid-arguments"))?;
+            let paths = LibraryPaths::resolve(library, db.as_deref())?;
+            print_success(json!({"view":LibraryStore::open(paths, true)?.remove_view(id)?}))
+        }
+    }
+}
+
+fn write_catalog(
+    items: &[crate::model::LibraryItem],
+    format: &str,
+    output: &Path,
+) -> AppResult<Value> {
+    if output.exists()
+        || output.parent().is_none_or(|parent| !parent.is_dir())
+        || !matches!(format, "json" | "csv" | "html")
+        || output
+            .extension()
+            .and_then(|value| value.to_str())
+            .is_none_or(|value| !value.eq_ignore_ascii_case(format))
+    {
+        return Err(AppError::new(if output.exists() {
+            "output-file-exists"
+        } else {
+            "invalid-arguments"
+        }));
+    }
+    let records = items.iter().map(catalog_record).collect::<Vec<_>>();
+    let body = match format {
+        "json" => format!(
+            "{}\n",
+            serde_json::to_string_pretty(&json!({"version":1,"books":records}))
+                .map_err(|_| AppError::new("write-failed"))?
+        ),
+        "csv" => render_catalog_csv(items),
+        "html" => render_catalog_html(items),
+        _ => return Err(AppError::new("invalid-arguments")),
+    };
+    if body.len() > 64 * 1024 * 1024 {
+        return Err(AppError::new("write-failed"));
+    }
+    let absolute_output = absolute(output)?;
+    let parent = output
+        .parent()
+        .ok_or_else(|| AppError::new("invalid-arguments"))?;
+    let temporary = parent.join(format!(".takio-catalog-{}.tmp", uuid::Uuid::new_v4()));
+    #[cfg(unix)]
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+    let publication = (|| -> AppResult<()> {
+        let mut file = options
+            .open(&temporary)
+            .map_err(|_| AppError::new("write-failed"))?;
+        file.write_all(body.as_bytes())
+            .and_then(|_| file.flush())
+            .and_then(|_| file.sync_all())
+            .map_err(|_| AppError::new("write-failed"))?;
+        if !temporary.is_file() {
+            return Err(AppError::new("write-failed"));
+        }
+        std::fs::hard_link(&temporary, output).map_err(|_| AppError::new("write-failed"))?;
+        Ok(())
+    })();
+    let _ = std::fs::remove_file(&temporary);
+    publication?;
+    let mut hash = Sha256::new();
+    hash.update(body.as_bytes());
+    Ok(
+        json!({"path":absolute_output,"books":items.len(),"bytes":body.len(),"sha256":hex::encode(hash.finalize()),"format":format}),
+    )
+}
+
+fn catalog_record(item: &crate::model::LibraryItem) -> Value {
+    let authors = if item.authors.is_empty() {
+        item.author.clone().into_iter().collect::<Vec<_>>()
+    } else {
+        item.authors
+            .iter()
+            .map(|author| author.name.clone())
+            .collect::<Vec<_>>()
+    };
+    let mut record = json!({
+        "id":item.id,
+        "title":item.title,
+        "authors":authors,
+        "tags":item.tags,
+        "formats":item.formats.iter().map(|format|format.format).collect::<Vec<_>>(),
+        "hasCover":item.cover_path.is_some()
+    });
+    let object = record.as_object_mut().expect("catalog record object");
+    for (key, value) in [
+        ("series", item.series.as_ref().map(|value| json!(value))),
+        ("seriesIndex", item.series_index.map(|value| json!(value))),
+        (
+            "publisher",
+            item.publisher.as_ref().map(|value| json!(value)),
+        ),
+        (
+            "publishedDate",
+            item.published_date.as_ref().map(|value| json!(value)),
+        ),
+        ("rating", item.rating.map(|value| json!(value))),
+        (
+            "description",
+            item.description.as_ref().map(|value| json!(value)),
+        ),
+    ] {
+        if let Some(value) = value {
+            object.insert(key.to_owned(), value);
+        }
+    }
+    if !item.languages.is_empty() {
+        object.insert("languages".to_owned(), json!(item.languages));
+    }
+    if !item.identifiers.is_empty() {
+        object.insert("identifiers".to_owned(), json!(item.identifiers));
+    }
+    if !item.custom_metadata.is_empty() {
+        object.insert("customMetadata".to_owned(), json!(item.custom_metadata));
+    }
+    record
+}
+
+fn render_catalog_csv(items: &[crate::model::LibraryItem]) -> String {
+    let mut output = "id,title,authors,series,seriesIndex,publisher,publishedDate,languages,tags,formats,rating,identifiers,customMetadata,description\n".to_owned();
+    for item in items {
+        let record = catalog_record(item);
+        let values = [
+            item.id.clone(),
+            item.title.clone(),
+            record["authors"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .collect::<Vec<_>>()
+                .join("; "),
+            item.series.clone().unwrap_or_default(),
+            item.series_index
+                .map(|value| value.to_string())
+                .unwrap_or_default(),
+            item.publisher.clone().unwrap_or_default(),
+            item.published_date.clone().unwrap_or_default(),
+            item.languages.join("; "),
+            item.tags.join("; "),
+            item.formats
+                .iter()
+                .map(|format| format.format.as_str())
+                .collect::<Vec<_>>()
+                .join("; "),
+            item.rating
+                .map(|value| value.to_string())
+                .unwrap_or_default(),
+            serde_json::to_string(&item.identifiers).unwrap_or_else(|_| "{}".to_owned()),
+            serde_json::to_string(&item.custom_metadata).unwrap_or_else(|_| "{}".to_owned()),
+            item.description.clone().unwrap_or_default(),
+        ];
+        output.push_str(
+            &values
+                .iter()
+                .map(|value| csv_cell(value))
+                .collect::<Vec<_>>()
+                .join(","),
+        );
+        output.push('\n');
+    }
+    output
+}
+
+fn csv_cell(value: &str) -> String {
+    let passive = if value
+        .trim_start_matches(|value: char| value.is_whitespace() || value.is_control())
+        .starts_with(['=', '+', '-', '@'])
+    {
+        format!("'{value}")
+    } else {
+        value.to_owned()
+    };
+    format!("\"{}\"", passive.replace('"', "\"\""))
+}
+
+fn render_catalog_html(items: &[crate::model::LibraryItem]) -> String {
+    let rows = items
+        .iter()
+        .map(|item| {
+            format!(
+                "      <tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
+                html_escape(&item.title),
+                html_escape(
+                    &item
+                        .authors
+                        .iter()
+                        .map(|author| author.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+                html_escape(item.series.as_deref().unwrap_or_default()),
+                html_escape(&item.tags.join(", ")),
+                html_escape(
+                    &item
+                        .formats
+                        .iter()
+                        .map(|format| format.format.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            )
+        })
+        .collect::<String>();
+    format!(
+        "<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width\"><title>Takio catalog</title><style>body{{font:16px system-ui;margin:2rem}}table{{border-collapse:collapse;width:100%}}th,td{{border-bottom:1px solid #ccc;padding:.5rem;text-align:left}}</style></head><body><h1>Takio catalog</h1><table><thead><tr><th>Title</th><th>Authors</th><th>Series</th><th>Tags</th><th>Formats</th></tr></thead><tbody>\n{rows}\n    </tbody></table></body></html>\n"
+    )
+}
+
+fn html_escape(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
+}
+
+fn valid_selection(ids: &[String], limit: usize) -> bool {
+    limit > 0
+        && limit <= 256
+        && ids.len() <= limit
+        && ids.iter().all(|id| !id.trim().is_empty())
+        && ids.iter().collect::<std::collections::HashSet<_>>().len() == ids.len()
+}
+
+type SelectedLibraryItems = Vec<(String, Option<crate::model::LibraryItem>)>;
+
+fn selected_items(
+    store: &LibraryStore,
+    ids: &[String],
+    limit: usize,
+) -> AppResult<(usize, SelectedLibraryItems)> {
+    if ids.is_empty() {
+        let items = store.list(false)?;
+        let available = items.len();
+        Ok((
+            available,
+            items
+                .into_iter()
+                .take(limit)
+                .map(|item| (item.id.clone(), Some(item)))
+                .collect(),
+        ))
+    } else {
+        Ok((
+            store.list(false)?.len(),
+            ids.iter()
+                .map(|id| Ok((id.clone(), store.get(id)?)))
+                .collect::<AppResult<Vec<_>>>()?,
+        ))
+    }
+}
+
+fn content_search(
+    store: &LibraryStore,
+    query: &str,
+    ids: &[String],
+    limit: usize,
+    timeout: Duration,
+) -> AppResult<Value> {
+    let (available, entries) = selected_items(store, ids, limit)?;
+    let mut outcomes = Vec::new();
+    for (item_id, item) in entries {
+        let Some(item) = item else {
+            outcomes.push(json!({"status":"missing","itemId":item_id}));
+            continue;
+        };
+        let Some(format) = item.formats.iter().find(|format| {
+            matches!(
+                format.format,
+                FormatId::Kepub
+                    | FormatId::Epub
+                    | FormatId::Pdf
+                    | FormatId::Mobi
+                    | FormatId::Azw3
+                    | FormatId::Docx
+                    | FormatId::Html
+                    | FormatId::Txt
+            )
+        }) else {
+            outcomes.push(json!({"status":"skipped","itemId":item_id,"code":"unsupported-format"}));
+            continue;
+        };
+        match maintenance::extract_text(&format.source_path, timeout) {
+            Ok((_, text)) => {
+                let (matches, snippets) = maintenance::find_literal_text(&text, query, 3);
+                if matches == 0 {
+                    outcomes.push(json!({"status":"no-match","itemId":item_id,"format":format.format}));
+                } else {
+                    outcomes.push(json!({"status":"matched","itemId":item_id,"title":item.title,"format":format.format,"matches":matches,"snippets":snippets}));
+                }
+            }
+            Err(error) => outcomes.push(json!({"status":"failed","itemId":item_id,"format":format.format,"code":error.code()})),
+        }
+    }
+    let count = |status: &str| {
+        outcomes
+            .iter()
+            .filter(|value| value["status"] == status)
+            .count()
+    };
+    Ok(
+        json!({"query":query,"available":available,"selected":outcomes.len(),"canceled":false,"counts":{"total":outcomes.len(),"matched":count("matched"),"noMatch":count("no-match"),"missing":count("missing"),"skipped":count("skipped"),"failed":count("failed")},"outcomes":outcomes}),
+    )
+}
+
+fn validate_library_formats(
+    store: &LibraryStore,
+    ids: &[String],
+    limit: usize,
+    timeout: Duration,
+) -> AppResult<Value> {
+    if discover_ebook_meta().is_none() {
+        return Err(AppError::new("backend-unavailable"));
+    }
+    let (available, entries) = selected_items(store, ids, limit)?;
+    let selected = entries.len();
+    let mut outcomes = Vec::new();
+    for (item_id, item) in entries {
+        let Some(item) = item else {
+            outcomes.push(json!({"status":"missing","itemId":item_id}));
+            continue;
+        };
+        for format in item.formats {
+            let result = metadata::extract(&format.source_path, timeout).and_then(|_| {
+                if matches!(
+                    format.format,
+                    FormatId::Kepub
+                        | FormatId::Epub
+                        | FormatId::Pdf
+                        | FormatId::Mobi
+                        | FormatId::Azw3
+                        | FormatId::Docx
+                        | FormatId::Html
+                        | FormatId::Txt
+                ) {
+                    maintenance::extract_text(&format.source_path, timeout).map(|_| "checked")
+                } else {
+                    Ok("not-applicable")
+                }
+            });
+            match result {
+                Ok(content) => outcomes.push(json!({"status":"valid","itemId":item_id,"format":format.format,"content":content})),
+                Err(error) => outcomes.push(json!({"status":"failed","itemId":item_id,"format":format.format,"code":error.code()})),
+            }
+        }
+    }
+    let count = |status: &str| {
+        outcomes
+            .iter()
+            .filter(|value| value["status"] == status)
+            .count()
+    };
+    Ok(
+        json!({"available":available,"selected":selected,"outcomes":outcomes,"counts":{"total":outcomes.len(),"valid":count("valid"),"missing":count("missing"),"failed":count("failed")}}),
+    )
 }
 
 fn library_format(command: FormatCommand, library: Option<&str>) -> AppResult<()> {
@@ -1473,8 +2404,12 @@ fn jobs(command: JobsCommand, library: Option<&str>) -> AppResult<()> {
             timeout_seconds,
         } => {
             let path = job_path(library, db.as_deref())?;
-            print_success(json!({"job":JobStore::open(&path)?
-                .run_next(&profile, Duration::from_secs(timeout_seconds))?}))
+            let mut store = JobStore::open(&path)?;
+            let job = store.run_next(&profile, Duration::from_secs(timeout_seconds))?;
+            let job = job
+                .map(|job| reconcile_job_attachment(&store, library, job))
+                .transpose()?;
+            print_success(json!({"job":job}))
         }
         JobsCommand::Drain {
             db,
@@ -1483,18 +2418,57 @@ fn jobs(command: JobsCommand, library: Option<&str>) -> AppResult<()> {
             timeout_seconds,
         } => {
             let path = job_path(library, db.as_deref())?;
-            let values = JobStore::open(&path)?.drain(
-                max_jobs,
-                &profile,
-                Duration::from_secs(timeout_seconds),
-            )?;
+            let mut store = JobStore::open(&path)?;
+            let values = store.drain(max_jobs, &profile, Duration::from_secs(timeout_seconds))?;
+            let values = values
+                .into_iter()
+                .map(|job| reconcile_job_attachment(&store, library, job))
+                .collect::<AppResult<Vec<_>>>()?;
             print_success(json!({"jobs":values,"counts":{"processed":values.len()}}))
         }
-        JobsCommand::RetryAttachment => Err(AppError::new("feature-unavailable")),
+        JobsCommand::RetryAttachment { db, id } => {
+            if db.is_some() || id.trim().is_empty() {
+                return Err(AppError::new("invalid-arguments"));
+            }
+            let path = job_path(library, None)?;
+            let store = JobStore::open(&path)?;
+            let job = store.retry_attachment(&id)?;
+            print_success(json!({"job":reconcile_job_attachment(&store, library, job)?}))
+        }
     }
 }
 
-fn destination(command: DestinationCommand) -> AppResult<()> {
+fn reconcile_job_attachment(
+    jobs: &JobStore,
+    library: Option<&str>,
+    job: crate::jobs::ConversionJob,
+) -> AppResult<crate::jobs::ConversionJob> {
+    if job.attachment.as_ref().map(|value| value.status.as_str()) != Some("pending") {
+        return Ok(job);
+    }
+    let Some(item_id) = job.library_item_id.as_deref() else {
+        return jobs.finish_attachment(&job.id, Some("invalid-attachment"));
+    };
+    let Some(artifact) = job.artifact.as_ref() else {
+        return jobs.finish_attachment(&job.id, Some("artifact-invalid"));
+    };
+    let paths = LibraryPaths::resolve(library, None)?;
+    let result = LibraryStore::open(paths, true).and_then(|mut store| {
+        store.attach_verified_artifact(
+            item_id,
+            &artifact.path,
+            job.output_format,
+            artifact.bytes,
+            &artifact.sha256,
+        )
+    });
+    match result {
+        Ok(_) => jobs.finish_attachment(&job.id, None),
+        Err(error) => jobs.finish_attachment(&job.id, Some(error.code())),
+    }
+}
+
+fn destination(command: DestinationCommand, library: Option<&str>) -> AppResult<()> {
     match command {
         DestinationCommand::List { volumes_root } => {
             print_success(json!({"destinations":destinations::list(&volumes_root)?}))
@@ -1521,7 +2495,38 @@ fn destination(command: DestinationCommand) -> AppResult<()> {
                 json!({"destinationId":device.id,"removed":destinations::remove(&device,&id)?}),
             )
         }
-        DestinationCommand::RootedKindleSend => Err(AppError::new("feature-unavailable")),
+        DestinationCommand::RootedKindleSend {
+            id,
+            format,
+            host,
+            user,
+            remote_root,
+            identity_file,
+            port,
+            timeout_ms,
+        } => {
+            let paths = LibraryPaths::resolve(library, None)?;
+            let item = LibraryStore::open(paths, true)?
+                .get(&id)?
+                .ok_or_else(|| AppError::new("not-found"))?;
+            let source = item
+                .formats
+                .iter()
+                .find(|candidate| candidate.format == format)
+                .ok_or_else(|| AppError::new("format-not-found"))?;
+            if detect_format(&source.source_path) != Some(format) {
+                return Err(AppError::new("format-mismatch"));
+            }
+            let destination = KindleSshDestination {
+                host,
+                user,
+                port,
+                remote_root,
+                identity_file,
+                timeout: Duration::from_millis(timeout_ms),
+            };
+            print_success(kindle_ssh::send(&id, &source.source_path, &destination)?)
+        }
     }
 }
 fn send(

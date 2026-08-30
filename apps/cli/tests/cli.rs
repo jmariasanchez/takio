@@ -22,6 +22,14 @@ fn capabilities_identify_the_native_tui() {
     assert_eq!(value["implementation"], "rust");
     assert_eq!(value["tui"], true);
     assert_eq!(value["librarySchemaVersion"], 10);
+    assert_eq!(value["features"]["metadata"], true);
+    assert_eq!(value["features"]["contentServer"], true);
+    assert!(
+        value["unsupportedCommands"]
+            .as_array()
+            .expect("unsupported commands")
+            .contains(&serde_json::json!("library duplicates"))
+    );
 }
 
 #[test]
@@ -170,6 +178,24 @@ fn invalid_arguments_use_the_machine_readable_failure_envelope() {
     let envelope: Value = serde_json::from_slice(&output.stdout).expect("valid JSON failure");
     assert_eq!(envelope["ok"], false);
     assert_eq!(envelope["error"]["code"], "invalid-arguments");
+}
+
+#[test]
+fn reserved_legacy_commands_return_feature_unavailable_with_their_old_syntax() {
+    let output = cargo_bin_cmd!("takio")
+        .args([
+            "library",
+            "import-calibre",
+            "--library-root",
+            "/tmp/calibre-library",
+        ])
+        .output()
+        .expect("run reserved command");
+
+    assert!(!output.status.success());
+    assert!(output.stderr.is_empty());
+    let envelope: Value = serde_json::from_slice(&output.stdout).expect("failure envelope");
+    assert_eq!(envelope["error"]["code"], "feature-unavailable");
 }
 
 #[test]
@@ -389,4 +415,220 @@ fn jobs_commands_return_desktop_compatible_envelopes() {
     assert!(listed.status.success());
     let listed = success_value(&listed.stdout);
     assert_eq!(listed["jobs"].as_array().expect("jobs").len(), 1);
+}
+
+#[test]
+fn backup_restore_rebases_managed_files_into_a_new_library() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let original = temp.path().join("original").join("library.sqlite");
+    let source = temp.path().join("parable.epub");
+    fs::write(&source, b"restorable ebook").expect("write source ebook");
+
+    let imported = cargo_bin_cmd!("takio")
+        .args(["library", "import", "--db"])
+        .arg(&original)
+        .args(["--source-path"])
+        .arg(&source)
+        .output()
+        .expect("import ebook");
+    assert!(imported.status.success());
+
+    let backup = temp.path().join("backup");
+    let backed_up = cargo_bin_cmd!("takio")
+        .args(["library", "backup", "--db"])
+        .arg(&original)
+        .args(["--dest"])
+        .arg(&backup)
+        .output()
+        .expect("back up library");
+    assert!(backed_up.status.success());
+    assert!(backup.join("manifest.json").is_file());
+
+    let restored_parent = temp.path().join("restored");
+    fs::create_dir(&restored_parent).expect("create existing restore parent");
+    let marker = restored_parent.join("keep.txt");
+    fs::write(&marker, b"unrelated").expect("write unrelated parent file");
+    let restored = restored_parent.join("library.sqlite");
+    let restored_output = cargo_bin_cmd!("takio")
+        .args(["library", "restore-backup", "--db"])
+        .arg(&restored)
+        .args(["--source"])
+        .arg(&backup)
+        .output()
+        .expect("restore library");
+    assert!(restored_output.status.success());
+    assert_eq!(
+        success_value(&restored_output.stdout)["restore"]["report"]["verifiedManagedFormats"],
+        1
+    );
+
+    let listed = cargo_bin_cmd!("takio")
+        .args(["library", "list", "--db"])
+        .arg(&restored)
+        .output()
+        .expect("list restored library");
+    let value = success_value(&listed.stdout);
+    let restored_path = value["items"][0]["formats"][0]["sourcePath"]
+        .as_str()
+        .expect("restored managed path");
+    assert!(restored_path.contains("/restored/items/"));
+    assert_eq!(
+        fs::read(restored_path).expect("read restored ebook"),
+        b"restorable ebook"
+    );
+    assert_eq!(
+        fs::read(marker).expect("read unrelated parent file"),
+        b"unrelated"
+    );
+}
+
+#[test]
+fn catalog_saved_views_and_content_search_work_without_calibre() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let database = temp.path().join("library.sqlite");
+    let source = temp.path().join("Octavia Butler - Kindred.txt");
+    fs::write(&source, b"A journey through time and memory.").expect("write text ebook");
+    let imported = cargo_bin_cmd!("takio")
+        .args(["library", "import", "--db"])
+        .arg(&database)
+        .args(["--source-path"])
+        .arg(&source)
+        .output()
+        .expect("import text ebook");
+    let item = success_value(&imported.stdout)["item"].clone();
+    let id = item["id"].as_str().expect("item id");
+
+    let request = serde_json::json!({
+        "id":"favorite-fiction",
+        "name":"Favorite fiction",
+        "definition":{
+            "version":1,
+            "query":"Kindred",
+            "filters":{"authors":[],"tags":[],"series":[],"languages":[],"formats":[]},
+            "sort":{"field":"title","direction":"ascending"}
+        }
+    });
+    let saved = cargo_bin_cmd!("takio")
+        .args(["library", "saved-views", "save", "--db"])
+        .arg(&database)
+        .args(["--request-json", &request.to_string()])
+        .output()
+        .expect("save library view");
+    assert!(saved.status.success());
+
+    let views = cargo_bin_cmd!("takio")
+        .args(["library", "saved-views", "list", "--db"])
+        .arg(&database)
+        .output()
+        .expect("list saved views");
+    assert_eq!(
+        success_value(&views.stdout)["views"][0]["id"],
+        "favorite-fiction"
+    );
+
+    let invalid = serde_json::json!({
+        "id":"invalid-view",
+        "name":"Invalid view",
+        "definition":{"unexpected":true}
+    });
+    let rejected = cargo_bin_cmd!("takio")
+        .args(["library", "saved-views", "save", "--db"])
+        .arg(&database)
+        .args(["--request-json", &invalid.to_string()])
+        .output()
+        .expect("reject invalid library view");
+    assert!(!rejected.status.success());
+    let envelope: Value = serde_json::from_slice(&rejected.stdout).expect("failure envelope");
+    assert_eq!(envelope["error"]["code"], "invalid-arguments");
+
+    let patch = serde_json::json!({
+        "authors":[{"name":"Octavia E. Butler","sortName":"Butler, Octavia E."}],
+        "series":"Patternist adjacent",
+        "seriesIndex":1.0,
+        "publisher":"Beacon Press",
+        "languages":["en"],
+        "identifiers":{"isbn":"9780807083697"},
+        "customMetadata":{"shelf":"favorites"},
+        "publishedDate":"1979-06-01",
+        "rating":5.0,
+        "description":"A landmark time-travel novel.",
+        "tags":["fiction","time travel"]
+    });
+    let updated = cargo_bin_cmd!("takio")
+        .args(["library", "update", "--db"])
+        .arg(&database)
+        .args(["--id", id, "--patch-json", &patch.to_string()])
+        .output()
+        .expect("enrich catalog metadata");
+    assert!(updated.status.success());
+
+    let catalog_json = temp.path().join("catalog.json");
+    let exported_json = cargo_bin_cmd!("takio")
+        .args(["library", "catalog", "--db"])
+        .arg(&database)
+        .args(["--format", "json", "--output"])
+        .arg(&catalog_json)
+        .output()
+        .expect("write JSON catalog");
+    assert!(exported_json.status.success());
+    let document: Value =
+        serde_json::from_slice(&fs::read(&catalog_json).expect("read JSON catalog"))
+            .expect("parse JSON catalog");
+    let book = &document["books"][0];
+    assert_eq!(book["authors"], serde_json::json!(["Octavia E. Butler"]));
+    assert_eq!(book["identifiers"]["isbn"], "9780807083697");
+    assert_eq!(book["customMetadata"]["shelf"], "favorites");
+    assert_eq!(book["tags"], serde_json::json!(["fiction", "time travel"]));
+    assert_eq!(book["hasCover"], false);
+    assert!(book.get("sourcePath").is_none());
+
+    let catalog = temp.path().join("catalog.csv");
+    let exported = cargo_bin_cmd!("takio")
+        .args(["library", "catalog", "--db"])
+        .arg(&database)
+        .args(["--format", "csv", "--output"])
+        .arg(&catalog)
+        .output()
+        .expect("write catalog");
+    assert!(exported.status.success());
+    assert!(
+        fs::read_to_string(&catalog)
+            .expect("read catalog")
+            .contains("Kindred")
+    );
+
+    let searched = cargo_bin_cmd!("takio")
+        .args(["library", "content-search", "--db"])
+        .arg(&database)
+        .args(["--query", "through time", "--id", id])
+        .output()
+        .expect("search ebook content");
+    let result = success_value(&searched.stdout);
+    assert_eq!(result["counts"]["matched"], 1);
+    assert_eq!(result["outcomes"][0]["status"], "matched");
+}
+
+#[test]
+fn filename_metadata_candidates_are_available_without_external_backends() {
+    let output = cargo_bin_cmd!("takio")
+        .args([
+            "metadata",
+            "candidates",
+            "filename",
+            "--source-path",
+            "Ursula K. Le Guin - Earthsea 2 - The Tombs of Atuan.epub",
+            "--id",
+            "book-7",
+        ])
+        .output()
+        .expect("derive filename metadata");
+
+    assert!(output.status.success());
+    let value = success_value(&output.stdout);
+    assert_eq!(
+        value["candidates"][0]["patch"]["title"],
+        "The Tombs of Atuan"
+    );
+    assert_eq!(value["candidates"][0]["patch"]["series"], "Earthsea");
+    assert_eq!(value["candidates"][0]["patch"]["seriesIndex"], 2.0);
 }

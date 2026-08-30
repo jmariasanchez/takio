@@ -4,7 +4,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use chrono::Utc;
-use rusqlite::{Connection, OptionalExtension, Transaction, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use serde::Serialize;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -40,6 +40,24 @@ pub struct BackupReport {
     pub destination_path: PathBuf,
     pub database_path: PathBuf,
     pub managed_files: u64,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RestoreReport {
+    pub source_path: PathBuf,
+    pub database_path: PathBuf,
+    pub report: VerifyReport,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SavedView {
+    pub id: String,
+    pub name: String,
+    pub definition: Value,
+    pub created_at: String,
+    pub updated_at: String,
 }
 
 impl LibraryStore {
@@ -250,6 +268,92 @@ impl LibraryStore {
         }
         self.read_item(id)?
             .ok_or_else(|| AppError::new("storage-unavailable"))
+    }
+
+    pub fn attach_verified_artifact(
+        &mut self,
+        id: &str,
+        source: &Path,
+        format: FormatId,
+        expected_bytes: u64,
+        expected_sha256: &str,
+    ) -> AppResult<LibraryItem> {
+        let item = self
+            .read_item(id)?
+            .ok_or_else(|| AppError::new("not-found"))?;
+        let expected = (expected_bytes, expected_sha256.to_owned());
+        if let Some(existing) = read_stored_format(&self.connection, id, format)? {
+            if existing.provenance == Provenance::Managed
+                && existing.fingerprint.as_ref() == Some(&expected)
+                && hash_file(&existing.path).ok().as_ref() == Some(&expected)
+            {
+                return Ok(item);
+            }
+            return Err(AppError::new("format-exists"));
+        }
+        let source = canonical_file(source)?;
+        if detect_format(&source) != Some(format) || hash_file(&source)? != expected {
+            return Err(AppError::new("artifact-invalid"));
+        }
+        let now = Utc::now().to_rfc3339();
+        let content_bytes = as_i64(expected_bytes)?;
+        let target = self.managed_path(id, format);
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if let Some(existing) = read_stored_format(&transaction, id, format)? {
+            if existing.provenance == Provenance::Managed
+                && existing.fingerprint.as_ref() == Some(&expected)
+                && hash_file(&existing.path).ok().as_ref() == Some(&expected)
+            {
+                return Ok(item);
+            }
+            return Err(AppError::new("format-exists"));
+        }
+        let position: i64 = transaction.query_row(
+            "SELECT COALESCE(MAX(position), -1) + 1 FROM library_item_formats WHERE library_item_id = ?1",
+            [id],
+            |row| row.get(0),
+        )?;
+        publish_copy(&source, &target, &expected)?;
+        let inserted = transaction.execute(
+            "INSERT INTO library_item_formats
+             (library_item_id, format, source_path, added_at, provenance, position, content_bytes, content_sha256)
+             VALUES (?1, ?2, ?3, ?4, 'managed', ?5, ?6, ?7)",
+            params![id, format.as_str(), target.to_string_lossy(), now, position, content_bytes, expected_sha256],
+        );
+        if let Err(error) = inserted {
+            let _ = fs::remove_file(&target);
+            return Err(error.into());
+        }
+        transaction.commit()?;
+        self.read_item(id)?
+            .ok_or_else(|| AppError::new("storage-unavailable"))
+    }
+
+    pub fn catalog_page(&self, limit: usize, offset: usize) -> AppResult<(u64, Vec<LibraryItem>)> {
+        let total = count(
+            &self.connection,
+            "SELECT COUNT(*) FROM library_items WHERE trashed_at IS NULL",
+        )?;
+        let mut statement = self.connection.prepare(
+            "SELECT id FROM library_items WHERE trashed_at IS NULL ORDER BY title COLLATE NOCASE,id LIMIT ?1 OFFSET ?2",
+        )?;
+        let limit = u64::try_from(limit).map_err(|_| AppError::new("invalid-arguments"))?;
+        let offset = u64::try_from(offset).map_err(|_| AppError::new("invalid-arguments"))?;
+        let ids = statement
+            .query_map(params![as_i64(limit)?, as_i64(offset)?], |row| {
+                row.get::<_, String>(0)
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        let items = ids
+            .into_iter()
+            .map(|id| {
+                self.read_item(&id)?
+                    .ok_or_else(|| AppError::new("invalid-stored-data"))
+            })
+            .collect::<AppResult<Vec<_>>>()?;
+        Ok((total, items))
     }
 
     pub fn remove_format(&mut self, id: &str, format: FormatId) -> AppResult<LibraryItem> {
@@ -607,41 +711,226 @@ impl LibraryStore {
     }
 
     pub fn backup(&self, destination: &Path) -> AppResult<BackupReport> {
+        let destination = safe_new_tree_path(destination, &self.paths.root)?;
         if destination.exists() {
             return Err(AppError::new("destination-exists"));
         }
-        fs::create_dir_all(destination).map_err(|_| AppError::new("backup-failed"))?;
-        let database_path = destination.join("library.sqlite");
-        let mut output =
-            Connection::open(&database_path).map_err(|_| AppError::new("backup-failed"))?;
-        let backup = rusqlite::backup::Backup::new(&self.connection, &mut output)
+        let result = (|| -> AppResult<BackupReport> {
+            fs::create_dir_all(&destination).map_err(|_| AppError::new("backup-failed"))?;
+            let database_path = destination.join("library.sqlite");
+            let backup_paths = LibraryPaths::resolve(None, Some(&database_path))?;
+            let mut output =
+                Connection::open(&database_path).map_err(|_| AppError::new("backup-failed"))?;
+            let backup = rusqlite::backup::Backup::new(&self.connection, &mut output)
+                .map_err(|_| AppError::new("backup-failed"))?;
+            backup
+                .run_to_completion(16, std::time::Duration::from_millis(10), None)
+                .map_err(|_| AppError::new("backup-failed"))?;
+            drop(backup);
+            rebase_owned_paths(&mut output, &self.paths, &backup_paths)
+                .map_err(|_| AppError::new("backup-failed"))?;
+            drop(output);
+            copy_tree_if_present(&self.paths.items, &backup_paths.items)?;
+            copy_tree_if_present(&self.paths.covers, &backup_paths.covers)?;
+            let report = Self::open(backup_paths.clone(), false)?.verify()?;
+            let managed_files = report.managed_formats;
+            let manifest = serde_json::json!({
+                "version": 1,
+                "schemaVersion": LIBRARY_SCHEMA_VERSION,
+                "createdAt": Utc::now().to_rfc3339(),
+                "sourceRoot": backup_paths.root,
+                "managedFiles": managed_files,
+            });
+            fs::write(
+                destination.join("manifest.json"),
+                serde_json::to_vec_pretty(&manifest).map_err(|_| AppError::new("backup-failed"))?,
+            )
             .map_err(|_| AppError::new("backup-failed"))?;
-        backup
-            .run_to_completion(16, std::time::Duration::from_millis(10), None)
-            .map_err(|_| AppError::new("backup-failed"))?;
-        drop(backup);
-        copy_tree_if_present(&self.paths.items, &destination.join("items"))?;
-        copy_tree_if_present(&self.paths.covers, &destination.join("covers"))?;
-        let managed_files = count(
-            &self.connection,
-            "SELECT COUNT(*) FROM library_item_formats WHERE provenance='managed'",
-        )?;
-        let manifest = serde_json::json!({
-            "version": 1,
-            "schemaVersion": LIBRARY_SCHEMA_VERSION,
-            "createdAt": Utc::now().to_rfc3339(),
-            "managedFiles": managed_files,
-        });
-        fs::write(
-            destination.join("manifest.json"),
-            serde_json::to_vec_pretty(&manifest).map_err(|_| AppError::new("backup-failed"))?,
+            Ok(BackupReport {
+                destination_path: backup_paths.root,
+                database_path: backup_paths.database,
+                managed_files,
+            })
+        })();
+        if result.is_err() {
+            let _ = fs::remove_dir_all(&destination);
+        }
+        result
+    }
+
+    pub fn restore_backup(source: &Path, paths: LibraryPaths) -> AppResult<RestoreReport> {
+        let source = source
+            .canonicalize()
+            .map_err(|_| AppError::new("source-invalid"))?;
+        let destinations = [&paths.database, &paths.jobs, &paths.items, &paths.covers];
+        let destination_exists = destinations.iter().any(|path| path.exists());
+        let destination_overlaps_source = destinations.iter().any(|path| path.starts_with(&source));
+        if !source.is_dir() || destination_overlaps_source || destination_exists {
+            return Err(AppError::new(if destination_exists {
+                "destination-exists"
+            } else {
+                "source-invalid"
+            }));
+        }
+        let manifest: Value = serde_json::from_slice(
+            &fs::read(source.join("manifest.json")).map_err(|_| AppError::new("source-invalid"))?,
         )
-        .map_err(|_| AppError::new("backup-failed"))?;
-        Ok(BackupReport {
-            destination_path: destination.to_path_buf(),
-            database_path,
-            managed_files,
+        .map_err(|_| AppError::new("source-invalid"))?;
+        if manifest.get("version").and_then(Value::as_u64) != Some(1)
+            || manifest.get("schemaVersion").and_then(Value::as_i64) != Some(LIBRARY_SCHEMA_VERSION)
+            || manifest.get("sourceRoot").and_then(Value::as_str).is_none()
+            || !source.join("library.sqlite").is_file()
+        {
+            return Err(AppError::new("source-invalid"));
+        }
+        let source_paths = LibraryPaths::resolve(
+            None,
+            Some(
+                &Path::new(
+                    manifest
+                        .get("sourceRoot")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| AppError::new("source-invalid"))?,
+                )
+                .join("library.sqlite"),
+            ),
+        )?;
+        let created_root = !paths.root.exists();
+        let result = (|| -> AppResult<RestoreReport> {
+            fs::create_dir_all(&paths.root).map_err(|_| AppError::new("restore-failed"))?;
+            fs::copy(source.join("library.sqlite"), &paths.database)
+                .map_err(|_| AppError::new("restore-failed"))?;
+            copy_tree_if_present(&source.join("items"), &paths.items)
+                .map_err(|_| AppError::new("restore-failed"))?;
+            copy_tree_if_present(&source.join("covers"), &paths.covers)
+                .map_err(|_| AppError::new("restore-failed"))?;
+            let mut connection =
+                Connection::open(&paths.database).map_err(|_| AppError::new("restore-failed"))?;
+            rebase_owned_paths(&mut connection, &source_paths, &paths)
+                .map_err(|_| AppError::new("restore-failed"))?;
+            drop(connection);
+            let report = Self::open(paths.clone(), false)?.verify()?;
+            Ok(RestoreReport {
+                source_path: source,
+                database_path: paths.database.clone(),
+                report,
+            })
+        })();
+        if result.is_err() {
+            let _ = fs::remove_file(&paths.database);
+            let _ = fs::remove_dir_all(&paths.items);
+            let _ = fs::remove_dir_all(&paths.covers);
+            if created_root {
+                let _ = fs::remove_dir(&paths.root);
+            }
+        }
+        result
+    }
+
+    pub fn list_saved_views(&self) -> AppResult<Vec<SavedView>> {
+        let mut statement = self.connection.prepare(
+            "SELECT id,name,definition_json,created_at,updated_at FROM saved_library_views ORDER BY name COLLATE NOCASE,id",
+        )?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        rows.into_iter()
+            .map(|(id, name, definition, created_at, updated_at)| {
+                let definition: Value = serde_json::from_str(&definition)
+                    .map_err(|_| AppError::new("invalid-stored-data"))?;
+                validate_saved_view_definition(&definition)
+                    .map_err(|_| AppError::new("invalid-stored-data"))?;
+                Ok(SavedView {
+                    id,
+                    name,
+                    definition,
+                    created_at,
+                    updated_at,
+                })
+            })
+            .collect()
+    }
+
+    pub fn save_view(&self, request: &Value) -> AppResult<SavedView> {
+        let request_object = request
+            .as_object()
+            .filter(|object| {
+                object.len() == 3
+                    && object.contains_key("id")
+                    && object.contains_key("name")
+                    && object.contains_key("definition")
+            })
+            .ok_or_else(|| AppError::new("invalid-arguments"))?;
+        let id = request
+            .get("id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| AppError::new("invalid-arguments"))?;
+        let name = request
+            .get("name")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty() && value.len() <= 120)
+            .ok_or_else(|| AppError::new("invalid-arguments"))?;
+        let definition = request_object
+            .get("definition")
+            .ok_or_else(|| AppError::new("invalid-arguments"))?;
+        validate_saved_view_definition(definition)?;
+        let now = Utc::now().to_rfc3339();
+        let definition_json =
+            serde_json::to_string(definition).map_err(|_| AppError::new("invalid-arguments"))?;
+        self.connection.execute(
+            "INSERT INTO saved_library_views(id,name,definition_json,created_at,updated_at) VALUES(?1,?2,?3,?4,?4)
+             ON CONFLICT(id) DO UPDATE SET name=excluded.name,definition_json=excluded.definition_json,updated_at=excluded.updated_at",
+            params![id, name, definition_json, now],
+        )?;
+        self.connection.query_row(
+            "SELECT id,name,definition_json,created_at,updated_at FROM saved_library_views WHERE id=?1",
+            [id],
+            |row| {
+                let definition: String = row.get(2)?;
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    definition,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                ))
+            },
+        )
+        .map_err(AppError::from)
+        .and_then(|(id, name, definition, created_at, updated_at)| {
+            Ok(SavedView {
+                id,
+                name,
+                definition: serde_json::from_str(&definition)
+                    .map_err(|_| AppError::new("invalid-stored-data"))?,
+                created_at,
+                updated_at,
+            })
         })
+    }
+
+    pub fn remove_view(&self, id: &str) -> AppResult<Option<SavedView>> {
+        let view = self
+            .list_saved_views()?
+            .into_iter()
+            .find(|view| view.id == id);
+        if view.is_none() {
+            return Ok(None);
+        }
+        self.connection
+            .execute("DELETE FROM saved_library_views WHERE id=?1", [id])?;
+        Ok(view)
     }
 
     fn set_trash(&mut self, id: &str, timestamp: Option<String>) -> AppResult<LibraryItem> {
@@ -664,35 +953,7 @@ impl LibraryStore {
     }
 
     fn stored_format(&self, id: &str, format: FormatId) -> AppResult<Option<StoredFormat>> {
-        self.connection
-            .query_row(
-                "SELECT source_path, provenance, position, content_bytes, content_sha256
-             FROM library_item_formats WHERE library_item_id=?1 AND format=?2",
-                params![id, format.as_str()],
-                |row| {
-                    let provenance: String = row.get(1)?;
-                    Ok(StoredFormat {
-                        path: PathBuf::from(row.get::<_, String>(0)?),
-                        provenance: if provenance == "managed" {
-                            Provenance::Managed
-                        } else {
-                            Provenance::Referenced
-                        },
-                        position: row.get(2)?,
-                        fingerprint: match (
-                            row.get::<_, Option<i64>>(3)?,
-                            row.get::<_, Option<String>>(4)?,
-                        ) {
-                            (Some(bytes), Some(sha256)) => {
-                                Some((u64::try_from(bytes).unwrap_or_default(), sha256))
-                            }
-                            _ => None,
-                        },
-                    })
-                },
-            )
-            .optional()
-            .map_err(Into::into)
+        read_stored_format(&self.connection, id, format)
     }
 
     fn read_item(&self, id: &str) -> AppResult<Option<LibraryItem>> {
@@ -842,6 +1103,42 @@ fn has_schema(connection: &Connection) -> AppResult<bool> {
             [],
             |row| row.get(0),
         )
+        .map_err(Into::into)
+}
+
+fn read_stored_format(
+    connection: &Connection,
+    id: &str,
+    format: FormatId,
+) -> AppResult<Option<StoredFormat>> {
+    connection
+        .query_row(
+            "SELECT source_path, provenance, position, content_bytes, content_sha256
+             FROM library_item_formats WHERE library_item_id=?1 AND format=?2",
+            params![id, format.as_str()],
+            |row| {
+                let provenance: String = row.get(1)?;
+                Ok(StoredFormat {
+                    path: PathBuf::from(row.get::<_, String>(0)?),
+                    provenance: if provenance == "managed" {
+                        Provenance::Managed
+                    } else {
+                        Provenance::Referenced
+                    },
+                    position: row.get(2)?,
+                    fingerprint: match (
+                        row.get::<_, Option<i64>>(3)?,
+                        row.get::<_, Option<String>>(4)?,
+                    ) {
+                        (Some(bytes), Some(sha256)) => {
+                            Some((u64::try_from(bytes).unwrap_or_default(), sha256))
+                        }
+                        _ => None,
+                    },
+                })
+            },
+        )
+        .optional()
         .map_err(Into::into)
 }
 
@@ -1061,6 +1358,82 @@ fn clean_optional(value: Option<String>) -> Option<String> {
         (!value.is_empty()).then_some(value)
     })
 }
+
+fn validate_saved_view_definition(definition: &Value) -> AppResult<()> {
+    let object = definition
+        .as_object()
+        .filter(|object| {
+            object.len() == 4
+                && object.contains_key("version")
+                && object.contains_key("query")
+                && object.contains_key("filters")
+                && object.contains_key("sort")
+        })
+        .ok_or_else(|| AppError::new("invalid-arguments"))?;
+    if object.get("version").and_then(Value::as_u64) != Some(1)
+        || object.get("query").and_then(Value::as_str).is_none()
+    {
+        return Err(AppError::new("invalid-arguments"));
+    }
+    let filters = object
+        .get("filters")
+        .and_then(Value::as_object)
+        .filter(|filters| {
+            filters.len() == 5
+                && filters.contains_key("authors")
+                && filters.contains_key("tags")
+                && filters.contains_key("series")
+                && filters.contains_key("languages")
+                && filters.contains_key("formats")
+        })
+        .ok_or_else(|| AppError::new("invalid-arguments"))?;
+    for key in ["authors", "tags", "series", "languages"] {
+        let values = filters
+            .get(key)
+            .and_then(Value::as_array)
+            .ok_or_else(|| AppError::new("invalid-arguments"))?;
+        let mut seen = std::collections::HashSet::new();
+        if values.iter().any(|value| {
+            value
+                .as_str()
+                .map(str::trim)
+                .is_none_or(|value| value.is_empty() || !seen.insert(value.to_ascii_lowercase()))
+        }) {
+            return Err(AppError::new("invalid-arguments"));
+        }
+    }
+    let formats = filters
+        .get("formats")
+        .and_then(Value::as_array)
+        .ok_or_else(|| AppError::new("invalid-arguments"))?;
+    let mut seen_formats = std::collections::HashSet::new();
+    if formats.iter().any(|value| {
+        value
+            .as_str()
+            .and_then(|value| value.parse::<FormatId>().ok())
+            .is_none_or(|format| !seen_formats.insert(format.as_str()))
+    }) {
+        return Err(AppError::new("invalid-arguments"));
+    }
+    let sort = object
+        .get("sort")
+        .and_then(Value::as_object)
+        .filter(|sort| {
+            sort.len() == 2 && sort.contains_key("field") && sort.contains_key("direction")
+        })
+        .ok_or_else(|| AppError::new("invalid-arguments"))?;
+    let field = sort.get("field").and_then(Value::as_str);
+    let direction = sort.get("direction").and_then(Value::as_str);
+    if !matches!(
+        field,
+        Some("title" | "author" | "series" | "publishedDate" | "rating" | "addedAt" | "updatedAt")
+    ) || !matches!(direction, Some("ascending" | "descending"))
+    {
+        return Err(AppError::new("invalid-arguments"));
+    }
+    Ok(())
+}
+
 fn normalize_texts(values: Vec<String>) -> AppResult<Vec<String>> {
     let mut normalized = Vec::new();
     let mut seen = std::collections::HashSet::new();
@@ -1124,6 +1497,84 @@ fn copy_tree_if_present(source: &Path, target: &Path) -> AppResult<()> {
     Ok(())
 }
 
+fn safe_new_tree_path(path: &Path, owned_root: &Path) -> AppResult<PathBuf> {
+    if path.as_os_str().is_empty()
+        || path
+            .components()
+            .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
+        return Err(AppError::new("invalid-arguments"));
+    }
+    let path = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()?.join(path)
+    };
+    if path == owned_root || path.starts_with(owned_root) {
+        return Err(AppError::new("invalid-arguments"));
+    }
+    if let Some(parent) = path.parent()
+        && let Ok(parent) = parent.canonicalize()
+        && (parent == owned_root || parent.starts_with(owned_root))
+    {
+        return Err(AppError::new("invalid-arguments"));
+    }
+    Ok(path)
+}
+
+fn rebase_owned_paths(
+    connection: &mut Connection,
+    source: &LibraryPaths,
+    destination: &LibraryPaths,
+) -> AppResult<()> {
+    let formats = {
+        let mut statement = connection.prepare(
+            "SELECT library_item_id,format,source_path FROM library_item_formats WHERE provenance='managed'",
+        )?;
+        statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?
+    };
+    let covers = {
+        let mut statement = connection
+            .prepare("SELECT id,cover_path FROM library_items WHERE cover_path IS NOT NULL")?;
+        statement
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()?
+    };
+    let transaction = connection.transaction()?;
+    for (id, format, stored) in formats {
+        let relative = Path::new(&stored)
+            .strip_prefix(&source.items)
+            .map_err(|_| AppError::new("invalid-stored-data"))?;
+        let rebased = destination.items.join(relative);
+        transaction.execute(
+            "UPDATE library_item_formats SET source_path=?3 WHERE library_item_id=?1 AND format=?2 AND provenance='managed'",
+            params![id, format, rebased.to_string_lossy()],
+        )?;
+    }
+    for (id, stored) in covers {
+        let relative = Path::new(&stored)
+            .strip_prefix(&source.covers)
+            .map_err(|_| AppError::new("invalid-stored-data"))?;
+        let rebased = destination.covers.join(relative);
+        transaction.execute(
+            "UPDATE library_items SET cover_path=?2 WHERE id=?1",
+            params![id, rebased.to_string_lossy()],
+        )?;
+    }
+    transaction.commit()?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1153,5 +1604,121 @@ mod tests {
         let second = store.set_cover(&item.id, &second_cover).unwrap();
         assert!(!first_path.exists());
         assert!(second.cover_path.unwrap().exists());
+    }
+
+    #[test]
+    fn verified_artifact_attachment_rejects_mutation_and_is_idempotent() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = LibraryPaths::resolve(None, Some(&temp.path().join("library.sqlite"))).unwrap();
+        let source = temp.path().join("source.epub");
+        fs::write(&source, b"epub source").unwrap();
+        let mut store = LibraryStore::open(paths, true).unwrap();
+        let item = store.import(&source, Some("Book"), false).unwrap();
+        let artifact = temp.path().join("converted.pdf");
+        fs::write(&artifact, b"verified pdf").unwrap();
+        let expected = hash_file(&artifact).unwrap();
+
+        fs::write(&artifact, b"mutated pdf").unwrap();
+        let error = store
+            .attach_verified_artifact(&item.id, &artifact, FormatId::Pdf, expected.0, &expected.1)
+            .unwrap_err();
+        assert_eq!(error.code(), "artifact-invalid");
+
+        fs::write(&artifact, b"verified pdf").unwrap();
+        let attached = store
+            .attach_verified_artifact(&item.id, &artifact, FormatId::Pdf, expected.0, &expected.1)
+            .unwrap();
+        assert_eq!(attached.formats.len(), 2);
+
+        fs::write(&artifact, b"changed after attachment").unwrap();
+        let retried = store
+            .attach_verified_artifact(&item.id, &artifact, FormatId::Pdf, expected.0, &expected.1)
+            .unwrap();
+        assert_eq!(retried.formats.len(), 2);
+    }
+
+    #[test]
+    fn verified_artifact_attachment_cleans_up_after_database_failure() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = LibraryPaths::resolve(None, Some(&temp.path().join("library.sqlite"))).unwrap();
+        let source = temp.path().join("source.epub");
+        fs::write(&source, b"epub source").unwrap();
+        let mut store = LibraryStore::open(paths, true).unwrap();
+        let item = store.import(&source, Some("Book"), false).unwrap();
+        store
+            .connection
+            .execute_batch(
+                "CREATE TRIGGER reject_pdf_attachment
+                 BEFORE INSERT ON library_item_formats
+                 WHEN NEW.format = 'pdf'
+                 BEGIN SELECT RAISE(FAIL, 'reject pdf attachment'); END;",
+            )
+            .unwrap();
+        let artifact = temp.path().join("converted.pdf");
+        fs::write(&artifact, b"verified pdf").unwrap();
+        let expected = hash_file(&artifact).unwrap();
+        let target = store.managed_path(&item.id, FormatId::Pdf);
+
+        let error = store
+            .attach_verified_artifact(&item.id, &artifact, FormatId::Pdf, expected.0, &expected.1)
+            .unwrap_err();
+
+        assert_eq!(error.code(), "storage-unavailable");
+        assert!(!target.exists());
+        assert_eq!(store.get(&item.id).unwrap().unwrap().formats.len(), 1);
+    }
+
+    #[test]
+    fn concurrent_verified_attachment_retries_preserve_the_published_file() {
+        use std::sync::{Arc, Barrier};
+
+        let temp = tempfile::tempdir().unwrap();
+        let database = temp.path().join("library.sqlite");
+        let paths = LibraryPaths::resolve(None, Some(&database)).unwrap();
+        let source = temp.path().join("source.epub");
+        fs::write(&source, b"epub source").unwrap();
+        let mut store = LibraryStore::open(paths, true).unwrap();
+        let item = store.import(&source, Some("Book"), false).unwrap();
+        drop(store);
+
+        let artifact = temp.path().join("converted.pdf");
+        fs::write(&artifact, vec![b'p'; 4 * 1024 * 1024]).unwrap();
+        let expected = hash_file(&artifact).unwrap();
+        let barrier = Arc::new(Barrier::new(3));
+        let mut workers = Vec::new();
+        for _ in 0..2 {
+            let database = database.clone();
+            let artifact = artifact.clone();
+            let item_id = item.id.clone();
+            let expected = expected.clone();
+            let barrier = Arc::clone(&barrier);
+            workers.push(std::thread::spawn(move || {
+                let paths = LibraryPaths::resolve(None, Some(&database)).unwrap();
+                let mut store = LibraryStore::open(paths, false).unwrap();
+                barrier.wait();
+                store.attach_verified_artifact(
+                    &item_id,
+                    &artifact,
+                    FormatId::Pdf,
+                    expected.0,
+                    &expected.1,
+                )
+            }));
+        }
+        barrier.wait();
+        for worker in workers {
+            assert!(worker.join().unwrap().is_ok());
+        }
+
+        let paths = LibraryPaths::resolve(None, Some(&database)).unwrap();
+        let store = LibraryStore::open(paths, false).unwrap();
+        let attached = store.get(&item.id).unwrap().unwrap();
+        assert_eq!(attached.formats.len(), 2);
+        let pdf = attached
+            .formats
+            .iter()
+            .find(|format| format.format == FormatId::Pdf)
+            .unwrap();
+        assert_eq!(hash_file(&pdf.source_path).unwrap(), expected);
     }
 }

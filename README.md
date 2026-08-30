@@ -145,9 +145,10 @@ incompatible, or damaged library fails with a stable machine-readable code.
 `takio library backup --dest <new-directory>` creates a SQLite-consistent,
 verified snapshot containing `library.sqlite`, every Takio-managed format and
 cover, and a machine-readable manifest. It never overwrites a destination.
-Restore and portable-rebuild commands are intentionally unavailable in this Rust
-release. Backups are complete on-disk snapshots, but restoring one is currently
-an explicit operator action rather than an automated command.
+`takio library restore-backup --source <backup> --db <new-path>` verifies and
+rebases that snapshot into an absent library path without retaining paths to the
+original library or disturbing unrelated files in an existing parent directory.
+Portable OPF export and rebuild remain reserved for a later Rust implementation.
 
 ## CLI for skills and agents
 
@@ -175,18 +176,23 @@ The Rust migration currently exposes the core daily-driver and automation surfac
 | `takio`, `takio tui` | Open the interactive terminal library with search, details, import, trash, jobs, devices, and keyboard help. |
 | `takio doctor`, `capabilities` | Report Rust implementation details, schema versions, limits, and live Calibre availability. |
 | `takio formats`, `devices`, `plan`, `convert` | Inspect formats and execution targets, plan work, or run an advertised Calibre conversion synchronously. |
-| `takio library path`, `verify`, `backup` | Locate, audit, and snapshot a schema-v10 library and its managed files. |
-| `takio library import`, `import-many`, `list`, `get`, `search`, `query`, `update`, `export-many` | Import, browse, filter, edit, and export the local catalogue. |
-| `takio library format import`, `attach`, `remove` | Manage owned copies and caller-owned format references. |
+| `takio library path`, `verify`, `backup`, `restore-backup` | Locate, audit, snapshot, and safely restore a schema-v10 library and its managed files. |
+| `takio library import`, `import-many`, `list`, `get`, `search`, `query`, `update`, `update-many`, `remove`, `export-many` | Import, browse, filter, edit, remove, and export the local catalogue. |
+| `takio library catalog`, `content-search`, `validate`, `saved-views` | Publish JSON, CSV, or HTML catalogues, inspect book contents, validate attached formats, and persist reusable views. |
+| `takio library format import`, `attach`, `remove`, `replace` | Manage owned copies and caller-owned format references, including guarded atomic replacement. |
 | `takio library cover set`, `remove` | Manage Takio-owned cover images. |
 | `takio library trash list`, `move`, `restore`, `purge` | Remove items recoverably or purge them permanently. |
-| `takio jobs enqueue`, `list`, `get`, `cancel`, `retry`, `run-next`, `drain` | Manage the schema-v4 durable foreground conversion queue. |
-| `takio destination list`, `inventory`, `reconcile`, `remove`, `eject` | Discover mounted volumes and manage verified delivery records. |
+| `takio metadata extract`, `fetch`, `candidates`; `takio polish` | Use bounded Calibre metadata and polishing tools, plus local filename-derived metadata candidates. |
+| `takio jobs enqueue`, `list`, `get`, `cancel`, `retry`, `retry-attachment`, `run-next`, `drain` | Manage the schema-v4 durable foreground conversion queue and reconcile completed outputs with library items. |
+| `takio destination list`, `inventory`, `reconcile`, `remove`, `eject`, `rooted-kindle-send` | Discover mounted volumes, manage verified delivery records, or explicitly opt into hardened SSH/SCP delivery. |
 | `takio send` | Copy and SHA-256 verify an attached format on an authorized mounted destination. |
+| `takio serve` | Run an authenticated, loopback-only, read-only HTTP catalogue and format server. |
 
-Commands not yet ported from the former Bun CLI return the stable
-`feature-unavailable` error and are reported as unavailable by `takio capabilities`.
-The Rust binary does not launch Bun or JavaScript as a fallback.
+The remaining reserved workflows are Calibre-library import, watched import,
+portable OPF export/rebuild, and duplicate review/merge. They return the stable
+`feature-unavailable` error and appear in `unsupportedCommands` from
+`takio capabilities`. The Rust binary does not launch Bun or JavaScript as a
+fallback.
 
 Use `takio --library <name> ...` to keep independent named libraries under the
 Takio data directory. `--db <path>` remains available for an explicit physical
@@ -203,11 +209,12 @@ foreground. Conversion output is published only after the adapter exits
 successfully and the artifact has a recorded byte count and SHA-256 digest.
 
 The caller chooses and owns the output path. Takio refuses to overwrite an
-existing file. The Rust migration currently advertises the five Calibre-backed
+existing file. The Rust CLI currently advertises the five Calibre-backed
 pairs only: EPUB to PDF, EPUB to AZW3, and DOCX, HTML, or TXT to EPUB. Native
-EPUB-to-KEPUB, metadata automation, portable rebuild, the content server, rooted
-Kindle SSH, attachment reconciliation, duplicate review, and saved views remain
-explicitly unavailable until their Rust modules reach parity.
+EPUB-to-KEPUB remains unavailable. Metadata automation, polishing, attachment
+reconciliation, saved views, backup restore, loopback content serving, and rooted
+Kindle SSH are implemented natively. Portable rebuild, Calibre-library import,
+watched import, and duplicate review remain explicit migration gaps.
 
 Mounted-volume delivery uses a private partial file, verifies bytes and SHA-256,
 then records the delivery in `.takio/deliveries.json`. Removal verifies the file

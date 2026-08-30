@@ -78,7 +78,7 @@ pub struct LibraryItem {
     pub updated_at: Option<String>,
 }
 
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct LibraryPatch {
     pub title: Option<String>,

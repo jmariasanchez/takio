@@ -2,9 +2,13 @@ pub mod cli;
 pub mod conversion;
 pub mod destinations;
 pub mod jobs;
+pub mod kindle_ssh;
+pub mod maintenance;
+pub mod metadata;
 pub mod model;
 pub mod output;
 pub mod paths;
+pub mod server;
 pub mod store;
 pub mod tui;
 

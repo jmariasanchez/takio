@@ -17,7 +17,7 @@ binary never launches Bun as a fallback.
 
 | Boundary | Responsibility |
 | --- | --- |
-| `apps/cli` | Rust CLI, Ratatui interface, SQLite library, conversion queue, Calibre adapter, and mounted-volume delivery |
+| `apps/cli` | Rust CLI, Ratatui interface, SQLite library, conversion queue, Calibre adapters, content server, and verified delivery |
 | `apps/desktop` | Electron shell, context-isolated preload, React renderer, native dialogs, and Rust sidecar packaging |
 | `packages/core` | Renderer-side ebook domain schemas and format vocabulary |
 | `packages/library-contract` | Runtime-neutral desktop wire schemas |
@@ -34,6 +34,10 @@ The `takio` crate is split by responsibility:
 | `jobs` | Independent schema-v4 foreground conversion ledger |
 | `conversion` | Format detection, Calibre discovery, planning, execution, and artifact verification |
 | `destinations` | Mounted-volume authorization, verified copy, inventory, removal, and eject |
+| `kindle_ssh` | Explicit rooted Kindle SSH/SCP validation, upload, remote verification, and publication |
+| `metadata` | Bounded Calibre metadata extraction/fetching, OPF parsing, and cover publication |
+| `maintenance` | Ebook polishing and bounded text extraction for content search and validation |
+| `server` | Authenticated loopback-only read-only catalogue and format delivery |
 | `tui` | Ratatui application state, keyboard handling, responsive rendering, and terminal restoration |
 | `paths` | Default, named, and explicit library path resolution |
 | `model` | Library item, author, format, provenance, and metadata patch wire models |
@@ -87,7 +91,8 @@ removing the source. Format removal and purge delete only paths owned by Takio.
 Implemented library workflows include single and recursive import, copy or move
 ownership, references, list/get/search, filtered and paged queries with facets,
 metadata updates, cover lifecycle, format lifecycle, trash/restore/purge, bulk
-export, integrity verification, and complete snapshot backup.
+export, catalogue publication, content search, format validation, saved views,
+integrity verification, complete snapshot backup, and path-rebased restore.
 
 ## Terminal UI
 
@@ -127,19 +132,22 @@ private partial file, verifies the completed copy, and records delivery metadata
 under `.takio`. Removal is restricted to recorded deliveries and refuses changed
 content. Eject is delegated to the operating system.
 
-MTP, Amazon Send-to-Kindle, and rooted Kindle SSH are not available in this Rust
-release.
+Rooted Kindle SSH/SCP delivery is available only through an explicit command with
+strict host-key checking, key-file authentication, validated remote paths,
+bounded execution, partial upload, remote size/hash verification, and atomic
+publication. MTP and Amazon Send-to-Kindle remain unavailable.
 
 ## Explicit migration gaps
 
 The command names for unported workflows remain reserved, but return
-`feature-unavailable`. Current gaps include native EPUB-to-KEPUB conversion,
-metadata extraction and polishing, saved views, duplicate review and merge,
-portable rebuild and automated restore, the content server, rooted Kindle SSH,
-and conversion-to-library attachment reconciliation.
+`feature-unavailable`. Current gaps are Calibre-library import, watched import,
+portable OPF export/rebuild, duplicate review/merge, and native EPUB-to-KEPUB
+conversion. Capability output includes the exact unsupported command families.
 
-Capability output reports unavailable features as unavailable. No command
-silently delegates to the deleted Bun CLI.
+Metadata extraction/fetching, polishing, filename candidates, saved views,
+attachment reconciliation, backup restore, the loopback content server, and
+rooted Kindle SSH are native Rust modules. No command silently delegates to the
+deleted Bun CLI.
 
 ## Security and release rules
 

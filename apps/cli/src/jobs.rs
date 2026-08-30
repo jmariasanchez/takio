@@ -200,6 +200,46 @@ impl JobStore {
         )
     }
 
+    pub fn retry_attachment(&self, id: &str) -> AppResult<ConversionJob> {
+        let job = self.get(id)?.ok_or_else(|| AppError::new("unknown-job"))?;
+        if job.status != JobStatus::Completed
+            || job.library_item_id.is_none()
+            || job.artifact.is_none()
+            || job.attachment.as_ref().map(|value| value.status.as_str()) != Some("failed")
+        {
+            return Err(AppError::new("invalid-transition"));
+        }
+        self.connection.execute(
+            "UPDATE jobs SET attachment_status='pending',attachment_finished_at=NULL,attachment_error_code=NULL,attachment_owner_pid=NULL WHERE id=?1",
+            [id],
+        )?;
+        self.get(id)?.ok_or_else(|| AppError::new("unknown-job"))
+    }
+
+    pub fn finish_attachment(
+        &self,
+        id: &str,
+        error_code: Option<&str>,
+    ) -> AppResult<ConversionJob> {
+        let status = if error_code.is_some() {
+            "failed"
+        } else {
+            "attached"
+        };
+        let changed = self.connection.execute(
+            "UPDATE jobs SET attachment_status=?2,attachment_finished_at=?3,attachment_error_code=?4,attachment_owner_pid=NULL WHERE id=?1 AND attachment_status='pending'",
+            params![id, status, Utc::now().to_rfc3339(), error_code],
+        )?;
+        if changed == 0 {
+            return Err(AppError::new(if self.get(id)?.is_some() {
+                "invalid-transition"
+            } else {
+                "unknown-job"
+            }));
+        }
+        self.get(id)?.ok_or_else(|| AppError::new("unknown-job"))
+    }
+
     pub fn run_next(
         &mut self,
         profile: &str,
