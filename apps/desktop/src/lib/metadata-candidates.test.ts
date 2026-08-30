@@ -40,6 +40,14 @@ const item = {
 } as const;
 
 describe("metadata candidate renderer decoder", () => {
+  const applied = {
+    itemId: "book-1",
+    candidateId: "filename:1",
+    source: "filename",
+    provenance: "desktop-candidate-review:filename",
+    fields: ["title"],
+  } as const;
+
   test("accepts strict list and apply envelopes", async () => {
     expect(await listMetadataCandidates(
       { itemId: "book-1", includeOnline: false },
@@ -53,28 +61,8 @@ describe("metadata candidate renderer decoder", () => {
         fields: ["title"],
         provenance: "desktop-candidate-review:filename",
       },
-      returns({
-        ok: true,
-        value: {
-          item,
-          applied: {
-            candidateId: "filename:1",
-            source: "filename",
-            provenance: "desktop-candidate-review:filename",
-          },
-        },
-      }),
-    )).toEqual({
-      ok: true,
-      value: {
-        item,
-        applied: {
-          candidateId: "filename:1",
-          source: "filename",
-          provenance: "desktop-candidate-review:filename",
-        },
-      },
-    });
+      returns({ ok: true, value: { item, applied } }),
+    )).toEqual({ ok: true, value: { item, applied } });
   });
 
   test("converts malformed and over-broad envelopes to protocol errors", async () => {
@@ -94,6 +82,57 @@ describe("metadata candidate renderer decoder", () => {
         provenance: "desktop-candidate-review:filename",
       },
       returns({ ok: true, value: { item } }),
+    )).toEqual({ ok: false, error: { code: "protocol-error" } });
+  });
+
+  test("rejects list responses that answer a different item or carry foreign candidates", async () => {
+    // The response answers another item entirely.
+    expect(await listMetadataCandidates(
+      { itemId: "book-1", includeOnline: false },
+      returns({ ok: true, value: { itemId: "book-2", candidates: [] } }),
+    )).toEqual({ ok: false, error: { code: "protocol-error" } });
+
+    // The response answers this item but smuggles a foreign candidate.
+    expect(await listMetadataCandidates(
+      { itemId: "book-1", includeOnline: false },
+      returns({
+        ok: true,
+        value: {
+          itemId: "book-1",
+          candidates: [
+            { ...candidate, provenance: { ...candidate.provenance, itemId: "book-9" } },
+          ],
+        },
+      }),
+    )).toEqual({ ok: false, error: { code: "protocol-error" } });
+  });
+
+  test("refuses to send a candidate bound to a different item", async () => {
+    let invoked = false;
+    expect(await applyMetadataCandidate(
+      {
+        itemId: "book-2",
+        candidate,
+        fields: ["title"],
+        provenance: "desktop-candidate-review:filename",
+      },
+      async () => {
+        invoked = true;
+        return null as never;
+      },
+    )).toEqual({ ok: false, error: { code: "invalid-arguments" } });
+    expect(invoked).toBe(false);
+  });
+
+  test("rejects apply responses that describe another item", async () => {
+    expect(await applyMetadataCandidate(
+      {
+        itemId: "book-1",
+        candidate,
+        fields: ["title"],
+        provenance: "desktop-candidate-review:filename",
+      },
+      returns({ ok: true, value: { item, applied: { ...applied, itemId: "book-9" } } }),
     )).toEqual({ ok: false, error: { code: "protocol-error" } });
   });
 });

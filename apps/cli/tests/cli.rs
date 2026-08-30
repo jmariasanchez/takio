@@ -1543,3 +1543,408 @@ fn filename_metadata_candidates_are_available_without_external_backends() {
     assert_eq!(value["candidates"][0]["patch"]["series"], "Earthsea");
     assert_eq!(value["candidates"][0]["patch"]["seriesIndex"], 2.0);
 }
+
+#[test]
+fn standalone_filename_candidates_remain_valid_without_an_item_id() {
+    let output = cargo_bin_cmd!("takio")
+        .args([
+            "metadata",
+            "candidates",
+            "filename",
+            "--source-path",
+            "Ursula K. Le Guin - The Tombs of Atuan.epub",
+        ])
+        .output()
+        .expect("derive filename metadata without an item");
+
+    assert!(output.status.success());
+    let value = success_value(&output.stdout);
+    assert_eq!(value["candidates"][0]["provenance"]["itemId"], Value::Null);
+    assert_eq!(
+        value["candidates"][0]["patch"]["title"],
+        "The Tombs of Atuan"
+    );
+}
+
+fn seed_candidate_library(temp: &std::path::Path) -> (std::path::PathBuf, String) {
+    let database = temp.join("library.sqlite");
+    let book = temp.join("Ada Writer - Real Title.epub");
+    fs::write(&book, b"book").expect("write ebook");
+    let output = cargo_bin_cmd!("takio")
+        .args(["library", "import", "--db"])
+        .arg(&database)
+        .arg("--source-path")
+        .arg(&book)
+        .output()
+        .expect("import ebook");
+    let id = success_value(&output.stdout)["item"]["id"]
+        .as_str()
+        .expect("item id")
+        .to_owned();
+    (database, id)
+}
+
+fn candidate_for(item_id: &str) -> Value {
+    serde_json::json!({
+        "schemaVersion": 1,
+        "id": "filename:1",
+        "source": "filename",
+        "confidence": "medium",
+        "patch": {"title": "Applied Title"},
+        "provenance": {
+            "generatedAt": "1970-01-01T00:00:00.000Z",
+            "itemId": item_id,
+            "sourcePath": "/Books/book.epub",
+            "pattern": "(?<title>.+)"
+        }
+    })
+}
+
+#[test]
+fn candidate_apply_rejects_a_candidate_bound_to_another_item_before_mutating() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let (database, id) = seed_candidate_library(temp.path());
+
+    let output = cargo_bin_cmd!("takio")
+        .args(["metadata", "candidates", "apply", "--db"])
+        .arg(&database)
+        .args([
+            "--id",
+            &id,
+            "--candidate-json",
+            &candidate_for("some-other-item").to_string(),
+            "--provenance",
+            "desktop-candidate-review:filename",
+        ])
+        .output()
+        .expect("apply cross-item candidate");
+
+    assert_eq!(failure_code(&output.stdout), "invalid-arguments");
+
+    let fetched = cargo_bin_cmd!("takio")
+        .args(["library", "get", "--db"])
+        .arg(&database)
+        .args(["--id", &id])
+        .output()
+        .expect("read item back");
+    let item = success_value(&fetched.stdout)["item"].clone();
+    assert_ne!(item["title"], "Applied Title");
+    assert_eq!(item["customMetadata"], Value::Null);
+}
+
+#[test]
+fn candidate_apply_durably_records_bounded_provenance_in_custom_metadata() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let (database, id) = seed_candidate_library(temp.path());
+
+    let seeded = cargo_bin_cmd!("takio")
+        .args(["library", "update", "--db"])
+        .arg(&database)
+        .args([
+            "--id",
+            &id,
+            "--patch-json",
+            r#"{"customMetadata":{"shelf":"office"}}"#,
+        ])
+        .output()
+        .expect("seed custom metadata");
+    assert!(seeded.status.success());
+
+    let mut candidate = candidate_for(&id);
+    candidate["patch"]["customMetadata"] = serde_json::json!({"shelf": "study"});
+    let output = cargo_bin_cmd!("takio")
+        .args(["metadata", "candidates", "apply", "--db"])
+        .arg(&database)
+        .args([
+            "--id",
+            &id,
+            "--candidate-json",
+            &candidate.to_string(),
+            "--provenance",
+            "desktop-candidate-review:filename",
+        ])
+        .output()
+        .expect("apply candidate");
+
+    assert!(output.status.success());
+    let value = success_value(&output.stdout);
+    assert_eq!(value["applied"]["itemId"], id.as_str());
+    assert_eq!(value["applied"]["candidateId"], "filename:1");
+    assert_eq!(value["item"]["title"], "Applied Title");
+
+    // Candidate-selected custom metadata must not erase the audit entry.
+    let recorded = value["item"]["customMetadata"]["takio_metadata_audit"]
+        .as_str()
+        .expect("durable audit entry");
+    assert_eq!(value["item"]["customMetadata"]["shelf"], "study");
+    let audit: Value = serde_json::from_str(recorded).expect("audit is JSON");
+    assert_eq!(audit["schemaVersion"], 1);
+    assert_eq!(audit["candidateId"], "filename:1");
+    assert_eq!(audit["source"], "filename");
+    assert_eq!(audit["confidence"], "medium");
+    assert_eq!(audit["candidateProvenance"]["itemId"], id.as_str());
+    assert_eq!(
+        audit["applicationProvenance"],
+        "desktop-candidate-review:filename"
+    );
+    let fields = audit["selectedFields"]
+        .as_array()
+        .expect("selected fields")
+        .iter()
+        .filter_map(Value::as_str)
+        .collect::<Vec<_>>();
+    assert!(fields.contains(&"title"));
+    assert!(fields.contains(&"customMetadata"));
+
+    // The audit survives a later read of the persisted row.
+    let fetched = cargo_bin_cmd!("takio")
+        .args(["library", "get", "--db"])
+        .arg(&database)
+        .args(["--id", &id])
+        .output()
+        .expect("read item back");
+    assert_eq!(
+        success_value(&fetched.stdout)["item"]["customMetadata"]["takio_metadata_audit"],
+        recorded
+    );
+}
+
+#[test]
+fn metadata_patch_distinguishes_missing_from_explicit_null() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let (database, id) = seed_candidate_library(temp.path());
+
+    let update = |patch: &str| {
+        cargo_bin_cmd!("takio")
+            .args(["library", "update", "--db"])
+            .arg(&database)
+            .args(["--id", &id, "--patch-json", patch])
+            .output()
+            .expect("update item")
+    };
+
+    assert!(
+        update(
+            r#"{"series":"Earthsea","seriesIndex":2,"publisher":"Press","rating":7,
+                "description":"Text","publishedDate":"2001","languages":["en"],
+                "identifiers":{"isbn":"123"},"customMetadata":{"shelf":"office"},
+                "authors":[{"name":"Ada Writer"}],"tags":["fiction"]}"#
+        )
+        .status
+        .success()
+    );
+
+    // Missing fields leave stored values untouched.
+    let untouched = success_value(&update(r#"{"title":"Kept"}"#).stdout)["item"].clone();
+    assert_eq!(untouched["series"], "Earthsea");
+    assert_eq!(untouched["languages"][0], "en");
+    assert_eq!(untouched["identifiers"]["isbn"], "123");
+
+    // Explicit nulls clear every nullable field the contract allows.
+    let cleared = success_value(
+        &update(
+            r#"{"author":null,"authors":null,"series":null,"seriesIndex":null,"publisher":null,
+                "languages":null,"identifiers":null,"customMetadata":null,"publishedDate":null,
+                "rating":null,"description":null}"#,
+        )
+        .stdout,
+    )["item"]
+        .clone();
+    for field in [
+        "author",
+        "authors",
+        "series",
+        "seriesIndex",
+        "publisher",
+        "languages",
+        "identifiers",
+        "customMetadata",
+        "publishedDate",
+        "rating",
+        "description",
+    ] {
+        assert_eq!(cleared[field], Value::Null, "{field} should be cleared");
+    }
+    assert_eq!(cleared["tags"][0], "fiction");
+    assert_eq!(cleared["title"], "Kept");
+
+    // Non-nullable and empty-array-invalid fields are client errors.
+    assert_eq!(
+        failure_code(&update(r#"{"tags":null}"#).stdout),
+        "invalid-arguments"
+    );
+    assert_eq!(
+        failure_code(&update(r#"{"title":null}"#).stdout),
+        "invalid-arguments"
+    );
+    assert_eq!(
+        failure_code(&update(r#"{"authors":[]}"#).stdout),
+        "invalid-arguments"
+    );
+    assert_eq!(
+        failure_code(&update(r#"{"languages":[]}"#).stdout),
+        "invalid-arguments"
+    );
+    assert_eq!(failure_code(&update("{}").stdout), "invalid-arguments");
+
+    // `tags` clears through an empty array, as the contract allows.
+    let untagged = success_value(&update(r#"{"tags":[]}"#).stdout)["item"].clone();
+    assert_eq!(untagged["tags"].as_array().expect("tags").len(), 0);
+}
+
+#[test]
+fn candidate_apply_honors_custom_metadata_patch_semantics_and_always_records_the_audit() {
+    let apply = |database: &std::path::Path, id: &str, candidate: &Value| {
+        let output = cargo_bin_cmd!("takio")
+            .args(["metadata", "candidates", "apply", "--db"])
+            .arg(database)
+            .args([
+                "--id",
+                id,
+                "--candidate-json",
+                &candidate.to_string(),
+                "--provenance",
+                "desktop-candidate-review:filename",
+            ])
+            .output()
+            .expect("apply candidate");
+        assert!(output.status.success());
+        success_value(&output.stdout)["item"]["customMetadata"].clone()
+    };
+    let seed = |database: &std::path::Path, id: &str| {
+        let output = cargo_bin_cmd!("takio")
+            .args(["library", "update", "--db"])
+            .arg(database)
+            .args([
+                "--id",
+                id,
+                "--patch-json",
+                r#"{"customMetadata":{"shelf":"office"}}"#,
+            ])
+            .output()
+            .expect("seed custom metadata");
+        assert!(output.status.success());
+    };
+
+    // Missing preserves existing entries.
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let (database, id) = seed_candidate_library(temp.path());
+    seed(&database, &id);
+    let preserved = apply(&database, &id, &candidate_for(&id));
+    assert_eq!(preserved["shelf"], "office");
+    assert!(preserved["takio_metadata_audit"].is_string());
+
+    // Null clears existing entries but keeps the audit.
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let (database, id) = seed_candidate_library(temp.path());
+    seed(&database, &id);
+    let mut cleared_candidate = candidate_for(&id);
+    cleared_candidate["patch"]["customMetadata"] = Value::Null;
+    let cleared = apply(&database, &id, &cleared_candidate);
+    assert_eq!(cleared["shelf"], Value::Null);
+    assert!(cleared["takio_metadata_audit"].is_string());
+
+    // Set replaces existing entries and still keeps the audit.
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let (database, id) = seed_candidate_library(temp.path());
+    seed(&database, &id);
+    let mut replaced_candidate = candidate_for(&id);
+    replaced_candidate["patch"]["customMetadata"] = serde_json::json!({"room": "study"});
+    let replaced = apply(&database, &id, &replaced_candidate);
+    assert_eq!(replaced["shelf"], Value::Null);
+    assert_eq!(replaced["room"], "study");
+    assert!(replaced["takio_metadata_audit"].is_string());
+}
+
+#[test]
+fn candidate_apply_rejects_malformed_candidate_records() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let (database, id) = seed_candidate_library(temp.path());
+    let reject = |candidate: Value| {
+        let output = cargo_bin_cmd!("takio")
+            .args(["metadata", "candidates", "apply", "--db"])
+            .arg(&database)
+            .args([
+                "--id",
+                &id,
+                "--candidate-json",
+                &candidate.to_string(),
+                "--provenance",
+                "desktop-candidate-review:filename",
+            ])
+            .output()
+            .expect("apply malformed candidate");
+        assert_eq!(failure_code(&output.stdout), "invalid-arguments");
+    };
+
+    let mut without_id = candidate_for(&id);
+    without_id["id"] = Value::Null;
+    reject(without_id);
+
+    let mut bad_source = candidate_for(&id);
+    bad_source["source"] = serde_json::json!("manual");
+    reject(bad_source);
+
+    let mut bad_confidence = candidate_for(&id);
+    bad_confidence["confidence"] = serde_json::json!("certain");
+    reject(bad_confidence);
+
+    let mut null_item = candidate_for(&id);
+    null_item["provenance"]["itemId"] = Value::Null;
+    reject(null_item);
+
+    let mut string_provenance = candidate_for(&id);
+    string_provenance["provenance"] = serde_json::json!("filename");
+    reject(string_provenance);
+
+    let mut empty_patch = candidate_for(&id);
+    empty_patch["patch"] = serde_json::json!({});
+    reject(empty_patch);
+
+    let mut wrong_version = candidate_for(&id);
+    wrong_version["schemaVersion"] = serde_json::json!(2);
+    reject(wrong_version);
+
+    let mut unknown_key = candidate_for(&id);
+    unknown_key["coverPath"] = serde_json::json!("/tmp/cover.jpg");
+    reject(unknown_key);
+
+    let mut unknown_provenance_key = candidate_for(&id);
+    unknown_provenance_key["provenance"]["executable"] = serde_json::json!("sh");
+    reject(unknown_provenance_key);
+
+    let mut bad_generated_at = candidate_for(&id);
+    bad_generated_at["provenance"]["generatedAt"] = serde_json::json!("yesterday");
+    reject(bad_generated_at);
+
+    let mut bad_backend = candidate_for(&id);
+    bad_backend["provenance"]["backend"] = serde_json::json!("sh");
+    reject(bad_backend);
+}
+
+#[test]
+fn malformed_candidate_apply_never_creates_a_library_as_a_side_effect() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let database = temp.path().join("library.sqlite");
+    let candidate = candidate_for("book-1");
+
+    let output = cargo_bin_cmd!("takio")
+        .args(["metadata", "candidates", "apply", "--db"])
+        .arg(&database)
+        .args([
+            "--id",
+            "book-2",
+            "--candidate-json",
+            &candidate.to_string(),
+            "--provenance",
+            "desktop-candidate-review:filename",
+        ])
+        .output()
+        .expect("apply cross-item candidate against a missing library");
+
+    assert_eq!(failure_code(&output.stdout), "invalid-arguments");
+    assert!(
+        !database.exists(),
+        "no library may be created by rejected input"
+    );
+}

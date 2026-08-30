@@ -13,6 +13,7 @@
     "build:electron": "bun scripts/build-electron.ts",
     "build:engine": "bun scripts/build-library-engine.ts",
     "check": "tsc -b --pretty false",
+    "pretest": "bun run --filter '@takio/library-contract' build",
     "test": "bun test",
     "package": "bun run build && electron-builder",
     "package:dir": "bun run build && electron-builder --dir"

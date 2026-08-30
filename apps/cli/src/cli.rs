@@ -17,7 +17,7 @@ use crate::jobs::{JobStatus, JobStore};
 use crate::kindle_ssh::{self, KindleSshDestination};
 use crate::maintenance::{self, discover_ebook_polish};
 use crate::metadata::{self, discover_ebook_meta, discover_fetch_ebook_metadata};
-use crate::model::LibraryPatch;
+use crate::model::{LibraryPatch, Patch};
 use crate::output::{AppError, AppResult, print_success};
 use crate::paths::LibraryPaths;
 use crate::portable_library;
@@ -895,39 +895,158 @@ fn metadata_candidates(command: MetadataCandidatesCommand, library: Option<&str>
             {
                 return Err(AppError::new("invalid-arguments"));
             }
-            let (patch_value, candidate_id, source) = if let Some(input) = candidate_json {
-                let candidate = read_json(&input)?;
-                if candidate.get("schemaVersion").and_then(Value::as_u64) != Some(1) {
-                    return Err(AppError::new("invalid-arguments"));
-                }
-                (
-                    candidate
-                        .get("patch")
-                        .cloned()
-                        .ok_or_else(|| AppError::new("invalid-arguments"))?,
-                    candidate.get("id").cloned().unwrap_or(Value::Null),
-                    candidate
-                        .get("source")
-                        .cloned()
-                        .unwrap_or_else(|| json!("manual")),
-                )
-            } else {
-                (
-                    read_json(patch_json.as_deref().unwrap_or_default())?,
-                    Value::Null,
-                    json!("manual"),
-                )
+            let id = id.trim().to_owned();
+            let provenance = provenance.trim().to_owned();
+            let Some(candidate_input) = candidate_json else {
+                // Manual patches carry no candidate identity, so they are not
+                // recorded as a candidate audit entry and answer a plain
+                // envelope rather than the candidate apply response schema.
+                let patch_value = read_json(patch_json.as_deref().unwrap_or_default())?;
+                let patch: LibraryPatch = serde_json::from_value(patch_value)
+                    .map_err(|_| AppError::new("invalid-arguments"))?;
+                let paths = LibraryPaths::resolve(library, db.as_deref())?;
+                let mut store = LibraryStore::open(paths, true)?;
+                let item = store.update(&id, patch)?;
+                return print_success(
+                    json!({"item":item,"applied":{"itemId":id,"source":"manual","provenance":provenance}}),
+                );
             };
-            let patch: LibraryPatch = serde_json::from_value(patch_value)
+
+            // The engine validates the candidate independently of any client,
+            // and fully before opening or mutating a library, so malformed or
+            // cross-item input has no side effect at all.
+            let candidate: WireCandidate = serde_json::from_value(read_json(&candidate_input)?)
                 .map_err(|_| AppError::new("invalid-arguments"))?;
+            let selected_fields = candidate.validated_fields(&id)?;
+            let patch: LibraryPatch = serde_json::from_value(candidate.patch.clone())
+                .map_err(|_| AppError::new("invalid-arguments"))?;
+
             let paths = LibraryPaths::resolve(library, db.as_deref())?;
             let mut store = LibraryStore::open(paths, true)?;
+            let current = store
+                .get(&id)?
+                .ok_or_else(|| AppError::new("item-not-found"))?;
+            let audit = json!({
+                "schemaVersion": METADATA_AUDIT_SCHEMA_VERSION,
+                "candidateId": candidate.id,
+                "source": candidate.source,
+                "confidence": candidate.confidence,
+                "candidateProvenance": candidate.provenance,
+                "selectedFields": selected_fields,
+                "applicationProvenance": provenance,
+            });
+            let mut patch = patch;
+            patch.custom_metadata = Patch::Set(merge_metadata_audit(
+                &current.custom_metadata,
+                &patch.custom_metadata,
+                &audit,
+            )?);
             let item = store.update(&id, patch)?;
-            print_success(
-                json!({"item":item,"applied":{"candidateId":candidate_id,"source":source,"provenance":provenance}}),
-            )
+            print_success(json!({
+                "item": item,
+                "applied": {
+                    "itemId": id,
+                    "candidateId": candidate.id,
+                    "source": candidate.source,
+                    "provenance": provenance,
+                    "fields": selected_fields,
+                }
+            }))
         }
     }
+}
+
+pub(crate) const METADATA_AUDIT_KEY: &str = "takio_metadata_audit";
+const METADATA_AUDIT_SCHEMA_VERSION: u64 = 1;
+const MAX_CUSTOM_METADATA_ENTRIES: usize = 64;
+const MAX_CUSTOM_METADATA_VALUE_BYTES: usize = 16 * 1024;
+
+#[derive(serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct WireCandidateProvenance {
+    generated_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    item_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pattern: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    backend: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct WireCandidate {
+    schema_version: u64,
+    id: String,
+    source: String,
+    confidence: String,
+    patch: Value,
+    provenance: WireCandidateProvenance,
+}
+
+impl WireCandidate {
+    /// Validates every advertised candidate bound and the exact item identity,
+    /// returning the selected patch field names in stable order.
+    fn validated_fields(&self, item_id: &str) -> AppResult<Vec<String>> {
+        let invalid = || AppError::new("invalid-arguments");
+        if self.schema_version != 1
+            || self.id.trim().is_empty()
+            || self.id.len() > 120
+            || !["filename", "embedded", "online"].contains(&self.source.as_str())
+            || !["low", "medium", "high"].contains(&self.confidence.as_str())
+        {
+            return Err(invalid());
+        }
+        let provenance = &self.provenance;
+        if provenance.item_id.as_deref() != Some(item_id)
+            || chrono::DateTime::parse_from_rfc3339(&provenance.generated_at).is_err()
+            || provenance
+                .source_path
+                .as_ref()
+                .is_some_and(|value| value.is_empty() || value.len() > 4096)
+            || provenance
+                .pattern
+                .as_ref()
+                .is_some_and(|value| value.is_empty() || value.len() > 240)
+            || provenance.backend.as_ref().is_some_and(|value| {
+                !["ebook-meta", "fetch-ebook-metadata"].contains(&value.as_str())
+            })
+        {
+            return Err(invalid());
+        }
+        self.patch
+            .as_object()
+            .filter(|object| !object.is_empty())
+            .map(|object| object.keys().cloned().collect())
+            .ok_or_else(invalid)
+    }
+}
+
+/// Builds the effective custom metadata for a candidate application, honouring
+/// the patch's own semantics for the field: `Missing` preserves the stored
+/// entries, `Null` clears them, and `Set` replaces them. The durable audit
+/// entry is added last, so candidate-selected custom metadata cannot erase it.
+fn merge_metadata_audit(
+    existing: &BTreeMap<String, String>,
+    selected: &Patch<BTreeMap<String, String>>,
+    audit: &Value,
+) -> AppResult<BTreeMap<String, String>> {
+    let mut merged = match selected {
+        Patch::Missing => existing.clone(),
+        Patch::Null => BTreeMap::new(),
+        Patch::Set(value) => value.clone(),
+    };
+    let encoded = serde_json::to_string(audit).map_err(|_| AppError::new("storage-unavailable"))?;
+    if encoded.len() > MAX_CUSTOM_METADATA_VALUE_BYTES {
+        return Err(AppError::new("invalid-arguments"));
+    }
+    if !merged.contains_key(METADATA_AUDIT_KEY) && merged.len() >= MAX_CUSTOM_METADATA_ENTRIES {
+        return Err(AppError::new("invalid-arguments"));
+    }
+    merged.insert(METADATA_AUDIT_KEY.to_owned(), encoded);
+    Ok(merged)
 }
 
 fn parse_identifiers(inputs: &[String]) -> AppResult<BTreeMap<String, String>> {

@@ -10,8 +10,8 @@ import {
   libraryImportReportSchema,
   libraryQueryPageSchema,
   libraryTrashPageSchema,
-  metadataCandidateApplyValueSchema,
-  metadataCandidateListValueSchema,
+  metadataCandidateApplyValueSchemaFor,
+  metadataCandidateListValueSchemaFor,
   listMetadataCandidatesRequestSchema,
   listLibraryTrashRequestSchema,
   listDuplicateCandidatesRequestSchema,
@@ -293,7 +293,7 @@ export async function listMetadataCandidates(
   if (!parsed.success) return invalidArguments();
   const result = await invokeCommand<unknown>("metadata_candidates_list", { request: parsed.data });
   return decodeLibraryResult<MetadataCandidateListWireResult>(result, (value) =>
-    metadataCandidateListValueSchema.safeParse(value).success,
+    metadataCandidateListValueSchemaFor(parsed.data.itemId).safeParse(value).success,
   );
 }
 
@@ -305,7 +305,7 @@ export async function applyMetadataCandidate(
   if (!parsed.success) return invalidArguments();
   const result = await invokeCommand<unknown>("metadata_candidates_apply", { request: parsed.data });
   return decodeLibraryResult<MetadataCandidateApplyWireResult>(result, (value) =>
-    metadataCandidateApplyValueSchema.safeParse(value).success,
+    metadataCandidateApplyValueSchemaFor(parsed.data.itemId).safeParse(value).success,
   );
 }
 

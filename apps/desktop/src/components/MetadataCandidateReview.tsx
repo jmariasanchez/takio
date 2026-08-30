@@ -1,6 +1,6 @@
 import type { LibraryItem } from "@takio/core";
 import type { MetadataCandidate } from "@takio/library-contract";
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 
 import {
   applyMetadataCandidate,
@@ -14,6 +14,9 @@ type Props = {
   readonly disabled?: boolean;
   readonly item: LibraryItem;
   readonly onApplied: (item: LibraryItem) => void;
+  /** Injectable for tests; defaults to the real bridge calls. */
+  readonly listCandidates?: typeof listMetadataCandidates;
+  readonly applyCandidate?: typeof applyMetadataCandidate;
 };
 
 type CandidateField = keyof MetadataCandidate["patch"];
@@ -50,37 +53,67 @@ function provenanceLabel(candidate: MetadataCandidate): string {
   return provenance.sourcePath ?? candidate.source;
 }
 
-export function MetadataCandidateReview({ disabled = false, item, onApplied }: Props) {
+export function MetadataCandidateReview({
+  disabled = false,
+  item,
+  onApplied,
+  listCandidates = listMetadataCandidates,
+  applyCandidate = applyMetadataCandidate,
+}: Props) {
   const [includeOnline, setIncludeOnline] = useState(false);
   const [candidates, setCandidates] = useState<readonly MetadataCandidate[]>([]);
   const [selected, setSelected] = useState<Record<string, readonly CandidateField[]>>({});
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState("");
+  // Every in-flight request carries the item it was issued for plus a
+  // monotonic token, so responses that arrive after the selection changed (or
+  // after a newer request started) are discarded instead of applied.
+  const request = useRef({ itemId: item.id, token: 0 });
 
   useEffect(() => {
+    request.current = { itemId: item.id, token: request.current.token + 1 };
     setCandidates([]);
     setSelected({});
     setStatus("");
+    setBusy(false);
   }, [item.id]);
 
+  function issue() {
+    const token = request.current.token + 1;
+    request.current = { itemId: item.id, token };
+    return { itemId: item.id, token };
+  }
+
+  function isCurrent(issued: { itemId: string; token: number }): boolean {
+    return request.current.itemId === issued.itemId && request.current.token === issued.token;
+  }
+
   async function loadCandidates() {
+    const issued = issue();
     setBusy(true);
     setStatus("Looking for metadata candidates.");
     try {
-      const result = await listMetadataCandidates({ itemId: item.id, includeOnline });
+      const result = await listCandidates({ itemId: issued.itemId, includeOnline });
+      if (!isCurrent(issued)) return;
       if (!result.ok) {
         setStatus(describeLibraryError(result.error.code));
         return;
       }
-      setCandidates(result.value.candidates);
+      const candidates = result.value.itemId === issued.itemId
+        ? result.value.candidates.filter(
+            (candidate) => candidate.provenance.itemId === issued.itemId,
+          )
+        : [];
+      setCandidates(candidates);
       setSelected({});
-      setStatus(result.value.candidates.length === 0
+      setStatus(candidates.length === 0
         ? "No metadata candidates were found."
-        : `Found ${result.value.candidates.length} metadata candidate${result.value.candidates.length === 1 ? "" : "s"}. Select fields to apply.`);
+        : `Found ${candidates.length} metadata candidate${candidates.length === 1 ? "" : "s"}. Select fields to apply.`);
     } catch {
+      if (!isCurrent(issued)) return;
       setStatus("Metadata candidates could not be loaded.");
     } finally {
-      setBusy(false);
+      if (isCurrent(issued)) setBusy(false);
     }
   }
 
@@ -103,15 +136,21 @@ export function MetadataCandidateReview({ disabled = false, item, onApplied }: P
       setStatus("Select at least one field before applying this candidate.");
       return;
     }
+    if (candidate.provenance.itemId !== item.id) {
+      setStatus("This candidate belongs to a different book and was not applied.");
+      return;
+    }
+    const issued = issue();
     setBusy(true);
     setStatus(`Applying ${fields.length} selected field${fields.length === 1 ? "" : "s"}.`);
     try {
-      const result = await applyMetadataCandidate({
-        itemId: item.id,
+      const result = await applyCandidate({
+        itemId: issued.itemId,
         candidate,
         fields,
         provenance: `desktop-candidate-review:${candidate.source}`,
       });
+      if (!isCurrent(issued)) return;
       if (!result.ok) {
         setStatus(describeLibraryError(result.error.code));
         return;
@@ -121,9 +160,10 @@ export function MetadataCandidateReview({ disabled = false, item, onApplied }: P
       setSelected({});
       setStatus(`Applied ${fields.length} selected field${fields.length === 1 ? "" : "s"} from ${sourceLabel(candidate).toLowerCase()}.`);
     } catch {
+      if (!isCurrent(issued)) return;
       setStatus("The selected metadata fields could not be applied.");
     } finally {
-      setBusy(false);
+      if (isCurrent(issued)) setBusy(false);
     }
   }
 

@@ -12,7 +12,7 @@ use unicode_normalization::UnicodeNormalization;
 use uuid::Uuid;
 
 use crate::conversion::{FormatId, detect_format};
-use crate::model::{BookAuthor, BookFormat, LibraryItem, LibraryPatch, Provenance};
+use crate::model::{BookAuthor, BookFormat, LibraryItem, LibraryPatch, Patch, Provenance};
 use crate::output::{AppError, AppResult};
 use crate::paths::LibraryPaths;
 
@@ -999,51 +999,107 @@ impl LibraryStore {
         let mut item = self
             .read_item(id)?
             .ok_or_else(|| AppError::new("not-found"))?;
-        if let Some(title) = patch.title {
+        // Patch semantics, uniform across every nullable field the contract
+        // allows: `Missing` leaves the stored value untouched, `Null` clears it
+        // to the documented empty value, `Set` replaces it.
+        if patch.is_empty() {
+            return Err(AppError::new("invalid-arguments"));
+        }
+        // `title` is non-nullable: an explicit null is a client error.
+        if matches!(patch.title, Patch::Null) {
+            return Err(AppError::new("invalid-arguments"));
+        }
+        if let Some(title) = patch.title.into_set() {
             let title = title.trim();
             if title.is_empty() {
                 return Err(AppError::new("invalid-arguments"));
             }
             item.title = title.to_owned();
         }
-        if let Some(value) = patch.author {
-            item.author = clean_optional(value);
+        match patch.author {
+            Patch::Missing => {}
+            Patch::Null => item.author = None,
+            Patch::Set(value) => item.author = clean_optional(Some(value)),
         }
-        if let Some(value) = patch.authors {
-            item.authors = normalize_authors(value)?;
-        }
-        if let Some(value) = patch.series {
-            item.series = clean_optional(value);
-        }
-        if let Some(value) = patch.series_index {
-            item.series_index = value;
-        }
-        if let Some(value) = patch.publisher {
-            item.publisher = clean_optional(value);
-        }
-        if let Some(value) = patch.languages {
-            item.languages = normalize_texts(value)?;
-        }
-        if let Some(value) = patch.identifiers {
-            item.identifiers = normalize_map(value)?;
-        }
-        if let Some(value) = patch.custom_metadata {
-            item.custom_metadata = normalize_map(value)?;
-        }
-        if let Some(value) = patch.published_date {
-            item.published_date = clean_optional(value);
-        }
-        if let Some(value) = patch.rating {
-            if value.is_some_and(|rating| !(0.0..=10.0).contains(&rating)) {
-                return Err(AppError::new("invalid-arguments"));
+        match patch.authors {
+            Patch::Missing => {}
+            Patch::Null => item.authors = Vec::new(),
+            Patch::Set(value) => {
+                // The contract requires at least one author when present;
+                // clearing is expressed only as an explicit null.
+                if value.is_empty() {
+                    return Err(AppError::new("invalid-arguments"));
+                }
+                item.authors = normalize_authors(value)?;
             }
-            item.rating = value;
         }
-        if let Some(value) = patch.description {
-            item.description = clean_optional(value);
+        match patch.series {
+            Patch::Missing => {}
+            Patch::Null => item.series = None,
+            Patch::Set(value) => item.series = clean_optional(Some(value)),
         }
-        if let Some(value) = patch.tags {
-            item.tags = normalize_texts(value)?;
+        match patch.series_index {
+            Patch::Missing => {}
+            Patch::Null => item.series_index = None,
+            Patch::Set(value) => {
+                if !value.is_finite() {
+                    return Err(AppError::new("invalid-arguments"));
+                }
+                item.series_index = Some(value);
+            }
+        }
+        match patch.publisher {
+            Patch::Missing => {}
+            Patch::Null => item.publisher = None,
+            Patch::Set(value) => item.publisher = clean_optional(Some(value)),
+        }
+        match patch.languages {
+            Patch::Missing => {}
+            Patch::Null => item.languages = Vec::new(),
+            Patch::Set(value) => {
+                // The contract requires at least one language when present;
+                // clearing is expressed only as an explicit null.
+                if value.is_empty() {
+                    return Err(AppError::new("invalid-arguments"));
+                }
+                item.languages = normalize_texts(value)?;
+            }
+        }
+        match patch.identifiers {
+            Patch::Missing => {}
+            Patch::Null => item.identifiers = BTreeMap::new(),
+            Patch::Set(value) => item.identifiers = normalize_map(value)?,
+        }
+        match patch.custom_metadata {
+            Patch::Missing => {}
+            Patch::Null => item.custom_metadata = BTreeMap::new(),
+            Patch::Set(value) => item.custom_metadata = normalize_map(value)?,
+        }
+        match patch.published_date {
+            Patch::Missing => {}
+            Patch::Null => item.published_date = None,
+            Patch::Set(value) => item.published_date = clean_optional(Some(value)),
+        }
+        match patch.rating {
+            Patch::Missing => {}
+            Patch::Null => item.rating = None,
+            Patch::Set(value) => {
+                if !value.is_finite() || !(0.0..=10.0).contains(&value) {
+                    return Err(AppError::new("invalid-arguments"));
+                }
+                item.rating = Some(value);
+            }
+        }
+        match patch.description {
+            Patch::Missing => {}
+            Patch::Null => item.description = None,
+            Patch::Set(value) => item.description = clean_optional(Some(value)),
+        }
+        match patch.tags {
+            Patch::Missing => {}
+            // `tags` is not nullable in the contract; an empty array clears it.
+            Patch::Null => return Err(AppError::new("invalid-arguments")),
+            Patch::Set(value) => item.tags = normalize_texts(value)?,
         }
         item.updated_at = Some(Utc::now().to_rfc3339());
 
@@ -2796,11 +2852,11 @@ mod tests {
                 .update(
                     id,
                     LibraryPatch {
-                        authors: Some(vec![BookAuthor {
+                        authors: Patch::Set(vec![BookAuthor {
                             name: "Frank Herbert".to_owned(),
                             sort_name: None,
                         }]),
-                        identifiers: Some(BTreeMap::from([(
+                        identifiers: Patch::Set(BTreeMap::from([(
                             "ISBN".to_owned(),
                             "9780441172719".to_owned(),
                         )])),
@@ -2840,7 +2896,7 @@ mod tests {
             .update(
                 &right.id,
                 LibraryPatch {
-                    title: Some("Dune revised".to_owned()),
+                    title: Patch::Set("Dune revised".to_owned()),
                     ..LibraryPatch::default()
                 },
             )
@@ -2873,7 +2929,7 @@ mod tests {
                 .update(
                     id,
                     LibraryPatch {
-                        identifiers: Some(BTreeMap::from([(
+                        identifiers: Patch::Set(BTreeMap::from([(
                             "isbn".to_owned(),
                             "shared".to_owned(),
                         )])),
@@ -2953,7 +3009,7 @@ mod tests {
                 .update(
                     id,
                     LibraryPatch {
-                        identifiers: Some(BTreeMap::from([(
+                        identifiers: Patch::Set(BTreeMap::from([(
                             "isbn".to_owned(),
                             "shared".to_owned(),
                         )])),
@@ -3016,7 +3072,7 @@ mod tests {
                 .update(
                     id,
                     LibraryPatch {
-                        identifiers: Some(BTreeMap::from([(
+                        identifiers: Patch::Set(BTreeMap::from([(
                             "isbn".to_owned(),
                             "shared".to_owned(),
                         )])),
@@ -3110,7 +3166,7 @@ mod tests {
                 .update(
                     id,
                     LibraryPatch {
-                        identifiers: Some(identifiers.clone()),
+                        identifiers: Patch::Set(identifiers.clone()),
                         ..LibraryPatch::default()
                     },
                 )
@@ -3167,7 +3223,7 @@ mod tests {
                 .update(
                     id,
                     LibraryPatch {
-                        authors: Some(vec![BookAuthor {
+                        authors: Patch::Set(vec![BookAuthor {
                             name: "Author".to_owned(),
                             sort_name: None,
                         }]),

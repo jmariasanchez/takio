@@ -1,9 +1,63 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::conversion::FormatId;
+
+/// A patch field that distinguishes "absent" from "explicitly null".
+///
+/// `Missing` leaves the stored value untouched, `Null` clears it to the
+/// documented empty value for that field, and `Set` replaces it.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub enum Patch<T> {
+    #[default]
+    Missing,
+    Null,
+    Set(T),
+}
+
+impl<T> Patch<T> {
+    #[must_use]
+    pub const fn is_missing(&self) -> bool {
+        matches!(self, Self::Missing)
+    }
+
+    /// Returns the explicit value when the field is present and non-null.
+    #[must_use]
+    pub const fn set(&self) -> Option<&T> {
+        match self {
+            Self::Set(value) => Some(value),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub fn into_set(self) -> Option<T> {
+        match self {
+            Self::Set(value) => Some(value),
+            _ => None,
+        }
+    }
+}
+
+impl<'de, T: Deserialize<'de>> Deserialize<'de> for Patch<T> {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Ok(match Option::<T>::deserialize(deserializer)? {
+            Some(value) => Self::Set(value),
+            None => Self::Null,
+        })
+    }
+}
+
+impl<T: Serialize> Serialize for Patch<T> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::Set(value) => value.serialize(serializer),
+            _ => serializer.serialize_none(),
+        }
+    }
+}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -81,17 +135,50 @@ pub struct LibraryItem {
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct LibraryPatch {
-    pub title: Option<String>,
-    pub author: Option<Option<String>>,
-    pub authors: Option<Vec<BookAuthor>>,
-    pub series: Option<Option<String>>,
-    pub series_index: Option<Option<f64>>,
-    pub publisher: Option<Option<String>>,
-    pub languages: Option<Vec<String>>,
-    pub identifiers: Option<BTreeMap<String, String>>,
-    pub custom_metadata: Option<BTreeMap<String, String>>,
-    pub published_date: Option<Option<String>>,
-    pub rating: Option<Option<f64>>,
-    pub description: Option<Option<String>>,
-    pub tags: Option<Vec<String>>,
+    #[serde(default)]
+    pub title: Patch<String>,
+    #[serde(default)]
+    pub author: Patch<String>,
+    #[serde(default)]
+    pub authors: Patch<Vec<BookAuthor>>,
+    #[serde(default)]
+    pub series: Patch<String>,
+    #[serde(default)]
+    pub series_index: Patch<f64>,
+    #[serde(default)]
+    pub publisher: Patch<String>,
+    #[serde(default)]
+    pub languages: Patch<Vec<String>>,
+    #[serde(default)]
+    pub identifiers: Patch<BTreeMap<String, String>>,
+    #[serde(default)]
+    pub custom_metadata: Patch<BTreeMap<String, String>>,
+    #[serde(default)]
+    pub published_date: Patch<String>,
+    #[serde(default)]
+    pub rating: Patch<f64>,
+    #[serde(default)]
+    pub description: Patch<String>,
+    #[serde(default)]
+    pub tags: Patch<Vec<String>>,
+}
+
+impl LibraryPatch {
+    /// True when no field was supplied at all.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.title.is_missing()
+            && self.author.is_missing()
+            && self.authors.is_missing()
+            && self.series.is_missing()
+            && self.series_index.is_missing()
+            && self.publisher.is_missing()
+            && self.languages.is_missing()
+            && self.identifiers.is_missing()
+            && self.custom_metadata.is_missing()
+            && self.published_date.is_missing()
+            && self.rating.is_missing()
+            && self.description.is_missing()
+            && self.tags.is_missing()
+    }
 }

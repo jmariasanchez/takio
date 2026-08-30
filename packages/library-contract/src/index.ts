@@ -872,11 +872,15 @@ export const METADATA_CANDIDATE_SOURCES = ["filename", "embedded", "online"] as 
 export const METADATA_CANDIDATE_CONFIDENCES = ["low", "medium", "high"] as const;
 export const MAX_METADATA_CANDIDATES = 8;
 export const MAX_METADATA_CANDIDATE_FIELDS = 13;
+export const METADATA_CANDIDATE_AUDIT_KEY = "takio_metadata_audit";
 
 export const metadataCandidateProvenanceSchema = z
   .object({
     generatedAt: z.string().datetime(),
-    itemId: z.string().min(1).nullable().optional(),
+    // Standalone `metadata candidates filename` output has no item context, so
+    // the base schema stays nullable. Item-scoped list responses and apply
+    // requests separately require exact, non-null identity with the item.
+    itemId: z.string().min(1).max(256).nullable().optional(),
     sourcePath: z.string().min(1).max(4096).optional(),
     pattern: z.string().min(1).max(240).optional(),
     backend: z.enum(["ebook-meta", "fetch-ebook-metadata"]).optional(),
@@ -910,7 +914,24 @@ export const metadataCandidateListValueSchema = z
     candidates: z.array(metadataCandidateSchema).max(MAX_METADATA_CANDIDATES).readonly(),
   })
   .strict()
+  .superRefine((value, context) => {
+    for (const [index, candidate] of value.candidates.entries()) {
+      if (candidate.provenance.itemId !== value.itemId) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["candidates", index, "provenance", "itemId"],
+          message: "Every candidate must be provenance-bound to the listed item.",
+        });
+      }
+    }
+  })
   .readonly();
+
+export function metadataCandidateListValueSchemaFor(itemId: string) {
+  return metadataCandidateListValueSchema.refine((value) => value.itemId === itemId, {
+    message: "Candidate list must answer the requested item.",
+  });
+}
 
 export const applyMetadataCandidateRequestSchema = z
   .object({
@@ -926,6 +947,13 @@ export const applyMetadataCandidateRequestSchema = z
   })
   .strict()
   .superRefine((request, context) => {
+    if (request.candidate.provenance.itemId !== request.itemId) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["candidate", "provenance", "itemId"],
+        message: "The candidate must be provenance-bound to the requested item.",
+      });
+    }
     for (const [index, field] of request.fields.entries()) {
       if (!Object.hasOwn(request.candidate.patch, field)) {
         context.addIssue({
@@ -943,15 +971,36 @@ export const metadataCandidateApplyValueSchema = z
     item: libraryItemSchema,
     applied: z
       .object({
+        itemId: z.string().min(1).max(256),
         candidateId: z.string().min(1).max(120),
         source: z.enum(METADATA_CANDIDATE_SOURCES),
         provenance: z.string().min(1).max(240),
+        fields: z
+          .array(z.string().min(1))
+          .min(1)
+          .max(MAX_METADATA_CANDIDATE_FIELDS)
+          .readonly(),
       })
       .strict()
       .readonly(),
   })
   .strict()
+  .superRefine((value, context) => {
+    if (value.applied.itemId !== value.item.id) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["applied", "itemId"],
+        message: "The applied result must describe the returned item.",
+      });
+    }
+  })
   .readonly();
+
+export function metadataCandidateApplyValueSchemaFor(itemId: string) {
+  return metadataCandidateApplyValueSchema.refine((value) => value.applied.itemId === itemId, {
+    message: "Apply result must answer the requested item.",
+  });
+}
 
 export type MetadataCandidate = z.infer<typeof metadataCandidateSchema>;
 export type ListMetadataCandidatesRequest = z.infer<typeof listMetadataCandidatesRequestSchema>;

@@ -7,7 +7,7 @@ use rusqlite::{Connection, OpenFlags};
 use serde_json::{Value, json};
 
 use crate::conversion::{FormatId, detect_format};
-use crate::model::{BookAuthor, LibraryPatch};
+use crate::model::{BookAuthor, LibraryPatch, Patch};
 use crate::output::{AppError, AppResult};
 use crate::paths::LibraryPaths;
 use crate::store::LibraryStore;
@@ -599,23 +599,27 @@ fn custom_rows(database: &Connection) -> rusqlite::Result<HashMap<i64, BTreeMap<
 }
 
 fn patch_for(book: &CalibreBook) -> LibraryPatch {
+    fn set<T>(value: Option<T>) -> Patch<T> {
+        value.map_or(Patch::Missing, Patch::Set)
+    }
     LibraryPatch {
-        title: Some(book.title.clone()),
-        author: book.authors.first().map(|author| Some(author.name.clone())),
-        authors: (!book.authors.is_empty()).then(|| book.authors.clone()),
-        series: book.series.clone().map(Some),
-        series_index: book.series_index.map(Some),
-        publisher: book.publisher.clone().map(Some),
-        languages: (!book.languages.is_empty()).then(|| book.languages.clone()),
-        identifiers: (!book.identifiers.is_empty()).then(|| book.identifiers.clone()),
-        custom_metadata: (!book.custom_metadata.is_empty()).then(|| book.custom_metadata.clone()),
-        published_date: book.published_date.clone().map(Some),
-        rating: book
+        title: Patch::Set(book.title.clone()),
+        author: set(book.authors.first().map(|author| author.name.clone())),
+        authors: set((!book.authors.is_empty()).then(|| book.authors.clone())),
+        series: set(book.series.clone()),
+        series_index: set(book.series_index),
+        publisher: set(book.publisher.clone()),
+        languages: set((!book.languages.is_empty()).then(|| book.languages.clone())),
+        identifiers: set((!book.identifiers.is_empty()).then(|| book.identifiers.clone())),
+        custom_metadata: set(
+            (!book.custom_metadata.is_empty()).then(|| book.custom_metadata.clone())
+        ),
+        published_date: set(book.published_date.clone()),
+        rating: set(book
             .rating
-            .filter(|rating| rating.is_finite() && (0.0..=10.0).contains(rating))
-            .map(Some),
-        description: book.description.clone().map(Some),
-        tags: Some(book.tags.clone()),
+            .filter(|rating| rating.is_finite() && (0.0..=10.0).contains(rating))),
+        description: set(book.description.clone()),
+        tags: Patch::Set(book.tags.clone()),
     }
 }
 
