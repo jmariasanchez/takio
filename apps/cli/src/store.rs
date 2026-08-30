@@ -183,6 +183,8 @@ impl LibraryStore {
             migration::migrate(&mut connection, &paths, version)?;
         } else if version != LIBRARY_SCHEMA_VERSION {
             return Err(AppError::new("incompatible-schema"));
+        } else {
+            migration::verify_schema_version(&connection, version)?;
         }
         Ok(Self { connection, paths })
     }
@@ -2121,9 +2123,12 @@ fn create_schema(connection: &Connection) -> AppResult<()> {
          CREATE INDEX library_items_by_title ON library_items(title COLLATE NOCASE,id);
          CREATE INDEX library_items_by_author ON library_items(author COLLATE NOCASE,id);
          CREATE INDEX library_items_by_series ON library_items(series COLLATE NOCASE,series_index,id);
+         CREATE INDEX library_items_by_published_date ON library_items(published_date,id);
+         CREATE INDEX library_items_by_rating ON library_items(rating,id);
          CREATE INDEX library_items_by_added_at ON library_items(added_at,id);
          CREATE INDEX library_items_by_updated_at ON library_items(updated_at,id);
-         CREATE INDEX library_items_by_trash ON library_items(trashed_at,id);
+         CREATE INDEX library_items_by_trashed_at
+           ON library_items(trashed_at DESC,id ASC) WHERE trashed_at IS NOT NULL;
          CREATE INDEX library_item_formats_by_format ON library_item_formats(format,library_item_id);
          CREATE INDEX library_item_formats_by_fingerprint ON library_item_formats(content_bytes,content_sha256,library_item_id,position)
            WHERE provenance='managed';
