@@ -25,6 +25,13 @@ pub struct LibraryStore {
     paths: LibraryPaths,
 }
 
+pub struct ImportWatchObservation {
+    pub canonical_source_path: PathBuf,
+    pub content_bytes: u64,
+    pub content_sha256: String,
+    pub outcome: &'static str,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct VerifyReport {
@@ -336,6 +343,56 @@ impl LibraryStore {
                 .ok_or_else(|| AppError::new("invalid-stored-data"))
         })
         .transpose()
+    }
+
+    pub fn import_watch_accounted(
+        &self,
+        canonical_source_path: &Path,
+        fingerprint: &(u64, String),
+    ) -> AppResult<bool> {
+        self.connection
+            .query_row(
+                "SELECT EXISTS(
+                   SELECT 1 FROM import_watch_observations
+                   WHERE canonical_source_path=?1 AND content_bytes=?2 AND content_sha256=?3
+                     AND outcome<>'failed'
+                 )",
+                params![
+                    canonical_source_path.to_string_lossy(),
+                    as_i64(fingerprint.0)?,
+                    fingerprint.1
+                ],
+                |row| row.get(0),
+            )
+            .map_err(Into::into)
+    }
+
+    pub fn record_import_watch_observation(
+        &mut self,
+        observation: ImportWatchObservation,
+    ) -> AppResult<()> {
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        transaction.execute(
+            "INSERT INTO import_watch_observations
+             (canonical_source_path,content_bytes,content_sha256,outcome,accounted_at)
+             VALUES (?1,?2,?3,?4,?5)
+             ON CONFLICT(canonical_source_path) DO UPDATE SET
+               content_bytes=excluded.content_bytes,
+               content_sha256=excluded.content_sha256,
+               outcome=excluded.outcome,
+               accounted_at=excluded.accounted_at",
+            params![
+                observation.canonical_source_path.to_string_lossy(),
+                as_i64(observation.content_bytes)?,
+                observation.content_sha256,
+                observation.outcome,
+                Utc::now().to_rfc3339()
+            ],
+        )?;
+        transaction.commit()?;
+        Ok(())
     }
 
     pub fn attach_format(

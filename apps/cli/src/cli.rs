@@ -12,6 +12,7 @@ use crate::conversion::{
     CALIBRE_CAPABILITIES, FormatId, convert, detect_format, discover_ebook_convert,
 };
 use crate::destinations::{self, DestinationKind};
+use crate::import_scan::{ImportCounts, scan_imports};
 use crate::jobs::{JobStatus, JobStore};
 use crate::kindle_ssh::{self, KindleSshDestination};
 use crate::maintenance::{self, discover_ebook_polish};
@@ -239,7 +240,7 @@ enum LibraryCommand {
     ImportMany {
         #[arg(long)]
         db: Option<PathBuf>,
-        #[arg(long = "source-path", required = true)]
+        #[arg(long = "source-path", required = true, num_args = 1..=256)]
         source_paths: Vec<PathBuf>,
         #[arg(long, default_value = "copy")]
         mode: String,
@@ -265,11 +266,11 @@ enum LibraryCommand {
     ImportWatch {
         #[arg(long)]
         db: Option<PathBuf>,
-        #[arg(long = "source-path", required = true)]
+        #[arg(long = "source-path", required = true, num_args = 1..=256)]
         source_paths: Vec<PathBuf>,
-        #[arg(long, default_value_t = 30)]
+        #[arg(long, default_value_t = 30, value_parser = clap::value_parser!(u64).range(1..=86_400))]
         interval_seconds: u64,
-        #[arg(long)]
+        #[arg(long, value_parser = clap::value_parser!(u64).range(1..=10_000))]
         max_cycles: Option<u64>,
     },
     Catalog {
@@ -763,7 +764,7 @@ fn capabilities() -> AppResult<()> {
         Vec::new()
     };
     print_success(
-        json!({"protocolVersion":1,"implementation":"rust","tui":true,"limits":{"structuredJsonBytes":16384},"librarySchemaVersion":LIBRARY_SCHEMA_VERSION,"jobsSchemaVersion":4,"formats":FormatId::ALL,"conversionPairs":pairs,"backends":{"ebookConvert":backend,"ebookMeta":{"available":metadata_backend.is_some(),"path":metadata_backend},"fetchEbookMetadata":{"available":online_metadata_backend.is_some(),"path":online_metadata_backend},"ebookPolish":{"available":polish_backend.is_some(),"path":polish_backend}},"features":{"library":true,"jobs":true,"destinations":true,"metadata":true,"polish":true,"rootedKindleSsh":true,"contentServer":true,"contentServerRemoteTls":false,"nativeKepub":false},"unsupportedCommands":["library import-watch"]}),
+        json!({"protocolVersion":1,"implementation":"rust","tui":true,"limits":{"structuredJsonBytes":16384},"librarySchemaVersion":LIBRARY_SCHEMA_VERSION,"jobsSchemaVersion":4,"formats":FormatId::ALL,"conversionPairs":pairs,"backends":{"ebookConvert":backend,"ebookMeta":{"available":metadata_backend.is_some(),"path":metadata_backend},"fetchEbookMetadata":{"available":online_metadata_backend.is_some(),"path":online_metadata_backend},"ebookPolish":{"available":polish_backend.is_some(),"path":polish_backend}},"features":{"library":true,"jobs":true,"destinations":true,"metadata":true,"polish":true,"rootedKindleSsh":true,"contentServer":true,"contentServerRemoteTls":false,"nativeKepub":false},"unsupportedCommands":[]}),
     )
 }
 fn formats(as_json: bool) -> AppResult<()> {
@@ -1247,7 +1248,7 @@ fn library(command: LibraryCommand, library: Option<&str>) -> AppResult<()> {
             source_paths,
             mode,
         } => {
-            if source_paths.len() > 256 {
+            if source_paths.is_empty() || source_paths.len() > 256 {
                 return Err(AppError::new("invalid-arguments"));
             }
             let move_source = match mode.as_str() {
@@ -1257,7 +1258,7 @@ fn library(command: LibraryCommand, library: Option<&str>) -> AppResult<()> {
             };
             let paths = LibraryPaths::resolve(library, db.as_deref())?;
             let mut store = LibraryStore::open(paths, true)?;
-            print_success(import_many(&mut store, &source_paths, move_source))
+            print_success(scan_imports(&mut store, &source_paths, move_source, false)?)
         }
         LibraryCommand::ExportMany { db, request_json } => {
             let request = read_json(&request_json)?;
@@ -1332,7 +1333,23 @@ fn library(command: LibraryCommand, library: Option<&str>) -> AppResult<()> {
         }
         LibraryCommand::SavedViews(command) => library_saved_views(command, library),
         LibraryCommand::Duplicates(command) => library_duplicates(command, library),
-        LibraryCommand::ImportWatch { .. } => Err(AppError::new("feature-unavailable")),
+        LibraryCommand::ImportWatch {
+            db,
+            source_paths,
+            interval_seconds,
+            max_cycles,
+        } => {
+            if source_paths.is_empty() || source_paths.len() > 256 {
+                return Err(AppError::new("invalid-arguments"));
+            }
+            import_watch(
+                library,
+                db.as_deref(),
+                &source_paths,
+                interval_seconds,
+                max_cycles,
+            )
+        }
     }
 }
 
@@ -2074,86 +2091,56 @@ fn integrity_value(report: &VerifyReport) -> Value {
     })
 }
 
-fn import_many(store: &mut LibraryStore, roots: &[PathBuf], move_source: bool) -> Value {
-    let mut sources = Vec::new();
-    let mut outcomes = Vec::new();
-    for root in roots {
-        match std::fs::symlink_metadata(root) {
-            Ok(metadata) if metadata.file_type().is_symlink() => outcomes.push(json!({
-                "status":"skipped","sourcePath":root,"reason":"symbolic-link"
-            })),
-            Ok(metadata) if metadata.is_file() => sources.push(root.clone()),
-            Ok(metadata) if metadata.is_dir() => {
-                for entry in walkdir::WalkDir::new(root).follow_links(false) {
-                    match entry {
-                        Ok(entry) if entry.file_type().is_symlink() => outcomes.push(json!({
-                            "status":"skipped","sourcePath":entry.path(),"reason":"symbolic-link"
-                        })),
-                        Ok(entry) if entry.file_type().is_file() => {
-                            sources.push(entry.into_path());
-                        }
-                        Ok(_) => {}
-                        Err(_) => outcomes.push(json!({
-                            "status":"failed","sourcePath":root,"code":"unreadable"
-                        })),
-                    }
-                }
+fn import_watch(
+    library: Option<&str>,
+    db: Option<&Path>,
+    source_paths: &[PathBuf],
+    interval_seconds: u64,
+    max_cycles: Option<u64>,
+) -> AppResult<()> {
+    use signal_hook::consts::signal::{SIGINT, SIGTERM};
+    use signal_hook::iterator::Signals;
+    use std::sync::mpsc;
+
+    let paths = LibraryPaths::resolve(library, db)?;
+    let mut store = LibraryStore::open(paths, true)?;
+    let mut signals = Signals::new([SIGINT, SIGTERM])?;
+    let handle = signals.handle();
+    let (sender, receiver) = mpsc::sync_channel(1);
+    let signal_thread = std::thread::spawn(move || {
+        if signals.forever().next().is_some() {
+            let _ = sender.try_send(());
+        }
+    });
+
+    let mut cycles = 0_u64;
+    let mut counts = ImportCounts::default();
+    let mut stopped = false;
+    loop {
+        let scan = scan_imports(&mut store, source_paths, false, true)?;
+        cycles += 1;
+        counts.add(scan.counts);
+        if receiver.try_recv().is_ok() {
+            stopped = true;
+            break;
+        }
+        if max_cycles.is_some_and(|maximum| cycles >= maximum) {
+            break;
+        }
+        match receiver.recv_timeout(Duration::from_secs(interval_seconds)) {
+            Ok(()) => {
+                stopped = true;
+                break;
             }
-            Ok(_) => outcomes.push(json!({
-                "status":"skipped","sourcePath":root,"reason":"unsupported-file-type"
-            })),
-            Err(error) => outcomes.push(json!({
-                "status":"failed",
-                "sourcePath":root,
-                "code":if error.kind()==std::io::ErrorKind::NotFound{"not-found"}else{"unreadable"}
-            })),
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
         }
     }
-    sources.sort();
-    sources.dedup();
-    for source in sources {
-        if detect_format(&source).is_none() {
-            outcomes.push(json!({
-                "status":"skipped","sourcePath":source,"reason":"unsupported-format"
-            }));
-            continue;
-        }
-        match store.import(&source, None, move_source) {
-            Ok(item) => outcomes.push(json!({
-                "status":"imported","sourcePath":source,"item":item
-            })),
-            Err(error) => outcomes.push(json!({
-                "status":"failed",
-                "sourcePath":source,
-                "code":match error.code(){
-                    "cross-device-move"=>"cross-device-move",
-                    "storage-unavailable"=>"storage-unavailable",
-                    "source-changed"=>"source-changed",
-                    _=>"unreadable"
-                }
-            })),
-        }
-    }
-    let imported = outcomes
-        .iter()
-        .filter(|value| value["status"] == "imported")
-        .count();
-    let skipped = outcomes
-        .iter()
-        .filter(|value| value["status"] == "skipped")
-        .count();
-    let duplicates = outcomes
-        .iter()
-        .filter(|value| value["status"] == "duplicate")
-        .count();
-    let failed = outcomes
-        .iter()
-        .filter(|value| value["status"] == "failed")
-        .count();
-    json!({
-        "counts":{"total":outcomes.len(),"imported":imported,"skipped":skipped,"duplicates":duplicates,"failed":failed},
-        "outcomes":outcomes
-    })
+    handle.close();
+    signal_thread
+        .join()
+        .map_err(|_| AppError::new("storage-unavailable"))?;
+    print_success(json!({"cycles":cycles,"stopped":stopped,"counts":counts}))
 }
 
 fn export_many(store: &LibraryStore, request: &Value) -> AppResult<Value> {

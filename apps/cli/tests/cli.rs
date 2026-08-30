@@ -58,6 +58,12 @@ fn capabilities_identify_the_native_tui() {
             .expect("unsupported commands")
             .contains(&serde_json::json!("library rebuild"))
     );
+    assert!(
+        !value["unsupportedCommands"]
+            .as_array()
+            .expect("unsupported commands")
+            .contains(&serde_json::json!("library import-watch"))
+    );
 }
 
 #[test]
@@ -379,21 +385,255 @@ fn invalid_arguments_use_the_machine_readable_failure_envelope() {
 }
 
 #[test]
-fn remaining_reserved_legacy_commands_return_feature_unavailable_with_their_old_syntax() {
-    let output = cargo_bin_cmd!("takio")
-        .args([
-            "library",
-            "import-watch",
-            "--source-path",
-            "/tmp/import-root",
-        ])
-        .output()
-        .expect("run reserved command");
+fn import_watch_rejects_historical_bound_violations() {
+    for arguments in [
+        vec!["--interval-seconds", "0"],
+        vec!["--interval-seconds", "86401"],
+        vec!["--max-cycles", "0"],
+        vec!["--max-cycles", "10001"],
+    ] {
+        let mut command = cargo_bin_cmd!("takio");
+        command.args(["library", "import-watch", "--source-path", "."]);
+        command.args(arguments);
+        let output = command.output().expect("run invalid import watch");
+        assert!(!output.status.success());
+        assert_eq!(failure_code(&output.stdout), "invalid-arguments");
+        assert!(output.stderr.is_empty());
+    }
 
+    let mut command = cargo_bin_cmd!("takio");
+    command.args(["library", "import-watch"]);
+    for index in 0..257 {
+        command.arg("--source-path").arg(format!("root-{index}"));
+    }
+    let output = command.output().expect("run excessive roots");
     assert!(!output.status.success());
+    assert_eq!(failure_code(&output.stdout), "invalid-arguments");
+}
+
+#[test]
+fn import_watch_two_cycles_and_restart_do_not_recount_accounted_files() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let database = temp.path().join("library.sqlite");
+    let source = temp.path().join("watch");
+    fs::create_dir(&source).expect("watch directory");
+    fs::write(source.join("book.epub"), b"first edition").expect("ebook");
+    fs::write(source.join("notes.bin"), b"unsupported").expect("unsupported file");
+
+    let first = run_import_watch(&database, &source, 2);
+    assert_eq!(first["cycles"], 2);
+    assert_eq!(first["stopped"], false);
+    assert_eq!(
+        first["counts"],
+        serde_json::json!({"total":2,"imported":1,"skipped":1,"duplicates":0,"failed":0})
+    );
+
+    let restarted = run_import_watch(&database, &source, 1);
+    assert_eq!(restarted["cycles"], 1);
+    assert_eq!(
+        restarted["counts"],
+        serde_json::json!({"total":0,"imported":0,"skipped":0,"duplicates":0,"failed":0})
+    );
+}
+
+#[test]
+fn import_watch_reprocesses_changed_files_and_persists_observations() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let database = temp.path().join("library.sqlite");
+    let source = temp.path().join("book.epub");
+    fs::write(&source, b"version one").expect("first version");
+    let first = run_import_watch(&database, &source, 1);
+    assert_eq!(first["counts"]["imported"], 1);
+
+    fs::write(&source, b"version two is different").expect("changed version");
+    let changed = run_import_watch(&database, &source, 1);
+    assert_eq!(changed["counts"]["imported"], 1);
+    assert_eq!(changed["counts"]["total"], 1);
+
+    let connection = Connection::open(&database).expect("open watch database");
+    let observations: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM import_watch_observations",
+            [],
+            |row| row.get(0),
+        )
+        .expect("count observations");
+    assert_eq!(observations, 1);
+}
+
+#[test]
+fn import_watch_suppresses_accounted_duplicates_but_retries_failures() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let database = temp.path().join("library.sqlite");
+    let managed = temp.path().join("managed.epub");
+    let duplicate = temp.path().join("duplicate.epub");
+    let missing = temp.path().join("missing.epub");
+    fs::write(&managed, b"duplicate bytes").expect("managed source");
+    fs::write(&duplicate, b"duplicate bytes").expect("duplicate source");
+    let added = cargo_bin_cmd!("takio")
+        .args(["library", "add", "--db"])
+        .arg(&database)
+        .arg("--source-path")
+        .arg(&managed)
+        .output()
+        .expect("seed library");
+    assert!(added.status.success());
+
+    let output = cargo_bin_cmd!("takio")
+        .args(["library", "import-watch", "--db"])
+        .arg(&database)
+        .arg("--source-path")
+        .arg(&duplicate)
+        .arg("--source-path")
+        .arg(&missing)
+        .args(["--interval-seconds", "1", "--max-cycles", "2"])
+        .output()
+        .expect("watch duplicate and failure");
+    assert!(output.status.success());
+    let value = success_value(&output.stdout);
+    assert_eq!(
+        value["counts"],
+        serde_json::json!({"total":3,"imported":0,"skipped":0,"duplicates":1,"failed":2})
+    );
+}
+
+#[test]
+fn import_many_reports_existing_and_earlier_request_duplicates() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let database = temp.path().join("library.sqlite");
+    let existing = temp.path().join("existing.epub");
+    let existing_again = temp.path().join("existing-again.epub");
+    let first = temp.path().join("a.epub");
+    let second = temp.path().join("b.epub");
+    fs::write(&existing, b"already managed").expect("existing");
+    fs::write(&existing_again, b"already managed").expect("existing duplicate");
+    fs::write(&first, b"same request").expect("first");
+    fs::write(&second, b"same request").expect("second");
+    let added = cargo_bin_cmd!("takio")
+        .args(["library", "add", "--db"])
+        .arg(&database)
+        .arg("--source-path")
+        .arg(&existing)
+        .output()
+        .expect("seed existing library");
+    assert!(added.status.success());
+
+    let output = cargo_bin_cmd!("takio")
+        .args(["library", "import-many", "--db"])
+        .arg(&database)
+        .arg("--source-path")
+        .arg(&existing)
+        .arg("--source-path")
+        .arg(&existing_again)
+        .arg("--source-path")
+        .arg(&first)
+        .arg("--source-path")
+        .arg(&second)
+        .output()
+        .expect("batch import duplicates");
+    assert!(output.status.success());
+    let value = success_value(&output.stdout);
+    assert_eq!(value["counts"]["imported"], 1);
+    assert_eq!(value["counts"]["duplicates"], 3);
+    assert_eq!(value["outcomes"][0]["reason"], "existing-library");
+    assert_eq!(value["outcomes"][1]["reason"], "earlier-in-request");
+    assert_eq!(value["outcomes"][3]["reason"], "earlier-in-request");
+    assert_eq!(value["outcomes"][3]["existing"]["format"], "epub");
+}
+
+#[cfg(unix)]
+#[test]
+fn import_many_reports_symlinks_and_unsupported_non_files() {
+    use std::os::unix::fs::{FileTypeExt, symlink};
+
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let database = temp.path().join("library.sqlite");
+    let source = temp.path().join("watch");
+    fs::create_dir(&source).expect("source directory");
+    fs::write(source.join("target.epub"), b"ebook").expect("target");
+    symlink(source.join("target.epub"), source.join("linked.epub")).expect("symlink");
+    let socket = source.join("socket");
+    let listener = std::os::unix::net::UnixListener::bind(&socket).expect("unix socket");
+    assert!(
+        fs::metadata(&socket)
+            .expect("socket metadata")
+            .file_type()
+            .is_socket()
+    );
+
+    let output = cargo_bin_cmd!("takio")
+        .args(["library", "import-many", "--db"])
+        .arg(&database)
+        .arg("--source-path")
+        .arg(&source)
+        .output()
+        .expect("scan special entries");
+    drop(listener);
+    assert!(output.status.success());
+    let value = success_value(&output.stdout);
+    assert_eq!(value["counts"]["total"], 3);
+    assert_eq!(value["outcomes"][0]["reason"], "symbolic-link");
+    assert_eq!(value["outcomes"][1]["reason"], "unsupported-file-type");
+    assert_eq!(value["outcomes"][2]["status"], "imported");
+}
+
+#[cfg(unix)]
+#[test]
+fn import_watch_signal_wakes_wait_and_returns_one_stopped_envelope() {
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
+
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let database = temp.path().join("library.sqlite");
+    let source = temp.path().join("book.epub");
+    fs::write(&source, b"signal test").expect("ebook");
+    let binary = assert_cmd::cargo::cargo_bin!("takio");
+    let child = Command::new(binary)
+        .args(["library", "import-watch", "--db"])
+        .arg(&database)
+        .arg("--source-path")
+        .arg(&source)
+        .args(["--interval-seconds", "60"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn import watch");
+    std::thread::sleep(Duration::from_secs(1));
+    let started = Instant::now();
+    let status = Command::new("kill")
+        .args(["-TERM", &child.id().to_string()])
+        .status()
+        .expect("signal import watch");
+    assert!(status.success());
+    let output = child.wait_with_output().expect("wait for import watch");
+    assert!(started.elapsed() < Duration::from_secs(5));
+    assert!(output.status.success());
     assert!(output.stderr.is_empty());
-    let envelope: Value = serde_json::from_slice(&output.stdout).expect("failure envelope");
-    assert_eq!(envelope["error"]["code"], "feature-unavailable");
+    assert_eq!(String::from_utf8_lossy(&output.stdout).lines().count(), 1);
+    let value = success_value(&output.stdout);
+    assert_eq!(value["cycles"], 1);
+    assert_eq!(value["stopped"], true);
+}
+
+fn run_import_watch(database: &std::path::Path, source: &std::path::Path, cycles: u64) -> Value {
+    let output = cargo_bin_cmd!("takio")
+        .args(["library", "import-watch", "--db"])
+        .arg(database)
+        .arg("--source-path")
+        .arg(source)
+        .args(["--interval-seconds", "1", "--max-cycles"])
+        .arg(cycles.to_string())
+        .output()
+        .expect("run import watch");
+    assert!(
+        output.status.success(),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.stderr.is_empty());
+    assert_eq!(String::from_utf8_lossy(&output.stdout).lines().count(), 1);
+    success_value(&output.stdout)
 }
 
 #[test]
