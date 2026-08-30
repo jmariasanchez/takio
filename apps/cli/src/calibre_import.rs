@@ -258,19 +258,7 @@ fn normalize_absolute(path: &Path) -> AppResult<PathBuf> {
 }
 
 fn same_file(left: &Path, right: &Path) -> AppResult<bool> {
-    if left.canonicalize().ok() == right.canonicalize().ok() {
-        return Ok(true);
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-
-        let left = fs::metadata(left).map_err(|_| AppError::new("storage-unavailable"))?;
-        let right = fs::metadata(right).map_err(|_| AppError::new("unreadable"))?;
-        Ok(left.dev() == right.dev() && left.ino() == right.ino())
-    }
-    #[cfg(not(unix))]
-    Ok(false)
+    same_file::is_same_file(left, right).map_err(|_| AppError::new("unreadable"))
 }
 
 fn read_books(database: &Connection, root: &Path) -> rusqlite::Result<Vec<CalibreBook>> {
