@@ -180,6 +180,14 @@ enum LibraryCommand {
         #[arg(long = "patch-json")]
         patch_json: String,
     },
+    UpdateMany {
+        #[arg(long)]
+        db: Option<PathBuf>,
+        #[arg(long = "id", required = true)]
+        ids: Vec<String>,
+        #[arg(long = "patch-json")]
+        patch_json: String,
+    },
     #[command(subcommand)]
     Format(FormatCommand),
     #[command(subcommand)]
@@ -209,6 +217,12 @@ enum LibraryCommand {
         db: Option<PathBuf>,
         #[arg(long = "request-json")]
         request_json: String,
+    },
+    Remove {
+        #[arg(long)]
+        db: Option<PathBuf>,
+        #[arg(long)]
+        id: String,
     },
     ImportCalibre,
     ImportWatch,
@@ -248,7 +262,12 @@ enum FormatCommand {
         #[arg(long)]
         format: FormatId,
     },
-    Replace,
+    Replace {
+        #[arg(long)]
+        db: Option<PathBuf>,
+        #[arg(long = "request-json")]
+        request_json: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -658,6 +677,47 @@ fn library(command: LibraryCommand, library: Option<&str>) -> AppResult<()> {
             let mut store = LibraryStore::open(paths, true)?;
             print_success(json!({"item":store.update(&id, patch)?}))
         }
+        LibraryCommand::UpdateMany {
+            db,
+            ids,
+            patch_json,
+        } => {
+            if ids.is_empty()
+                || ids.len() > 256
+                || ids.iter().any(|id| id.trim().is_empty())
+                || ids.iter().collect::<std::collections::HashSet<_>>().len() != ids.len()
+            {
+                return Err(AppError::new("invalid-arguments"));
+            }
+            let patch: LibraryPatch = serde_json::from_value(read_json(&patch_json)?)
+                .map_err(|_| AppError::new("invalid-arguments"))?;
+            let paths = LibraryPaths::resolve(library, db.as_deref())?;
+            let mut store = LibraryStore::open(paths, true)?;
+            let mut outcomes = Vec::with_capacity(ids.len());
+            for id in ids {
+                match store.update(&id, patch.clone()) {
+                    Ok(item) => outcomes.push(json!({"status":"updated","itemId":id,"item":item})),
+                    Err(error) if error.code() == "not-found" => {
+                        outcomes.push(json!({"status":"missing","itemId":id}));
+                    }
+                    Err(error) => {
+                        outcomes.push(json!({"status":"failed","itemId":id,"code":error.code()}))
+                    }
+                }
+            }
+            let updated = outcomes
+                .iter()
+                .filter(|outcome| outcome["status"] == "updated")
+                .count();
+            let missing = outcomes
+                .iter()
+                .filter(|outcome| outcome["status"] == "missing")
+                .count();
+            let failed = outcomes.len() - updated - missing;
+            print_success(
+                json!({"outcomes":outcomes,"counts":{"total":outcomes.len(),"updated":updated,"missing":missing,"failed":failed}}),
+            )
+        }
         LibraryCommand::Format(command) => library_format(command, library),
         LibraryCommand::Cover(command) => library_cover(command, library),
         LibraryCommand::Open {
@@ -711,6 +771,11 @@ fn library(command: LibraryCommand, library: Option<&str>) -> AppResult<()> {
             let store = LibraryStore::open(paths, true)?;
             print_success(export_many(&store, &request)?)
         }
+        LibraryCommand::Remove { db, id } => {
+            let paths = LibraryPaths::resolve(library, db.as_deref())?;
+            let mut store = LibraryStore::open(paths, true)?;
+            print_success(json!({"item":store.remove(&id)?,"cleanupPending":false}))
+        }
         _ => Err(AppError::new("feature-unavailable")),
     }
 }
@@ -740,7 +805,36 @@ fn library_format(command: FormatCommand, library: Option<&str>) -> AppResult<()
             let mut store = LibraryStore::open(paths, true)?;
             print_success(json!({"item":store.remove_format(&id, format)?,"cleanupPending":false}))
         }
-        FormatCommand::Replace => Err(AppError::new("feature-unavailable")),
+        FormatCommand::Replace { db, request_json } => {
+            let request = read_json(&request_json)?;
+            let id = request_id(&request)?;
+            let format = serde_json::from_value::<FormatId>(
+                request
+                    .get("format")
+                    .cloned()
+                    .ok_or_else(|| AppError::new("invalid-arguments"))?,
+            )
+            .map_err(|_| AppError::new("invalid-arguments"))?;
+            let expected = request
+                .get("expectedCurrent")
+                .ok_or_else(|| AppError::new("invalid-arguments"))?;
+            let source = request
+                .get("source")
+                .ok_or_else(|| AppError::new("invalid-arguments"))?;
+            let path = source
+                .get("path")
+                .and_then(Value::as_str)
+                .ok_or_else(|| AppError::new("invalid-arguments"))?;
+            let managed = match source.get("kind").and_then(Value::as_str) {
+                Some("copy") => true,
+                Some("reference") => false,
+                _ => return Err(AppError::new("invalid-arguments")),
+            };
+            let paths = LibraryPaths::resolve(library, db.as_deref())?;
+            let mut store = LibraryStore::open(paths, true)?;
+            let item = store.replace_format(id, format, expected, Path::new(path), managed)?;
+            print_success(json!({"item":item,"cleanupPending":false}))
+        }
     }
 }
 fn library_cover(command: CoverCommand, library: Option<&str>) -> AppResult<()> {
@@ -921,7 +1015,33 @@ fn service_request(store: &mut LibraryStore, request: &Value) -> AppResult<Value
             let id = request_id(args)?;
             Ok(json!({"item":store.purge(id)?,"cleanupPending":false}))
         }
-        "library_replace_format" => Err(AppError::new("feature-unavailable")),
+        "library_replace_format" => {
+            let id = request_id(args)?;
+            let format = serde_json::from_value::<FormatId>(
+                args.get("format")
+                    .cloned()
+                    .ok_or_else(|| AppError::new("invalid-arguments"))?,
+            )
+            .map_err(|_| AppError::new("invalid-arguments"))?;
+            let expected = args
+                .get("expectedCurrent")
+                .ok_or_else(|| AppError::new("invalid-arguments"))?;
+            let source = args
+                .get("source")
+                .ok_or_else(|| AppError::new("invalid-arguments"))?;
+            let path = source
+                .get("path")
+                .and_then(Value::as_str)
+                .ok_or_else(|| AppError::new("invalid-arguments"))?;
+            let managed = match source.get("kind").and_then(Value::as_str) {
+                Some("copy") => true,
+                Some("reference") => false,
+                _ => return Err(AppError::new("invalid-arguments")),
+            };
+            Ok(
+                json!({"item":store.replace_format(id, format, expected, Path::new(path), managed)?,"cleanupPending":false}),
+            )
+        }
         _ => Err(AppError::new("invalid-arguments")),
     }
 }

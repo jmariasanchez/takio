@@ -210,6 +210,157 @@ fn library_service_correlates_mutations_with_request_ids() {
 }
 
 #[test]
+fn update_many_accounts_for_updated_and_missing_items() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let database = temp.path().join("library.sqlite");
+    let first = temp.path().join("first.epub");
+    let second = temp.path().join("second.epub");
+    fs::write(&first, b"first").expect("write first ebook");
+    fs::write(&second, b"second").expect("write second ebook");
+
+    let import = |source: &std::path::Path| {
+        let output = cargo_bin_cmd!("takio")
+            .args(["library", "import", "--db"])
+            .arg(&database)
+            .args(["--source-path"])
+            .arg(source)
+            .output()
+            .expect("import ebook");
+        success_value(&output.stdout)["item"]["id"]
+            .as_str()
+            .expect("item id")
+            .to_owned()
+    };
+    let first_id = import(&first);
+    let second_id = import(&second);
+
+    let output = cargo_bin_cmd!("takio")
+        .args(["library", "update-many", "--db"])
+        .arg(&database)
+        .args(["--id", &first_id, "--id", "missing", "--id", &second_id])
+        .args([
+            "--patch-json",
+            r#"{"publisher":"Batch Publisher","tags":["Reviewed"]}"#,
+        ])
+        .output()
+        .expect("update library items");
+
+    assert!(output.status.success());
+    let value = success_value(&output.stdout);
+    assert_eq!(
+        value["counts"],
+        serde_json::json!({"total":3,"updated":2,"missing":1,"failed":0})
+    );
+    assert_eq!(value["outcomes"][0]["status"], "updated");
+    assert_eq!(
+        value["outcomes"][1],
+        serde_json::json!({"status":"missing","itemId":"missing"})
+    );
+    assert_eq!(
+        value["outcomes"][2]["item"]["tags"],
+        serde_json::json!(["Reviewed"])
+    );
+}
+
+#[test]
+fn remove_is_idempotent_and_deletes_managed_files() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let database = temp.path().join("library.sqlite");
+    let source = temp.path().join("remove.epub");
+    fs::write(&source, b"remove me").expect("write ebook");
+    let imported = cargo_bin_cmd!("takio")
+        .args(["library", "import", "--db"])
+        .arg(&database)
+        .args(["--source-path"])
+        .arg(&source)
+        .output()
+        .expect("import ebook");
+    let item = success_value(&imported.stdout)["item"].clone();
+    let id = item["id"].as_str().expect("item id");
+    let managed_path = item["sourcePath"].as_str().expect("managed path");
+
+    let removed = cargo_bin_cmd!("takio")
+        .args(["library", "remove", "--db"])
+        .arg(&database)
+        .args(["--id", id])
+        .output()
+        .expect("remove ebook");
+    assert!(removed.status.success());
+    assert_eq!(
+        success_value(&removed.stdout),
+        serde_json::json!({"item":item,"cleanupPending":false})
+    );
+    assert!(!std::path::Path::new(managed_path).exists());
+
+    let repeated = cargo_bin_cmd!("takio")
+        .args(["library", "remove", "--db"])
+        .arg(&database)
+        .args(["--id", id])
+        .output()
+        .expect("repeat removal");
+    assert_eq!(
+        success_value(&repeated.stdout),
+        serde_json::json!({"item":null,"cleanupPending":false})
+    );
+}
+
+#[test]
+fn format_replace_honors_the_expected_snapshot() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let database = temp.path().join("library.sqlite");
+    let original = temp.path().join("original.epub");
+    let replacement = temp.path().join("replacement.epub");
+    fs::write(&original, b"original").expect("write original ebook");
+    fs::write(&replacement, b"replacement").expect("write replacement ebook");
+    let imported = cargo_bin_cmd!("takio")
+        .args(["library", "import", "--db"])
+        .arg(&database)
+        .args(["--source-path"])
+        .arg(&original)
+        .output()
+        .expect("import ebook");
+    let item = success_value(&imported.stdout)["item"].clone();
+    let current = &item["formats"][0];
+    let request = serde_json::json!({
+        "id":item["id"],
+        "format":"epub",
+        "expectedCurrent":{
+            "sourcePath":current["sourcePath"],
+            "addedAt":current["addedAt"],
+            "provenance":current["provenance"]
+        },
+        "source":{"kind":"copy","path":replacement}
+    });
+
+    let replaced = cargo_bin_cmd!("takio")
+        .args(["library", "format", "replace", "--db"])
+        .arg(&database)
+        .args(["--request-json", &request.to_string()])
+        .output()
+        .expect("replace format");
+    assert!(replaced.status.success());
+    let value = success_value(&replaced.stdout);
+    let new_path = value["item"]["formats"][0]["sourcePath"]
+        .as_str()
+        .expect("replacement path");
+    assert_eq!(
+        fs::read(new_path).expect("read replacement"),
+        b"replacement"
+    );
+    assert_eq!(value["cleanupPending"], false);
+
+    let stale = cargo_bin_cmd!("takio")
+        .args(["library", "format", "replace", "--db"])
+        .arg(&database)
+        .args(["--request-json", &request.to_string()])
+        .output()
+        .expect("reject stale replacement");
+    assert!(!stale.status.success());
+    let envelope: Value = serde_json::from_slice(&stale.stdout).expect("failure envelope");
+    assert_eq!(envelope["error"]["code"], "format-changed");
+}
+
+#[test]
 fn jobs_commands_return_desktop_compatible_envelopes() {
     let temp = tempfile::tempdir().expect("temporary directory");
     let database = temp.path().join("jobs.sqlite");

@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use chrono::Utc;
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde::Serialize;
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
@@ -277,6 +278,102 @@ impl LibraryStore {
         }
         self.read_item(id)?
             .ok_or_else(|| AppError::new("storage-unavailable"))
+    }
+
+    pub fn replace_format(
+        &mut self,
+        id: &str,
+        format: FormatId,
+        expected: &Value,
+        source: &Path,
+        managed: bool,
+    ) -> AppResult<LibraryItem> {
+        let current = self
+            .read_item(id)?
+            .ok_or_else(|| AppError::new("format-changed"))?
+            .formats
+            .into_iter()
+            .find(|candidate| candidate.format == format)
+            .ok_or_else(|| AppError::new("format-changed"))?;
+        if expected.get("sourcePath").and_then(Value::as_str) != current.source_path.to_str()
+            || expected.get("addedAt").and_then(Value::as_str) != Some(&current.added_at)
+            || expected.get("provenance").and_then(Value::as_str)
+                != Some(current.provenance.as_str())
+        {
+            return Err(AppError::new("format-changed"));
+        }
+        let source = canonical_file(source)?;
+        if detect_format(&source) != Some(format) {
+            return Err(AppError::new("invalid-arguments"));
+        }
+        let old = self
+            .stored_format(id, format)?
+            .ok_or_else(|| AppError::new("format-changed"))?;
+        let now = Utc::now().to_rfc3339();
+        let (stored_path, fingerprint) = if managed {
+            let fingerprint = hash_file(&source)?;
+            let target = self.paths.items.join(id).join(format!(
+                "book-{}.{}",
+                Uuid::new_v4(),
+                format.extension()
+            ));
+            publish_copy(&source, &target, &fingerprint)?;
+            (target, Some(fingerprint))
+        } else {
+            (source, None)
+        };
+        let result = self.connection.execute(
+            "UPDATE library_item_formats SET source_path=?3, added_at=?4, provenance=?5,
+             content_bytes=?6, content_sha256=?7 WHERE library_item_id=?1 AND format=?2",
+            params![
+                id,
+                format.as_str(),
+                stored_path.to_string_lossy(),
+                now,
+                if managed { "managed" } else { "referenced" },
+                fingerprint
+                    .as_ref()
+                    .map(|value| value.0)
+                    .map(as_i64)
+                    .transpose()?,
+                fingerprint.as_ref().map(|value| value.1.as_str())
+            ],
+        );
+        if let Err(error) = result {
+            if managed {
+                let _ = fs::remove_file(&stored_path);
+            }
+            return Err(error.into());
+        }
+        if old.provenance == Provenance::Managed && old.path != stored_path {
+            cleanup_managed(&self.paths.items, &old.path, old.fingerprint.as_ref())?;
+        }
+        self.read_item(id)?
+            .ok_or_else(|| AppError::new("storage-unavailable"))
+    }
+
+    pub fn remove(&mut self, id: &str) -> AppResult<Option<LibraryItem>> {
+        let Some(item) = self.read_item(id)? else {
+            return Ok(None);
+        };
+        let stored = item
+            .formats
+            .iter()
+            .map(|format| self.stored_format(id, format.format))
+            .collect::<AppResult<Vec<_>>>()?;
+        self.connection
+            .execute("DELETE FROM library_items WHERE id=?1", [id])?;
+        for format in stored.into_iter().flatten() {
+            if format.provenance == Provenance::Managed {
+                cleanup_managed(&self.paths.items, &format.path, format.fingerprint.as_ref())?;
+            }
+        }
+        if let Some(path) = &item.cover_path
+            && path.starts_with(&self.paths.covers)
+        {
+            let _ = fs::remove_file(path);
+        }
+        Ok(Some(item))
     }
 
     pub fn update(&mut self, id: &str, patch: LibraryPatch) -> AppResult<LibraryItem> {
