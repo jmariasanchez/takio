@@ -339,6 +339,9 @@ fn parse_book(book_root: &Path, artifacts: &HashSet<String>) -> AppResult<Parsed
         return Err(AppError::new("source-invalid"));
     }
     let id = takio_ids[0].clone();
+    if !valid_item_id(&id) {
+        return Err(AppError::new("source-invalid"));
+    }
     let metas = metadata
         .children()
         .filter(|node| node.is_element() && node.tag_name().name() == "meta")
@@ -365,12 +368,19 @@ fn parse_book(book_root: &Path, artifacts: &HashSet<String>) -> AppResult<Parsed
             .collect::<Vec<_>>();
         if entries.len() != 1
             || attr(entries[0], "href").as_deref() != Some(leaf.as_str())
+            || attr(entries[0], "media-type").as_deref() != Some(media_type(format))
             || !artifacts.contains(&leaf)
         {
             return Err(AppError::new("source-invalid"));
         }
+        let format_added_at =
+            optional_unique_meta(&metas, &format!("takio:format_added_at:{name}"))?
+                .unwrap_or_else(|| added_at.clone());
+        if !valid_timestamp(&format_added_at) {
+            return Err(AppError::new("source-invalid"));
+        }
         expected_artifacts.insert(leaf.clone());
-        formats.push((format, book_root.join(leaf)));
+        formats.push((format, book_root.join(leaf), format_added_at));
     }
 
     let cover_items = manifest_items
@@ -386,6 +396,12 @@ fn parse_book(book_root: &Path, artifacts: &HashSet<String>) -> AppResult<Parsed
             let leaf = required_attr(item, "href")?;
             if !matches!(leaf.as_str(), "cover.jpg" | "cover.jpeg" | "cover.png")
                 || !artifacts.contains(&leaf)
+                || attr(item, "media-type").as_deref()
+                    != Some(if leaf.ends_with(".png") {
+                        "image/png"
+                    } else {
+                        "image/jpeg"
+                    })
             {
                 return Err(AppError::new("source-invalid"));
             }
@@ -452,7 +468,12 @@ fn parse_book(book_root: &Path, artifacts: &HashSet<String>) -> AppResult<Parsed
             return Err(AppError::new("source-invalid"));
         }
     }
-    if id.trim().is_empty() || title.trim().is_empty() || added_at.trim().is_empty() {
+    if title.trim().is_empty()
+        || !valid_timestamp(&added_at)
+        || updated_at
+            .as_deref()
+            .is_some_and(|value| !valid_timestamp(value))
+    {
         return Err(AppError::new("source-invalid"));
     }
     let primary = formats
@@ -466,10 +487,10 @@ fn parse_book(book_root: &Path, artifacts: &HashSet<String>) -> AppResult<Parsed
         added_at: added_at.clone(),
         formats: formats
             .iter()
-            .map(|(format, path)| crate::model::BookFormat {
+            .map(|(format, path, format_added_at)| crate::model::BookFormat {
                 source_path: path.clone(),
                 format: *format,
-                added_at: added_at.clone(),
+                added_at: format_added_at.clone(),
                 provenance: Provenance::Referenced,
             })
             .collect(),
@@ -490,7 +511,10 @@ fn parse_book(book_root: &Path, artifacts: &HashSet<String>) -> AppResult<Parsed
     };
     Ok(ParsedBook {
         item,
-        formats,
+        formats: formats
+            .into_iter()
+            .map(|(format, path, _)| (format, path))
+            .collect(),
         cover,
     })
 }
@@ -576,6 +600,13 @@ fn portable_opf(item: &LibraryItem, cover_name: Option<&str>) -> String {
             .collect::<Vec<_>>()
             .join(",")
     ));
+    for format in &item.formats {
+        metadata.push(format!(
+            "    <meta name=\"takio:format_added_at:{}\" content=\"{}\"/>",
+            format.format.as_str(),
+            xml(&format.added_at)
+        ));
+    }
     if cover_name.is_some() {
         metadata.push("    <meta name=\"cover\" content=\"cover-image\"/>".to_owned());
     }
@@ -758,6 +789,18 @@ fn valid_component(value: &str) -> bool {
             .eq([Component::Normal(value.as_ref())])
         && !value.contains(['/', '\\'])
 }
+pub(crate) fn valid_item_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value != "."
+        && value != ".."
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+}
+fn valid_timestamp(value: &str) -> bool {
+    chrono::DateTime::parse_from_rfc3339(value).is_ok()
+}
 fn valid_leaf(value: &str) -> bool {
     value == "metadata.opf"
         || matches!(
@@ -935,6 +978,23 @@ fn integrity_value(report: &VerifyReport) -> serde_json::Value {
 mod tests {
     use super::*;
 
+    fn replace_opf(fixture: &Path, before: &str, after: &str) {
+        let opf = fixture.join("books/Book [abc]/metadata.opf");
+        let source = fs::read_to_string(&opf).expect("opf");
+        fs::write(&opf, source.replace(before, after)).expect("replace opf");
+        let manifest_path = fixture.join("manifest.json");
+        let mut manifest: PortableManifest =
+            serde_json::from_slice(&fs::read(&manifest_path).expect("manifest")).expect("json");
+        let replacement = fingerprint(&opf, "metadata.opf").expect("fingerprint");
+        *manifest.books[0]
+            .artifacts
+            .iter_mut()
+            .find(|artifact| artifact.path == "metadata.opf")
+            .expect("opf entry") = replacement;
+        fs::write(&manifest_path, serde_json::to_vec(&manifest).expect("json"))
+            .expect("write manifest");
+    }
+
     fn fixture() -> tempfile::TempDir {
         let temp = tempfile::tempdir().expect("temporary directory");
         let book = temp.path().join("books").join("Book [abc]");
@@ -1038,6 +1098,31 @@ mod tests {
         .expect("oversized manifest");
         assert_eq!(
             validate_source(oversized.path()).unwrap_err().code(),
+            "source-invalid"
+        );
+    }
+
+    #[test]
+    fn rejects_unsafe_item_ids_and_inconsistent_media_types() {
+        let unsafe_id = fixture();
+        replace_opf(
+            unsafe_id.path(),
+            ">book-one</dc:identifier>",
+            ">../../escape</dc:identifier>",
+        );
+        assert_eq!(
+            validate_source(unsafe_id.path()).unwrap_err().code(),
+            "source-invalid"
+        );
+
+        let wrong_media_type = fixture();
+        replace_opf(
+            wrong_media_type.path(),
+            "media-type=\"application/epub+zip\"",
+            "media-type=\"application/pdf\"",
+        );
+        assert_eq!(
+            validate_source(wrong_media_type.path()).unwrap_err().code(),
             "source-invalid"
         );
     }

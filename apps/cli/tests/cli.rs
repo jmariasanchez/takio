@@ -114,6 +114,17 @@ fn portable_export_and_rebuild_preserve_rich_metadata_order_and_bytes() {
         .output()
         .expect("set cover");
     assert!(covered.status.success());
+    let source_listed = cargo_bin_cmd!("takio")
+        .args(["library", "list", "--db"])
+        .arg(&database)
+        .output()
+        .expect("list source");
+    assert!(source_listed.status.success());
+    let source_formats = success_value(&source_listed.stdout)["items"][0]["formats"]
+        .as_array()
+        .expect("source formats")
+        .clone();
+    assert_ne!(source_formats[0]["addedAt"], source_formats[1]["addedAt"]);
 
     let portable = temp.path().join("portable");
     let exported = cargo_bin_cmd!("takio")
@@ -160,6 +171,8 @@ fn portable_export_and_rebuild_preserve_rich_metadata_order_and_bytes() {
     assert_eq!(item["customMetadata"], patch["customMetadata"]);
     assert_eq!(item["formats"][0]["format"], "epub");
     assert_eq!(item["formats"][1]["format"], "pdf");
+    assert_eq!(item["formats"][0]["addedAt"], source_formats[0]["addedAt"]);
+    assert_eq!(item["formats"][1]["addedAt"], source_formats[1]["addedAt"]);
     assert_eq!(
         fs::read(
             item["formats"][0]["sourcePath"]

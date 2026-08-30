@@ -448,7 +448,10 @@ impl LibraryStore {
         formats: &[(FormatId, PathBuf)],
         cover: Option<&Path>,
     ) -> AppResult<LibraryItem> {
-        if formats.is_empty() || formats.len() != item.formats.len() {
+        if !crate::portable_library::valid_item_id(&item.id)
+            || formats.is_empty()
+            || formats.len() != item.formats.len()
+        {
             return Err(AppError::new("invalid-arguments"));
         }
         let mut published = Vec::new();
