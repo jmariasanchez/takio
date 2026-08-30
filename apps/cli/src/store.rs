@@ -442,6 +442,82 @@ impl LibraryStore {
             .ok_or_else(|| AppError::new("storage-unavailable"))
     }
 
+    pub(crate) fn restore_portable_item(
+        &mut self,
+        item: &LibraryItem,
+        formats: &[(FormatId, PathBuf)],
+        cover: Option<&Path>,
+    ) -> AppResult<LibraryItem> {
+        if formats.is_empty() || formats.len() != item.formats.len() {
+            return Err(AppError::new("invalid-arguments"));
+        }
+        let mut published = Vec::new();
+        let result = (|| -> AppResult<()> {
+            let mut format_targets = Vec::with_capacity(formats.len());
+            for (format, source) in formats {
+                let fingerprint = hash_file(source)?;
+                let target = self.managed_path(&item.id, *format);
+                publish_copy(source, &target, &fingerprint)?;
+                published.push(target.clone());
+                format_targets.push(target);
+            }
+            let cover_target = cover
+                .map(|source| -> AppResult<PathBuf> {
+                    let extension = source
+                        .extension()
+                        .and_then(|value| value.to_str())
+                        .ok_or_else(|| AppError::new("invalid-arguments"))?;
+                    let target = self.paths.covers.join(format!("{}.{}", item.id, extension));
+                    publish_copy(source, &target, &hash_file(source)?)?;
+                    published.push(target.clone());
+                    Ok(target)
+                })
+                .transpose()?;
+            let transaction = self.connection.transaction()?;
+            transaction.execute(
+                "INSERT INTO library_items
+                 (id,title,added_at,author,series,series_index,publisher,published_date,rating,description,cover_path,updated_at)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
+                params![item.id,item.title,item.added_at,item.author,item.series,item.series_index,
+                    item.publisher,item.published_date,item.rating,item.description,
+                    cover_target.as_ref().map(|path| path.to_string_lossy()),item.updated_at],
+            )?;
+            for (position, (((format, _), original), target)) in formats
+                .iter()
+                .zip(&item.formats)
+                .zip(&format_targets)
+                .enumerate()
+            {
+                if *format != original.format {
+                    return Err(AppError::new("invalid-arguments"));
+                }
+                let fingerprint = hash_file(target)?;
+                transaction.execute(
+                    "INSERT INTO library_item_formats
+                     (library_item_id,format,source_path,added_at,provenance,position,content_bytes,content_sha256)
+                     VALUES (?1,?2,?3,?4,'managed',?5,?6,?7)",
+                    params![item.id,format.as_str(),target.to_string_lossy(),original.added_at,
+                        as_i64(position as u64)?,as_i64(fingerprint.0)?,fingerprint.1],
+                )?;
+            }
+            replace_metadata(&transaction, item)?;
+            transaction.commit()?;
+            Ok(())
+        })();
+        if result.is_err() {
+            for path in published {
+                let _ = fs::remove_file(path);
+            }
+            return Err(AppError::new("storage-unavailable"));
+        }
+        self.read_item(&item.id)?
+            .ok_or_else(|| AppError::new("storage-unavailable"))
+    }
+
+    pub(crate) fn rebase_portable_paths(&mut self, destination: &LibraryPaths) -> AppResult<()> {
+        rebase_owned_paths(&mut self.connection, &self.paths, destination)
+    }
+
     pub fn catalog_page(&self, limit: usize, offset: usize) -> AppResult<(u64, Vec<LibraryItem>)> {
         let total = count(
             &self.connection,

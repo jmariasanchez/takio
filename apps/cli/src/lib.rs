@@ -9,6 +9,7 @@ pub mod metadata;
 pub mod model;
 pub mod output;
 pub mod paths;
+pub mod portable_library;
 pub mod server;
 pub mod store;
 pub mod tui;

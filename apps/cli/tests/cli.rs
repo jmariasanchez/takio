@@ -10,6 +10,15 @@ fn success_value(output: &[u8]) -> Value {
     envelope["value"].clone()
 }
 
+fn failure_code(output: &[u8]) -> String {
+    let envelope: Value = serde_json::from_slice(output).expect("valid JSON response");
+    assert_eq!(envelope["ok"], false);
+    envelope["error"]["code"]
+        .as_str()
+        .expect("error code")
+        .to_owned()
+}
+
 #[test]
 fn capabilities_identify_the_native_tui() {
     let output = cargo_bin_cmd!("takio")
@@ -36,6 +45,175 @@ fn capabilities_identify_the_native_tui() {
             .as_array()
             .expect("unsupported commands")
             .contains(&serde_json::json!("library import-calibre"))
+    );
+    assert!(
+        !value["unsupportedCommands"]
+            .as_array()
+            .expect("unsupported commands")
+            .contains(&serde_json::json!("library portable-export"))
+    );
+    assert!(
+        !value["unsupportedCommands"]
+            .as_array()
+            .expect("unsupported commands")
+            .contains(&serde_json::json!("library rebuild"))
+    );
+}
+
+#[test]
+fn portable_export_and_rebuild_preserve_rich_metadata_order_and_bytes() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let database = temp.path().join("source/library.sqlite");
+    let epub = temp.path().join("primary.epub");
+    let pdf = temp.path().join("referenced.pdf");
+    let cover = temp.path().join("cover.png");
+    fs::write(&epub, b"managed epub bytes").expect("epub");
+    fs::write(&pdf, b"referenced pdf bytes").expect("pdf");
+    fs::write(&cover, b"png cover bytes").expect("cover");
+
+    let added = cargo_bin_cmd!("takio")
+        .args(["library", "add", "--db"])
+        .arg(&database)
+        .args(["--source-path"])
+        .arg(&epub)
+        .args(["--title", "Rich & <Portable>"])
+        .output()
+        .expect("add");
+    assert!(added.status.success());
+    let id = success_value(&added.stdout)["item"]["id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+    let patch = serde_json::json!({
+        "authors":[{"name":"Ursula & Le Guin","sortName":"Le Guin, Ursula"},{"name":"Second <Author>"}],
+        "series":"Earthsea", "seriesIndex":2.5, "publisher":"Publisher & Co",
+        "languages":["en","fr"], "identifiers":{"isbn":"978-1","doi":"10/test"},
+        "customMetadata":{"shelf":"A&B","note":"<safe>"}, "publishedDate":"1972-01-01",
+        "rating":9.5, "description":"A <rich> & exact description", "tags":["classic","sci-fi"]
+    });
+    let updated = cargo_bin_cmd!("takio")
+        .args(["library", "update", "--db"])
+        .arg(&database)
+        .args(["--id", &id, "--patch-json", &patch.to_string()])
+        .output()
+        .expect("update");
+    assert!(updated.status.success());
+    let attached = cargo_bin_cmd!("takio")
+        .args(["library", "format", "attach", "--db"])
+        .arg(&database)
+        .args(["--id", &id, "--source-path"])
+        .arg(&pdf)
+        .output()
+        .expect("attach referenced format");
+    assert!(attached.status.success());
+    let covered = cargo_bin_cmd!("takio")
+        .args(["library", "cover", "set", "--db"])
+        .arg(&database)
+        .args(["--id", &id, "--source-path"])
+        .arg(&cover)
+        .output()
+        .expect("set cover");
+    assert!(covered.status.success());
+
+    let portable = temp.path().join("portable");
+    let exported = cargo_bin_cmd!("takio")
+        .args(["library", "portable-export", "--db"])
+        .arg(&database)
+        .args(["--dest"])
+        .arg(&portable)
+        .output()
+        .expect("portable export");
+    assert!(
+        exported.status.success(),
+        "{}",
+        String::from_utf8_lossy(&exported.stdout)
+    );
+    let export = success_value(&exported.stdout);
+    assert_eq!(export["export"]["items"], 1);
+    assert_eq!(export["export"]["formats"], 2);
+    assert_eq!(export["export"]["covers"], 1);
+
+    let rebuilt_database = temp.path().join("rebuilt/library.sqlite");
+    let rebuilt = cargo_bin_cmd!("takio")
+        .args(["library", "rebuild", "--db"])
+        .arg(&rebuilt_database)
+        .args(["--source"])
+        .arg(&portable)
+        .output()
+        .expect("rebuild");
+    assert!(
+        rebuilt.status.success(),
+        "{}",
+        String::from_utf8_lossy(&rebuilt.stdout)
+    );
+    let listed = cargo_bin_cmd!("takio")
+        .args(["library", "list", "--db"])
+        .arg(&rebuilt_database)
+        .output()
+        .expect("list rebuilt");
+    assert!(listed.status.success());
+    let item = success_value(&listed.stdout)["items"][0].clone();
+    assert_eq!(item["id"], id);
+    assert_eq!(item["title"], "Rich & <Portable>");
+    assert_eq!(item["authors"], patch["authors"]);
+    assert_eq!(item["identifiers"], patch["identifiers"]);
+    assert_eq!(item["customMetadata"], patch["customMetadata"]);
+    assert_eq!(item["formats"][0]["format"], "epub");
+    assert_eq!(item["formats"][1]["format"], "pdf");
+    assert_eq!(
+        fs::read(
+            item["formats"][0]["sourcePath"]
+                .as_str()
+                .expect("epub path")
+        )
+        .expect("epub bytes"),
+        b"managed epub bytes"
+    );
+    assert_eq!(
+        fs::read(item["formats"][1]["sourcePath"].as_str().expect("pdf path")).expect("pdf bytes"),
+        b"referenced pdf bytes"
+    );
+    assert_eq!(
+        fs::read(item["coverPath"].as_str().expect("cover path")).expect("cover bytes"),
+        b"png cover bytes"
+    );
+
+    let conflict = cargo_bin_cmd!("takio")
+        .args(["library", "rebuild", "--db"])
+        .arg(&rebuilt_database)
+        .args(["--source"])
+        .arg(&portable)
+        .output()
+        .expect("conflicting rebuild");
+    assert!(!conflict.status.success());
+    assert_eq!(failure_code(&conflict.stdout), "destination-exists");
+
+    let invalid_destination = temp.path().join("invalid/library.sqlite");
+    let manifest: Value =
+        serde_json::from_slice(&fs::read(portable.join("manifest.json")).expect("manifest"))
+            .expect("json");
+    let leaf = manifest["books"][0]["directory"]
+        .as_str()
+        .expect("directory");
+    fs::write(
+        portable.join("books").join(leaf).join("book.epub"),
+        b"tampered",
+    )
+    .expect("tamper");
+    let invalid = cargo_bin_cmd!("takio")
+        .args(["library", "rebuild", "--db"])
+        .arg(&invalid_destination)
+        .args(["--source"])
+        .arg(&portable)
+        .output()
+        .expect("invalid rebuild");
+    assert!(!invalid.status.success());
+    assert_eq!(failure_code(&invalid.stdout), "source-invalid");
+    assert!(
+        !invalid_destination
+            .parent()
+            .expect("destination root")
+            .exists()
     );
 }
 

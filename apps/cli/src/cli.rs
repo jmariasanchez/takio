@@ -19,6 +19,7 @@ use crate::metadata::{self, discover_ebook_meta, discover_fetch_ebook_metadata};
 use crate::model::LibraryPatch;
 use crate::output::{AppError, AppResult, print_success};
 use crate::paths::LibraryPaths;
+use crate::portable_library;
 use crate::store::{
     DuplicatePairReviewRequest, LIBRARY_SCHEMA_VERSION, LibraryStore,
     ListDuplicateCandidatesRequest, MergeDuplicatePairRequest, VerifyReport,
@@ -762,7 +763,7 @@ fn capabilities() -> AppResult<()> {
         Vec::new()
     };
     print_success(
-        json!({"protocolVersion":1,"implementation":"rust","tui":true,"limits":{"structuredJsonBytes":16384},"librarySchemaVersion":LIBRARY_SCHEMA_VERSION,"jobsSchemaVersion":4,"formats":FormatId::ALL,"conversionPairs":pairs,"backends":{"ebookConvert":backend,"ebookMeta":{"available":metadata_backend.is_some(),"path":metadata_backend},"fetchEbookMetadata":{"available":online_metadata_backend.is_some(),"path":online_metadata_backend},"ebookPolish":{"available":polish_backend.is_some(),"path":polish_backend}},"features":{"library":true,"jobs":true,"destinations":true,"metadata":true,"polish":true,"rootedKindleSsh":true,"contentServer":true,"contentServerRemoteTls":false,"nativeKepub":false},"unsupportedCommands":["library import-watch","library portable-export","library rebuild"]}),
+        json!({"protocolVersion":1,"implementation":"rust","tui":true,"limits":{"structuredJsonBytes":16384},"librarySchemaVersion":LIBRARY_SCHEMA_VERSION,"jobsSchemaVersion":4,"formats":FormatId::ALL,"conversionPairs":pairs,"backends":{"ebookConvert":backend,"ebookMeta":{"available":metadata_backend.is_some(),"path":metadata_backend},"fetchEbookMetadata":{"available":online_metadata_backend.is_some(),"path":online_metadata_backend},"ebookPolish":{"available":polish_backend.is_some(),"path":polish_backend}},"features":{"library":true,"jobs":true,"destinations":true,"metadata":true,"polish":true,"rootedKindleSsh":true,"contentServer":true,"contentServerRemoteTls":false,"nativeKepub":false},"unsupportedCommands":["library import-watch"]}),
     )
 }
 fn formats(as_json: bool) -> AppResult<()> {
@@ -1316,15 +1317,22 @@ fn library(command: LibraryCommand, library: Option<&str>) -> AppResult<()> {
                 Duration::from_secs(timeout_seconds),
             )?)
         }
+        LibraryCommand::PortableExport { db, dest } => {
+            let paths = LibraryPaths::resolve(library, db.as_deref())?;
+            let store = LibraryStore::open(paths, false)?;
+            print_success(portable_library::export(&store, &dest)?)
+        }
+        LibraryCommand::Rebuild { db, source } => {
+            let paths = LibraryPaths::resolve(library, Some(&db))?;
+            print_success(portable_library::rebuild(&source, paths)?)
+        }
         LibraryCommand::RestoreBackup { db, source } => {
             let paths = LibraryPaths::resolve(library, db.as_deref())?;
             print_success(json!({"restore":LibraryStore::restore_backup(&source, paths)?}))
         }
         LibraryCommand::SavedViews(command) => library_saved_views(command, library),
         LibraryCommand::Duplicates(command) => library_duplicates(command, library),
-        LibraryCommand::ImportWatch { .. }
-        | LibraryCommand::PortableExport { .. }
-        | LibraryCommand::Rebuild { .. } => Err(AppError::new("feature-unavailable")),
+        LibraryCommand::ImportWatch { .. } => Err(AppError::new("feature-unavailable")),
     }
 }
 
