@@ -54,7 +54,7 @@ use public Calibre executables where they remain the strongest bounded backend.
 
 #### A1. Duplicate review and merge
 
-Status: delivered in `3afc154`.
+Status: delivered in `3afc154` and integrity-hardened in `aa56bd6`.
 
 Deliver:
 
