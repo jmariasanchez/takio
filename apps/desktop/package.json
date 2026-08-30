@@ -11,7 +11,7 @@
     "dev": "bun scripts/dev-electron.ts",
     "build": "bun run build:engine && tsc -b && vite build && bun run build:electron",
     "build:electron": "bun scripts/build-electron.ts",
-    "build:engine": "bun run --filter '@takio/library-store-bun' build && bun scripts/build-library-engine.ts",
+    "build:engine": "bun scripts/build-library-engine.ts",
     "check": "tsc -b --pretty false",
     "test": "bun test",
     "package": "bun run build && electron-builder",

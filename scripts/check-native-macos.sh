@@ -12,14 +12,7 @@ case "$(uname -m)" in arm64|x86_64) ;; *) echo "Unsupported macOS architecture: 
 repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repository_root"
 
-if [[ -z "${TAKIO_BUN_COMPILE_EXECUTABLE:-}" ]]; then
-  TAKIO_BUN_COMPILE_EXECUTABLE="$(bun scripts/bootstrap-official-bun.ts)"
-  export TAKIO_BUN_COMPILE_EXECUTABLE
-  echo "Using official version-matched Bun compile executable: $TAKIO_BUN_COMPILE_EXECUTABLE"
-else
-  echo "Using caller-provided Bun compile executable: $TAKIO_BUN_COMPILE_EXECUTABLE"
-fi
-
+cargo test -p takio
 bun run --filter '@takio/desktop' check
 bun run --filter '@takio/desktop' test
 bun run --filter '@takio/desktop' build

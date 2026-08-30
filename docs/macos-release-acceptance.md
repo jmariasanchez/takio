@@ -11,7 +11,9 @@ bun install --frozen-lockfile
 bun run check:native:macos
 ```
 
-`check:native:macos` bootstraps an official version-matched Bun executable into `.takio/toolchains` when `TAKIO_BUN_COMPILE_EXECUTABLE` is not already set. This keeps Nix or Homebrew-provided Bun usable as the command runner while forcing `bun build --compile` to use a portable official runtime. The script does not mutate shell profiles, global Bun installs, or user configuration.
+`check:native:macos` runs the Rust CLI tests, checks the Electron workspace, and
+builds the native Rust sidecar through Cargo before the desktop bundle is
+assembled. The sidecar has no Bun runtime dependency.
 
 ## Bundle acceptance gate
 

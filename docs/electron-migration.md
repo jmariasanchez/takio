@@ -25,7 +25,7 @@ toolchain without adding meaningful domain behavior.
 flowchart LR
   R[React renderer] -->|typed window.takio API| P[context-isolated preload]
   P -->|allowlisted IPC| M[Electron main process]
-  M -->|fixed argv, max 4 concurrent| E[Bun library engine]
+  M -->|fixed argv, max 4 concurrent| E[Rust library engine]
   E --> S[(Local SQLite library)]
   M --> D[Native dialogs and menus]
 ```
@@ -38,8 +38,9 @@ flowchart LR
   exit-code/result consistency checks.
 - Managed covers use a custom protocol restricted to image files below Takio's
   data root.
-- Electron Builder packages the renderer, main process, preload, and compiled Bun
-  sidecar. Rust and Cargo are no longer part of the desktop toolchain.
+- Electron Builder packages the renderer, main process, preload, and native Rust
+  sidecar. Cargo builds the sidecar before Electron packaging; Bun remains only
+  in the desktop build toolchain.
 
 ## Product changes
 

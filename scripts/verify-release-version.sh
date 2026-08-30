@@ -10,9 +10,11 @@ fi
 tag_version="${1#v}"
 root_version="$(bun -p 'require("./package.json").version')"
 desktop_version="$(bun -p 'require("./apps/desktop/package.json").version')"
+cli_version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n 1)"
 for version_source in \
   "package.json:$root_version" \
-  "apps/desktop/package.json:$desktop_version"; do
+  "apps/desktop/package.json:$desktop_version" \
+  "Cargo.toml:$cli_version"; do
   source_path="${version_source%%:*}"
   source_version="${version_source#*:}"
   if [[ "$source_version" != "$tag_version" ]]; then

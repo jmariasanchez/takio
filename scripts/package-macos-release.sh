@@ -13,10 +13,6 @@ case "$(uname -m)" in arm64|x86_64) ;; *) fail "unsupported macOS architecture: 
 repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repository_root"
 
-if [[ -z "${TAKIO_BUN_COMPILE_EXECUTABLE:-}" ]]; then
-  export TAKIO_BUN_COMPILE_EXECUTABLE="$(bun scripts/bootstrap-official-bun.ts)"
-fi
-
 if [[ -n "${APPLE_SIGNING_IDENTITY:-}" ]]; then
   export CSC_NAME="$APPLE_SIGNING_IDENTITY"
 else
