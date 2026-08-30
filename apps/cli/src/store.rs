@@ -314,6 +314,26 @@ impl LibraryStore {
             .ok_or_else(|| AppError::new("storage-unavailable"))
     }
 
+    pub fn find_managed_duplicate(&self, source: &Path) -> AppResult<Option<LibraryItem>> {
+        let source = canonical_file(source)?;
+        let fingerprint = hash_file(&source)?;
+        let id = self
+            .connection
+            .query_row(
+                "SELECT library_item_id FROM library_item_formats
+                 WHERE provenance = 'managed' AND content_bytes = ?1 AND content_sha256 = ?2
+                 LIMIT 1",
+                params![as_i64(fingerprint.0)?, fingerprint.1],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        id.map(|id| {
+            self.read_item(&id)?
+                .ok_or_else(|| AppError::new("invalid-stored-data"))
+        })
+        .transpose()
+    }
+
     pub fn attach_format(
         &mut self,
         id: &str,

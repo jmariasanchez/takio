@@ -7,6 +7,7 @@ use clap::{CommandFactory, Parser, Subcommand};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
+use crate::calibre_import::import_calibre_library;
 use crate::conversion::{
     CALIBRE_CAPABILITIES, FormatId, convert, detect_format, discover_ebook_convert,
 };
@@ -761,7 +762,7 @@ fn capabilities() -> AppResult<()> {
         Vec::new()
     };
     print_success(
-        json!({"protocolVersion":1,"implementation":"rust","tui":true,"limits":{"structuredJsonBytes":16384},"librarySchemaVersion":LIBRARY_SCHEMA_VERSION,"jobsSchemaVersion":4,"formats":FormatId::ALL,"conversionPairs":pairs,"backends":{"ebookConvert":backend,"ebookMeta":{"available":metadata_backend.is_some(),"path":metadata_backend},"fetchEbookMetadata":{"available":online_metadata_backend.is_some(),"path":online_metadata_backend},"ebookPolish":{"available":polish_backend.is_some(),"path":polish_backend}},"features":{"library":true,"jobs":true,"destinations":true,"metadata":true,"polish":true,"rootedKindleSsh":true,"contentServer":true,"contentServerRemoteTls":false,"nativeKepub":false},"unsupportedCommands":["library import-calibre","library import-watch","library portable-export","library rebuild"]}),
+        json!({"protocolVersion":1,"implementation":"rust","tui":true,"limits":{"structuredJsonBytes":16384},"librarySchemaVersion":LIBRARY_SCHEMA_VERSION,"jobsSchemaVersion":4,"formats":FormatId::ALL,"conversionPairs":pairs,"backends":{"ebookConvert":backend,"ebookMeta":{"available":metadata_backend.is_some(),"path":metadata_backend},"fetchEbookMetadata":{"available":online_metadata_backend.is_some(),"path":online_metadata_backend},"ebookPolish":{"available":polish_backend.is_some(),"path":polish_backend}},"features":{"library":true,"jobs":true,"destinations":true,"metadata":true,"polish":true,"rootedKindleSsh":true,"contentServer":true,"contentServerRemoteTls":false,"nativeKepub":false},"unsupportedCommands":["library import-watch","library portable-export","library rebuild"]}),
     )
 }
 fn formats(as_json: bool) -> AppResult<()> {
@@ -1268,6 +1269,10 @@ fn library(command: LibraryCommand, library: Option<&str>) -> AppResult<()> {
             let mut store = LibraryStore::open(paths, true)?;
             print_success(json!({"item":store.remove(&id)?,"cleanupPending":false}))
         }
+        LibraryCommand::ImportCalibre { db, library_root } => {
+            let paths = LibraryPaths::resolve(library, db.as_deref())?;
+            print_success(import_calibre_library(paths, &library_root)?)
+        }
         LibraryCommand::Catalog { db, format, output } => {
             let paths = LibraryPaths::resolve(library, db.as_deref())?;
             let items = LibraryStore::open(paths, true)?.list(false)?;
@@ -1317,8 +1322,7 @@ fn library(command: LibraryCommand, library: Option<&str>) -> AppResult<()> {
         }
         LibraryCommand::SavedViews(command) => library_saved_views(command, library),
         LibraryCommand::Duplicates(command) => library_duplicates(command, library),
-        LibraryCommand::ImportCalibre { .. }
-        | LibraryCommand::ImportWatch { .. }
+        LibraryCommand::ImportWatch { .. }
         | LibraryCommand::PortableExport { .. }
         | LibraryCommand::Rebuild { .. } => Err(AppError::new("feature-unavailable")),
     }

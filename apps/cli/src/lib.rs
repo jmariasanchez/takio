@@ -1,3 +1,4 @@
+pub mod calibre_import;
 pub mod cli;
 pub mod conversion;
 pub mod destinations;

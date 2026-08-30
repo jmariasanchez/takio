@@ -1,6 +1,7 @@
 use std::fs;
 
 use assert_cmd::cargo::cargo_bin_cmd;
+use rusqlite::Connection;
 use serde_json::Value;
 
 fn success_value(output: &[u8]) -> Value {
@@ -29,6 +30,12 @@ fn capabilities_identify_the_native_tui() {
             .as_array()
             .expect("unsupported commands")
             .contains(&serde_json::json!("library duplicates"))
+    );
+    assert!(
+        !value["unsupportedCommands"]
+            .as_array()
+            .expect("unsupported commands")
+            .contains(&serde_json::json!("library import-calibre"))
     );
 }
 
@@ -181,13 +188,13 @@ fn invalid_arguments_use_the_machine_readable_failure_envelope() {
 }
 
 #[test]
-fn reserved_legacy_commands_return_feature_unavailable_with_their_old_syntax() {
+fn remaining_reserved_legacy_commands_return_feature_unavailable_with_their_old_syntax() {
     let output = cargo_bin_cmd!("takio")
         .args([
             "library",
-            "import-calibre",
-            "--library-root",
-            "/tmp/calibre-library",
+            "import-watch",
+            "--source-path",
+            "/tmp/import-root",
         ])
         .output()
         .expect("run reserved command");
@@ -196,6 +203,255 @@ fn reserved_legacy_commands_return_feature_unavailable_with_their_old_syntax() {
     assert!(output.stderr.is_empty());
     let envelope: Value = serde_json::from_slice(&output.stdout).expect("failure envelope");
     assert_eq!(envelope["error"]["code"], "feature-unavailable");
+}
+
+#[test]
+fn calibre_import_preserves_metadata_formats_cover_duplicates_and_source_database() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let calibre_root = temp.path().join("Calibre Library #1");
+    fs::create_dir(&calibre_root).expect("create Calibre root");
+    let metadata_db = calibre_root.join("metadata.db");
+    create_calibre_fixture(&metadata_db);
+    let book_dir = calibre_root.join("Author/Calibre Title (1)");
+    fs::create_dir_all(&book_dir).expect("create Calibre book directory");
+    fs::write(book_dir.join("Calibre Title - Ada.epub"), b"epub bytes").expect("write epub");
+    fs::write(book_dir.join("Calibre Title - Ada.pdf"), b"pdf bytes").expect("write pdf");
+    fs::write(book_dir.join("cover.jpg"), [0xff, 0xd8, 0xff, 0xd9]).expect("write cover");
+    let before = fs::metadata(&metadata_db).expect("metadata before import");
+    let takio_db = temp.path().join("takio/library.sqlite");
+
+    let first = cargo_bin_cmd!("takio")
+        .args(["library", "import-calibre", "--db"])
+        .arg(&takio_db)
+        .args(["--library-root"])
+        .arg(&calibre_root)
+        .output()
+        .expect("import Calibre library");
+    assert!(
+        first.status.success(),
+        "{}",
+        String::from_utf8_lossy(&first.stdout)
+    );
+    assert!(first.stderr.is_empty());
+    assert_eq!(String::from_utf8_lossy(&first.stdout).lines().count(), 1);
+    let first = success_value(&first.stdout);
+    assert_eq!(
+        first["counts"],
+        serde_json::json!({"total":1,"imported":1,"skipped":0,"duplicates":0,"failed":0})
+    );
+    let item = &first["outcomes"][0]["item"];
+    assert_eq!(item["title"], "Calibre Title");
+    assert_eq!(
+        item["authors"],
+        serde_json::json!([{"name":"Ada Lovelace","sortName":"Lovelace, Ada"}])
+    );
+    assert_eq!(item["author"], "Ada Lovelace");
+    assert_eq!(item["series"], "Analytical Engines");
+    assert_eq!(item["seriesIndex"], 2.5);
+    assert_eq!(item["publisher"], "First Publisher");
+    assert_eq!(item["publishedDate"], "2020-05-02");
+    assert_eq!(item["rating"], 8.0);
+    assert_eq!(
+        item["identifiers"],
+        serde_json::json!({"isbn":"9780000000001"})
+    );
+    assert_eq!(item["languages"], serde_json::json!(["en"]));
+    assert_eq!(item["tags"], serde_json::json!(["Math", "Computing"]));
+    assert_eq!(item["description"], "Important description");
+    assert_eq!(
+        item["customMetadata"],
+        serde_json::json!({"reading_state":"planned"})
+    );
+    assert_eq!(item["formats"][0]["format"], "epub");
+    assert_eq!(item["formats"][1]["format"], "pdf");
+    for format in item["formats"].as_array().expect("managed formats") {
+        let managed = format["sourcePath"].as_str().expect("managed path");
+        assert!(std::path::Path::new(managed).is_file());
+        assert!(!managed.starts_with(calibre_root.to_string_lossy().as_ref()));
+        assert_eq!(format["provenance"], "managed");
+    }
+    assert!(std::path::Path::new(item["coverPath"].as_str().expect("managed cover")).is_file());
+
+    let second = cargo_bin_cmd!("takio")
+        .args(["library", "import-calibre", "--db"])
+        .arg(&takio_db)
+        .args(["--library-root"])
+        .arg(&calibre_root)
+        .output()
+        .expect("import Calibre library again");
+    assert!(second.status.success());
+    let second = success_value(&second.stdout);
+    assert_eq!(
+        second["counts"],
+        serde_json::json!({"total":1,"imported":0,"skipped":0,"duplicates":1,"failed":0})
+    );
+    assert_eq!(second["outcomes"][0]["status"], "duplicate");
+    assert_eq!(second["outcomes"][0]["reason"], "existing-library");
+    assert_eq!(second["outcomes"][0]["existing"]["format"], "epub");
+
+    let after = fs::metadata(&metadata_db).expect("metadata after import");
+    assert_eq!(after.len(), before.len());
+    assert_eq!(
+        after.modified().expect("mtime after"),
+        before.modified().expect("mtime before")
+    );
+}
+
+#[test]
+fn calibre_import_uses_stable_top_level_errors_without_writing_the_source() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let missing = run_calibre_import(
+        temp.path().join("library.sqlite"),
+        temp.path().join("missing"),
+    );
+    assert_failure_code(&missing, "not-found");
+
+    let unreadable_root = temp.path().join("unreadable");
+    fs::create_dir(&unreadable_root).expect("create unreadable fixture");
+    fs::write(unreadable_root.join("metadata.db"), b"not sqlite").expect("write invalid database");
+    let unreadable = run_calibre_import(temp.path().join("library.sqlite"), unreadable_root);
+    assert_failure_code(&unreadable, "unreadable");
+
+    let calibre_root = temp.path().join("calibre");
+    fs::create_dir(&calibre_root).expect("create Calibre fixture");
+    let metadata_db = calibre_root.join("metadata.db");
+    create_calibre_fixture(&metadata_db);
+    let before = fs::metadata(&metadata_db).expect("source metadata");
+    let same_database = run_calibre_import(metadata_db.clone(), calibre_root.clone());
+    assert_failure_code(&same_database, "invalid-arguments");
+    let after = fs::metadata(&metadata_db).expect("source metadata after rejected target");
+    assert_eq!(after.len(), before.len());
+    assert_eq!(
+        after.modified().expect("after mtime"),
+        before.modified().expect("before mtime")
+    );
+
+    let blocked_root = temp.path().join("blocked");
+    fs::write(&blocked_root, b"not a directory").expect("create storage blocker");
+    let unavailable = run_calibre_import(blocked_root.join("library.sqlite"), calibre_root);
+    assert_failure_code(&unavailable, "storage-unavailable");
+}
+
+#[cfg(unix)]
+#[test]
+fn calibre_import_contains_malicious_paths_symlinks_and_custom_columns() {
+    use std::os::unix::fs::symlink;
+
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let calibre_root = temp.path().join("calibre");
+    fs::create_dir(&calibre_root).expect("create Calibre root");
+    let metadata_db = calibre_root.join("metadata.db");
+    create_calibre_fixture(&metadata_db);
+    let safe_dir = calibre_root.join("Author/Calibre Title (1)");
+    fs::create_dir_all(&safe_dir).expect("create safe book directory");
+    fs::write(safe_dir.join("Calibre Title - Ada.epub"), b"safe epub").expect("write safe epub");
+    fs::write(safe_dir.join("Calibre Title - Ada.pdf"), b"safe pdf").expect("write safe pdf");
+
+    let outside = temp.path().join("outside");
+    fs::create_dir(&outside).expect("create outside directory");
+    fs::write(outside.join("Escape.epub"), b"outside bytes").expect("write outside ebook");
+    symlink(&outside, calibre_root.join("linked-book")).expect("create source symlink");
+
+    let database = Connection::open(&metadata_db).expect("open fixture for malicious rows");
+    database
+        .execute_batch(&format!(
+            "INSERT INTO books VALUES (2,'Traversal','../outside',NULL,NULL);
+             INSERT INTO books VALUES (3,'Absolute','{}',NULL,NULL);
+             INSERT INTO books VALUES (4,'Symlink','linked-book',NULL,NULL);
+             INSERT INTO data VALUES (3,2,'EPUB','Escape'),(4,3,'EPUB','Escape'),(5,4,'EPUB','Escape');
+             INSERT INTO custom_columns VALUES (2,'custom_column_1; DROP TABLE books','unsafe'),
+                                               (3,'custom_column_2','9invalid'),
+                                               (4,'custom_column_3','blob_value');
+             CREATE TABLE custom_column_2 (book INTEGER,value TEXT);
+             CREATE TABLE custom_column_3 (book INTEGER,value BLOB);
+             INSERT INTO custom_column_2 VALUES (1,'ignored');
+             INSERT INTO custom_column_3 VALUES (1,x'00FF');",
+            outside.to_string_lossy().replace('\'', "''")
+        ))
+        .expect("insert malicious fixture rows");
+    drop(database);
+
+    let output = run_calibre_import(temp.path().join("takio/library.sqlite"), calibre_root);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let value = success_value(&output.stdout);
+    assert_eq!(
+        value["counts"],
+        serde_json::json!({"total":1,"imported":1,"skipped":0,"duplicates":0,"failed":0}),
+        "{value}"
+    );
+    assert_eq!(
+        value["outcomes"][0]["item"]["customMetadata"],
+        serde_json::json!({"reading_state":"planned"})
+    );
+    assert!(outside.join("Escape.epub").is_file());
+}
+
+fn run_calibre_import(
+    database: std::path::PathBuf,
+    root: std::path::PathBuf,
+) -> std::process::Output {
+    cargo_bin_cmd!("takio")
+        .args(["library", "import-calibre", "--db"])
+        .arg(database)
+        .args(["--library-root"])
+        .arg(root)
+        .output()
+        .expect("run Calibre import")
+}
+
+fn assert_failure_code(output: &std::process::Output, code: &str) {
+    assert!(!output.status.success());
+    assert!(output.stderr.is_empty());
+    let envelope: Value = serde_json::from_slice(&output.stdout).expect("failure envelope");
+    assert_eq!(envelope["error"]["code"], code);
+}
+
+fn create_calibre_fixture(path: &std::path::Path) {
+    let database = Connection::open(path).expect("create Calibre metadata database");
+    database
+        .execute_batch(
+            "CREATE TABLE books (id INTEGER PRIMARY KEY, title TEXT NOT NULL, path TEXT NOT NULL, series_index REAL, pubdate TEXT);
+             CREATE TABLE authors (id INTEGER PRIMARY KEY, name TEXT, sort TEXT);
+             CREATE TABLE books_authors_link (id INTEGER PRIMARY KEY, book INTEGER, author INTEGER);
+             CREATE TABLE series (id INTEGER PRIMARY KEY, name TEXT);
+             CREATE TABLE books_series_link (id INTEGER PRIMARY KEY, book INTEGER, series INTEGER);
+             CREATE TABLE publishers (id INTEGER PRIMARY KEY, name TEXT);
+             CREATE TABLE books_publishers_link (id INTEGER PRIMARY KEY, book INTEGER, publisher INTEGER);
+             CREATE TABLE tags (id INTEGER PRIMARY KEY, name TEXT);
+             CREATE TABLE books_tags_link (id INTEGER PRIMARY KEY, book INTEGER, tag INTEGER);
+             CREATE TABLE languages (id INTEGER PRIMARY KEY, lang_code TEXT);
+             CREATE TABLE books_languages_link (id INTEGER PRIMARY KEY, book INTEGER, lang_code INTEGER, item_order INTEGER);
+             CREATE TABLE identifiers (id INTEGER PRIMARY KEY, book INTEGER, type TEXT, val TEXT);
+             CREATE TABLE comments (id INTEGER PRIMARY KEY, book INTEGER, text TEXT);
+             CREATE TABLE data (id INTEGER PRIMARY KEY, book INTEGER, format TEXT, name TEXT);
+             CREATE TABLE ratings (id INTEGER PRIMARY KEY, rating INTEGER);
+             CREATE TABLE books_ratings_link (id INTEGER PRIMARY KEY, book INTEGER, rating INTEGER);
+             CREATE TABLE custom_columns (id INTEGER PRIMARY KEY, name TEXT, label TEXT);
+             CREATE TABLE custom_column_1 (id INTEGER PRIMARY KEY, book INTEGER, value TEXT);
+             INSERT INTO books VALUES (1, 'Calibre Title', 'Author/Calibre Title (1)', 2.5, '2020-05-02 00:00:00+00:00');
+             INSERT INTO authors VALUES (1, 'Ada Lovelace', 'Lovelace, Ada');
+             INSERT INTO books_authors_link VALUES (1, 1, 1);
+             INSERT INTO series VALUES (1, 'Analytical Engines');
+             INSERT INTO books_series_link VALUES (1, 1, 1);
+             INSERT INTO publishers VALUES (1, 'First Publisher');
+             INSERT INTO books_publishers_link VALUES (1, 1, 1);
+             INSERT INTO tags VALUES (1, 'Math'), (2, 'Computing');
+             INSERT INTO books_tags_link VALUES (1, 1, 1), (2, 1, 2);
+             INSERT INTO languages VALUES (1, 'en');
+             INSERT INTO books_languages_link VALUES (1, 1, 1, 0);
+             INSERT INTO identifiers VALUES (1, 1, 'isbn', '9780000000001');
+             INSERT INTO comments VALUES (1, 1, 'Important description');
+             INSERT INTO data VALUES (1, 1, 'EPUB', 'Calibre Title - Ada'), (2, 1, 'PDF', 'Calibre Title - Ada');
+             INSERT INTO ratings VALUES (1, 4);
+             INSERT INTO books_ratings_link VALUES (1, 1, 1);
+             INSERT INTO custom_columns VALUES (1, 'custom_column_1', 'reading_state');
+             INSERT INTO custom_column_1 VALUES (1, 1, 'planned');",
+        )
+        .expect("populate Calibre metadata database");
 }
 
 #[test]
