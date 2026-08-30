@@ -31,7 +31,7 @@ fn capabilities_identify_the_native_tui() {
     let value = success_value(&output.stdout);
     assert_eq!(value["implementation"], "rust");
     assert_eq!(value["tui"], true);
-    assert_eq!(value["librarySchemaVersion"], 10);
+    assert_eq!(value["librarySchemaVersion"], 11);
     assert_eq!(value["features"]["metadata"], true);
     assert_eq!(value["features"]["contentServer"], true);
     assert!(

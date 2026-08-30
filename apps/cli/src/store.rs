@@ -16,7 +16,9 @@ use crate::model::{BookAuthor, BookFormat, LibraryItem, LibraryPatch, Provenance
 use crate::output::{AppError, AppResult};
 use crate::paths::LibraryPaths;
 
-pub const LIBRARY_SCHEMA_VERSION: i64 = 10;
+mod migration;
+
+pub const LIBRARY_SCHEMA_VERSION: i64 = 11;
 
 pub struct LibraryStore {
     connection: Connection,
@@ -161,7 +163,7 @@ impl LibraryStore {
             fs::create_dir_all(&paths.items)?;
             fs::create_dir_all(&paths.covers)?;
         }
-        let connection = Connection::open(&paths.database)?;
+        let mut connection = Connection::open(&paths.database)?;
         connection.busy_timeout(std::time::Duration::from_secs(5))?;
         connection.pragma_update(None, "foreign_keys", "ON")?;
         let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
@@ -170,6 +172,8 @@ impl LibraryStore {
                 return Err(AppError::new("incompatible-schema"));
             }
             create_schema(&connection)?;
+        } else if (1..LIBRARY_SCHEMA_VERSION).contains(&version) && create {
+            migration::migrate(&mut connection, &paths, version)?;
         } else if version != LIBRARY_SCHEMA_VERSION {
             return Err(AppError::new("incompatible-schema"));
         }
@@ -1116,6 +1120,7 @@ impl LibraryStore {
         if foreign_keys != 0 {
             return Err(AppError::new("integrity-failed"));
         }
+        migration::verify_current(&self.connection, &self.paths)?;
         let active_items = count(
             &self.connection,
             "SELECT COUNT(*) FROM library_items WHERE trashed_at IS NULL",
@@ -2033,16 +2038,29 @@ fn create_schema(connection: &Connection) -> AppResult<()> {
          CREATE TABLE saved_library_views (id TEXT PRIMARY KEY, name TEXT NOT NULL, definition_json TEXT NOT NULL CHECK(json_valid(definition_json)),
            created_at TEXT NOT NULL, updated_at TEXT NOT NULL) STRICT;
          CREATE TABLE duplicate_pair_reviews (left_id TEXT NOT NULL REFERENCES library_items(id) ON DELETE CASCADE,
-           right_id TEXT NOT NULL REFERENCES library_items(id) ON DELETE CASCADE, review_token TEXT NOT NULL,
-           reviewed_at TEXT NOT NULL, PRIMARY KEY(left_id,right_id)) STRICT;
-         CREATE TABLE library_adoptions (id TEXT PRIMARY KEY, library_item_id TEXT NOT NULL UNIQUE, title TEXT NOT NULL,
-           source_path TEXT NOT NULL, target_path TEXT NOT NULL UNIQUE, format TEXT NOT NULL, content_bytes INTEGER NOT NULL,
-           content_sha256 TEXT NOT NULL, state TEXT NOT NULL CHECK(state IN ('pending-rename','renamed','finalizing')),
-           created_at TEXT NOT NULL, updated_at TEXT NOT NULL) STRICT;
+           right_id TEXT NOT NULL REFERENCES library_items(id) ON DELETE CASCADE,
+           review_token TEXT NOT NULL CHECK(length(review_token)=64 AND review_token NOT GLOB '*[^0-9a-f]*'),
+           reviewed_at TEXT NOT NULL CHECK(length(reviewed_at)>0), PRIMARY KEY(left_id,right_id), CHECK(left_id<right_id)) STRICT;
+         CREATE TABLE library_adoptions (id TEXT PRIMARY KEY CHECK(length(id)>0),
+           library_item_id TEXT NOT NULL UNIQUE CHECK(length(library_item_id)>0), title TEXT NOT NULL CHECK(length(title)>0),
+           source_path TEXT NOT NULL CHECK(length(source_path)>0), target_path TEXT NOT NULL UNIQUE CHECK(length(target_path)>0),
+           format TEXT NOT NULL CHECK(format IN ('kepub','epub','pdf','mobi','azw3','docx','html','txt','cbz')),
+           content_bytes INTEGER NOT NULL CHECK(content_bytes>=0),
+           content_sha256 TEXT NOT NULL CHECK(length(content_sha256)=64 AND content_sha256 NOT GLOB '*[^0-9a-f]*'),
+           state TEXT NOT NULL CHECK(state IN ('pending-rename','renamed','finalizing')),
+           created_at TEXT NOT NULL CHECK(length(created_at)>0), updated_at TEXT NOT NULL CHECK(length(updated_at)>0),
+           CHECK(source_path<>target_path)) STRICT;
          CREATE TABLE managed_file_cleanup (source_path TEXT PRIMARY KEY,
            kind TEXT NOT NULL DEFAULT 'format' CHECK(kind IN ('format','cover'))) STRICT;
-         CREATE TABLE source_file_cleanup (source_path TEXT PRIMARY KEY, content_bytes INTEGER NOT NULL CHECK(content_bytes>=0),
-           content_sha256 TEXT NOT NULL) STRICT;
+         CREATE TABLE source_file_cleanup (source_path TEXT PRIMARY KEY CHECK(length(source_path)>0),
+           content_bytes INTEGER NOT NULL CHECK(content_bytes>=0),
+           content_sha256 TEXT NOT NULL CHECK(length(content_sha256)=64 AND content_sha256 NOT GLOB '*[^0-9a-f]*')) STRICT;
+         CREATE TABLE import_watch_observations (
+           canonical_source_path TEXT PRIMARY KEY CHECK(length(canonical_source_path)>0),
+           content_bytes INTEGER NOT NULL CHECK(content_bytes>=0),
+           content_sha256 TEXT NOT NULL CHECK(length(content_sha256)=64 AND content_sha256 NOT GLOB '*[^0-9a-f]*'),
+           outcome TEXT NOT NULL CHECK(outcome IN ('imported','duplicate','unsupported','failed')),
+           accounted_at TEXT NOT NULL CHECK(length(accounted_at)>0)) STRICT;
          CREATE INDEX library_items_by_title ON library_items(title COLLATE NOCASE,id);
          CREATE INDEX library_items_by_author ON library_items(author COLLATE NOCASE,id);
          CREATE INDEX library_items_by_series ON library_items(series COLLATE NOCASE,series_index,id);
@@ -2056,7 +2074,12 @@ fn create_schema(connection: &Connection) -> AppResult<()> {
          CREATE INDEX library_item_languages_by_language ON library_item_languages(language COLLATE NOCASE,library_item_id);
          CREATE INDEX library_item_tags_by_tag ON library_item_tags(tag_normalized_name,library_item_id);
          CREATE INDEX saved_library_views_by_name ON saved_library_views(name COLLATE NOCASE,id);
-         PRAGMA user_version=10;
+         CREATE INDEX library_adoptions_by_state ON library_adoptions(state,updated_at,id);
+         CREATE INDEX import_watch_observations_by_accounted_at
+           ON import_watch_observations(accounted_at,canonical_source_path);
+         CREATE INDEX import_watch_observations_by_fingerprint
+           ON import_watch_observations(content_bytes,content_sha256,canonical_source_path);
+         PRAGMA user_version=11;
          COMMIT;"
     )?;
     Ok(())
