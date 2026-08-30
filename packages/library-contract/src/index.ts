@@ -868,6 +868,101 @@ export const libraryMetadataPatchSchema = z
   })
   .readonly();
 
+export const METADATA_CANDIDATE_SOURCES = ["filename", "embedded", "online"] as const;
+export const METADATA_CANDIDATE_CONFIDENCES = ["low", "medium", "high"] as const;
+export const MAX_METADATA_CANDIDATES = 8;
+export const MAX_METADATA_CANDIDATE_FIELDS = 13;
+
+export const metadataCandidateProvenanceSchema = z
+  .object({
+    generatedAt: z.string().datetime(),
+    itemId: z.string().min(1).nullable().optional(),
+    sourcePath: z.string().min(1).max(4096).optional(),
+    pattern: z.string().min(1).max(240).optional(),
+    backend: z.enum(["ebook-meta", "fetch-ebook-metadata"]).optional(),
+  })
+  .strict()
+  .readonly();
+
+export const metadataCandidateSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    id: z.string().min(1).max(120),
+    source: z.enum(METADATA_CANDIDATE_SOURCES),
+    confidence: z.enum(METADATA_CANDIDATE_CONFIDENCES),
+    patch: libraryMetadataPatchSchema,
+    provenance: metadataCandidateProvenanceSchema,
+  })
+  .strict()
+  .readonly();
+
+export const listMetadataCandidatesRequestSchema = z
+  .object({
+    itemId: z.string().trim().min(1).max(256),
+    includeOnline: z.boolean(),
+  })
+  .strict()
+  .readonly();
+
+export const metadataCandidateListValueSchema = z
+  .object({
+    itemId: z.string().min(1).max(256),
+    candidates: z.array(metadataCandidateSchema).max(MAX_METADATA_CANDIDATES).readonly(),
+  })
+  .strict()
+  .readonly();
+
+export const applyMetadataCandidateRequestSchema = z
+  .object({
+    itemId: z.string().trim().min(1).max(256),
+    candidate: metadataCandidateSchema,
+    fields: z
+      .array(z.string().min(1))
+      .min(1)
+      .max(MAX_METADATA_CANDIDATE_FIELDS)
+      .refine((fields) => new Set(fields).size === fields.length, "Fields must be unique.")
+      .readonly(),
+    provenance: z.string().trim().min(1).max(240),
+  })
+  .strict()
+  .superRefine((request, context) => {
+    for (const [index, field] of request.fields.entries()) {
+      if (!Object.hasOwn(request.candidate.patch, field)) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["fields", index],
+          message: "Each selected field must exist in the candidate patch.",
+        });
+      }
+    }
+  })
+  .readonly();
+
+export const metadataCandidateApplyValueSchema = z
+  .object({
+    item: libraryItemSchema,
+    applied: z
+      .object({
+        candidateId: z.string().min(1).max(120),
+        source: z.enum(METADATA_CANDIDATE_SOURCES),
+        provenance: z.string().min(1).max(240),
+      })
+      .strict()
+      .readonly(),
+  })
+  .strict()
+  .readonly();
+
+export type MetadataCandidate = z.infer<typeof metadataCandidateSchema>;
+export type ListMetadataCandidatesRequest = z.infer<typeof listMetadataCandidatesRequestSchema>;
+export type ApplyMetadataCandidateRequest = z.infer<typeof applyMetadataCandidateRequestSchema>;
+export type MetadataCandidateListWireResult = LibraryStoreResult<
+  z.infer<typeof metadataCandidateListValueSchema>
+>;
+export type MetadataCandidateApplyWireResult = LibraryStoreResult<
+  z.infer<typeof metadataCandidateApplyValueSchema>
+>;
+
 export const mergeDuplicatePairRequestSchema = z
   .object({
     targetId: z.string().min(1),

@@ -1523,6 +1523,11 @@ export default function App() {
     }
   }
 
+  function metadataCandidateApplied(item: LibraryItem) {
+    replaceItem(item);
+    setNotice({ kind: "status", text: `Applied selected metadata to “${item.title}”.` });
+  }
+
   async function chooseCover(item: LibraryItem) {
     let selection: string | string[] | null;
     try {
@@ -3237,6 +3242,7 @@ export default function App() {
           onOpenSaveView={openSaveViewDialog}
           onOpenTrash={openTrash}
           onOpenItem={openItem}
+          onMetadataCandidateApplied={metadataCandidateApplied}
           onRemoveItem={removeItem}
           onRemoveFormat={removeFormat}
           onRemoveSavedView={removeSavedView}

@@ -1,0 +1,119 @@
+.metadata-candidate-review {
+  padding: 16px 18px;
+  border-bottom: 1px solid #e4e7ec;
+}
+
+.metadata-candidate-review__heading,
+.metadata-candidate-review__candidate header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.metadata-candidate-review h3,
+.metadata-candidate-review legend {
+  margin: 0;
+  color: #667085;
+  font-size: 0.625rem;
+  font-weight: 700;
+  letter-spacing: 0.075em;
+  text-transform: uppercase;
+}
+
+.metadata-candidate-review button {
+  min-height: 30px;
+  border: 1px solid #c7cdd6;
+  border-radius: 5px;
+  background: #fff;
+  color: #344054;
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.6875rem;
+  font-weight: 650;
+}
+
+.metadata-candidate-review button:focus-visible,
+.metadata-candidate-review input:focus-visible {
+  outline: 2px solid #4f46e5;
+  outline-offset: 2px;
+}
+
+.metadata-candidate-review button:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.metadata-candidate-review__online,
+.metadata-candidate-review__field {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  color: #475467;
+  font-size: 0.75rem;
+}
+
+.metadata-candidate-review__online {
+  margin-top: 10px;
+}
+
+.metadata-candidate-review__hint,
+.metadata-candidate-review__status,
+.metadata-candidate-review__provenance {
+  margin: 8px 0 0;
+  color: #667085;
+  font-size: 0.6875rem;
+  line-height: 1.45;
+}
+
+.metadata-candidate-review__status:empty {
+  display: none;
+}
+
+.metadata-candidate-review__candidate {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid #e4e7ec;
+}
+
+.metadata-candidate-review__candidate header strong {
+  color: #344054;
+  font-size: 0.75rem;
+}
+
+.metadata-candidate-review__candidate header span {
+  color: #667085;
+  font-size: 0.6875rem;
+  text-transform: capitalize;
+}
+
+.metadata-candidate-review fieldset {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.metadata-candidate-review legend {
+  margin-bottom: 8px;
+}
+
+.metadata-candidate-review__field > span {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.metadata-candidate-review__field strong {
+  color: #344054;
+  text-transform: capitalize;
+}
+
+.metadata-candidate-review__field small {
+  overflow-wrap: anywhere;
+  color: #667085;
+  line-height: 1.4;
+}

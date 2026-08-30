@@ -10,6 +10,7 @@ import {
   type ConversionChoice,
 } from "../lib/conversion-choices";
 import { coverFileSource } from "../lib/desktop";
+import { MetadataCandidateReview } from "./MetadataCandidateReview";
 
 import "./LibraryInspector.css";
 
@@ -37,6 +38,7 @@ export type LibraryInspectorProps = {
   readonly actionsDisabled?: boolean;
   readonly item: LibraryItem | null;
   readonly onConvertFormat: ConversionAction;
+  readonly onMetadataCandidateApplied?: (item: LibraryItem) => void;
   readonly onOpenFormat: FormatAction;
   readonly onSendFormat: FormatAction;
 };
@@ -71,6 +73,7 @@ export function LibraryInspector({
   actionsDisabled = false,
   item,
   onConvertFormat,
+  onMetadataCandidateApplied = () => undefined,
   onOpenFormat,
   onSendFormat,
 }: LibraryInspectorProps) {
@@ -114,6 +117,11 @@ export function LibraryInspector({
       </header>
 
       <div className="library-inspector__body">
+        <MetadataCandidateReview
+          disabled={actionsDisabled}
+          item={item}
+          onApplied={onMetadataCandidateApplied}
+        />
         <section className="library-inspector__section" aria-labelledby="inspector-metadata-heading">
           <h3 id="inspector-metadata-heading">Metadata</h3>
           <dl className="library-inspector__metadata">

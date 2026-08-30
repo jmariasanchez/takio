@@ -147,6 +147,7 @@ export type LibraryWorkspaceProps = {
     bookFormat: BookFormat,
     focusControlId: string,
   ) => Promise<void>;
+  readonly onMetadataCandidateApplied?: (item: LibraryItem) => void;
   readonly onOpenDuplicateReview: (disposition: DuplicateReviewDisposition) => void;
   readonly onOpenImport?: () => void;
   readonly onOpenSaveView: () => void;
@@ -235,6 +236,7 @@ function InspectorManagement({
   onClearCover,
   onEnqueueConversion,
   onOpenItem,
+  onMetadataCandidateApplied = () => undefined,
   onRemoveFormat,
   onRemoveItem,
   onSaveMetadata,
@@ -254,6 +256,7 @@ function InspectorManagement({
   onClearCover: LibraryWorkspaceProps["onClearCover"];
   onEnqueueConversion: LibraryWorkspaceProps["onEnqueueConversion"];
   onOpenItem: LibraryWorkspaceProps["onOpenItem"];
+  onMetadataCandidateApplied: LibraryWorkspaceProps["onMetadataCandidateApplied"];
   onRemoveFormat: LibraryWorkspaceProps["onRemoveFormat"];
   onRemoveItem: LibraryWorkspaceProps["onRemoveItem"];
   onSaveMetadata: LibraryWorkspaceProps["onSaveMetadata"];
@@ -317,6 +320,7 @@ function InspectorManagement({
           <LibraryInspector
             actionsDisabled={actionsPending}
             item={item}
+            onMetadataCandidateApplied={onMetadataCandidateApplied}
             onConvertFormat={chooseConversion}
             onOpenFormat={openFormat}
             onSendFormat={sendFormat}
@@ -561,6 +565,7 @@ export function LibraryWorkspace({
   onOpenDuplicateReview,
   onOpenImport,
   onOpenItem,
+  onMetadataCandidateApplied,
   onOpenSaveView,
   onOpenTrash,
   onRemoveFormat,
@@ -638,6 +643,7 @@ export function LibraryWorkspace({
       onClearCover={onClearCover}
       onEnqueueConversion={onEnqueueConversion}
       onOpenItem={onOpenItem}
+      onMetadataCandidateApplied={onMetadataCandidateApplied}
       onRemoveFormat={onRemoveFormat}
       onRemoveItem={onRemoveItem}
       onSaveMetadata={onSaveMetadata}

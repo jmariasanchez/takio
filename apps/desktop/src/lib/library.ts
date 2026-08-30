@@ -3,12 +3,16 @@ import { FORMAT_IDS, libraryItemSchema, normalizeTags } from "@takio/core";
 import type { FormatId, LibraryItem } from "@takio/core";
 import {
   duplicateCandidatePageSchema,
+  applyMetadataCandidateRequestSchema,
   exportLibraryItemsRequestSchema,
   keepDuplicatePairRequestSchema,
   libraryExportReportSchema,
   libraryImportReportSchema,
   libraryQueryPageSchema,
   libraryTrashPageSchema,
+  metadataCandidateApplyValueSchema,
+  metadataCandidateListValueSchema,
+  listMetadataCandidatesRequestSchema,
   listLibraryTrashRequestSchema,
   listDuplicateCandidatesRequestSchema,
   mergeDuplicatePairRequestSchema,
@@ -23,6 +27,7 @@ import {
 } from "@takio/library-contract";
 import type {
   ExportLibraryItemsRequest,
+  ApplyMetadataCandidateRequest,
   KeepDuplicatePairRequest,
   LibraryBatchImportWireResult,
   LibraryCoverWireResult,
@@ -34,6 +39,9 @@ import type {
   LibraryImportMode,
   LibraryListWireResult,
   LibraryMetadataPatch,
+  MetadataCandidateApplyWireResult,
+  MetadataCandidateListWireResult,
+  ListMetadataCandidatesRequest,
   LibraryQueryWireResult,
   LibraryPurgeWireResult,
   LibraryRemoveWireResult,
@@ -95,6 +103,12 @@ export type DesktopLibraryDuplicateDispositionResult =
   | LibraryBridgeFailure;
 export type DesktopLibraryDuplicateMergeResult =
   | LibraryDuplicateMergeWireResult
+  | LibraryBridgeFailure;
+export type DesktopMetadataCandidateListResult =
+  | MetadataCandidateListWireResult
+  | LibraryBridgeFailure;
+export type DesktopMetadataCandidateApplyResult =
+  | MetadataCandidateApplyWireResult
   | LibraryBridgeFailure;
 export type DesktopLibraryTrashListResult =
   LibraryTrashListWireResult | LibraryBridgeFailure;
@@ -269,6 +283,30 @@ export async function listLibraryItems(
 ): Promise<DesktopLibraryListResult> {
   const result = await invokeCommand<unknown>("library_list");
   return decodeLibraryResult<LibraryListWireResult>(result, isItemsValue);
+}
+
+export async function listMetadataCandidates(
+  request: ListMetadataCandidatesRequest,
+  invokeCommand: LibraryInvoker = invokeDesktop,
+): Promise<DesktopMetadataCandidateListResult> {
+  const parsed = listMetadataCandidatesRequestSchema.safeParse(request);
+  if (!parsed.success) return invalidArguments();
+  const result = await invokeCommand<unknown>("metadata_candidates_list", { request: parsed.data });
+  return decodeLibraryResult<MetadataCandidateListWireResult>(result, (value) =>
+    metadataCandidateListValueSchema.safeParse(value).success,
+  );
+}
+
+export async function applyMetadataCandidate(
+  request: ApplyMetadataCandidateRequest,
+  invokeCommand: LibraryInvoker = invokeDesktop,
+): Promise<DesktopMetadataCandidateApplyResult> {
+  const parsed = applyMetadataCandidateRequestSchema.safeParse(request);
+  if (!parsed.success) return invalidArguments();
+  const result = await invokeCommand<unknown>("metadata_candidates_apply", { request: parsed.data });
+  return decodeLibraryResult<MetadataCandidateApplyWireResult>(result, (value) =>
+    metadataCandidateApplyValueSchema.safeParse(value).success,
+  );
 }
 
 export async function getLibraryItem(

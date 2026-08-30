@@ -2,6 +2,10 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { stat } from "node:fs/promises";
 import * as electron from "electron";
 import { join } from "node:path";
+import {
+  applyMetadataCandidateRequestSchema,
+  listMetadataCandidatesRequestSchema,
+} from "@takio/library-contract";
 
 const { app } = electron;
 
@@ -95,6 +99,45 @@ export async function buildEngineArguments(
       return ["library", "list"];
     case "library_get":
       return nonempty(id) ? ["library", "get", "--id", id] : null;
+    case "metadata_candidates_list": {
+      const parsed = listMetadataCandidatesRequestSchema.safeParse(request);
+      if (!parsed.success) return null;
+      return [
+        "metadata",
+        "candidates",
+        "item",
+        "--id",
+        parsed.data.itemId,
+        ...(parsed.data.includeOnline ? ["--include-online"] : []),
+      ];
+    }
+    case "metadata_candidates_apply": {
+      const parsed = applyMetadataCandidateRequestSchema.safeParse(request);
+      if (!parsed.success) return null;
+      const selectedPatch = Object.fromEntries(
+        parsed.data.fields.map((field) => [
+          field,
+          parsed.data.candidate.patch[field as keyof typeof parsed.data.candidate.patch],
+        ]),
+      );
+      const candidateJson = objectJson({
+        ...parsed.data.candidate,
+        patch: selectedPatch,
+      });
+      return candidateJson
+        ? [
+            "metadata",
+            "candidates",
+            "apply",
+            "--id",
+            parsed.data.itemId,
+            "--candidate-json",
+            candidateJson,
+            "--provenance",
+            parsed.data.provenance,
+          ]
+        : null;
+    }
     case "library_import":
       return nonempty(input.sourcePath) && (await existingFile(input.sourcePath))
         ? ["library", "import", "--source-path", input.sourcePath]
