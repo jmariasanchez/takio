@@ -3,12 +3,17 @@
 > Current product direction. This supersedes the strategic scope in
 > `claude-fable-5-product-roadmap.md`; historical implementation plans remain
 > snapshots of their original milestones.
+>
+> Expansion across Calibre comparison areas 2 through 9 is now tracked in
+> `calibre-gap-closure-2-9.md`. That program supersedes the permanent exclusions
+> below for reading, editing, browser reading, and extension workflows.
 
 ## Product contract
 
 Takio is a local-first, Calibre-competitive library, metadata, conversion, and
 device-management application with a modern macOS workspace and deterministic
-CLI. Reading stays in external applications.
+CLI. Reading currently uses external applications while the secure reader
+milestones in `calibre-gap-closure-2-9.md` are developed and validated.
 
 The implementation continues to use Calibre executables for ebook conversion,
 metadata extraction, polishing, and optional external editing. Takio does not

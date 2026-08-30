@@ -5,13 +5,17 @@ provides a predictable interface for managing, converting, and sending books
 while using Calibre's proven command-line tools for conversion.
 
 Takio is intended to replace operating Calibre directly for focused library
-workflows, not to reimplement Calibre's reader, editor, conversion engine, or
-plugin ecosystem. USB mass-storage delivery remains the default hardware path.
-Rooted Kindle SSH/SCP delivery is available only through an explicit per-command
-opt-in with host/user/key/path validation and no password handling. MTP and
-Amazon Send-to-Kindle are reported as unavailable gated transports rather than
-claimed as supported. Its optional content server is a narrow read-only delivery
-surface rather than a browser reader.
+workflows. The current release does not yet reimplement Calibre's reader,
+editor, or plugin ecosystem, but those product areas are now part of the
+acceptance-gated roadmap in
+`docs/roadmaps/calibre-gap-closure-2-9.md`. Takio does not plan to build a
+general-purpose conversion engine. USB mass-storage delivery remains the
+default hardware path. Rooted Kindle SSH/SCP delivery is available only through
+an explicit per-command opt-in with host/user/key/path validation and no
+password handling. MTP and Amazon Send-to-Kindle are reported as unavailable
+gated transports rather than claimed as supported. The current optional content
+server is a narrow read-only delivery surface; remote multi-user service and
+browser reading are planned as later gated milestones.
 
 Takio is MIT licensed. Native transformation code is implemented independently
 from public format specifications, interoperability tests, and observed file
