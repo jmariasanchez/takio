@@ -134,7 +134,7 @@ Windows rather than inferring it from cross-platform dependencies.
 
 #### B1. Candidate review in desktop and TUI
 
-Status: selected-book desktop slice delivered in `663541e` and hardened in
+Status: complete. Selected-book desktop slice delivered in `663541e` and hardened in
 `3db7264`, `e944aee`, `4a8e3ad`, `8582eee`, and `a99670a`. Equivalent
 selected-book TUI review delivered in `67d36f1` and hardened in `cbce02b` and
 `502b8c5`. Strict bounded bulk contracts and native discovery were delivered in
@@ -143,8 +143,10 @@ delivered in `0c4dd6b` and hardened in `4bd9019` and `a171891`. Native discovery
 was hardened in `61527de`, with the final cross-runtime item-id alignment in
 `c1a955e`. Path-free candidate-cover contracts and Rust staging were delivered in
 `0805fbf`, `f219c40`, and `9be1e1c`; desktop and selected-book TUI review landed
-in `8786f15` and `0e9eff0`, with application and cleanup hardening in
-`15279ec` and failed-discovery stage cleanup in `d2495de`.
+in `8786f15` and `0e9eff0`. Rust staging and apply were finalized in `d2495de`
+and `7f0d880`, TUI cleanup and compact review in `7b12949`, and desktop protocol,
+discard, and lifecycle handling in `4af244d`, `60e1930`, `867790f`, and
+`d0ff592`.
 
 Deliver:
 
@@ -215,6 +217,20 @@ Delivered evidence:
   provenance, digest, size, and media pair. Metadata, audit, and durable cover
   reference commit together; failures remove the unpublished durable copy while
   retaining the stage for retry, and successful apply consumes it.
+- Staging quota and garbage collection use a bounded cross-process coordination
+  lock. Apply claims a stage before publication, restores it on transaction
+  rollback, rejects replay after commit, and returns the committed item without a
+  fallible post-commit hydration step.
+- Selected-book and bulk desktop workflows reject cross-item and duplicate
+  candidates, treat applied fields as an exact unordered selection, discard
+  abandoned stages on refresh, item change, skip, close, cancellation, unmount,
+  metadata-only apply, and invalid or stale responses, and isolate cancellation
+  tokens across close and reopen lifetimes.
+- Final exact-head validation passed all Rust, contract, desktop, and workspace
+  tests and builds. Checksummed standalone CLI and bundled desktop-sidecar
+  acceptance exercised path-free cover discovery, explicit metadata and cover
+  application, replay rejection, stage consumption, compact TUI rendering, and
+  terminal restoration.
 
 Remaining acceptance work:
 
