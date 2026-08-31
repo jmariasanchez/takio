@@ -4,6 +4,8 @@ import * as electron from "electron";
 import { join } from "node:path";
 import {
   applyMetadataCandidateRequestSchema,
+  libraryHealthBackupRequestSchema,
+  libraryHealthDiagnosticsRequestSchema,
   listMetadataCandidatesRequestSchema,
 } from "@takio/library-contract";
 
@@ -91,14 +93,18 @@ export async function buildEngineArguments(
       return ["library", "path"];
     case "library_health_verify":
       return ["library", "verify"];
-    case "library_health_backup":
-      return nonempty(input.destinationPath)
-        ? ["library", "backup", "--dest", input.destinationPath]
+    case "library_health_backup": {
+      const parsed = libraryHealthBackupRequestSchema.safeParse(input);
+      return parsed.success
+        ? ["library", "backup", "--dest", parsed.data.destinationPath]
         : null;
-    case "library_health_diagnostics":
-      return nonempty(input.destinationPath)
-        ? ["library", "diagnostics", "--dest", input.destinationPath]
+    }
+    case "library_health_diagnostics": {
+      const parsed = libraryHealthDiagnosticsRequestSchema.safeParse(input);
+      return parsed.success
+        ? ["library", "diagnostics", "--dest", parsed.data.destinationPath]
         : null;
+    }
     case "library_list":
       return ["library", "list"];
     case "library_get":

@@ -89,6 +89,14 @@ describe("desktop library health bridge", () => {
       ok: false,
       error: { code: "protocol-error" },
     });
+    const unknownFailure: LibraryInvoker = async () => ({
+      ok: false,
+      error: { code: "unexpected-private-error" },
+    } as never);
+    expect(await verifyLibraryHealth(unknownFailure)).toEqual({
+      ok: false,
+      error: { code: "protocol-error" },
+    });
   });
 
   test("describes non-overwrite backup failures for users", () => {

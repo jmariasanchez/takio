@@ -1,4 +1,5 @@
 import {
+  LIBRARY_HEALTH_ERROR_CODES,
   libraryHealthBackupRequestSchema,
   libraryHealthBackupValueSchema,
   libraryHealthDiagnosticsRequestSchema,
@@ -37,8 +38,14 @@ function invalidArguments(): BridgeFailure {
   return { ok: false, error: { code: "invalid-arguments" } };
 }
 
+const healthFailureCodes = new Set<string>([
+  ...LIBRARY_HEALTH_ERROR_CODES,
+  "engine-unavailable",
+  "protocol-error",
+]);
+
 function isFailureCode(value: unknown): value is LibraryHealthErrorCode | BridgeFailure["error"]["code"] {
-  return typeof value === "string" && value.length > 0;
+  return typeof value === "string" && healthFailureCodes.has(value);
 }
 
 function parseResult<T>(
