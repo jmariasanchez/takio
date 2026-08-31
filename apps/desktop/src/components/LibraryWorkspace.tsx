@@ -116,6 +116,7 @@ export type LibraryWorkspaceProps = {
   readonly bulkActions?: LibraryWorkspaceBulkActions;
   readonly conversionDraft: ConversionDraft | null;
   readonly currentSavedViewId: string | null;
+  readonly definitionGeneration: number;
   readonly draft: MetadataDraft | null;
   readonly facets: LibraryFacetCounts;
   readonly filters: LibraryQueryFilters;
@@ -546,6 +547,7 @@ export function LibraryWorkspace({
   bulkActions,
   conversionDraft,
   currentSavedViewId,
+  definitionGeneration,
   draft,
   facets,
   filters,
@@ -606,6 +608,7 @@ export function LibraryWorkspace({
     readonly CustomColumnDefinition[]
   >([]);
   const [visibleCustomColumnKey, setVisibleCustomColumnKey] = useState<string | null>(null);
+  const definitionRequestSequence = useRef(0);
   const previousSaveViewDialogOpen = useRef(saveViewDialogOpen);
   const selectedItem = items.find(({ id }) => id === selectedItemId) ?? null;
   const busy = libraryState === "loading" || searchPending;
@@ -614,16 +617,18 @@ export function LibraryWorkspace({
   const firstUse = libraryState === "ready" && !busy && total === 0 && !filtered;
 
   useEffect(() => {
-    let active = true;
+    const request = ++definitionRequestSequence.current;
     void listCustomColumnDefinitions()
       .then((result) => {
-        if (active && result.ok) setCustomColumnDefinitions(result.value.definitions);
+        if (request === definitionRequestSequence.current && result.ok) {
+          setCustomColumnDefinitions(result.value.definitions);
+        }
       })
       .catch(() => undefined);
     return () => {
-      active = false;
+      definitionRequestSequence.current += 1;
     };
-  }, []);
+  }, [definitionGeneration]);
 
   useEffect(() => {
     if (

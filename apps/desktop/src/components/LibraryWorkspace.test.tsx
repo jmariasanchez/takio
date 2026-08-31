@@ -85,6 +85,7 @@ function props(overrides: Partial<LibraryWorkspaceProps> = {}): LibraryWorkspace
     actionsPending: false,
     conversionDraft: null,
     currentSavedViewId: "favourites",
+    definitionGeneration: 0,
     draft: null,
     facets,
     filters,

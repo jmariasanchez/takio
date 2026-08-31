@@ -156,6 +156,8 @@ test("labels defined fields while retaining undeclared legacy fields", () => {
 
   expect(markup).toContain("Shelf (#shelf)");
   expect(markup).toContain('aria-label="Shelf key, #shelf"');
+  expect(markup).toContain("<span>Shelf value</span><textarea");
+  expect(markup).not.toContain('aria-label="Custom field 1 value"');
   expect(markup).toContain('aria-label="Custom field 2 key"');
 });
 

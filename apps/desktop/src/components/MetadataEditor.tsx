@@ -828,7 +828,9 @@ export function MetadataEditor({
                           id={controlId(idPrefix, valuePath)}
                           value={field.value}
                           disabled={draft.customMetadata.state !== "concrete"}
-                          aria-label={`Custom field ${index + 1} value`}
+                          aria-label={
+                            definition === undefined ? `Custom field ${index + 1} value` : undefined
+                          }
                           onChange={(event) =>
                             change("customMetadata", {
                               state: "concrete",

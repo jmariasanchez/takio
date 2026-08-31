@@ -3307,6 +3307,7 @@ export default function App() {
           }}
           conversionDraft={conversionDraft}
           currentSavedViewId={currentSavedViewId}
+          definitionGeneration={libraryQuery.lastIssuedRequestToken}
           draft={draft}
           facets={cataloguePage?.facets ?? emptyLibraryFacets}
           filters={libraryQuery.request.filters}
