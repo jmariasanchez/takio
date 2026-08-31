@@ -22,6 +22,7 @@ import {
   libraryTrashPageSchema,
   listLibraryTrashRequestSchema,
   listSavedLibraryViewsRequestSchema,
+  METADATA_CANDIDATE_AUDIT_KEY,
   mergeDuplicatePairRequestSchema,
   purgeLibraryItemRequestSchema,
   queryLibraryItemsRequestSchema,
@@ -5492,6 +5493,15 @@ export class BunSqliteLibraryStore
             : parsedPatch.data.author === null
               ? undefined
               : (parsedPatch.data.author ?? current.value.author);
+        const requestedCustomMetadata =
+          parsedPatch.data.customMetadata === null
+            ? {}
+            : (parsedPatch.data.customMetadata ?? current.value.customMetadata ?? {});
+        const audit = current.value.customMetadata?.[METADATA_CANDIDATE_AUDIT_KEY];
+        const customMetadata =
+          audit === undefined
+            ? requestedCustomMetadata
+            : { ...requestedCustomMetadata, [METADATA_CANDIDATE_AUDIT_KEY]: audit };
         const updated = libraryItemSchema.safeParse({
           ...current.value,
           title: parsedPatch.data.title ?? current.value.title,
@@ -5517,10 +5527,7 @@ export class BunSqliteLibraryStore
             parsedPatch.data.identifiers === null
               ? undefined
               : (parsedPatch.data.identifiers ?? current.value.identifiers),
-          customMetadata:
-            parsedPatch.data.customMetadata === null
-              ? undefined
-              : (parsedPatch.data.customMetadata ?? current.value.customMetadata),
+          customMetadata: Object.keys(customMetadata).length === 0 ? undefined : customMetadata,
           publishedDate:
             parsedPatch.data.publishedDate === null
               ? undefined

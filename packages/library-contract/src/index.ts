@@ -986,6 +986,11 @@ export type ReplaceLibraryFormatRequest = z.infer<typeof replaceLibraryFormatReq
 export type RemoveLibraryFormatRequest = Readonly<{ id: string; format: FormatId }>;
 export type RemoveLibraryItemRequest = Readonly<{ id: string }>;
 const nullableLibraryMetadataTextSchema = z.string().trim().min(1).nullable().optional();
+export const METADATA_CANDIDATE_AUDIT_KEY = "takio_metadata_audit";
+const bookUserCustomMetadataSchema = bookCustomMetadataSchema.refine(
+  (metadata) => !Object.hasOwn(metadata, METADATA_CANDIDATE_AUDIT_KEY),
+  { message: "Reserved Takio metadata cannot be changed directly." },
+);
 
 export const libraryMetadataPatchSchema = z
   .object({
@@ -997,7 +1002,7 @@ export const libraryMetadataPatchSchema = z
     publisher: nullableLibraryMetadataTextSchema,
     languages: z.array(languageTagSchema).min(1).readonly().nullable().optional(),
     identifiers: bookIdentifiersSchema.nullable().optional(),
-    customMetadata: bookCustomMetadataSchema.nullable().optional(),
+    customMetadata: bookUserCustomMetadataSchema.nullable().optional(),
     publishedDate: publishedDateSchema.nullable().optional(),
     rating: z.number().finite().min(0).max(10).nullable().optional(),
     description: nullableLibraryMetadataTextSchema,
@@ -1021,7 +1026,6 @@ export const METADATA_CANDIDATE_COVER_MEDIA_TYPES = [
   "image/webp",
 ] as const;
 export const METADATA_CANDIDATE_COVER_EXTENSIONS = [".jpg", ".png", ".gif", ".webp"] as const;
-export const METADATA_CANDIDATE_AUDIT_KEY = "takio_metadata_audit";
 export const BULK_METADATA_CANDIDATE_SCHEMA_VERSION = 1;
 export const MAX_BULK_METADATA_CANDIDATE_ITEMS = 64;
 export const MAX_BULK_METADATA_CANDIDATE_ITEM_ID_LENGTH = 128;

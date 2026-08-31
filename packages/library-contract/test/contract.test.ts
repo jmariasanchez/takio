@@ -1019,6 +1019,7 @@ describe("LibraryStore", () => {
       { tags: [], languages: [] },
       { tags: [], languages: ["English (US)"] },
       { tags: [], identifiers: { isbn: " " } },
+      { tags: [], customMetadata: { takio_metadata_audit: "forged" } },
       { tags: [], publishedDate: "1979-13" },
       { tags: [], rating: 10.1 },
       { tags: ["Classic", " classic "] },

@@ -9,7 +9,7 @@ use uuid::Uuid;
 use crate::conversion::{FormatId, detect_format};
 use crate::model::LibraryItem;
 use crate::output::{AppError, AppResult, print_success};
-use crate::store::LibraryStore;
+use crate::store::{LibraryStore, user_custom_metadata};
 
 const MAX_CATALOG_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
 
@@ -223,8 +223,9 @@ fn catalog_record(item: &LibraryItem) -> serde_json::Value {
     if !item.identifiers.is_empty() {
         object.insert("identifiers".to_owned(), json!(item.identifiers));
     }
-    if !item.custom_metadata.is_empty() {
-        object.insert("customMetadata".to_owned(), json!(item.custom_metadata));
+    let custom_metadata = user_custom_metadata(&item.custom_metadata);
+    if !custom_metadata.is_empty() {
+        object.insert("customMetadata".to_owned(), json!(custom_metadata));
     }
     record
 }
@@ -417,7 +418,13 @@ mod tests {
             publisher: Some("Beacon Press".to_owned()),
             languages: vec!["en".to_owned()],
             identifiers: BTreeMap::from([("isbn".to_owned(), "9780807083697".to_owned())]),
-            custom_metadata: BTreeMap::from([("shelf".to_owned(), "favorites".to_owned())]),
+            custom_metadata: BTreeMap::from([
+                ("shelf".to_owned(), "favorites".to_owned()),
+                (
+                    "takio_metadata_audit".to_owned(),
+                    "private source path".to_owned(),
+                ),
+            ]),
             published_date: Some("1979-06-01".to_owned()),
             rating: Some(5.0),
             description: Some("A landmark novel.".to_owned()),
@@ -430,6 +437,12 @@ mod tests {
         assert_eq!(record["authors"], json!(["Octavia E. Butler"]));
         assert_eq!(record["identifiers"]["isbn"], "9780807083697");
         assert_eq!(record["customMetadata"]["shelf"], "favorites");
+        assert!(
+            record["customMetadata"]
+                .get("takio_metadata_audit")
+                .is_none()
+        );
+        assert!(!record.to_string().contains("private source path"));
         assert_eq!(record["hasCover"], true);
         assert!(record.get("sourcePath").is_none());
         assert!(!record.to_string().contains("/private/library"));

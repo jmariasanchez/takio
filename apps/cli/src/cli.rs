@@ -27,7 +27,7 @@ use crate::portable_library;
 use crate::store::{
     DuplicatePairReviewRequest, LIBRARY_SCHEMA_VERSION, LibraryQueryFilters, LibraryQueryScope,
     LibraryQuerySyntax, LibraryStore, ListDuplicateCandidatesRequest, METADATA_AUDIT_KEY,
-    MergeDuplicatePairRequest, VerifyReport, validate_candidate_patch,
+    MergeDuplicatePairRequest, VerifyReport, user_custom_metadata, validate_candidate_patch,
 };
 
 #[derive(Parser)]
@@ -2078,8 +2078,9 @@ fn catalog_record(item: &crate::model::LibraryItem) -> Value {
     if !item.identifiers.is_empty() {
         object.insert("identifiers".to_owned(), json!(item.identifiers));
     }
-    if !item.custom_metadata.is_empty() {
-        object.insert("customMetadata".to_owned(), json!(item.custom_metadata));
+    let custom_metadata = user_custom_metadata(&item.custom_metadata);
+    if !custom_metadata.is_empty() {
+        object.insert("customMetadata".to_owned(), json!(custom_metadata));
     }
     record
 }
@@ -2115,7 +2116,8 @@ fn render_catalog_csv(items: &[crate::model::LibraryItem]) -> String {
                 .map(|value| value.to_string())
                 .unwrap_or_default(),
             serde_json::to_string(&item.identifiers).unwrap_or_else(|_| "{}".to_owned()),
-            serde_json::to_string(&item.custom_metadata).unwrap_or_else(|_| "{}".to_owned()),
+            serde_json::to_string(&user_custom_metadata(&item.custom_metadata))
+                .unwrap_or_else(|_| "{}".to_owned()),
             item.description.clone().unwrap_or_default(),
         ];
         output.push_str(

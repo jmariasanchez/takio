@@ -3264,7 +3264,7 @@ fn normalize_identifiers(values: BTreeMap<String, String>) -> AppResult<BTreeMap
         .collect()
 }
 
-fn normalize_custom_metadata(
+pub(crate) fn normalize_custom_metadata(
     values: BTreeMap<String, String>,
 ) -> AppResult<BTreeMap<String, String>> {
     let user_entries = values
@@ -3281,6 +3281,14 @@ fn normalize_custom_metadata(
         return Err(AppError::new("invalid-arguments"));
     }
     Ok(values)
+}
+
+pub(crate) fn user_custom_metadata(values: &BTreeMap<String, String>) -> BTreeMap<String, String> {
+    values
+        .iter()
+        .filter(|(key, _)| key.as_str() != METADATA_AUDIT_KEY)
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect()
 }
 
 fn valid_custom_metadata_key(value: &str) -> bool {

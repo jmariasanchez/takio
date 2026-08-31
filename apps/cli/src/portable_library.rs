@@ -14,7 +14,7 @@ use crate::conversion::FormatId;
 use crate::model::{BookAuthor, LibraryItem, Provenance};
 use crate::output::{AppError, AppResult};
 use crate::paths::LibraryPaths;
-use crate::store::{LibraryStore, VerifyReport};
+use crate::store::{LibraryStore, METADATA_AUDIT_KEY, VerifyReport, normalize_custom_metadata};
 
 const PORTABLE_FORMAT: &str = "takio-portable-library";
 const PORTABLE_VERSION: u64 = 1;
@@ -464,10 +464,15 @@ fn parse_book(book_root: &Path, artifacts: &HashSet<String>) -> AppResult<Parsed
             continue;
         };
         let value = attr(node, "content").ok_or_else(|| AppError::new("source-invalid"))?;
-        if key.is_empty() || custom_metadata.insert(key.to_owned(), value).is_some() {
+        if key.is_empty()
+            || key == METADATA_AUDIT_KEY
+            || custom_metadata.insert(key.to_owned(), value).is_some()
+        {
             return Err(AppError::new("source-invalid"));
         }
     }
+    let custom_metadata =
+        normalize_custom_metadata(custom_metadata).map_err(|_| AppError::new("source-invalid"))?;
     if title.trim().is_empty()
         || !valid_timestamp(&added_at)
         || updated_at
@@ -576,7 +581,11 @@ fn portable_opf(item: &LibraryItem, cover_name: Option<&str>) -> String {
             "    <meta name=\"calibre:rating\" content=\"{value}\"/>"
         ));
     }
-    for (name, value) in &item.custom_metadata {
+    for (name, value) in item
+        .custom_metadata
+        .iter()
+        .filter(|(name, _)| name.as_str() != METADATA_AUDIT_KEY)
+    {
         metadata.push(format!(
             "    <meta name=\"takio:custom:{}\" content=\"{}\"/>",
             xml(name),
@@ -1022,7 +1031,13 @@ mod tests {
                     publisher: None,
                     languages: Vec::new(),
                     identifiers: BTreeMap::new(),
-                    custom_metadata: BTreeMap::new(),
+                    custom_metadata: BTreeMap::from([
+                        ("shelf".to_owned(), "Favorites".to_owned()),
+                        (
+                            METADATA_AUDIT_KEY.to_owned(),
+                            "private source path".to_owned(),
+                        ),
+                    ]),
                     published_date: None,
                     rating: None,
                     description: None,
@@ -1052,6 +1067,28 @@ mod tests {
         )
         .expect("write manifest");
         temp
+    }
+
+    #[test]
+    fn portable_opf_keeps_user_fields_without_exporting_reserved_audit() {
+        let portable = fixture();
+        let opf = fs::read_to_string(portable.path().join("books/Book [abc]/metadata.opf"))
+            .expect("portable OPF");
+        assert!(opf.contains("takio:custom:shelf"));
+        assert!(opf.contains("Favorites"));
+        assert!(!opf.contains(METADATA_AUDIT_KEY));
+        assert!(!opf.contains("private source path"));
+        let parsed = validate_source(portable.path()).expect("valid portable library");
+        assert_eq!(
+            parsed[0].item.custom_metadata.get("shelf"),
+            Some(&"Favorites".to_owned())
+        );
+        assert!(
+            !parsed[0]
+                .item
+                .custom_metadata
+                .contains_key(METADATA_AUDIT_KEY)
+        );
     }
 
     #[test]
@@ -1123,6 +1160,49 @@ mod tests {
         );
         assert_eq!(
             validate_source(wrong_media_type.path()).unwrap_err().code(),
+            "source-invalid"
+        );
+
+        let invalid_custom_key = fixture();
+        replace_opf(
+            invalid_custom_key.path(),
+            "<meta name=\"takio:added_at\"",
+            "<meta name=\"takio:custom:Bad Key\" content=\"value\"/>\n    <meta name=\"takio:added_at\"",
+        );
+        assert_eq!(
+            validate_source(invalid_custom_key.path())
+                .unwrap_err()
+                .code(),
+            "source-invalid"
+        );
+
+        let reserved_custom_key = fixture();
+        replace_opf(
+            reserved_custom_key.path(),
+            "<meta name=\"takio:added_at\"",
+            "<meta name=\"takio:custom:takio_metadata_audit\" content=\"forged\"/>\n    <meta name=\"takio:added_at\"",
+        );
+        assert_eq!(
+            validate_source(reserved_custom_key.path())
+                .unwrap_err()
+                .code(),
+            "source-invalid"
+        );
+
+        let oversized_custom_value = fixture();
+        let replacement = format!(
+            "<meta name=\"takio:custom:shelf\" content=\"{}\"/>\n    <meta name=\"takio:added_at\"",
+            "x".repeat(16 * 1024 + 1)
+        );
+        replace_opf(
+            oversized_custom_value.path(),
+            "<meta name=\"takio:added_at\"",
+            &replacement,
+        );
+        assert_eq!(
+            validate_source(oversized_custom_value.path())
+                .unwrap_err()
+                .code(),
             "source-invalid"
         );
     }

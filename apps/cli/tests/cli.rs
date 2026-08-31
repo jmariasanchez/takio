@@ -2427,6 +2427,13 @@ fn catalog_saved_views_and_content_search_work_without_calibre() {
         .output()
         .expect("enrich catalog metadata");
     assert!(updated.status.success());
+    Connection::open(&database)
+        .expect("open catalog database")
+        .execute(
+            "INSERT INTO library_item_custom_metadata(library_item_id,name,value) VALUES(?1,'takio_metadata_audit','private source path')",
+            [id],
+        )
+        .expect("insert reserved audit fixture");
 
     let catalog_json = temp.path().join("catalog.json");
     let exported_json = cargo_bin_cmd!("takio")
@@ -2444,6 +2451,7 @@ fn catalog_saved_views_and_content_search_work_without_calibre() {
     assert_eq!(book["authors"], serde_json::json!(["Octavia E. Butler"]));
     assert_eq!(book["identifiers"]["isbn"], "9780807083697");
     assert_eq!(book["customMetadata"]["shelf"], "favorites");
+    assert!(book["customMetadata"].get("takio_metadata_audit").is_none());
     assert_eq!(book["tags"], serde_json::json!(["fiction", "time travel"]));
     assert_eq!(book["hasCover"], false);
     assert!(book.get("sourcePath").is_none());
@@ -2457,11 +2465,9 @@ fn catalog_saved_views_and_content_search_work_without_calibre() {
         .output()
         .expect("write catalog");
     assert!(exported.status.success());
-    assert!(
-        fs::read_to_string(&catalog)
-            .expect("read catalog")
-            .contains("Kindred")
-    );
+    let csv = fs::read_to_string(&catalog).expect("read catalog");
+    assert!(csv.contains("Kindred"));
+    assert!(!csv.contains("private source path"));
 
     let searched = cargo_bin_cmd!("takio")
         .args(["library", "content-search", "--db"])

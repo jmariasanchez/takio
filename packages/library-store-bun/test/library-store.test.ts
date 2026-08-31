@@ -1601,6 +1601,48 @@ describe("BunSqliteLibraryStore", () => {
     expect(await reopened.get({ id: richItem.id })).toEqual(updated);
   });
 
+  it("rejects forged audit metadata and preserves the stored audit on replace and clear", async () => {
+    const first = createStore();
+    expect(await first.open({ config: {} })).toEqual({ ok: true, value: null });
+    expect(await first.add({ item: richItem })).toEqual({ ok: true, value: richItem });
+    first.close();
+
+    using database = new Database(databasePath, { strict: true });
+    database.run(
+      "INSERT INTO library_item_custom_metadata(library_item_id,name,value) VALUES(?,?,?)",
+      [richItem.id, "takio_metadata_audit", "bounded audit"],
+    );
+
+    const reopened = createStore();
+    expect(await reopened.open({ config: {} })).toEqual({ ok: true, value: null });
+    expect(
+      await reopened.update({
+        id: richItem.id,
+        patch: { customMetadata: { takio_metadata_audit: "forged" } },
+      }),
+    ).toEqual({ ok: false, error: { code: "invalid-arguments" } });
+
+    const replaced = await reopened.update({
+      id: richItem.id,
+      patch: { customMetadata: { shelf: "Favorites" } },
+    });
+    expect(replaced).toMatchObject({
+      ok: true,
+      value: {
+        customMetadata: { shelf: "Favorites", takio_metadata_audit: "bounded audit" },
+      },
+    });
+
+    const cleared = await reopened.update({
+      id: richItem.id,
+      patch: { customMetadata: null },
+    });
+    expect(cleared).toMatchObject({
+      ok: true,
+      value: { customMetadata: { takio_metadata_audit: "bounded audit" } },
+    });
+  });
+
   it("clears every nullable metadata field and relation", async () => {
     const store = createStore();
     expect(await store.open({ config: {} })).toEqual({ ok: true, value: null });
