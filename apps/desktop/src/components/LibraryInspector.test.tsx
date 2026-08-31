@@ -55,6 +55,11 @@ const item = {
   rating: 8.5,
   description: "A novel of exile, identity, and trust.",
   tags: ["Science fiction", "Classic"],
+  customMetadata: {
+    z_note: "Last",
+    takio_metadata_audit: "reserved audit",
+    shelf: "Favorites",
+  },
 } as const satisfies LibraryItem;
 
 const convertibleItem = {
@@ -101,6 +106,12 @@ test("renders selected metadata and every real format without a reading surface"
   expect(markup).toContain("8.5 / 10");
   expect(markup).toContain("Science fiction, Classic");
   expect(markup).toContain("A novel of exile, identity, and trust.");
+  expect(markup).toContain("#shelf");
+  expect(markup).toContain("Favorites");
+  expect(markup).toContain("#z_note");
+  expect(markup.indexOf("#shelf")).toBeLessThan(markup.indexOf("#z_note"));
+  expect(markup).not.toContain("takio_metadata_audit");
+  expect(markup).not.toContain("reserved audit");
   expect(markup).toContain("EPUB");
   expect(markup).toContain("PDF");
   expect(markup).toContain("2 formats");

@@ -36,6 +36,11 @@ const item: LibraryItem = {
   rating: 8.5,
   description: "A novel",
   tags: ["Classic", "Science Fiction"],
+  customMetadata: {
+    shelf: "Favorites",
+    takio_metadata_audit: "reserved audit",
+    source_note: "Library sale",
+  },
 };
 
 function draftWith(overrides: Partial<MetadataDraft>): MetadataDraft {
@@ -61,6 +66,13 @@ test("creates an unchanged draft without losing ordered rich metadata", () => {
       value: [
         { type: "isbn", value: "978-0-385-15059-0" },
         { type: "asin", value: "B00TEST" },
+      ],
+    },
+    customMetadata: {
+      state: "unchanged",
+      value: [
+        { key: "shelf", value: "Favorites" },
+        { key: "source_note", value: "Library sale" },
       ],
     },
     publishedDate: { state: "unchanged", value: "1979-06" },
@@ -101,6 +113,13 @@ test("parses concrete values, preserves list order, and trims contract text", ()
           { type: " asin ", value: " B00TEST " },
         ],
       },
+      customMetadata: {
+        state: "concrete",
+        value: [
+          { key: " shelf ", value: "Favorites" },
+          { key: "source_note", value: "Library sale" },
+        ],
+      },
       publishedDate: { state: "concrete", value: "1993-10" },
       rating: { state: "concrete", value: "9.25" },
       description: { state: "concrete", value: "  A novel.  " },
@@ -125,6 +144,7 @@ test("parses concrete values, preserves list order, and trims contract text", ()
       publisher: "Four Walls Eight Windows",
       languages: ["en-US", "fr"],
       identifiers: { isbn: "9780446675505", asin: "B00TEST" },
+      customMetadata: { shelf: "Favorites", source_note: "Library sale" },
       publishedDate: "1993-10",
       rating: 9.25,
       description: "A novel.",
@@ -149,6 +169,7 @@ test("keeps unchanged fields omitted and represents explicit clears with null", 
       publisher: { state: "clear", value: "" },
       languages: { state: "clear", value: [] },
       identifiers: { state: "clear", value: [] },
+      customMetadata: { state: "clear", value: [] },
       publishedDate: { state: "clear", value: "" },
       rating: { state: "clear", value: "" },
       description: { state: "clear", value: "" },
@@ -165,12 +186,76 @@ test("keeps unchanged fields omitted and represents explicit clears with null", 
       publisher: null,
       languages: null,
       identifiers: null,
+      customMetadata: null,
       publishedDate: null,
       rating: null,
       description: null,
       tags: [],
     },
   });
+});
+
+test("omits reserved audit metadata while round-tripping ordered user custom fields", () => {
+  const draft = draftFor(item);
+  expect(draft.customMetadata.value.map(({ key }) => key)).toEqual(["shelf", "source_note"]);
+
+  const unchanged = parseMetadataDraft(draft);
+  expect(unchanged.ok && unchanged.patch.customMetadata).toBeUndefined();
+
+  const replaced = parseMetadataDraft(
+    draftWith({
+      customMetadata: {
+        state: "concrete",
+        value: [...draft.customMetadata.value].reverse(),
+      },
+    }),
+  );
+  expect(replaced).toEqual({
+    ok: true,
+    patch: {
+      customMetadata: { source_note: "Library sale", shelf: "Favorites" },
+      tags: ["Classic", "Science Fiction"],
+    },
+  });
+  expect(JSON.stringify(replaced)).not.toContain("takio_metadata_audit");
+});
+
+test("rejects invalid, duplicate, reserved, over-limit, and oversized custom fields", () => {
+  const invalid = parseMetadataDraft(
+    draftWith({
+      customMetadata: {
+        state: "concrete",
+        value: [
+          { key: "Bad Key", value: "one" },
+          { key: " shelf ", value: "two" },
+          { key: "shelf", value: "three" },
+          { key: "takio_metadata_audit", value: "forged" },
+          { key: "oversized", value: "x".repeat(16 * 1024 + 1) },
+        ],
+      },
+    }),
+  );
+  expect(invalid.ok).toBe(false);
+  if (!invalid.ok) {
+    expect(invalid.fieldErrors["customMetadata.0.key"]).toBeDefined();
+    expect(invalid.fieldErrors["customMetadata.2.key"]).toContain("already present");
+    expect(invalid.fieldErrors["customMetadata.3.key"]).toContain("reserved");
+    expect(invalid.fieldErrors["customMetadata.4.value"]).toBeDefined();
+  }
+
+  const tooMany = parseMetadataDraft(
+    draftWith({
+      customMetadata: {
+        state: "concrete",
+        value: Array.from({ length: 65 }, (_, index) => ({
+          key: `field_${index}`,
+          value: "value",
+        })),
+      },
+    }),
+  );
+  expect(tooMany.ok).toBe(false);
+  if (!tooMany.ok) expect(tooMany.fieldErrors.customMetadata).toBeDefined();
 });
 
 test("accepts all supported published-date partials and rejects impossible dates", () => {

@@ -158,7 +158,10 @@ test("renders an explicit structured-search mode and syntax guidance", () => {
 
   expect(markup).toContain('aria-label="Search syntax"');
   expect(markup).toContain('<option value="structured-v1" selected="">Structured</option>');
-  expect(markup).toContain('author:&quot;Name&quot; tag:Classic not publisher:Tor');
+  expect(markup).toContain('author:&quot;Name&quot; tag:Classic #shelf:&quot;Favorites&quot;');
+  expect(markup).toContain(
+    'title="Structured search supports field:value, quoted values, implicit AND, not, and custom fields such as #shelf:&quot;Favorites&quot;"',
+  );
 });
 
 test("closes a compact pane before opening the saved-view modal so overlays cannot stack", () => {

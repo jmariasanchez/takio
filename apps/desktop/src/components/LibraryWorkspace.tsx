@@ -684,7 +684,7 @@ export function LibraryWorkspace({
             value={querySyntax}
             disabled={actionsPending || firstUse}
             aria-label="Search syntax"
-            title="Structured search supports field:value, quoted values, implicit AND, and not"
+            title={'Structured search supports field:value, quoted values, implicit AND, not, and custom fields such as #shelf:"Favorites"'}
             onChange={(event) =>
               onChangeSearchSyntax(event.currentTarget.value as LibraryQuerySyntax)
             }
@@ -703,7 +703,7 @@ export function LibraryWorkspace({
             disabled={actionsPending || firstUse}
             placeholder={
               querySyntax === "structured-v1"
-                ? 'author:"Name" tag:Classic not publisher:Tor'
+                ? 'author:"Name" tag:Classic #shelf:"Favorites"'
                 : "Search your library"
             }
             onChange={(event) => onChangeSearch(event.currentTarget.value)}

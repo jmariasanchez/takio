@@ -761,6 +761,120 @@ export function MetadataEditor({
         </fieldset>
 
         <fieldset disabled={controlsDisabled}>
+          <legend>Custom fields</legend>
+          <div className="metadata-editor__group">
+            <GroupHeading
+              stateControl={
+                <ChangeSelect
+                  disabled={controlsDisabled}
+                  fieldErrors={fieldErrors}
+                  idPrefix={idPrefix}
+                  label="Custom fields"
+                  name="customMetadata"
+                  state={draft.customMetadata.state}
+                  onChange={(state) =>
+                    change("customMetadata", { ...draft.customMetadata, state })
+                  }
+                />
+              }
+            >
+              Custom fields
+            </GroupHeading>
+            <ol className="metadata-editor__rows">
+              {draft.customMetadata.value.map((field, index) => {
+                const keyPath = `customMetadata.${index}.key`;
+                const valuePath = `customMetadata.${index}.value`;
+                return (
+                  <li key={index}>
+                    <div className="metadata-editor__row-fields metadata-editor__row-fields--custom">
+                      <label>
+                        <span>Key</span>
+                        <input
+                          id={controlId(idPrefix, keyPath)}
+                          type="text"
+                          value={field.key}
+                          disabled={draft.customMetadata.state !== "concrete"}
+                          aria-label={`Custom field ${index + 1} key`}
+                          onChange={(event) =>
+                            change("customMetadata", {
+                              state: "concrete",
+                              value: replaceAt(draft.customMetadata.value, index, {
+                                ...field,
+                                key: event.currentTarget.value,
+                              }),
+                            })
+                          }
+                          {...errorAttributes(fieldErrors, idPrefix, keyPath)}
+                        />
+                      </label>
+                      <label>
+                        <span>Value</span>
+                        <textarea
+                          id={controlId(idPrefix, valuePath)}
+                          value={field.value}
+                          disabled={draft.customMetadata.state !== "concrete"}
+                          aria-label={`Custom field ${index + 1} value`}
+                          onChange={(event) =>
+                            change("customMetadata", {
+                              state: "concrete",
+                              value: replaceAt(draft.customMetadata.value, index, {
+                                ...field,
+                                value: event.currentTarget.value,
+                              }),
+                            })
+                          }
+                          {...errorAttributes(fieldErrors, idPrefix, valuePath)}
+                        />
+                      </label>
+                    </div>
+                    <button
+                      className="metadata-editor__remove-row"
+                      type="button"
+                      aria-label={`Remove custom field ${index + 1}`}
+                      disabled={draft.customMetadata.state !== "concrete"}
+                      onClick={() =>
+                        change("customMetadata", {
+                          state: "concrete",
+                          value: removeAt(draft.customMetadata.value, index),
+                        })
+                      }
+                    >
+                      Remove
+                    </button>
+                    <FieldError fieldErrors={fieldErrors} idPrefix={idPrefix} path={keyPath} />
+                    <FieldError fieldErrors={fieldErrors} idPrefix={idPrefix} path={valuePath} />
+                  </li>
+                );
+              })}
+            </ol>
+            <button
+              className="metadata-editor__add"
+              type="button"
+              disabled={
+                draft.customMetadata.state !== "concrete" ||
+                draft.customMetadata.value.length >= 64
+              }
+              onClick={() =>
+                change("customMetadata", {
+                  state: "concrete",
+                  value: [...draft.customMetadata.value, { key: "", value: "" }],
+                })
+              }
+            >
+              Add custom field
+            </button>
+            <small>
+              Use safe lowercase keys. Up to 64 fields and 16 KiB per value.
+            </small>
+            <FieldError
+              fieldErrors={fieldErrors}
+              idPrefix={idPrefix}
+              path="customMetadata"
+            />
+          </div>
+        </fieldset>
+
+        <fieldset disabled={controlsDisabled}>
           <legend>Notes</legend>
           <TextField
             disabled={controlsDisabled}

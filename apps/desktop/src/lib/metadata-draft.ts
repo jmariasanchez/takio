@@ -1,5 +1,6 @@
 import {
   libraryMetadataPatchSchema,
+  METADATA_CANDIDATE_AUDIT_KEY,
   type LibraryMetadataPatch,
 } from "@takio/library-contract";
 import type { LibraryItem } from "@takio/core";
@@ -24,6 +25,11 @@ export type IdentifierDraft = Readonly<{
   value: string;
 }>;
 
+export type CustomMetadataDraft = Readonly<{
+  key: string;
+  value: string;
+}>;
+
 export type MetadataDraft = Readonly<{
   title: MetadataDraftField<string>;
   authors: ClearableMetadataDraftField<readonly AuthorDraft[]>;
@@ -32,6 +38,7 @@ export type MetadataDraft = Readonly<{
   publisher: ClearableMetadataDraftField<string>;
   languages: ClearableMetadataDraftField<readonly string[]>;
   identifiers: ClearableMetadataDraftField<readonly IdentifierDraft[]>;
+  customMetadata: ClearableMetadataDraftField<readonly CustomMetadataDraft[]>;
   publishedDate: ClearableMetadataDraftField<string>;
   rating: ClearableMetadataDraftField<string>;
   description: ClearableMetadataDraftField<string>;
@@ -47,6 +54,8 @@ export type MetadataDraftParseResult =
     }>;
 
 const decimalNumberPattern = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/;
+const customMetadataKeyPattern = /^[a-z][a-z0-9_]{0,63}$/;
+const maxCustomMetadataValueLength = 16 * 1024;
 
 export function draftFor(item: LibraryItem): MetadataDraft {
   const authors =
@@ -75,6 +84,12 @@ export function draftFor(item: LibraryItem): MetadataDraft {
         value,
       })),
     },
+    customMetadata: {
+      state: "unchanged",
+      value: Object.entries(item.customMetadata ?? {})
+        .filter(([key]) => key !== METADATA_CANDIDATE_AUDIT_KEY)
+        .map(([key, value]) => ({ key, value })),
+    },
     publishedDate: { state: "unchanged", value: item.publishedDate ?? "" },
     rating: { state: "unchanged", value: item.rating?.toString() ?? "" },
     description: { state: "unchanged", value: item.description ?? "" },
@@ -99,6 +114,13 @@ function messageForContractIssue(path: readonly PropertyKey[], fallback: string)
     return path.length === 1
       ? "Add at least one language or choose Clear."
       : "Enter a valid language tag, such as en or en-US.";
+  }
+  if (field === "customMetadata") {
+    return path.length === 1
+      ? "Add no more than 64 custom fields or choose Clear."
+      : path[2] === "key"
+        ? "Use a lowercase key starting with a letter, followed by letters, numbers, or underscores (64 characters maximum)."
+        : "Enter a value no larger than 16 KiB.";
   }
   if (field === "publishedDate") {
     return "Enter a valid date as YYYY, YYYY-MM, or YYYY-MM-DD.";
@@ -207,6 +229,44 @@ export function parseMetadataDraft(draft: MetadataDraft): MetadataDraftParseResu
       }
     }
     candidate.identifiers = identifiers;
+  }
+
+  if (draft.customMetadata.state === "clear") {
+    candidate.customMetadata = null;
+  } else if (draft.customMetadata.state === "concrete") {
+    const customMetadata: Record<string, string> = {};
+    const seenKeys = new Set<string>();
+    if (draft.customMetadata.value.length > 64) {
+      addError("customMetadata", "Add no more than 64 custom fields or choose Clear.");
+    }
+    for (const [index, field] of draft.customMetadata.value.entries()) {
+      const key = field.key.trim();
+      if (!customMetadataKeyPattern.test(key)) {
+        addError(
+          `customMetadata.${index}.key`,
+          "Use a lowercase key starting with a letter, followed by letters, numbers, or underscores (64 characters maximum).",
+        );
+      } else if (key === METADATA_CANDIDATE_AUDIT_KEY) {
+        addError(
+          `customMetadata.${index}.key`,
+          "This key is reserved for Takio and cannot be edited.",
+        );
+      } else if (seenKeys.has(key)) {
+        addError(
+          `customMetadata.${index}.key`,
+          `Custom field key “${key}” is already present.`,
+        );
+      } else {
+        seenKeys.add(key);
+      }
+      if (field.value.length > maxCustomMetadataValueLength) {
+        addError(`customMetadata.${index}.value`, "Enter a value no larger than 16 KiB.");
+      }
+      if (key.length > 0 && !Object.hasOwn(customMetadata, key)) {
+        customMetadata[key] = field.value;
+      }
+    }
+    candidate.customMetadata = customMetadata;
   }
 
   assignText("publishedDate", draft.publishedDate);

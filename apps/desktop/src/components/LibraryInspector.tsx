@@ -4,6 +4,7 @@ import {
   type FormatId,
   type LibraryItem,
 } from "@takio/core";
+import { METADATA_CANDIDATE_AUDIT_KEY } from "@takio/library-contract";
 
 import {
   conversionChoices,
@@ -92,6 +93,9 @@ export function LibraryInspector({
   const authors = authorLabel(item);
   const choices = conversionChoices(item.formats);
   const identifiers = Object.entries(item.identifiers ?? {});
+  const customMetadata = Object.entries(item.customMetadata ?? {})
+    .filter(([key]) => key !== METADATA_CANDIDATE_AUDIT_KEY)
+    .sort(([left], [right]) => left.localeCompare(right));
 
   return (
     <aside className="library-inspector" aria-labelledby="library-inspector-heading">
@@ -165,6 +169,12 @@ export function LibraryInspector({
                 </dd>
               </div>
             )}
+            {customMetadata.map(([key, value]) => (
+              <div key={key}>
+                <dt>#{key}</dt>
+                <dd>{value}</dd>
+              </div>
+            ))}
             {item.publishedDate && (
               <div>
                 <dt>Published</dt>

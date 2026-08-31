@@ -56,6 +56,10 @@ const item = {
   rating: 8.5,
   description: "A novel of exile, identity, and trust.",
   tags: ["Science fiction", "Classic"],
+  customMetadata: {
+    shelf: "Favorites",
+    takio_metadata_audit: "reserved audit",
+  },
 } as const satisfies LibraryItem;
 
 function props(overrides: Partial<MetadataEditorProps> = {}): MetadataEditorProps {
@@ -79,6 +83,7 @@ function concreteDraft(): MetadataDraft {
     publisher: { ...draft.publisher, state: "concrete" },
     languages: { ...draft.languages, state: "concrete" },
     identifiers: { ...draft.identifiers, state: "concrete" },
+    customMetadata: { ...draft.customMetadata, state: "concrete" },
     publishedDate: { ...draft.publishedDate, state: "concrete" },
     rating: { ...draft.rating, state: "concrete" },
     description: { ...draft.description, state: "concrete" },
@@ -97,6 +102,7 @@ test("renders the complete dense metadata contract without a reading surface", (
     "Publication",
     "Classification and identifiers",
     "Notes",
+    "Custom fields",
   ]) {
     expect(markup).toContain(`<legend>${section}</legend>`);
   }
@@ -112,12 +118,16 @@ test("renders the complete dense metadata contract without a reading surface", (
     "Rating",
     "Description",
     "Tags",
+    "Custom fields",
   ]) {
     expect(markup).toContain(field);
   }
   expect(markup).toContain("Use YYYY, YYYY-MM, or YYYY-MM-DD.");
   expect(markup).toContain("Enter a number from 0 to 10.");
   expect(markup).toContain("An empty list clears all tags.");
+  expect(markup).toContain("Up to 64 fields and 16 KiB per value.");
+  expect(markup).toContain('aria-label="Custom field 1 key"');
+  expect(markup).not.toContain("takio_metadata_audit");
   expect(markup).toContain("Keep current");
   expect(markup).toContain("Replace");
   expect(markup).toContain("Clear");
@@ -148,6 +158,15 @@ test("controlled collection and title actions emit exact concrete drafts", () =>
   controls
     .find((element) => element.props["aria-label"] === "Tag 1")
     ?.props.onChange?.({ currentTarget: { value: "Speculative fiction" } });
+  controls
+    .find((element) => element.props["aria-label"] === "Custom field 1 value")
+    ?.props.onChange?.({ currentTarget: { value: "To reread" } });
+  controls
+    .find((element) => element.props.children === "Add custom field")
+    ?.props.onClick?.();
+  controls
+    .find((element) => element.props["aria-label"] === "Remove custom field 1")
+    ?.props.onClick?.();
   const authorsStateControl = controls.find(
     (element) => element.props.children === "Authors" && element.props.stateControl,
   )?.props.stateControl;
@@ -155,7 +174,7 @@ test("controlled collection and title actions emit exact concrete drafts", () =>
     (authorsStateControl as ChangeControl).props.onChange?.("clear");
   }
 
-  expect(changes).toHaveLength(6);
+  expect(changes).toHaveLength(9);
   expect(changes[0]?.title).toEqual({ state: "concrete", value: "A Wizard of Earthsea" });
   expect(changes[1]?.authors).toEqual({
     state: "concrete",
@@ -170,7 +189,13 @@ test("controlled collection and title actions emit exact concrete drafts", () =>
     state: "concrete",
     value: ["Speculative fiction", "Classic"],
   });
-  expect(changes[5]?.authors).toEqual({ state: "clear", value: draft.authors.value });
+  expect(changes[5]?.customMetadata).toEqual({
+    state: "concrete",
+    value: [{ key: "shelf", value: "To reread" }],
+  });
+  expect(changes[6]?.customMetadata.value.at(-1)).toEqual({ key: "", value: "" });
+  expect(changes[7]?.customMetadata).toEqual({ state: "concrete", value: [] });
+  expect(changes[8]?.authors).toEqual({ state: "clear", value: draft.authors.value });
 });
 
 test("invalid fields render a focusable linked summary and block save", () => {
@@ -183,6 +208,14 @@ test("invalid fields render a focusable linked summary and block save", () => {
       value: [
         { type: "isbn", value: "one" },
         { type: "isbn", value: "two" },
+      ],
+    },
+    customMetadata: {
+      state: "concrete",
+      value: [
+        { key: "Bad Key", value: "one" },
+        { key: "shelf", value: "two" },
+        { key: "shelf", value: "three" },
       ],
     },
     rating: { state: "concrete", value: "11" },
@@ -202,12 +235,38 @@ test("invalid fields render a focusable linked summary and block save", () => {
   expect(markup).toContain('href="#book-edit-authors-change"');
   expect(markup).toContain('href="#book-edit-identifiers-1-type"');
   expect(markup).toContain('href="#book-edit-rating"');
+  expect(markup).toContain('href="#book-edit-customMetadata-0-key"');
+  expect(markup).toContain('href="#book-edit-customMetadata-2-key"');
   expect(markup).toContain('aria-invalid="true"');
   expect(markup).toContain("Enter a title.");
   expect(markup).toContain("Identifier type “isbn” is already present.");
+  expect(markup).toContain("Custom field key “shelf” is already present.");
   expect(markup).toContain("Enter a rating from 0 to 10.");
   expect(prevented).toBe(true);
   expect(saves).toEqual([]);
+});
+
+test("custom field change control emits an explicit clear without exposing audit metadata", () => {
+  const changes: MetadataDraft[] = [];
+  const draft = draftFor(item);
+  const controls = elements(
+    MetadataEditor(props({ draft, onChange: (nextDraft) => changes.push(nextDraft) })),
+  );
+  const customStateControl = controls.find(
+    (element) => element.props.children === "Custom fields" && element.props.stateControl,
+  )?.props.stateControl;
+
+  if (isValidElement(customStateControl)) {
+    (customStateControl as ChangeControl).props.onChange?.("clear");
+  }
+
+  expect(changes).toEqual([
+    {
+      ...draft,
+      customMetadata: { state: "clear", value: [{ key: "shelf", value: "Favorites" }] },
+    },
+  ]);
+  expect(JSON.stringify(changes)).not.toContain("takio_metadata_audit");
 });
 
 test("save emits only the schema-validated patch with normalized author values", () => {
@@ -243,6 +302,7 @@ test("save emits only the schema-validated patch with normalized author values",
       publisher: "Ace Books",
       languages: ["en-US", "fr"],
       identifiers: { isbn: "9780441478125", asin: "B00YBA7PGW" },
+      customMetadata: { shelf: "Favorites" },
       publishedDate: "1969-03",
       rating: 8.5,
       description: "A novel of exile, identity, and trust.",
