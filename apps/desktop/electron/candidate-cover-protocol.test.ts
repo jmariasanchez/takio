@@ -1,10 +1,10 @@
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, symlink, unlink, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
 
-import { candidateCoverResponse, candidateCoverUrl, localCoverResponse } from "./candidate-cover-protocol";
+import { candidateCoverResponse, candidateCoverUrl, discardCandidateCovers, localCoverResponse } from "./candidate-cover-protocol";
 
 const token = "0123456789abcdef0123456789abcdef";
 const otherToken = "fedcba9876543210fedcba9876543210";
@@ -35,6 +35,26 @@ async function fixture(overrides: Record<string, unknown> = {}) {
 }
 
 describe("candidate cover protocol", () => {
+  test("discard refuses a symlinked stage root and only removes exact token manifests", async () => {
+    const linkedLibrary = await mkdtemp(join(tmpdir(), "takio-discard-linked-"));
+    const outside = await fixture();
+    await symlink(outside.covers, join(linkedLibrary, "candidate-covers"));
+    await discardCandidateCovers(linkedLibrary, [token]);
+    expect(await access(join(outside.covers, `${token}.json`)).then(() => true, () => false)).toBe(true);
+    expect(await access(join(outside.covers, `${token}.bin`)).then(() => true, () => false)).toBe(true);
+
+    const exact = await fixture();
+    await discardCandidateCovers(exact.root, [token, token, "../outside"]);
+    expect(await access(join(exact.covers, `${token}.json`)).then(() => true, () => false)).toBe(false);
+    expect(await access(join(exact.covers, `${token}.bin`)).then(() => true, () => false)).toBe(false);
+    await discardCandidateCovers(exact.root, [token]);
+
+    const mismatched = await fixture({ artifactId: otherToken });
+    await discardCandidateCovers(mismatched.root, [token]);
+    expect(await access(join(mismatched.covers, `${token}.json`)).then(() => true, () => false)).toBe(true);
+    expect(await access(join(mismatched.covers, `${token}.bin`)).then(() => true, () => false)).toBe(true);
+  });
+
   test("local covers never follow a file or directory symlink outside the cover root", async () => {
     const root = await mkdtemp(join(tmpdir(), "takio-local-cover-test-"));
     const covers = join(root, "covers");

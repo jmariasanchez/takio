@@ -93,10 +93,43 @@ export async function localCoverResponse(requestUrl: string, libraryRoot: string
 }
 
 export async function discardCandidateCovers(libraryRoot: string, artifactIds: readonly string[]): Promise<void> {
-  const root = join(libraryRoot, "candidate-covers");
-  await Promise.all(artifactIds.filter((id) => ARTIFACT_ID.test(id)).flatMap((id) =>
-    ["json", "bin"].map((extension) => unlink(join(root, `${id}.${extension}`)).catch(() => undefined)),
-  ));
+  const root = resolve(libraryRoot, "candidate-covers");
+  const rootMetadata = await lstat(root).catch(() => null);
+  if (!rootMetadata?.isDirectory() || rootMetadata.isSymbolicLink()) return;
+  const rootDevice = rootMetadata.dev;
+  const rootInode = rootMetadata.ino;
+  const openedRoot = await realpath(root).catch(() => null);
+  if (openedRoot !== root) return;
+
+  async function rootIsCurrent(): Promise<boolean> {
+    const current = await lstat(root).catch(() => null);
+    return current?.isDirectory() === true && !current.isSymbolicLink() &&
+      current.dev === rootDevice && current.ino === rootInode &&
+      await realpath(root).catch(() => null) === openedRoot;
+  }
+
+  async function removeRegular(path: string): Promise<void> {
+    if (!await rootIsCurrent()) return;
+    const metadata = await lstat(path).catch(() => null);
+    if (!metadata?.isFile() || metadata.isSymbolicLink()) return;
+    if (!await rootIsCurrent()) return;
+    await unlink(path).catch(() => undefined);
+  }
+
+  for (const artifactId of new Set(artifactIds.filter((id) => ARTIFACT_ID.test(id)))) {
+    const manifestPath = join(root, `${artifactId}.json`);
+    const manifestBytes = await readRegular(manifestPath, MAX_MANIFEST_BYTES);
+    if (!manifestBytes) continue;
+    let manifestArtifactId: unknown;
+    try {
+      manifestArtifactId = (JSON.parse(manifestBytes.toString("utf8")) as Record<string, unknown>).artifactId;
+    } catch {
+      continue;
+    }
+    if (manifestArtifactId !== artifactId) continue;
+    await removeRegular(join(root, `${artifactId}.bin`));
+    await removeRegular(manifestPath);
+  }
 }
 
 function decodeManifest(bytes: Buffer, artifactId: string): Manifest | null {
