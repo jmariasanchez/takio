@@ -56,7 +56,10 @@ export const LIBRARY_HEALTH_ERROR_CODES = [
   "integrity-failed",
   "destination-exists",
   "backup-failed",
+  "diagnostics-failed",
 ] as const;
+export const LIBRARY_DIAGNOSTIC_BUNDLE_SCHEMA_VERSION = 1;
+export const MAX_LIBRARY_DIAGNOSTIC_BUNDLE_BYTES = 1024 * 1024;
 
 export const LIBRARY_QUERY_SORT_FIELDS = [
   "title",
@@ -743,16 +746,128 @@ export const libraryHealthBackupValueSchema = z
   .strict()
   .readonly();
 
+const libraryDiagnosticStoredFileSchema = z
+  .object({
+    present: z.boolean(),
+    bytes: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
+  })
+  .strict()
+  .superRefine((file, context) => {
+    if (!file.present && file.bytes !== 0) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["bytes"],
+        message: "An absent diagnostic file must report zero bytes.",
+      });
+    }
+  })
+  .readonly();
+
+const libraryDiagnosticTreeSchema = z
+  .object({
+    files: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
+    bytes: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
+    scanComplete: z.boolean(),
+  })
+  .strict()
+  .readonly();
+
+export const libraryDiagnosticVerificationSchema = z.discriminatedUnion("status", [
+  z
+    .object({ status: z.literal("ok"), report: libraryIntegrityReportSchema })
+    .strict(),
+  z
+    .object({
+      status: z.literal("failed"),
+      errorCode: z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/).max(64),
+    })
+    .strict(),
+]).readonly();
+
+export const libraryDiagnosticBundleSchema = z
+  .object({
+    schemaVersion: z.literal(LIBRARY_DIAGNOSTIC_BUNDLE_SCHEMA_VERSION),
+    generatedAt: z.string().datetime({ offset: true }),
+    application: z
+      .object({
+        name: z.literal("takio"),
+        version: z.string().trim().min(1).max(64),
+        implementation: z.literal("rust"),
+        platform: z.string().trim().min(1).max(32),
+        architecture: z.string().trim().min(1).max(32),
+      })
+      .strict()
+      .readonly(),
+    library: z
+      .object({
+        verification: libraryDiagnosticVerificationSchema,
+        storage: z
+          .object({
+            database: libraryDiagnosticStoredFileSchema,
+            jobsDatabase: libraryDiagnosticStoredFileSchema,
+            managedItems: libraryDiagnosticTreeSchema,
+            covers: libraryDiagnosticTreeSchema,
+          })
+          .strict()
+          .readonly(),
+      })
+      .strict()
+      .readonly(),
+    capabilities: z
+      .object({
+        tui: z.literal(true),
+        contentServerLocal: z.literal(true),
+        contentServerRemoteTls: z.literal(false),
+        metadataCandidateCovers: z.literal(true),
+      })
+      .strict()
+      .readonly(),
+    redaction: z
+      .object({
+        paths: z.literal("omitted"),
+        ebookContents: z.literal("omitted"),
+        secrets: z.literal("omitted"),
+      })
+      .strict()
+      .readonly(),
+  })
+  .strict()
+  .readonly();
+
+export const libraryHealthDiagnosticsRequestSchema = z
+  .object({ destinationPath: z.string().trim().min(1) })
+  .strict()
+  .readonly();
+
+export const libraryHealthDiagnosticsValueSchema = z
+  .object({
+    diagnostics: z
+      .object({
+        path: z.string().min(1),
+        bytes: z.number().int().positive().max(MAX_LIBRARY_DIAGNOSTIC_BUNDLE_BYTES),
+        sha256: z.string().regex(/^[0-9a-f]{64}$/),
+        generatedAt: z.string().datetime({ offset: true }),
+        verificationStatus: z.enum(["ok", "failed"]),
+      })
+      .strict()
+      .readonly(),
+  })
+  .strict()
+  .readonly();
+
 export type LibraryHealthErrorCode = (typeof LIBRARY_HEALTH_ERROR_CODES)[number];
 export type LibraryIntegrityReport = z.infer<typeof libraryIntegrityReportSchema>;
 export type LibraryHealthLocation = z.infer<typeof libraryHealthLocationSchema>;
 export type LibraryHealthBackupRequest = z.infer<typeof libraryHealthBackupRequestSchema>;
+export type LibraryDiagnosticBundle = z.infer<typeof libraryDiagnosticBundleSchema>;
+export type LibraryHealthDiagnosticsRequest = z.infer<typeof libraryHealthDiagnosticsRequestSchema>;
 export type LibraryHealthWireResult<T> =
   | { readonly ok: true; readonly value: T }
   | { readonly ok: false; readonly error: { readonly code: LibraryHealthErrorCode } };
 export type LibraryHealthLocationWireResult = LibraryHealthWireResult<LibraryHealthLocation>;
 export type LibraryHealthVerifyWireResult = LibraryHealthWireResult<z.infer<typeof libraryHealthVerifyValueSchema>>;
 export type LibraryHealthBackupWireResult = LibraryHealthWireResult<z.infer<typeof libraryHealthBackupValueSchema>>;
+export type LibraryHealthDiagnosticsWireResult = LibraryHealthWireResult<z.infer<typeof libraryHealthDiagnosticsValueSchema>>;
 
 export const LIBRARY_STORE_ERROR_CODES = [
   "duplicate-id",
