@@ -243,10 +243,10 @@ Remaining acceptance work:
 
 #### B2. Virtual libraries and advanced organization
 
-Status: the virtual-library and native-query vertical slices are delivered in
-`48caa27`, `ffaf197`, and `d5aaeb5`. Structured query grammar, custom metadata
-columns, reusable group rules, save-to-disk templates, and richer bulk
-organization remain open.
+Status: the virtual-library, native-query, and bounded structured-query vertical
+slices are delivered in `48caa27`, `ffaf197`, `d5aaeb5`, and `428fdc4`.
+Custom metadata columns, reusable group rules, save-to-disk templates, and richer
+bulk organization remain open.
 
 Deliver:
 
@@ -282,8 +282,22 @@ Delivered evidence:
   restoration of the active virtual-library ID; the rebuilt macOS ARM64 desktop
   bundle passed local bundle verification.
 - The exact-head 10,000-book public Rust query gate measured 64.18 ms p95 after
-  this change. The TypeScript reference-store gate measured 110.0 ms p95. Both
-  remain below the 150 ms roadmap target.
+  the virtual-library change. The TypeScript reference-store gate measured
+  110.0 ms p95. Both remain below the 150 ms roadmap target.
+- `structured-v1` is an explicit, bounded search mode across the shared contract,
+  Rust store/CLI, persisted virtual libraries, desktop search controls, and the
+  native performance gate. It supports quoted values, implicit conjunction,
+  `and`, `not`, and fixed fields for title, authors, tags, series, publisher,
+  languages, formats, identifiers, and description. Literal mode remains the
+  compatibility default.
+- The checksummed standalone release and packaged desktop sidecar both passed an
+  external real-SQLite workflow covering every structured field, quoting,
+  negation, literal compatibility, virtual-library composition, malformed-query
+  rejection without persistence, strict syntax decoding, one JSON envelope, and
+  empty stderr.
+- The packaged 10,000-book, 15,000-format gate measured 55.44 ms maximum p95 for
+  the standalone release and 57.83 ms for the desktop sidecar. Structured-only
+  p95 was 49.93 ms and 50.68 ms respectively, below the 150 ms target.
 
 ### Track C: Operational maturity foundation
 
@@ -505,8 +519,8 @@ journeys.
 
 1. Complete C1 durable operation audits and broader queue/server/device health
    summaries, then add import, merge, and server latency gates.
-2. Extend B2 with structured queries, custom organization columns/templates, and
-   richer reusable bulk workflows.
+2. Extend B2 with custom organization columns/templates and richer reusable
+   bulk workflows.
 3. Specify D1 device identity and simulator using real remount evidence.
 4. Prototype E1 secure EPUB reader resource isolation.
 5. Specify F1 recipe manifest and operation registry.
