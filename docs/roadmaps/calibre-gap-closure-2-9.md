@@ -243,10 +243,11 @@ Remaining acceptance work:
 
 #### B2. Virtual libraries and advanced organization
 
-Status: the virtual-library, native-query, and bounded structured-query vertical
-slices are delivered in `48caa27`, `ffaf197`, `d5aaeb5`, and `428fdc4`.
-Custom metadata columns, reusable group rules, save-to-disk templates, and richer
-bulk organization remain open.
+Status: the virtual-library, native-query, bounded structured-query, and bounded
+save-to-disk organization vertical slices are delivered in `48caa27`, `ffaf197`,
+`d5aaeb5`, `428fdc4`, and `cde5a4b`. Custom metadata columns, reusable group
+rules, arbitrary user-authored save-to-disk grammar, and richer bulk organization
+remain open.
 
 Deliver:
 
@@ -298,6 +299,20 @@ Delivered evidence:
 - The packaged 10,000-book, 15,000-format gate measured 55.44 ms maximum p95 for
   the standalone release and 57.83 ms for the desktop sidecar. Structured-only
   p95 was 49.93 ms and 50.68 ms respectively, below the 150 ms target.
+- `export-many` now accounts for every attached format rather than exporting only
+  the primary format. Each filename carries the full SHA-256 item identity, and
+  the shared contract plus desktop dialog expose fixed `flat`, `author`, and
+  `series` folder presets with safe `Unknown author` and `Unsorted` fallbacks.
+- The exact-head standalone release and desktop sidecar both passed an external
+  real-filesystem workflow with same-title books, a multi-format item, long
+  Unicode titles, all three folder presets, author-title naming, exact bytes and
+  digests, repeat no-overwrite behavior, duplicate and unknown request rejection
+  before destination creation, and symlink containment. Each machine command
+  emitted one JSON envelope with empty stderr.
+- This slice deliberately does not accept arbitrary path expressions. Richer
+  Calibre-style save-to-disk grammar remains blocked on a separately designed,
+  bounded template language rather than exposing filesystem paths or shell-like
+  interpolation.
 
 ### Track C: Operational maturity foundation
 

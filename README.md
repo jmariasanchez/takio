@@ -178,9 +178,14 @@ commands retain readable tables unless `--json` is requested.
 Structured `--request-json` and `--patch-json` values can be passed inline, as
 `-` to read stdin, or as `@path` to read a file. Inputs are capped at 16 KiB.
 For example, `takio library export-many --request-json
-'{"ids":["book-id"],"destinationPath":"/tmp/export","fileNameTemplate":"author-title"}'`
-uses `Author - title` names. Omitting `fileNameTemplate` or setting it to
-`title` preserves the default title-only naming.
+'{"ids":["book-id"],"destinationPath":"/tmp/export","fileNameTemplate":"author-title","directoryTemplate":"author"}'`
+uses `Author - title` names inside a sanitized author folder. The bounded
+`directoryTemplate` presets are `flat` (the default), `author`, and `series`;
+missing values use `Unknown author` or `Unsorted`. Every attached format is
+accounted for separately and receives a stable SHA-256 item-identity suffix, so
+same-title books do not collide and existing destination files are never
+overwritten. Arbitrary user-authored path templates are intentionally not
+accepted.
 
 Library queries default to literal substring search. Set `querySyntax` to
 `structured-v1` to use a bounded Calibre-style subset such as
