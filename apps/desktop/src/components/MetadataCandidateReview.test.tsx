@@ -31,7 +31,7 @@ test("starts as an explicit, keyboard-operable candidate review surface", () => 
   expect(markup).toContain("Nothing is changed until you select fields and apply them.");
   expect(markup).toContain('role="status"');
   expect(markup).toContain('aria-live="polite"');
-  expect(markup).not.toContain("Apply selected fields");
+  expect(markup).not.toContain("Apply selection");
   expect(markup).not.toContain("cover");
 });
 

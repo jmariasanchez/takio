@@ -24,13 +24,21 @@ function item(id: string, title = id) {
   } as never;
 }
 
-function candidate(itemId: string) {
+function candidate(itemId: string, withCover = false) {
+  const cover = {
+    artifactId: "0123456789abcdef0123456789abcdef",
+    mediaType: "image/jpeg",
+    extension: ".jpg",
+    bytes: 6,
+    sha256: "a".repeat(64),
+  } as const;
   return {
     schemaVersion: 1,
     id: `filename:${itemId}`,
     source: "filename",
     confidence: "medium",
     patch: { title: `Discovered ${itemId}`, publisher: "New publisher" },
+    ...(withCover ? { cover } : {}),
     provenance: {
       generatedAt: "2026-08-31T10:00:00.000Z",
       itemId,
@@ -89,6 +97,13 @@ const applyCandidate: ApplyCandidate = async (request) => ({
       source: request.candidate.source,
       provenance: request.provenance,
       fields: request.fields,
+      coverApplied: request.cover,
+      ...(request.cover && request.candidate.cover ? { cover: {
+        mediaType: request.candidate.cover.mediaType,
+        extension: request.candidate.cover.extension,
+        bytes: request.candidate.cover.bytes,
+        sha256: request.candidate.cover.sha256,
+      } } : {}),
     },
   },
 });
@@ -102,6 +117,7 @@ test("online discovery is explicit and selective apply records only checked fiel
   };
   mount(<LibraryBulkMetadataCandidateDialog open itemIds={["one"]} onClose={() => undefined} onApplied={(value) => applied.push(value)} getItem={getItem} listCandidates={list} applyCandidate={async (request) => {
     expect(request.fields).toEqual(["publisher"]);
+    expect(request.cover).toBe(false);
     return applyCandidate(request);
   }} />);
 
@@ -112,12 +128,32 @@ test("online discovery is explicit and selective apply records only checked fiel
 
   const publisher = [...host!.querySelectorAll("label")].find((label) => label.textContent?.includes("publisher"))!.querySelector("input")!;
   act(() => publisher.click());
-  act(() => button("Apply selected fields").click());
+  act(() => button("Apply selection").click());
   await flush();
 
   expect(applied).toHaveLength(1);
   expect(host!.textContent).toContain("Review complete");
   expect(host!.textContent).toContain("applied1");
+});
+
+test("bulk review keeps cover explicit and supports cover-only apply with final accounting", async () => {
+  const requests: Parameters<ApplyCandidate>[0][] = [];
+  const list: ListCandidates = async (request) => ({ ok: true, value: { itemId: request.itemId, candidates: [candidate(request.itemId, true)] } });
+  mount(<LibraryBulkMetadataCandidateDialog open itemIds={["one"]} onClose={() => undefined} onApplied={() => undefined} getItem={getItem} listCandidates={list} applyCandidate={async (request) => { requests.push(request); return applyCandidate(request); }} />);
+  act(() => button("Start review").click());
+  await flush();
+
+  const coverCheckbox = host!.querySelector<HTMLInputElement>('input[aria-label^="Apply candidate cover"]')!;
+  expect(coverCheckbox.checked).toBe(false);
+  expect(button("Apply selection").disabled).toBe(true);
+  act(() => coverCheckbox.click());
+  act(() => button("Apply selection").click());
+  await flush();
+
+  expect(requests[0]?.fields).toEqual([]);
+  expect(requests[0]?.cover).toBe(true);
+  expect(host!.textContent).toContain("Review complete");
+  expect(host!.textContent).not.toContain("final review report did not account");
 });
 
 test("skip advances one book at a time and leaves candidates unapplied", async () => {
@@ -192,7 +228,7 @@ test("restores focus to library search when applying the last book removes the o
     .find((label) => label.textContent?.includes("publisher"))!
     .querySelector("input")!;
   act(() => publisher.click());
-  act(() => button("Apply selected fields").click());
+  act(() => button("Apply selection").click());
   await flush();
   act(() =>
     root?.render(

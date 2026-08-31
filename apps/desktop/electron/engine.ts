@@ -133,6 +133,7 @@ export async function buildEngineArguments(
             parsed.data.itemId,
             "--candidate-json",
             candidateJson,
+            ...(parsed.data.cover ? ["--cover"] : []),
             "--provenance",
             parsed.data.provenance,
           ]

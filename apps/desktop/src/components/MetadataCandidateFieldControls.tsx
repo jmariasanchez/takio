@@ -1,6 +1,8 @@
 import type { LibraryItem } from "@takio/core";
 import type { MetadataCandidate } from "@takio/library-contract";
 
+import { candidateCoverSource, coverFileSource } from "../lib/desktop";
+
 export type MetadataCandidateField = keyof MetadataCandidate["patch"];
 
 function displayValue(value: unknown): string {
@@ -40,13 +42,17 @@ export function MetadataCandidateFieldControls({
   item,
   selectedFields,
   disabled = false,
+  coverSelected = false,
   onToggle,
+  onToggleCover,
 }: Readonly<{
   candidate: MetadataCandidate;
   item: LibraryItem;
   selectedFields: readonly MetadataCandidateField[];
   disabled?: boolean;
+  coverSelected?: boolean;
   onToggle: (field: MetadataCandidateField, checked: boolean) => void;
+  onToggleCover?: (checked: boolean) => void;
 }>) {
   const fields = Object.keys(candidate.patch) as MetadataCandidateField[];
   return (
@@ -66,6 +72,23 @@ export function MetadataCandidateFieldControls({
           </span>
         </label>
       ))}
+      {candidate.cover ? (
+        <label className="metadata-candidate-review__field metadata-candidate-review__cover-choice">
+          <input
+            type="checkbox"
+            aria-label={`Apply candidate cover from ${metadataCandidateSourceLabel(candidate)}`}
+            checked={coverSelected}
+            onChange={(event) => onToggleCover?.(event.currentTarget.checked)}
+          />
+          <span>
+            <strong>Cover</strong>
+            <span className="metadata-candidate-review__covers">
+              <span><small>Current cover</small>{item.coverPath ? <img src={coverFileSource(item.coverPath)} alt="Current book cover" /> : <em>No current cover</em>}</span>
+              <span><small>Candidate cover</small><img src={candidateCoverSource(candidate.cover.artifactId)} alt={`Candidate cover from ${metadataCandidateSourceLabel(candidate)}`} /></span>
+            </span>
+          </span>
+        </label>
+      ) : null}
     </fieldset>
   );
 }

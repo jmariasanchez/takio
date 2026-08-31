@@ -35,6 +35,7 @@ export function MetadataCandidateReview({
   const [includeOnline, setIncludeOnline] = useState(false);
   const [candidates, setCandidates] = useState<readonly MetadataCandidate[]>([]);
   const [selected, setSelected] = useState<Record<string, readonly MetadataCandidateField[]>>({});
+  const [selectedCovers, setSelectedCovers] = useState<Record<string, boolean>>({});
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState("");
   // Every in-flight request carries the item it was issued for plus a
@@ -46,6 +47,7 @@ export function MetadataCandidateReview({
     request.current = { itemId: item.id, token: request.current.token + 1 };
     setCandidates([]);
     setSelected({});
+    setSelectedCovers({});
     setStatus("");
     setBusy(false);
   }, [item.id]);
@@ -78,6 +80,7 @@ export function MetadataCandidateReview({
         : [];
       setCandidates(candidates);
       setSelected({});
+      setSelectedCovers({});
       setStatus(candidates.length === 0
         ? "No metadata candidates were found."
         : `Found ${candidates.length} metadata candidate${candidates.length === 1 ? "" : "s"}. Select fields to apply.`);
@@ -104,8 +107,9 @@ export function MetadataCandidateReview({
   async function apply(event: FormEvent, candidate: MetadataCandidate) {
     event.preventDefault();
     const fields = selected[candidate.id] ?? [];
-    if (fields.length === 0) {
-      setStatus("Select at least one field before applying this candidate.");
+    const cover = selectedCovers[candidate.id] === true;
+    if (fields.length === 0 && !cover) {
+      setStatus("Select at least one field or the candidate cover before applying.");
       return;
     }
     if (candidate.provenance.itemId !== item.id) {
@@ -114,12 +118,15 @@ export function MetadataCandidateReview({
     }
     const issued = issue();
     setBusy(true);
-    setStatus(`Applying ${fields.length} selected field${fields.length === 1 ? "" : "s"}.`);
+    setStatus(cover && fields.length === 0
+      ? "Applying the selected cover."
+      : `Applying ${fields.length} selected field${fields.length === 1 ? "" : "s"}${cover ? " and cover" : ""}.`);
     try {
       const result = await applyCandidate({
         itemId: issued.itemId,
         candidate,
         fields,
+        cover,
         provenance: `desktop-candidate-review:${candidate.source}`,
       });
       if (!isCurrent(issued)) return;
@@ -130,7 +137,13 @@ export function MetadataCandidateReview({
       onApplied(result.value.item);
       setCandidates([]);
       setSelected({});
-      setStatus(`Applied ${fields.length} selected field${fields.length === 1 ? "" : "s"} from ${metadataCandidateSourceLabel(candidate).toLowerCase()}.`);
+      setSelectedCovers({});
+      const applied = result.value.applied;
+      const summary = [
+        applied.fields.length > 0 ? `${applied.fields.length} metadata field${applied.fields.length === 1 ? "" : "s"}` : null,
+        applied.coverApplied ? "cover" : null,
+      ].filter(Boolean).join(" and ");
+      setStatus(`Applied ${summary} from ${metadataCandidateSourceLabel(candidate).toLowerCase()}.`);
     } catch {
       if (!isCurrent(issued)) return;
       setStatus("The selected metadata fields could not be applied.");
@@ -161,6 +174,7 @@ export function MetadataCandidateReview({
 
       {candidates.map((candidate) => {
         const selectedFields = selected[candidate.id] ?? [];
+        const coverSelected = selectedCovers[candidate.id] === true;
         return (
           <form key={candidate.id} className="metadata-candidate-review__candidate" onSubmit={(event) => void apply(event, candidate)}>
             <header>
@@ -173,10 +187,12 @@ export function MetadataCandidateReview({
               item={item}
               selectedFields={selectedFields}
               disabled={disabled || busy}
+              coverSelected={coverSelected}
               onToggle={(field, checked) => toggle(candidate.id, field, checked)}
+              onToggleCover={(checked) => setSelectedCovers((current) => ({ ...current, [candidate.id]: checked }))}
             />
-            <button type="submit" disabled={disabled || busy || selectedFields.length === 0}>
-              Apply selected fields
+            <button type="submit" disabled={disabled || busy || (selectedFields.length === 0 && !coverSelected)}>
+              Apply selection
             </button>
           </form>
         );

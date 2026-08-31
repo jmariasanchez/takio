@@ -31,13 +31,21 @@ function item(id: string, title: string): Item {
   } as unknown as Item;
 }
 
-function candidate(itemId: string, title: string) {
+function candidate(itemId: string, title: string, withCover = false) {
+  const cover = {
+    artifactId: "0123456789abcdef0123456789abcdef",
+    mediaType: "image/jpeg",
+    extension: ".jpg",
+    bytes: 6,
+    sha256: "a".repeat(64),
+  } as const;
   return {
     schemaVersion: 1,
     id: "filename:1",
     source: "filename",
     confidence: "medium",
     patch: { title },
+    ...(withCover ? { cover } : {}),
     provenance: {
       generatedAt: "1970-01-01T00:00:00.000Z",
       itemId,
@@ -108,6 +116,13 @@ const acceptingApply: ApplyCandidate = async (request) => ({
       source: request.candidate.source,
       provenance: request.provenance,
       fields: [...request.fields],
+      coverApplied: request.cover,
+      ...(request.cover && request.candidate.cover ? { cover: {
+        mediaType: request.candidate.cover.mediaType,
+        extension: request.candidate.cover.extension,
+        bytes: request.candidate.cover.bytes,
+        sha256: request.candidate.cover.sha256,
+      } } : {}),
     },
   },
 });
@@ -210,7 +225,7 @@ test("ignores a stale apply response and never reports it as applied", async () 
     checkbox?.click();
   });
   act(() => {
-    button(host, "Apply selected fields").click();
+    button(host, "Apply selection").click();
   });
   render(
     <MetadataCandidateReview
@@ -231,6 +246,7 @@ test("ignores a stale apply response and never reports it as applied", async () 
           source: "filename",
           provenance: "desktop-candidate-review:filename",
           fields: ["title"],
+          coverApplied: false,
         },
       },
     });
@@ -300,7 +316,7 @@ test("keyboard operation reaches review, selection, and apply controls", async (
     fieldCheckbox?.click();
   });
 
-  const submit = button(host, "Apply selected fields");
+  const submit = button(host, "Apply selection");
   expect(submit.disabled).toBe(false);
   await act(async () => {
     submit.click();
@@ -309,5 +325,36 @@ test("keyboard operation reaches review, selection, and apply controls", async (
   expect(applied).toEqual(["Discovered title"]);
   const status = host.querySelector('[role="status"]');
   expect(status?.getAttribute("aria-live")).toBe("polite");
-  expect(statusText(host)).toContain("Applied 1 selected field");
+  expect(statusText(host)).toContain("Applied 1 metadata field");
+});
+
+test("shows path-free cover previews, leaves cover unchecked, and supports cover-only apply", async () => {
+  const requests: Parameters<ApplyCandidate>[0][] = [];
+  const list: ListCandidates = async (request) => ({
+    ok: true,
+    value: { itemId: request.itemId, candidates: [candidate(request.itemId, "Discovered title", true)] },
+  });
+  const host = mount(
+    <MetadataCandidateReview
+      item={{ ...item("book-1", "Current"), coverPath: "/managed/current.jpg" }}
+      onApplied={() => undefined}
+      listCandidates={list}
+      applyCandidate={async (request) => { requests.push(request); return acceptingApply(request); }}
+    />,
+  );
+  await act(async () => button(host, "Review").click());
+
+  const candidateImage = host.querySelector<HTMLImageElement>('img[alt^="Candidate cover"]');
+  expect(candidateImage?.getAttribute("src")).toBe("takio-cover://candidate/0123456789abcdef0123456789abcdef");
+  expect(candidateImage?.getAttribute("src")).not.toContain("managed");
+  const coverCheckbox = host.querySelector<HTMLInputElement>('input[aria-label^="Apply candidate cover"]')!;
+  expect(coverCheckbox.checked).toBe(false);
+  expect(button(host, "Apply selection").disabled).toBe(true);
+  await act(async () => coverCheckbox.click());
+  await act(async () => button(host, "Apply selection").click());
+
+  expect(requests).toHaveLength(1);
+  expect(requests[0]?.fields).toEqual([]);
+  expect(requests[0]?.cover).toBe(true);
+  expect(statusText(host)).toContain("Applied cover");
 });

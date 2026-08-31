@@ -69,3 +69,10 @@ export function onMenuAction(listener: (action: string) => void): () => void {
 export function coverFileSource(path: string): string {
   return `takio-cover://local/${encodeURIComponent(path)}`;
 }
+
+export function candidateCoverSource(artifactId: string): string {
+  if (!/^[0-9a-f]{32}$/.test(artifactId)) {
+    throw new Error("Candidate cover artifact ids must be opaque tokens.");
+  }
+  return `takio-cover://candidate/${artifactId}`;
+}

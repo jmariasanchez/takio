@@ -17,6 +17,7 @@ import {
 } from "electron";
 
 import { invokeEngine, libraryServiceClient } from "./engine";
+import { candidateCoverResponse } from "./candidate-cover-protocol";
 
 protocol.registerSchemesAsPrivileged([
   { scheme: "takio-cover", privileges: { standard: true, secure: true, supportFetchAPI: true } },
@@ -168,6 +169,10 @@ async function createWindow() {
 
 app.whenReady().then(async () => {
   protocol.handle("takio-cover", (request) => {
+    const url = new URL(request.url);
+    if (url.hostname === "candidate") {
+      return candidateCoverResponse(request.url, libraryRoot());
+    }
     const path = decodeURIComponent(new URL(request.url).pathname.slice(1));
     return isManagedCover(path) && existsSync(path)
       ? net.fetch(pathToFileURL(path).href)

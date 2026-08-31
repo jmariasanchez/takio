@@ -46,6 +46,7 @@ describe("metadata candidate renderer decoder", () => {
     source: "filename",
     provenance: "desktop-candidate-review:filename",
     fields: ["title"],
+    coverApplied: false,
   } as const;
 
   test("accepts strict list and apply envelopes", async () => {
@@ -59,6 +60,7 @@ describe("metadata candidate renderer decoder", () => {
         itemId: "book-1",
         candidate,
         fields: ["title"],
+        cover: false,
         provenance: "desktop-candidate-review:filename",
       },
       returns({ ok: true, value: { item, applied } }),
@@ -79,6 +81,7 @@ describe("metadata candidate renderer decoder", () => {
         itemId: "book-1",
         candidate,
         fields: ["title"],
+        cover: false,
         provenance: "desktop-candidate-review:filename",
       },
       returns({ ok: true, value: { item } }),
@@ -114,6 +117,7 @@ describe("metadata candidate renderer decoder", () => {
         itemId: "book-2",
         candidate,
         fields: ["title"],
+        cover: false,
         provenance: "desktop-candidate-review:filename",
       },
       async () => {
@@ -130,9 +134,45 @@ describe("metadata candidate renderer decoder", () => {
         itemId: "book-1",
         candidate,
         fields: ["title"],
+        cover: false,
         provenance: "desktop-candidate-review:filename",
       },
       returns({ ok: true, value: { item, applied: { ...applied, itemId: "book-9" } } }),
     )).toEqual({ ok: false, error: { code: "protocol-error" } });
+  });
+
+  test("requires exact coverApplied and cover summary accounting", async () => {
+    const cover = {
+      mediaType: "image/jpeg",
+      extension: ".jpg",
+      bytes: 6,
+      sha256: "a".repeat(64),
+    } as const;
+    const request = {
+      itemId: "book-1",
+      candidate: {
+        ...candidate,
+        cover: { artifactId: "0123456789abcdef0123456789abcdef", ...cover },
+      },
+      fields: [],
+      cover: true,
+      provenance: "desktop-candidate-review:filename",
+    } as const;
+    expect(await applyMetadataCandidate(
+      request,
+      returns({ ok: true, value: { item, applied: { ...applied, fields: [], coverApplied: true, cover } } }),
+    )).toEqual({ ok: true, value: { item, applied: { ...applied, fields: [], coverApplied: true, cover } } });
+    for (const malformed of [
+      { ...applied, fields: [], coverApplied: true },
+      { ...applied, coverApplied: false, cover },
+      { ...applied, fields: [], coverApplied: false },
+      { ...applied, fields: [], coverApplied: true, cover: { ...cover, extension: ".png" } },
+      { ...applied, fields: [], coverApplied: true, cover: { ...cover, artifactId: request.candidate.cover.artifactId } },
+    ]) {
+      expect(await applyMetadataCandidate(
+        request,
+        returns({ ok: true, value: { item, applied: malformed } }),
+      )).toEqual({ ok: false, error: { code: "protocol-error" } });
+    }
   });
 });

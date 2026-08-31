@@ -34,7 +34,9 @@ type ReviewedOutcome = Readonly<{
   status: FinalStatus;
   item?: LibraryItem;
   candidateId?: string;
-  fields?: readonly MetadataCandidateField[];
+  fields?: readonly string[];
+  coverApplied?: boolean;
+  cover?: Readonly<{ mediaType: "image/jpeg" | "image/png" | "image/gif" | "image/webp"; extension: ".jpg" | ".png" | ".gif" | ".webp"; bytes: number; sha256: string }>;
   code?: string;
 }>;
 
@@ -92,6 +94,7 @@ export function LibraryBulkMetadataCandidateDialog({
   const [reviewed, setReviewed] = useState<readonly ReviewedOutcome[]>([]);
   const [currentItemId, setCurrentItemId] = useState<string | null>(null);
   const [selected, setSelected] = useState<Record<string, readonly MetadataCandidateField[]>>({});
+  const [selectedCovers, setSelectedCovers] = useState<Record<string, boolean>>({});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [live, setLive] = useState("");
@@ -117,6 +120,7 @@ export function LibraryBulkMetadataCandidateDialog({
     setReviewed([]);
     setCurrentItemId(null);
     setSelected({});
+    setSelectedCovers({});
     setBusy(false);
     setError(null);
     setLive(`Ready to review ${itemIds.length} selected books.`);
@@ -224,12 +228,15 @@ export function LibraryBulkMetadataCandidateDialog({
     status: "skipped" | "applied",
     item?: LibraryItem,
     candidateId?: string,
-    fields?: readonly MetadataCandidateField[],
+    fields?: readonly string[],
+    coverApplied?: boolean,
+    cover?: ReviewedOutcome["cover"],
   ) {
     if (!current) return;
-    const nextReviewed = [...reviewed, { itemId: current.itemId, status, item, candidateId, fields }];
+    const nextReviewed = [...reviewed, { itemId: current.itemId, status, item, candidateId, fields, coverApplied, cover }];
     setReviewed(nextReviewed);
     setSelected({});
+    setSelectedCovers({});
     const next = ready.find((outcome) => !nextReviewed.some((entry) => entry.itemId === outcome.itemId));
     if (next) {
       setCurrentItemId(next.itemId);
@@ -244,18 +251,20 @@ export function LibraryBulkMetadataCandidateDialog({
   async function apply(candidate: MetadataCandidate) {
     if (!current) return;
     const fields = selected[candidate.id] ?? [];
-    if (fields.length === 0) {
-      setError("Select at least one field before applying this candidate.");
+    const cover = selectedCovers[candidate.id] === true;
+    if (fields.length === 0 && !cover) {
+      setError("Select at least one field or the candidate cover before applying.");
       return;
     }
     setBusy(true);
     setError(null);
-    setLive(`Applying ${fields.length} selected field${fields.length === 1 ? "" : "s"} to ${current.item.title}.`);
+    setLive(`Applying ${fields.length} selected field${fields.length === 1 ? "" : "s"}${cover ? `${fields.length > 0 ? " and" : ""} cover` : ""} to ${current.item.title}.`);
     try {
       const result = await applyCandidate({
         itemId: current.itemId,
         candidate,
         fields,
+        cover,
         provenance: `desktop-bulk-candidate-review:${candidate.source}`,
       });
       if (!result.ok || result.value.item.id !== current.itemId) {
@@ -263,7 +272,7 @@ export function LibraryBulkMetadataCandidateDialog({
         return;
       }
       onApplied(result.value.item);
-      resolveCurrent("applied", result.value.item, candidate.id, fields);
+      resolveCurrent("applied", result.value.item, candidate.id, result.value.applied.fields, result.value.applied.coverApplied, result.value.applied.cover);
     } catch {
       setError("The selected metadata fields could not be applied.");
     } finally {
@@ -278,6 +287,7 @@ export function LibraryBulkMetadataCandidateDialog({
       if (!reviewed.some((entry) => entry.itemId === candidate.itemId)) {
         setCurrentItemId(candidate.itemId);
         setSelected({});
+        setSelectedCovers({});
         setError(null);
         return;
       }
@@ -290,7 +300,7 @@ export function LibraryBulkMetadataCandidateDialog({
     const outcome = reviewed.find((entry) => entry.itemId === itemId);
     if (!outcome) return [];
     if (outcome.status === "applied") {
-      return [{ status: outcome.status, itemId, item: outcome.item, candidateId: outcome.candidateId, fields: outcome.fields }];
+      return [{ status: outcome.status, itemId, item: outcome.item, candidateId: outcome.candidateId, fields: outcome.fields, coverApplied: outcome.coverApplied, ...(outcome.cover ? { cover: outcome.cover } : {}) }];
     }
     if (outcome.status === "failed") return [{ status: outcome.status, itemId, code: outcome.code ?? "unexpected-error" }];
     return [{ status: outcome.status, itemId }];
@@ -359,12 +369,13 @@ export function LibraryBulkMetadataCandidateDialog({
               </div>
               {current.candidates.map((candidate) => {
                 const fields = selected[candidate.id] ?? [];
+                const coverSelected = selectedCovers[candidate.id] === true;
                 return (
                   <form key={candidate.id} className="metadata-candidate-review__candidate" onSubmit={(event) => { event.preventDefault(); void apply(candidate); }}>
                     <header><strong>{metadataCandidateSourceLabel(candidate)}</strong><span>{candidate.confidence} confidence</span></header>
                     <p className="metadata-candidate-review__provenance">Source: {metadataCandidateProvenanceLabel(candidate)}</p>
-                    <MetadataCandidateFieldControls candidate={candidate} item={current.item} selectedFields={fields} disabled={busy} onToggle={(field, checked) => setSelected((value) => ({ ...value, [candidate.id]: checked ? [...fields, field] : fields.filter((entry) => entry !== field) }))} />
-                    <button type="submit" disabled={busy || fields.length === 0}>Apply selected fields</button>
+                    <MetadataCandidateFieldControls candidate={candidate} item={current.item} selectedFields={fields} coverSelected={coverSelected} disabled={busy} onToggle={(field, checked) => setSelected((value) => ({ ...value, [candidate.id]: checked ? [...fields, field] : fields.filter((entry) => entry !== field) }))} onToggleCover={(checked) => setSelectedCovers((value) => ({ ...value, [candidate.id]: checked }))} />
+                    <button type="submit" disabled={busy || (fields.length === 0 && !coverSelected)}>Apply selection</button>
                   </form>
                 );
               })}
