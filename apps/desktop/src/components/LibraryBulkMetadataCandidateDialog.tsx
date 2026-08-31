@@ -67,7 +67,7 @@ function initialReviewed(outcomes: readonly BulkMetadataDiscoveryOutcome[]): Rev
   return outcomes.flatMap((outcome) =>
     outcome.status === "ready"
       ? []
-      : [{ itemId: outcome.itemId, status: outcome.status, ...(outcome.status === "failed" ? { code: "discovery-failed" } : {}) }],
+      : [{ itemId: outcome.itemId, status: outcome.status, ...(outcome.status === "failed" ? { code: outcome.code } : {}) }],
   );
 }
 
@@ -178,7 +178,7 @@ export function LibraryBulkMetadataCandidateDialog({
       outcomes: result.outcomes.map((outcome) => outcome.status === "ready"
         ? { status: outcome.status, itemId: outcome.itemId, candidates: outcome.candidates }
         : outcome.status === "failed"
-          ? { status: outcome.status, itemId: outcome.itemId, code: "discovery-failed" }
+          ? { status: outcome.status, itemId: outcome.itemId, code: outcome.code }
           : { status: outcome.status, itemId: outcome.itemId }),
       counts: {
         total: result.counts.total,
@@ -281,7 +281,7 @@ export function LibraryBulkMetadataCandidateDialog({
     if (outcome.status === "applied") {
       return [{ status: outcome.status, itemId, item: outcome.item, candidateId: outcome.candidateId, fields: outcome.fields }];
     }
-    if (outcome.status === "failed") return [{ status: outcome.status, itemId, code: outcome.code ?? "discovery-failed" }];
+    if (outcome.status === "failed") return [{ status: outcome.status, itemId, code: outcome.code ?? "unexpected-error" }];
     return [{ status: outcome.status, itemId }];
   });
   const report = {

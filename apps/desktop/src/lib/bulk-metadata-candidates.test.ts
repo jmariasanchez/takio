@@ -140,12 +140,45 @@ test("classifies missing, failed, no-candidate, and thrown lookups exactly", asy
     "no-candidates",
     "failed",
   ]);
+  expect(result.outcomes[2]).toEqual({
+    itemId: "lookup-failure",
+    status: "failed",
+    code: "protocol-error",
+  });
+  expect(result.outcomes[4]).toEqual({
+    itemId: "throw",
+    status: "failed",
+    code: "unexpected-error",
+  });
   expect(result.counts).toEqual({
     total: 5,
     ready: 1,
     "no-candidates": 1,
     missing: 1,
     failed: 2,
+    canceled: 0,
+  });
+});
+
+test("classifies a book removed between hydration and candidate lookup as missing", async () => {
+  const result = await discoverBulkMetadataCandidates(
+    { itemIds: ["removed"], includeOnline: false },
+    {
+      getItem: async (id) => found(id),
+      listCandidates: async () => ({
+        ok: false,
+        error: { code: "item-not-found" },
+      }),
+    },
+  );
+
+  expect(result.outcomes).toEqual([{ itemId: "removed", status: "missing" }]);
+  expect(result.counts).toEqual({
+    total: 1,
+    ready: 0,
+    "no-candidates": 0,
+    missing: 1,
+    failed: 0,
     canceled: 0,
   });
 });

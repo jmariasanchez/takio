@@ -17,7 +17,7 @@ export type BulkMetadataDiscoveryOutcome =
     }>
   | Readonly<{ itemId: string; status: "no-candidates"; item: LibraryItem }>
   | Readonly<{ itemId: string; status: "missing" }>
-  | Readonly<{ itemId: string; status: "failed" }>
+  | Readonly<{ itemId: string; status: "failed"; code: string }>
   | Readonly<{ itemId: string; status: "canceled" }>;
 
 export type BulkMetadataDiscoveryCounts = Readonly<
@@ -61,12 +61,17 @@ async function discoverOne(
 ): Promise<BulkMetadataDiscoveryOutcome> {
   try {
     const itemResult = await dependencies.getItem(itemId);
-    if (!itemResult.ok) return { itemId, status: "failed" };
+    if (!itemResult.ok) return { itemId, status: "failed", code: itemResult.error.code };
     if (!itemResult.value.item) return { itemId, status: "missing" };
 
     const listResult = await dependencies.listCandidates({ itemId, includeOnline });
-    if (!listResult.ok || listResult.value.itemId !== itemId) {
-      return { itemId, status: "failed" };
+    if (!listResult.ok) {
+      return listResult.error.code === "item-not-found"
+        ? { itemId, status: "missing" }
+        : { itemId, status: "failed", code: listResult.error.code };
+    }
+    if (listResult.value.itemId !== itemId) {
+      return { itemId, status: "failed", code: "protocol-error" };
     }
     const candidates = listResult.value.candidates.filter(
       (candidate) => candidate.provenance.itemId === itemId,
@@ -75,7 +80,7 @@ async function discoverOne(
       ? { itemId, status: "no-candidates", item: itemResult.value.item }
       : { itemId, status: "ready", item: itemResult.value.item, candidates };
   } catch {
-    return { itemId, status: "failed" };
+    return { itemId, status: "failed", code: "unexpected-error" };
   }
 }
 

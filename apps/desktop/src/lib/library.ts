@@ -75,6 +75,11 @@ type LibraryBridgeFailure = {
   readonly error: { readonly code: LibraryBridgeErrorCode };
 };
 
+type MetadataCandidateFailure = {
+  readonly ok: false;
+  readonly error: { readonly code: string };
+};
+
 export type DesktopLibraryListResult = LibraryListWireResult | LibraryBridgeFailure;
 export type DesktopLibraryGetResult =
   | LibraryStoreResult<{ readonly item: LibraryItem | null }>
@@ -106,10 +111,10 @@ export type DesktopLibraryDuplicateMergeResult =
   | LibraryBridgeFailure;
 export type DesktopMetadataCandidateListResult =
   | MetadataCandidateListWireResult
-  | LibraryBridgeFailure;
+  | MetadataCandidateFailure;
 export type DesktopMetadataCandidateApplyResult =
   | MetadataCandidateApplyWireResult
-  | LibraryBridgeFailure;
+  | MetadataCandidateFailure;
 export type DesktopLibraryTrashListResult =
   LibraryTrashListWireResult | LibraryBridgeFailure;
 export type DesktopLibraryTrashResult =
