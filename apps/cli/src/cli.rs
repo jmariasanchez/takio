@@ -23,7 +23,7 @@ use crate::paths::LibraryPaths;
 use crate::portable_library;
 use crate::store::{
     DuplicatePairReviewRequest, LIBRARY_SCHEMA_VERSION, LibraryStore,
-    ListDuplicateCandidatesRequest, MergeDuplicatePairRequest, VerifyReport,
+    ListDuplicateCandidatesRequest, METADATA_AUDIT_KEY, MergeDuplicatePairRequest, VerifyReport,
 };
 
 #[derive(Parser)]
@@ -840,7 +840,8 @@ fn metadata_candidates(command: MetadataCandidatesCommand, library: Option<&str>
             let item = store
                 .get(&id)?
                 .ok_or_else(|| AppError::new("item-not-found"))?;
-            let mut candidates = filename_candidates(&item.source_path, Some(&item.id), &[])?;
+            let mut candidates =
+                filename_candidates_for_stem(&item.title, &item.source_path, Some(&item.id), &[])?;
             if discover_ebook_meta().is_some()
                 && let Ok(extracted) =
                     metadata::extract(&item.source_path, Duration::from_secs(timeout_seconds))
@@ -941,7 +942,7 @@ fn metadata_candidates(command: MetadataCandidatesCommand, library: Option<&str>
                 &patch.custom_metadata,
                 &audit,
             )?);
-            let item = store.update(&id, patch)?;
+            let item = store.update_candidate(&id, patch)?;
             print_success(json!({
                 "item": item,
                 "applied": {
@@ -956,7 +957,6 @@ fn metadata_candidates(command: MetadataCandidatesCommand, library: Option<&str>
     }
 }
 
-pub(crate) const METADATA_AUDIT_KEY: &str = "takio_metadata_audit";
 const METADATA_AUDIT_SCHEMA_VERSION: u64 = 1;
 const MAX_CUSTOM_METADATA_ENTRIES: usize = 64;
 const MAX_CUSTOM_METADATA_VALUE_BYTES: usize = 16 * 1024;
@@ -1073,6 +1073,19 @@ fn filename_candidates(
     item_id: Option<&str>,
     custom_patterns: &[String],
 ) -> AppResult<Vec<Value>> {
+    let stem = source
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| AppError::new("invalid-arguments"))?;
+    filename_candidates_for_stem(stem, source, item_id, custom_patterns)
+}
+
+fn filename_candidates_for_stem(
+    stem: &str,
+    provenance_path: &Path,
+    item_id: Option<&str>,
+    custom_patterns: &[String],
+) -> AppResult<Vec<Value>> {
     const BUILTINS: [&str; 4] = [
         r"^(?<author>.+?) - (?<series>.+?) (?<seriesIndex>\d+(?:\.\d+)?) - (?<title>.+)$",
         r"^(?<author>.+?) - (?<title>.+?) \((?<series>.+?) #(?<seriesIndex>\d+(?:\.\d+)?)\)$",
@@ -1085,10 +1098,6 @@ fn filename_candidates(
     {
         return Err(AppError::new("invalid-arguments"));
     }
-    let stem = source
-        .file_stem()
-        .and_then(|value| value.to_str())
-        .ok_or_else(|| AppError::new("invalid-arguments"))?;
     let patterns = custom_patterns
         .iter()
         .map(String::as_str)
@@ -1138,7 +1147,7 @@ fn filename_candidates(
             "source":"filename",
             "confidence":if custom_patterns.first().is_some_and(|value|value==pattern){"high"}else{"medium"},
             "patch":patch,
-            "provenance":{"generatedAt":"1970-01-01T00:00:00.000Z","itemId":item_id,"sourcePath":source,"pattern":pattern}
+            "provenance":{"generatedAt":"1970-01-01T00:00:00.000Z","itemId":item_id,"sourcePath":provenance_path,"pattern":pattern}
         }));
         if candidates.len() == 8 {
             break;

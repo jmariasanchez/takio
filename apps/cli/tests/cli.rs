@@ -1796,6 +1796,34 @@ fn standalone_filename_candidates_remain_valid_without_an_item_id() {
     );
 }
 
+#[test]
+fn item_filename_candidates_use_the_import_title_after_managed_publication() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let (database, id) = seed_candidate_library(temp.path());
+    let fetched = cargo_bin_cmd!("takio")
+        .args(["library", "get", "--db"])
+        .arg(&database)
+        .args(["--id", &id])
+        .output()
+        .expect("read managed item");
+    let source_path = success_value(&fetched.stdout)["item"]["sourcePath"].clone();
+
+    let output = cargo_bin_cmd!("takio")
+        .args(["metadata", "candidates", "item", "--db"])
+        .arg(&database)
+        .args(["--id", &id])
+        .output()
+        .expect("derive item filename metadata");
+
+    assert!(output.status.success());
+    let value = success_value(&output.stdout);
+    let candidate = &value["candidates"][0];
+    assert_eq!(candidate["patch"]["title"], "Real Title");
+    assert_eq!(candidate["patch"]["author"], "Ada Writer");
+    assert_eq!(candidate["provenance"]["itemId"], id);
+    assert_eq!(candidate["provenance"]["sourcePath"], source_path);
+}
+
 fn seed_candidate_library(temp: &std::path::Path) -> (std::path::PathBuf, String) {
     let database = temp.join("library.sqlite");
     let book = temp.join("Ada Writer - Real Title.epub");
@@ -2198,6 +2226,101 @@ fn candidate_apply_rejects_malformed_candidate_records() {
     let mut bad_backend = candidate_for(&id);
     bad_backend["provenance"]["backend"] = serde_json::json!("sh");
     reject(bad_backend);
+
+    let mut bad_published_date = candidate_for(&id);
+    bad_published_date["patch"]["publishedDate"] = serde_json::json!("yesterday");
+    reject(bad_published_date);
+
+    let mut bad_custom_key = candidate_for(&id);
+    bad_custom_key["patch"]["customMetadata"] = serde_json::json!({"Bad Key": "poison"});
+    reject(bad_custom_key);
+
+    let mut bad_language = candidate_for(&id);
+    bad_language["patch"]["languages"] = serde_json::json!(["not_a_language"]);
+    reject(bad_language);
+
+    let fetched = cargo_bin_cmd!("takio")
+        .args(["library", "get", "--db"])
+        .arg(&database)
+        .args(["--id", &id])
+        .output()
+        .expect("read item after rejected candidates");
+    let item = success_value(&fetched.stdout)["item"].clone();
+    assert_eq!(item["title"], "Ada Writer - Real Title");
+    assert_eq!(item["publishedDate"], Value::Null);
+    assert_eq!(item["customMetadata"], Value::Null);
+}
+
+#[test]
+fn ordinary_updates_cannot_forge_or_erase_candidate_audit_metadata() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let (database, id) = seed_candidate_library(temp.path());
+    let candidate = candidate_for(&id);
+    let applied = cargo_bin_cmd!("takio")
+        .args(["metadata", "candidates", "apply", "--db"])
+        .arg(&database)
+        .args([
+            "--id",
+            &id,
+            "--candidate-json",
+            &candidate.to_string(),
+            "--provenance",
+            "desktop-candidate-review:filename",
+        ])
+        .output()
+        .expect("apply candidate");
+    assert!(applied.status.success());
+    let audit =
+        success_value(&applied.stdout)["item"]["customMetadata"]["takio_metadata_audit"].clone();
+
+    let cleared = cargo_bin_cmd!("takio")
+        .args(["library", "update", "--db"])
+        .arg(&database)
+        .args(["--id", &id, "--patch-json", r#"{"customMetadata":null}"#])
+        .output()
+        .expect("clear user custom metadata");
+    assert!(cleared.status.success());
+    assert_eq!(
+        success_value(&cleared.stdout)["item"]["customMetadata"]["takio_metadata_audit"],
+        audit
+    );
+
+    let forged = cargo_bin_cmd!("takio")
+        .args(["library", "update", "--db"])
+        .arg(&database)
+        .args([
+            "--id",
+            &id,
+            "--patch-json",
+            r#"{"customMetadata":{"takio_metadata_audit":"forged"}}"#,
+        ])
+        .output()
+        .expect("attempt to forge audit metadata");
+    assert_eq!(failure_code(&forged.stdout), "invalid-arguments");
+
+    for patch in [
+        r#"{"publishedDate":"yesterday"}"#,
+        r#"{"customMetadata":{"Bad Key":"poison"}}"#,
+        r#"{"languages":["not_a_language"]}"#,
+    ] {
+        let rejected = cargo_bin_cmd!("takio")
+            .args(["library", "update", "--db"])
+            .arg(&database)
+            .args(["--id", &id, "--patch-json", patch])
+            .output()
+            .expect("reject invalid metadata update");
+        assert_eq!(failure_code(&rejected.stdout), "invalid-arguments");
+    }
+
+    let fetched = cargo_bin_cmd!("takio")
+        .args(["library", "get", "--db"])
+        .arg(&database)
+        .args(["--id", &id])
+        .output()
+        .expect("read protected audit metadata");
+    let item = success_value(&fetched.stdout)["item"].clone();
+    assert_eq!(item["customMetadata"]["takio_metadata_audit"], audit);
+    assert_eq!(item["publishedDate"], Value::Null);
 }
 
 #[test]

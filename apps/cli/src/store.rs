@@ -3,7 +3,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-use chrono::Utc;
+use chrono::{NaiveDate, Utc};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -19,6 +19,10 @@ use crate::paths::LibraryPaths;
 mod migration;
 
 pub const LIBRARY_SCHEMA_VERSION: i64 = 11;
+pub const METADATA_AUDIT_KEY: &str = "takio_metadata_audit";
+const MAX_CUSTOM_METADATA_USER_ENTRIES: usize = 64;
+const MAX_CUSTOM_METADATA_TOTAL_ENTRIES: usize = 65;
+const MAX_CUSTOM_METADATA_VALUE_CHARS: usize = 16 * 1024;
 
 pub struct LibraryStore {
     connection: Connection,
@@ -1006,6 +1010,23 @@ impl LibraryStore {
     }
 
     pub fn update(&mut self, id: &str, patch: LibraryPatch) -> AppResult<LibraryItem> {
+        self.update_inner(id, patch, false)
+    }
+
+    pub(crate) fn update_candidate(
+        &mut self,
+        id: &str,
+        patch: LibraryPatch,
+    ) -> AppResult<LibraryItem> {
+        self.update_inner(id, patch, true)
+    }
+
+    fn update_inner(
+        &mut self,
+        id: &str,
+        patch: LibraryPatch,
+        allow_reserved_metadata: bool,
+    ) -> AppResult<LibraryItem> {
         let mut item = self
             .read_item(id)?
             .ok_or_else(|| AppError::new("not-found"))?;
@@ -1029,7 +1050,7 @@ impl LibraryStore {
         match patch.author {
             Patch::Missing => {}
             Patch::Null => item.author = None,
-            Patch::Set(value) => item.author = clean_optional(Some(value)),
+            Patch::Set(value) => item.author = Some(required_text(value)?),
         }
         match patch.authors {
             Patch::Missing => {}
@@ -1046,7 +1067,7 @@ impl LibraryStore {
         match patch.series {
             Patch::Missing => {}
             Patch::Null => item.series = None,
-            Patch::Set(value) => item.series = clean_optional(Some(value)),
+            Patch::Set(value) => item.series = Some(required_text(value)?),
         }
         match patch.series_index {
             Patch::Missing => {}
@@ -1061,7 +1082,7 @@ impl LibraryStore {
         match patch.publisher {
             Patch::Missing => {}
             Patch::Null => item.publisher = None,
-            Patch::Set(value) => item.publisher = clean_optional(Some(value)),
+            Patch::Set(value) => item.publisher = Some(required_text(value)?),
         }
         match patch.languages {
             Patch::Missing => {}
@@ -1072,23 +1093,40 @@ impl LibraryStore {
                 if value.is_empty() {
                     return Err(AppError::new("invalid-arguments"));
                 }
-                item.languages = normalize_texts(value)?;
+                item.languages = normalize_languages(value)?;
             }
         }
         match patch.identifiers {
             Patch::Missing => {}
             Patch::Null => item.identifiers = BTreeMap::new(),
-            Patch::Set(value) => item.identifiers = normalize_map(value)?,
+            Patch::Set(value) => item.identifiers = normalize_identifiers(value)?,
         }
         match patch.custom_metadata {
             Patch::Missing => {}
-            Patch::Null => item.custom_metadata = BTreeMap::new(),
-            Patch::Set(value) => item.custom_metadata = normalize_map(value)?,
+            Patch::Null => {
+                let audit = item.custom_metadata.get(METADATA_AUDIT_KEY).cloned();
+                item.custom_metadata.clear();
+                if let Some(audit) = audit {
+                    item.custom_metadata
+                        .insert(METADATA_AUDIT_KEY.to_owned(), audit);
+                }
+            }
+            Patch::Set(value) => {
+                if !allow_reserved_metadata && value.contains_key(METADATA_AUDIT_KEY) {
+                    return Err(AppError::new("invalid-arguments"));
+                }
+                let existing_audit = item.custom_metadata.get(METADATA_AUDIT_KEY).cloned();
+                item.custom_metadata = normalize_custom_metadata(value)?;
+                if !allow_reserved_metadata && let Some(audit) = existing_audit {
+                    item.custom_metadata
+                        .insert(METADATA_AUDIT_KEY.to_owned(), audit);
+                }
+            }
         }
         match patch.published_date {
             Patch::Missing => {}
             Patch::Null => item.published_date = None,
-            Patch::Set(value) => item.published_date = clean_optional(Some(value)),
+            Patch::Set(value) => item.published_date = Some(normalize_published_date(value)?),
         }
         match patch.rating {
             Patch::Missing => {}
@@ -1103,7 +1141,7 @@ impl LibraryStore {
         match patch.description {
             Patch::Missing => {}
             Patch::Null => item.description = None,
-            Patch::Set(value) => item.description = clean_optional(Some(value)),
+            Patch::Set(value) => item.description = Some(required_text(value)?),
         }
         match patch.tags {
             Patch::Missing => {}
@@ -2047,30 +2085,48 @@ fn apply_duplicate_metadata(item: &mut LibraryItem, metadata: &Value) -> AppResu
             if languages.is_empty() {
                 return Err(AppError::new("invalid-arguments"));
             }
-            normalize_texts(languages)?
+            normalize_languages(languages)?
         };
     }
     if let Some(value) = object.get("identifiers") {
         item.identifiers = if value.is_null() {
             BTreeMap::new()
         } else {
-            normalize_map(
+            normalize_identifiers(
                 serde_json::from_value(value.clone())
                     .map_err(|_| AppError::new("invalid-arguments"))?,
             )?
         };
     }
     if let Some(value) = object.get("customMetadata") {
-        item.custom_metadata = if value.is_null() {
+        let audit = item.custom_metadata.get(METADATA_AUDIT_KEY).cloned();
+        let mut metadata = if value.is_null() {
             BTreeMap::new()
         } else {
-            normalize_map(
-                serde_json::from_value(value.clone())
-                    .map_err(|_| AppError::new("invalid-arguments"))?,
-            )?
+            let metadata: BTreeMap<String, String> = serde_json::from_value(value.clone())
+                .map_err(|_| AppError::new("invalid-arguments"))?;
+            if metadata.contains_key(METADATA_AUDIT_KEY) {
+                return Err(AppError::new("invalid-arguments"));
+            }
+            normalize_custom_metadata(metadata)?
+        };
+        if let Some(audit) = audit {
+            metadata.insert(METADATA_AUDIT_KEY.to_owned(), audit);
+        }
+        item.custom_metadata = metadata;
+    }
+    if let Some(value) = object.get("publishedDate") {
+        item.published_date = if value.is_null() {
+            None
+        } else {
+            Some(normalize_published_date(
+                value
+                    .as_str()
+                    .ok_or_else(|| AppError::new("invalid-arguments"))?
+                    .to_owned(),
+            )?)
         };
     }
-    apply_nullable_text(object, "publishedDate", &mut item.published_date)?;
     if let Some(value) = object.get("rating") {
         item.rating = if value.is_null() {
             None
@@ -2469,13 +2525,6 @@ fn cleanup_managed(root: &Path, path: &Path, expected: Option<&(u64, String)>) -
     Ok(())
 }
 
-fn clean_optional(value: Option<String>) -> Option<String> {
-    value.and_then(|value| {
-        let value = value.trim().to_owned();
-        (!value.is_empty()).then_some(value)
-    })
-}
-
 fn validate_saved_view_definition(definition: &Value) -> AppResult<()> {
     let object = definition
         .as_object()
@@ -2570,21 +2619,102 @@ fn normalize_authors(values: Vec<BookAuthor>) -> AppResult<Vec<BookAuthor>> {
         if name.is_empty() {
             return Err(AppError::new("invalid-arguments"));
         }
+        let sort_name = match value.sort_name {
+            Some(value) => Some(required_text(value)?),
+            None => None,
+        };
         output.push(BookAuthor {
             name: name.to_owned(),
-            sort_name: clean_optional(value.sort_name),
+            sort_name,
         });
     }
     Ok(output)
 }
-fn normalize_map(values: BTreeMap<String, String>) -> AppResult<BTreeMap<String, String>> {
-    if values
-        .iter()
-        .any(|(key, value)| key.trim().is_empty() || value.trim().is_empty())
-    {
+
+fn required_text(value: String) -> AppResult<String> {
+    let value = value.trim();
+    if value.is_empty() {
         Err(AppError::new("invalid-arguments"))
     } else {
+        Ok(value.to_owned())
+    }
+}
+
+fn normalize_languages(values: Vec<String>) -> AppResult<Vec<String>> {
+    let values = normalize_texts(values)?;
+    if values.iter().all(|value| valid_language_tag(value)) {
         Ok(values)
+    } else {
+        Err(AppError::new("invalid-arguments"))
+    }
+}
+
+fn valid_language_tag(value: &str) -> bool {
+    let mut parts = value.split('-');
+    let Some(primary) = parts.next() else {
+        return false;
+    };
+    (2..=3).contains(&primary.len())
+        && primary.bytes().all(|byte| byte.is_ascii_alphabetic())
+        && parts.all(|part| {
+            (2..=8).contains(&part.len()) && part.bytes().all(|byte| byte.is_ascii_alphanumeric())
+        })
+}
+
+fn normalize_identifiers(values: BTreeMap<String, String>) -> AppResult<BTreeMap<String, String>> {
+    values
+        .into_iter()
+        .map(|(key, value)| Ok((required_text(key)?, required_text(value)?)))
+        .collect()
+}
+
+fn normalize_custom_metadata(
+    values: BTreeMap<String, String>,
+) -> AppResult<BTreeMap<String, String>> {
+    let user_entries = values
+        .keys()
+        .filter(|key| key.as_str() != METADATA_AUDIT_KEY)
+        .count();
+    if user_entries > MAX_CUSTOM_METADATA_USER_ENTRIES
+        || values.len() > MAX_CUSTOM_METADATA_TOTAL_ENTRIES
+        || values.iter().any(|(key, value)| {
+            !valid_custom_metadata_key(key)
+                || value.encode_utf16().count() > MAX_CUSTOM_METADATA_VALUE_CHARS
+        })
+    {
+        return Err(AppError::new("invalid-arguments"));
+    }
+    Ok(values)
+}
+
+fn valid_custom_metadata_key(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    !bytes.is_empty()
+        && bytes.len() <= 64
+        && bytes[0].is_ascii_lowercase()
+        && bytes[1..]
+            .iter()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || *byte == b'_')
+}
+
+fn normalize_published_date(value: String) -> AppResult<String> {
+    let value = value.trim();
+    let valid = match value.len() {
+        4 => value.bytes().all(|byte| byte.is_ascii_digit()),
+        7 => {
+            value.as_bytes().get(4) == Some(&b'-')
+                && value[..4].bytes().all(|byte| byte.is_ascii_digit())
+                && value[5..]
+                    .parse::<u32>()
+                    .is_ok_and(|month| (1..=12).contains(&month))
+        }
+        10 => NaiveDate::parse_from_str(value, "%Y-%m-%d").is_ok(),
+        _ => false,
+    };
+    if valid {
+        Ok(value.to_owned())
+    } else {
+        Err(AppError::new("invalid-arguments"))
     }
 }
 fn count(connection: &Connection, sql: &str) -> AppResult<u64> {
