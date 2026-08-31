@@ -11,10 +11,17 @@ export type LibraryHealthDialogProps = {
   readonly verificationError: string | null;
   readonly backupResult: { readonly path: string; readonly report: LibraryIntegrityReport } | null;
   readonly backupError: string | null;
-  readonly pendingAction: "verify" | "backup" | null;
+  readonly diagnosticsResult: {
+    readonly path: string;
+    readonly bytes: number;
+    readonly verificationStatus: "ok" | "failed";
+  } | null;
+  readonly diagnosticsError: string | null;
+  readonly pendingAction: "verify" | "backup" | "diagnostics" | null;
   readonly onClose: () => void;
   readonly onVerify: () => void;
   readonly onBackup: () => void;
+  readonly onDiagnostics: () => void;
 };
 
 const focusableSelector = [
@@ -54,6 +61,11 @@ export function backupDirectoryName(date = new Date()): string {
   return `takio-library-backup-${stamp}`;
 }
 
+export function diagnosticsFileName(date = new Date()): string {
+  const stamp = date.toISOString().replace(/[:.]/g, "-");
+  return `takio-diagnostics-${stamp}.json`;
+}
+
 function Counts({ report }: { readonly report: LibraryIntegrityReport }) {
   return (
     <dl className="library-health-dialog__counts" aria-label="Integrity result counts">
@@ -75,10 +87,13 @@ export function LibraryHealthDialog({
   verificationError,
   backupResult,
   backupError,
+  diagnosticsResult,
+  diagnosticsError,
   pendingAction,
   onClose,
   onVerify,
   onBackup,
+  onDiagnostics,
 }: LibraryHealthDialogProps) {
   const busy = pendingAction !== null;
   const dialogRef = useRef<HTMLElement>(null);
@@ -145,6 +160,8 @@ export function LibraryHealthDialog({
     verificationError ? "library-health-error" : null,
     backupError ? "library-health-backup-error" : null,
     backupResult ? "library-health-backup-result" : null,
+    diagnosticsError ? "library-health-diagnostics-error" : null,
+    diagnosticsResult ? "library-health-diagnostics-result" : null,
   ].filter(Boolean).join(" ");
 
   return (
@@ -209,12 +226,32 @@ export function LibraryHealthDialog({
         ) : null}
         {backupError ? <p id="library-health-backup-error" role="alert">{backupError}</p> : null}
 
+        <section className="library-health-dialog__section">
+          <h3>Support diagnostics</h3>
+          <p className="library-health-dialog__fact">
+            Export a bounded support bundle with application, storage, and integrity summaries. Book contents, file paths, and secrets are omitted.
+          </p>
+          {diagnosticsResult ? (
+            <div id="library-health-diagnostics-result" className="library-health-dialog__success">
+              <p><strong>Diagnostic bundle created</strong></p>
+              <p><code>{diagnosticsResult.path}</code></p>
+              <p>
+                {diagnosticsResult.bytes.toLocaleString()} bytes. Integrity status: {diagnosticsResult.verificationStatus}.
+              </p>
+            </div>
+          ) : null}
+          {diagnosticsError ? <p id="library-health-diagnostics-error" role="alert">{diagnosticsError}</p> : null}
+        </section>
+
         <footer>
           <button type="button" className="secondary-button" disabled={busy} onClick={onVerify}>
             {pendingAction === "verify" ? "Verifying..." : "Verify now"}
           </button>
           <button type="button" className="primary-button" disabled={busy} onClick={onBackup}>
             {pendingAction === "backup" ? "Backing up..." : "Back up..."}
+          </button>
+          <button type="button" className="secondary-button" disabled={busy} onClick={onDiagnostics}>
+            {pendingAction === "diagnostics" ? "Exporting..." : "Export diagnostics..."}
           </button>
         </footer>
       </section>

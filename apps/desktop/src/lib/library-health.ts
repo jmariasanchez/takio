@@ -1,10 +1,14 @@
 import {
   libraryHealthBackupRequestSchema,
   libraryHealthBackupValueSchema,
+  libraryHealthDiagnosticsRequestSchema,
+  libraryHealthDiagnosticsValueSchema,
   libraryHealthLocationSchema,
   libraryHealthVerifyValueSchema,
   type LibraryHealthBackupRequest,
   type LibraryHealthBackupWireResult,
+  type LibraryHealthDiagnosticsRequest,
+  type LibraryHealthDiagnosticsWireResult,
   type LibraryHealthErrorCode,
   type LibraryHealthLocationWireResult,
   type LibraryHealthVerifyWireResult,
@@ -21,6 +25,7 @@ type BridgeFailure = {
 export type DesktopLibraryHealthLocationResult = LibraryHealthLocationWireResult | BridgeFailure;
 export type DesktopLibraryHealthVerifyResult = LibraryHealthVerifyWireResult | BridgeFailure;
 export type DesktopLibraryHealthBackupResult = LibraryHealthBackupWireResult | BridgeFailure;
+export type DesktopLibraryHealthDiagnosticsResult = LibraryHealthDiagnosticsWireResult | BridgeFailure;
 
 const invokeDesktop: LibraryInvoker = (command, args) => invoke(command, args);
 
@@ -80,6 +85,20 @@ export async function backUpLibrary(
   );
 }
 
+export async function exportLibraryDiagnostics(
+  request: LibraryHealthDiagnosticsRequest,
+  invoker: LibraryInvoker = invokeDesktop,
+): Promise<DesktopLibraryHealthDiagnosticsResult> {
+  const parsed = libraryHealthDiagnosticsRequestSchema.safeParse(request);
+  if (!parsed.success) {
+    return invalidArguments();
+  }
+  return parseResult(
+    await invoker<unknown>("library_health_diagnostics", parsed.data),
+    libraryHealthDiagnosticsValueSchema,
+  );
+}
+
 export function describeLibraryHealthError(code: string): string {
   switch (code) {
     case "storage-unavailable":
@@ -92,6 +111,8 @@ export function describeLibraryHealthError(code: string): string {
       return "A backup already exists at that destination. Choose another folder or try again.";
     case "backup-failed":
       return "Takio could not finish and verify the backup.";
+    case "diagnostics-failed":
+      return "Takio could not create the diagnostic bundle.";
     case "invalid-arguments":
       return "The library health request was not valid.";
     case "engine-unavailable":

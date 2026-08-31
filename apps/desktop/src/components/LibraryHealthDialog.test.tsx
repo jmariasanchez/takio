@@ -3,6 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 
 import {
   backupDirectoryName,
+  diagnosticsFileName,
   healthDialogFocusTarget,
   LibraryHealthDialog,
 } from "./LibraryHealthDialog";
@@ -23,10 +24,13 @@ function render(overrides: Partial<Parameters<typeof LibraryHealthDialog>[0]> = 
       verificationError={null}
       backupResult={null}
       backupError={null}
+      diagnosticsResult={null}
+      diagnosticsError={null}
       pendingAction={null}
       onClose={() => undefined}
       onVerify={() => undefined}
       onBackup={() => undefined}
+      onDiagnostics={() => undefined}
       {...overrides}
     />,
   );
@@ -45,6 +49,8 @@ test("renders storage location, session verification counts, and format facts", 
   expect(markup).toContain("Managed formats are Takio-owned files included in backups");
   expect(markup).toContain("Verify now");
   expect(markup).toContain("Back up...");
+  expect(markup).toContain("Export diagnostics...");
+  expect(markup).toContain("Book contents, file paths, and secrets are omitted");
 });
 
 test("renders pending, error, and backup result states", () => {
@@ -53,6 +59,12 @@ test("renders pending, error, and backup result states", () => {
     verificationError: "Integrity failed.",
     backupError: "A backup already exists.",
     backupResult: { path: "/Backups/takio", report },
+    diagnosticsResult: {
+      path: "/Support/takio.json",
+      bytes: 2048,
+      verificationStatus: "failed",
+    },
+    diagnosticsError: "Diagnostics failed.",
   });
 
   expect(markup).toContain('aria-busy="true"');
@@ -60,12 +72,18 @@ test("renders pending, error, and backup result states", () => {
   expect(markup).toContain('role="alert"');
   expect(markup).toContain("Backup complete");
   expect(markup).toContain("/Backups/takio");
+  expect(markup).toContain("Diagnostic bundle created");
+  expect(markup).toContain("/Support/takio.json");
+  expect(markup).toContain("Integrity status: failed");
 });
 
 test("does not render while closed and creates stable absent-destination names", () => {
   expect(render({ open: false })).toBe("");
   expect(backupDirectoryName(new Date("2026-08-19T21:00:00.123Z"))).toBe(
     "takio-library-backup-2026-08-19T21-00-00-123Z",
+  );
+  expect(diagnosticsFileName(new Date("2026-08-19T21:00:00.123Z"))).toBe(
+    "takio-diagnostics-2026-08-19T21-00-00-123Z.json",
   );
 });
 

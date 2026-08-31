@@ -191,6 +191,13 @@ describe("Electron engine boundary", () => {
       "/Backups/takio",
     ]);
     expect(await buildEngineArguments("library_health_backup", { destinationPath: " " })).toBeNull();
+    expect(await buildEngineArguments("library_health_diagnostics", { destinationPath: "/Support/takio.json" })).toEqual([
+      "library",
+      "diagnostics",
+      "--dest",
+      "/Support/takio.json",
+    ]);
+    expect(await buildEngineArguments("library_health_diagnostics", { destinationPath: " " })).toBeNull();
   });
 
   test("maps destination inventory, reconcile, and safe removal to fixed sidecar arguments", async () => {

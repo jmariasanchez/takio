@@ -70,6 +70,13 @@
   background: rgb(235 249 241 / 72%);
 }
 
+.library-health-dialog__section > .library-health-dialog__success {
+  margin-top: 12px;
+  border: 1px solid rgb(42 122 79 / 32%);
+  border-radius: 14px;
+  padding: 12px;
+}
+
 .library-health-dialog [role="alert"] {
   color: var(--danger, #9d2b22);
   font-weight: 700;

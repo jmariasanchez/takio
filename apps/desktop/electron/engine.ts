@@ -95,6 +95,10 @@ export async function buildEngineArguments(
       return nonempty(input.destinationPath)
         ? ["library", "backup", "--dest", input.destinationPath]
         : null;
+    case "library_health_diagnostics":
+      return nonempty(input.destinationPath)
+        ? ["library", "diagnostics", "--dest", input.destinationPath]
+        : null;
     case "library_list":
       return ["library", "list"];
     case "library_get":

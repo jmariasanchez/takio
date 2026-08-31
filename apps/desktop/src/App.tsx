@@ -45,6 +45,7 @@ import { RootedKindlePanel, type RootedKindlePanelDraft } from "./components/Roo
 import { JobsPanel } from "./components/JobsPanel";
 import {
   backupDirectoryName,
+  diagnosticsFileName,
   LibraryHealthDialog,
 } from "./components/LibraryHealthDialog";
 import {
@@ -113,6 +114,7 @@ import {
 import {
   backUpLibrary,
   describeLibraryHealthError,
+  exportLibraryDiagnostics,
   getLibraryHealthLocation,
   verifyLibraryHealth,
 } from "./lib/library-health";
@@ -308,8 +310,14 @@ export default function App() {
   const [healthBackupResult, setHealthBackupResult] =
     useState<{ readonly path: string; readonly report: LibraryIntegrityReport } | null>(null);
   const [healthBackupError, setHealthBackupError] = useState<string | null>(null);
+  const [healthDiagnosticsResult, setHealthDiagnosticsResult] = useState<{
+    readonly path: string;
+    readonly bytes: number;
+    readonly verificationStatus: "ok" | "failed";
+  } | null>(null);
+  const [healthDiagnosticsError, setHealthDiagnosticsError] = useState<string | null>(null);
   const [healthPendingAction, setHealthPendingAction] =
-    useState<"verify" | "backup" | null>(null);
+    useState<"verify" | "backup" | "diagnostics" | null>(null);
   const [searchPending, setSearchPending] = useState(false);
   const [draft, setDraft] = useState<MetadataDraft | null>(null);
   const [conversionDraft, setConversionDraft] = useState<ConversionDraft | null>(null);
@@ -3025,6 +3033,36 @@ export default function App() {
     }
   }
 
+  async function exportHealthDiagnostics(): Promise<void> {
+    if (healthPendingAction) return;
+    setHealthDiagnosticsError(null);
+    setHealthDiagnosticsResult(null);
+    const parent = await open({
+      title: "Choose where to create the Takio diagnostic bundle",
+      directory: true,
+    });
+    if (typeof parent !== "string") return;
+
+    setHealthPendingAction("diagnostics");
+    try {
+      const destinationPath = await joinPath(parent, diagnosticsFileName());
+      const result = await exportLibraryDiagnostics({ destinationPath });
+      if (result.ok) {
+        setHealthDiagnosticsResult(result.value.diagnostics);
+        setNotice({
+          kind: "status",
+          text: `Diagnostic bundle created at ${result.value.diagnostics.path}.`,
+        });
+      } else {
+        setHealthDiagnosticsError(describeLibraryHealthError(result.error.code));
+      }
+    } catch (error) {
+      setHealthDiagnosticsError(describeUnexpectedLibraryError(error));
+    } finally {
+      setHealthPendingAction(null);
+    }
+  }
+
   useEffect(() => {
     if (healthDialogOpen && !healthLocation && !healthLocationLoading) {
       void loadHealthLocation();
@@ -3371,10 +3409,13 @@ export default function App() {
         verificationError={healthVerificationError}
         backupResult={healthBackupResult}
         backupError={healthBackupError}
+        diagnosticsResult={healthDiagnosticsResult}
+        diagnosticsError={healthDiagnosticsError}
         pendingAction={healthPendingAction}
         onClose={() => setHealthDialogOpen(false)}
         onVerify={verifyHealthNow}
         onBackup={backUpHealthNow}
+        onDiagnostics={exportHealthDiagnostics}
       />
     </main>
   );
