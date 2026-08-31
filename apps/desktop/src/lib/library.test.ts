@@ -1214,6 +1214,7 @@ test("gives boundary and storage failures specific user-facing messages", () => 
   expect(describeLibraryError("invalid-arguments")).toBe(
     "That file or metadata could not be used.",
   );
+  expect(describeLibraryError("invalid-query")).toContain("structured search is invalid");
   expect(describeLibraryError("engine-unavailable")).toBe(
     "The local library engine is unavailable.",
   );

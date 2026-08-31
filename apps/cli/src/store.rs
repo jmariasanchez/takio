@@ -53,8 +53,15 @@ pub struct LibraryQueryFilters<'a> {
 }
 
 #[derive(Clone, Copy)]
+pub enum LibraryQuerySyntax {
+    Literal,
+    StructuredV1,
+}
+
+#[derive(Clone, Copy)]
 pub struct LibraryQueryScope<'a> {
     pub query: &'a str,
+    pub syntax: LibraryQuerySyntax,
     pub filters: LibraryQueryFilters<'a>,
 }
 
@@ -326,7 +333,11 @@ impl LibraryStore {
         query: &str,
         filters: LibraryQueryFilters<'_>,
     ) -> AppResult<Vec<LibraryItem>> {
-        self.query_items_scoped(&[LibraryQueryScope { query, filters }])
+        self.query_items_scoped(&[LibraryQueryScope {
+            query,
+            syntax: LibraryQuerySyntax::Literal,
+            filters,
+        }])
     }
 
     pub fn query_items_scoped(
@@ -337,7 +348,7 @@ impl LibraryStore {
             String::from("SELECT li.id FROM library_items li WHERE li.trashed_at IS NULL");
         let mut values = Vec::<SqlValue>::new();
         for scope in scopes {
-            append_query_scope(&mut sql, &mut values, *scope);
+            append_query_scope(&mut sql, &mut values, *scope)?;
         }
         sql.push_str(" ORDER BY li.title COLLATE NOCASE, li.id");
 
@@ -1829,29 +1840,28 @@ fn read_item_from(connection: &Connection, id: &str) -> AppResult<Option<Library
     }))
 }
 
-fn append_query_scope(sql: &mut String, values: &mut Vec<SqlValue>, scope: LibraryQueryScope<'_>) {
-    if !scope.query.is_empty() {
-        let needle = format!(
-            "%{}%",
-            scope
-                .query
-                .replace('\\', "\\\\")
-                .replace('%', "\\%")
-                .replace('_', "\\_")
-        );
-        sql.push_str(
-            " AND (li.title LIKE ? ESCAPE '\\' COLLATE NOCASE
-               OR li.author LIKE ? ESCAPE '\\' COLLATE NOCASE
-               OR EXISTS(SELECT 1 FROM library_item_authors qa
-                         WHERE qa.library_item_id=li.id
-                           AND qa.name LIKE ? ESCAPE '\\' COLLATE NOCASE)
-               OR li.series LIKE ? ESCAPE '\\' COLLATE NOCASE
-               OR EXISTS(SELECT 1 FROM library_item_tags qit
-                         JOIN tags qt ON qt.normalized_name=qit.tag_normalized_name
-                         WHERE qit.library_item_id=li.id
-                           AND qt.name LIKE ? ESCAPE '\\' COLLATE NOCASE))",
-        );
-        values.extend(std::iter::repeat_n(SqlValue::Text(needle), 5));
+fn append_query_scope(
+    sql: &mut String,
+    values: &mut Vec<SqlValue>,
+    scope: LibraryQueryScope<'_>,
+) -> AppResult<()> {
+    match scope.syntax {
+        LibraryQuerySyntax::Literal => {
+            if !scope.query.is_empty() {
+                append_structured_term(sql, values, None, scope.query, false);
+            }
+        }
+        LibraryQuerySyntax::StructuredV1 => {
+            for term in parse_structured_query(scope.query)? {
+                append_structured_term(
+                    sql,
+                    values,
+                    term.field.as_deref(),
+                    &term.value,
+                    term.negated,
+                );
+            }
+        }
     }
     if !scope.filters.authors.is_empty() {
         let legacy = query_placeholders(scope.filters.authors, values);
@@ -1894,6 +1904,222 @@ fn append_query_scope(sql: &mut String, values: &mut Vec<SqlValue>, scope: Libra
                            AND ff.format IN ({placeholders}))"
         ));
     }
+    Ok(())
+}
+
+#[derive(Debug)]
+struct StructuredQueryTerm {
+    field: Option<String>,
+    value: String,
+    negated: bool,
+}
+
+fn parse_structured_query(query: &str) -> AppResult<Vec<StructuredQueryTerm>> {
+    if query.encode_utf16().count() > 1024 {
+        return Err(AppError::new("invalid-arguments"));
+    }
+    let mut tokens = Vec::<(String, Option<usize>, bool)>::new();
+    let mut token = String::new();
+    let mut field_separator = None;
+    let mut token_was_quoted = false;
+    let mut quoted = false;
+    let mut escaped = false;
+    for character in query.chars() {
+        if escaped {
+            if !matches!(character, '"' | '\\') {
+                return Err(AppError::new("invalid-query"));
+            }
+            token.push(character);
+            escaped = false;
+        } else if character == '\\' {
+            escaped = true;
+        } else if character == '"' {
+            quoted = !quoted;
+            token_was_quoted = true;
+        } else if character.is_ascii_whitespace() && !quoted {
+            if !token.is_empty() {
+                tokens.push((
+                    std::mem::take(&mut token),
+                    field_separator.take(),
+                    std::mem::take(&mut token_was_quoted),
+                ));
+            }
+        } else if character == ':' && !quoted && field_separator.is_none() {
+            field_separator = Some(token.len());
+            token.push(character);
+        } else if matches!(character, '(' | ')') && !quoted {
+            return Err(AppError::new("invalid-query"));
+        } else {
+            token.push(character);
+        }
+    }
+    if escaped || quoted {
+        return Err(AppError::new("invalid-query"));
+    }
+    if !token.is_empty() {
+        tokens.push((token, field_separator, token_was_quoted));
+    }
+    if tokens.len() > 64 {
+        return Err(AppError::new("invalid-query"));
+    }
+
+    let mut terms = Vec::new();
+    let mut negated = false;
+    let mut explicit_and_pending = false;
+    for (token, field_separator, token_was_quoted) in tokens {
+        if !token_was_quoted && field_separator.is_none() && token.eq_ignore_ascii_case("and") {
+            if terms.is_empty() || explicit_and_pending || negated {
+                return Err(AppError::new("invalid-query"));
+            }
+            explicit_and_pending = true;
+            continue;
+        }
+        if !token_was_quoted && field_separator.is_none() && token.eq_ignore_ascii_case("or") {
+            return Err(AppError::new("invalid-query"));
+        }
+        if !token_was_quoted && field_separator.is_none() && token.eq_ignore_ascii_case("not") {
+            if negated {
+                return Err(AppError::new("invalid-query"));
+            }
+            negated = true;
+            continue;
+        }
+        let (field, value) = field_separator.map_or((None, token.as_str()), |separator| {
+            (
+                Some(token[..separator].to_ascii_lowercase()),
+                &token[separator + 1..],
+            )
+        });
+        if value.is_empty() || value.encode_utf16().count() > 256 {
+            return Err(AppError::new("invalid-query"));
+        }
+        if let Some(field) = field.as_deref()
+            && !matches!(
+                field,
+                "title"
+                    | "author"
+                    | "authors"
+                    | "tag"
+                    | "tags"
+                    | "series"
+                    | "publisher"
+                    | "language"
+                    | "languages"
+                    | "format"
+                    | "formats"
+                    | "identifier"
+                    | "identifiers"
+                    | "comments"
+                    | "description"
+            )
+        {
+            return Err(AppError::new("invalid-query"));
+        }
+        terms.push(StructuredQueryTerm {
+            field,
+            value: value.to_owned(),
+            negated,
+        });
+        negated = false;
+        explicit_and_pending = false;
+        if terms.len() > 32 {
+            return Err(AppError::new("invalid-query"));
+        }
+    }
+    if negated || explicit_and_pending {
+        return Err(AppError::new("invalid-query"));
+    }
+    Ok(terms)
+}
+
+fn append_structured_term(
+    sql: &mut String,
+    values: &mut Vec<SqlValue>,
+    field: Option<&str>,
+    value: &str,
+    negated: bool,
+) {
+    let needle = format!(
+        "%{}%",
+        value
+            .replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_")
+    );
+    sql.push_str(if negated { " AND NOT (" } else { " AND (" });
+    match field {
+        None => {
+            sql.push_str(
+                "li.title LIKE ? ESCAPE '\\' COLLATE NOCASE
+                 OR COALESCE(li.author,'') LIKE ? ESCAPE '\\' COLLATE NOCASE
+                 OR EXISTS(SELECT 1 FROM library_item_authors qa
+                           WHERE qa.library_item_id=li.id
+                             AND qa.name LIKE ? ESCAPE '\\' COLLATE NOCASE)
+                 OR COALESCE(li.series,'') LIKE ? ESCAPE '\\' COLLATE NOCASE
+                 OR EXISTS(SELECT 1 FROM library_item_tags qit
+                           JOIN tags qt ON qt.normalized_name=qit.tag_normalized_name
+                           WHERE qit.library_item_id=li.id
+                             AND qt.name LIKE ? ESCAPE '\\' COLLATE NOCASE)",
+            );
+            values.extend(std::iter::repeat_n(SqlValue::Text(needle), 5));
+        }
+        Some("title") => append_like(sql, values, "li.title", needle),
+        Some("author" | "authors") => {
+            sql.push_str(
+                "COALESCE(li.author,'') LIKE ? ESCAPE '\\' COLLATE NOCASE
+                 OR EXISTS(SELECT 1 FROM library_item_authors qa
+                           WHERE qa.library_item_id=li.id
+                             AND qa.name LIKE ? ESCAPE '\\' COLLATE NOCASE)",
+            );
+            values.extend(std::iter::repeat_n(SqlValue::Text(needle), 2));
+        }
+        Some("tag" | "tags") => {
+            sql.push_str(
+                "EXISTS(SELECT 1 FROM library_item_tags qit
+                        JOIN tags qt ON qt.normalized_name=qit.tag_normalized_name
+                        WHERE qit.library_item_id=li.id
+                          AND qt.name LIKE ? ESCAPE '\\' COLLATE NOCASE)",
+            );
+            values.push(SqlValue::Text(needle));
+        }
+        Some("series") => append_like(sql, values, "li.series", needle),
+        Some("publisher") => append_like(sql, values, "li.publisher", needle),
+        Some("language" | "languages") => {
+            sql.push_str(
+                "EXISTS(SELECT 1 FROM library_item_languages ql
+                        WHERE ql.library_item_id=li.id
+                          AND ql.language LIKE ? ESCAPE '\\' COLLATE NOCASE)",
+            );
+            values.push(SqlValue::Text(needle));
+        }
+        Some("format" | "formats") => {
+            sql.push_str(
+                "EXISTS(SELECT 1 FROM library_item_formats qf
+                        WHERE qf.library_item_id=li.id
+                          AND qf.format LIKE ? ESCAPE '\\' COLLATE NOCASE)",
+            );
+            values.push(SqlValue::Text(needle));
+        }
+        Some("identifier" | "identifiers") => {
+            sql.push_str(
+                "EXISTS(SELECT 1 FROM library_item_identifiers qi
+                        WHERE qi.library_item_id=li.id
+                          AND (qi.scheme LIKE ? ESCAPE '\\' COLLATE NOCASE
+                               OR qi.value LIKE ? ESCAPE '\\' COLLATE NOCASE))",
+            );
+            values.extend(std::iter::repeat_n(SqlValue::Text(needle), 2));
+        }
+        Some("comments" | "description") => append_like(sql, values, "li.description", needle),
+        Some(_) => unreachable!("structured query fields are validated"),
+    }
+    sql.push(')');
+}
+
+fn append_like(sql: &mut String, values: &mut Vec<SqlValue>, column: &str, needle: String) {
+    sql.push_str("COALESCE(");
+    sql.push_str(column);
+    sql.push_str(",'') LIKE ? ESCAPE '\\' COLLATE NOCASE");
+    values.push(SqlValue::Text(needle));
 }
 
 fn query_placeholders(values: &[String], parameters: &mut Vec<SqlValue>) -> String {
@@ -2794,17 +3020,40 @@ fn validate_saved_view_definition(definition: &Value) -> AppResult<()> {
     let object = definition
         .as_object()
         .filter(|object| {
-            object.len() == 4
+            (object.len() == 4 || object.len() == 5)
                 && object.contains_key("version")
                 && object.contains_key("query")
                 && object.contains_key("filters")
                 && object.contains_key("sort")
+                && object.keys().all(|key| {
+                    matches!(
+                        key.as_str(),
+                        "version" | "querySyntax" | "query" | "filters" | "sort"
+                    )
+                })
         })
         .ok_or_else(|| AppError::new("invalid-arguments"))?;
+    let query_syntax_valid = match object.get("querySyntax") {
+        None => true,
+        Some(Value::String(value)) => matches!(value.as_str(), "literal" | "structured-v1"),
+        Some(_) => false,
+    };
     if object.get("version").and_then(Value::as_u64) != Some(1)
-        || object.get("query").and_then(Value::as_str).is_none()
+        || object
+            .get("query")
+            .and_then(Value::as_str)
+            .is_none_or(|query| query.encode_utf16().count() > 1024)
+        || !query_syntax_valid
     {
         return Err(AppError::new("invalid-arguments"));
+    }
+    if object.get("querySyntax").and_then(Value::as_str) == Some("structured-v1") {
+        parse_structured_query(
+            object
+                .get("query")
+                .and_then(Value::as_str)
+                .ok_or_else(|| AppError::new("invalid-arguments"))?,
+        )?;
     }
     let filters = object
         .get("filters")
@@ -3154,6 +3403,102 @@ fn rebase_owned_paths(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn structured_queries_parse_fields_quotes_negation_and_literal_colons() {
+        let terms = parse_structured_query(
+            r#"author:"Ursula K. Le Guin" and tag:Classic not publisher:Tor "https://example.test" "or""#,
+        )
+        .unwrap();
+        assert_eq!(terms.len(), 5);
+        assert_eq!(terms[0].field.as_deref(), Some("author"));
+        assert_eq!(terms[0].value, "Ursula K. Le Guin");
+        assert_eq!(terms[1].field.as_deref(), Some("tag"));
+        assert!(terms[2].negated);
+        assert_eq!(terms[3].field, None);
+        assert_eq!(terms[3].value, "https://example.test");
+        assert_eq!(terms[4].value, "or");
+
+        for invalid in [
+            "author:\"unfinished",
+            "unknown:value",
+            "author:Asimov or author:Butler",
+            "and author:Asimov",
+            "author:Asimov and",
+            "not",
+            "(author:Asimov)",
+        ] {
+            assert_eq!(
+                parse_structured_query(invalid).unwrap_err().code(),
+                "invalid-query"
+            );
+        }
+    }
+
+    #[test]
+    fn structured_queries_execute_conjunctive_field_and_negation_terms() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = LibraryPaths::resolve(None, Some(&temp.path().join("library.sqlite"))).unwrap();
+        let mut store = LibraryStore::open(paths, true).unwrap();
+        for (file, title, author, tag, publisher) in [
+            (
+                "earthsea.txt",
+                "Classic Earthsea",
+                "Ursula K. Le Guin",
+                "Classic",
+                "Parnassus",
+            ),
+            (
+                "modern.txt",
+                "Modern Earthsea",
+                "Ursula K. Le Guin",
+                "Modern",
+                "Tor",
+            ),
+            (
+                "kindred.txt",
+                "Classic Kindred",
+                "Octavia E. Butler",
+                "Classic",
+                "Beacon",
+            ),
+        ] {
+            let source = temp.path().join(file);
+            fs::write(&source, file).unwrap();
+            let item = store.import(&source, Some(title), false).unwrap();
+            store
+                .update(
+                    &item.id,
+                    LibraryPatch {
+                        authors: Patch::Set(vec![BookAuthor {
+                            name: author.to_owned(),
+                            sort_name: None,
+                        }]),
+                        tags: Patch::Set(vec![tag.to_owned()]),
+                        publisher: Patch::Set(publisher.to_owned()),
+                        ..LibraryPatch::default()
+                    },
+                )
+                .unwrap();
+        }
+        let empty = Vec::<String>::new();
+        let items = store
+            .query_items_scoped(&[LibraryQueryScope {
+                query: "author:\"Ursula K. Le Guin\" tag:Classic not publisher:Tor",
+                syntax: LibraryQuerySyntax::StructuredV1,
+                filters: LibraryQueryFilters {
+                    authors: &empty,
+                    tags: &empty,
+                    series: &empty,
+                    languages: &empty,
+                    formats: &empty,
+                },
+            }])
+            .unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].title, "Classic Earthsea");
+    }
+
     #[test]
     fn creates_and_round_trips_a_managed_book() {
         let temp = tempfile::tempdir().unwrap();

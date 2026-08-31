@@ -57,6 +57,7 @@ describe("library query state", () => {
     const state = createLibraryQueryState();
 
     expect(queryLibraryItemsRequestSchema.parse(DEFAULT_LIBRARY_QUERY_REQUEST)).toEqual({
+      querySyntax: "literal",
       query: "",
       filters: {
         authors: [],
@@ -85,6 +86,11 @@ describe("library query state", () => {
 
     state = libraryQueryStateReducer(state, { type: "set-query", query: "earthsea" });
     expect(state.request.page).toEqual({ offset: 0, limit: 25 });
+    state = libraryQueryStateReducer(state, {
+      type: "set-query-syntax",
+      querySyntax: "structured-v1",
+    });
+    expect(state.request.querySyntax).toBe("structured-v1");
 
     state = libraryQueryStateReducer(state, {
       type: "set-page",
@@ -133,6 +139,7 @@ describe("library query state", () => {
 
     expect(state.request).toEqual({
       virtualLibraryId: "classics",
+      querySyntax: "literal",
       query: "",
       filters: DEFAULT_LIBRARY_QUERY_REQUEST.filters,
       sort: definition.sort,

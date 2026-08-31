@@ -9,13 +9,20 @@ canonical `LibraryItem` from `@takio/core`. Every operation returns a JSON-safe
 
 `LibraryQueryStore` adds database-backed query pages of at most 100 items with
 author, tag, series, language, and format facets and deterministic table
-sorting. Query text remains a literal substring rather than a structured search
-grammar. `SavedLibraryViewStore` persists the versioned query, filter, and sort
+sorting. Query text defaults to backward-compatible literal substring matching.
+Callers can explicitly select `structured-v1`, a bounded case-insensitive
+contains grammar with quoted values, implicit or explicit `and`, `not`, and the
+fields `title`, `author(s)`, `tag(s)`, `series`, `publisher`, `language(s)`,
+`format(s)`, `identifier(s)`, and `comments`/`description`. It deliberately
+rejects `or`, parentheses, regexes, comparisons, unknown fields, malformed
+quotes or escapes, more than 32 terms, and query text over 1024 UTF-16 units.
+`SavedLibraryViewStore` persists the versioned query, filter, and sort
 definitions exposed to users as virtual libraries. A query may select one of
 these definitions by `virtualLibraryId`; its query and filters constrain the
 session query conjunctively, while paging remains session state and the session
-sort remains independently changeable. Legacy saved-view names remain protocol
-aliases. Names are trimmed, nonblank, and limited to 120 characters.
+sort remains independently changeable. A virtual library can persist its query
+syntax. Legacy saved-view names remain protocol aliases. Names are trimmed,
+nonblank, and limited to 120 characters.
 `LibraryFormatReplacementStore` adds atomic format replacement. These
 capabilities are separate from `LibraryStore` so existing adapters remain
 compatible while runtimes adopt them.

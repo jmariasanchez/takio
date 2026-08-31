@@ -422,6 +422,7 @@ h2 { font-size: 20px; letter-spacing: -.6px; margin-bottom: 0; }
 .library-inspector h2,
 .library-table__title { color: var(--ink); font-family: Georgia, serif; }
 .library-workspace__search input,
+.library-workspace__search-mode select,
 .library-workspace__maintenance-button,
 .library-table__sort-controls select,
 .library-table__sort-controls button,

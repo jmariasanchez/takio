@@ -831,6 +831,30 @@ describe("LibraryStore", () => {
       page: { offset: 0, limit: 25 },
     });
     expect(request.virtualLibraryId).toBe("classics");
+    const structured = queryLibraryItemsRequestSchema.parse({
+      ...request,
+      querySyntax: "structured-v1",
+      query: 'author:"Ursula K. Le Guin" not tag:Modern',
+    });
+    expect(structured.querySyntax).toBe("structured-v1");
+    expect(
+      queryLibraryItemsRequestSchema.safeParse({
+        ...request,
+        querySyntax: "structured-v2",
+      }).success,
+    ).toBe(false);
+    expect(
+      queryLibraryItemsRequestSchema.safeParse({
+        ...request,
+        querySyntax: null,
+      }).success,
+    ).toBe(false);
+    expect(
+      queryLibraryItemsRequestSchema.safeParse({
+        ...request,
+        query: "q".repeat(1025),
+      }).success,
+    ).toBe(false);
     expect(
       queryLibraryItemsRequestSchema.safeParse({
         ...request,
@@ -843,6 +867,7 @@ describe("LibraryStore", () => {
         name: "Too long",
         definition: {
           version: 1,
+          querySyntax: "structured-v1",
           query: "",
           filters: { authors: [], tags: [], series: [], languages: [], formats: [] },
           sort: { field: "title", direction: "ascending" },
@@ -1000,6 +1025,7 @@ describe("LibraryStore", () => {
       "storage-unavailable",
       "incompatible-schema",
       "invalid-arguments",
+      "invalid-query",
       "cross-device-move",
       "duplicate-format",
       "last-format",

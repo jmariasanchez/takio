@@ -2397,6 +2397,153 @@ fn virtual_libraries_persist_independently_across_named_library_switches() {
 }
 
 #[test]
+fn structured_queries_are_explicit_bounded_and_compose_with_virtual_libraries() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let database = temp.path().join("library.sqlite");
+    for (file, title, author, tag, publisher) in [
+        (
+            "earthsea.txt",
+            "Classic Earthsea",
+            "Ursula K. Le Guin",
+            "Classic",
+            "Parnassus",
+        ),
+        (
+            "modern.txt",
+            "Modern Earthsea",
+            "Ursula K. Le Guin",
+            "Modern",
+            "Tor",
+        ),
+        (
+            "kindred.txt",
+            "Classic Kindred",
+            "Octavia E. Butler",
+            "Classic",
+            "Beacon",
+        ),
+    ] {
+        let source = temp.path().join(file);
+        fs::write(&source, file).expect("write source");
+        let id = add_book(&database, &source);
+        let patch = serde_json::json!({
+            "title":title,
+            "authors":[{"name":author}],
+            "tags":[tag],
+            "publisher":publisher
+        });
+        let updated = cargo_bin_cmd!("takio")
+            .args(["library", "update", "--db"])
+            .arg(&database)
+            .args(["--id", &id, "--patch-json", &patch.to_string()])
+            .output()
+            .expect("update item");
+        assert!(updated.status.success());
+    }
+
+    let definition = serde_json::json!({
+        "id":"classics",
+        "name":"Classics",
+        "definition":{
+            "version":1,
+            "querySyntax":"structured-v1",
+            "query":"tag:Classic",
+            "filters":{"authors":[],"tags":[],"series":[],"languages":[],"formats":[]},
+            "sort":{"field":"title","direction":"ascending"}
+        }
+    });
+    let saved = cargo_bin_cmd!("takio")
+        .args(["library", "virtual-libraries", "save", "--db"])
+        .arg(&database)
+        .args(["--request-json", &definition.to_string()])
+        .output()
+        .expect("save structured virtual library");
+    assert!(saved.status.success());
+
+    let mut invalid_definition = definition.clone();
+    invalid_definition["id"] = serde_json::json!("invalid");
+    invalid_definition["definition"]["query"] = serde_json::json!("author:\"unfinished");
+    let rejected_definition = cargo_bin_cmd!("takio")
+        .args(["library", "virtual-libraries", "save", "--db"])
+        .arg(&database)
+        .args(["--request-json", &invalid_definition.to_string()])
+        .output()
+        .expect("reject malformed structured virtual library");
+    assert!(!rejected_definition.status.success());
+    assert_eq!(failure_code(&rejected_definition.stdout), "invalid-query");
+    assert!(rejected_definition.stderr.is_empty());
+
+    let structured = serde_json::json!({
+        "virtualLibraryId":"classics",
+        "querySyntax":"structured-v1",
+        "query":"author:\"Ursula K. Le Guin\" not publisher:Tor",
+        "filters":{"authors":[],"tags":[],"series":[],"languages":[],"formats":[]},
+        "sort":{"field":"title","direction":"ascending"},
+        "page":{"offset":0,"limit":25}
+    });
+    let queried = cargo_bin_cmd!("takio")
+        .args(["library", "query", "--db"])
+        .arg(&database)
+        .args(["--request-json", &structured.to_string()])
+        .output()
+        .expect("run structured query");
+    assert!(queried.status.success());
+    assert!(queried.stderr.is_empty());
+    let page = success_value(&queried.stdout);
+    assert_eq!(page["total"], 1);
+    assert_eq!(page["items"][0]["title"], "Classic Earthsea");
+
+    let mut literal = structured.clone();
+    literal.as_object_mut().unwrap().remove("virtualLibraryId");
+    literal.as_object_mut().unwrap().remove("querySyntax");
+    literal["query"] = serde_json::json!("author:\"Ursula K. Le Guin\"");
+    let literal_result = cargo_bin_cmd!("takio")
+        .args(["library", "query", "--db"])
+        .arg(&database)
+        .args(["--request-json", &literal.to_string()])
+        .output()
+        .expect("preserve literal query behavior");
+    assert_eq!(success_value(&literal_result.stdout)["total"], 0);
+
+    for malformed in [
+        "author:\"unfinished",
+        "unknown:value",
+        "author:LeGuin or author:Butler",
+        "not",
+    ] {
+        let mut request = structured.clone();
+        request.as_object_mut().unwrap().remove("virtualLibraryId");
+        request["query"] = serde_json::json!(malformed);
+        let rejected = cargo_bin_cmd!("takio")
+            .args(["library", "query", "--db"])
+            .arg(&database)
+            .args(["--request-json", &request.to_string()])
+            .output()
+            .expect("reject malformed structured query");
+        assert!(!rejected.status.success());
+        assert_eq!(failure_code(&rejected.stdout), "invalid-query");
+        assert!(rejected.stderr.is_empty());
+    }
+
+    let mut null_syntax = structured;
+    null_syntax
+        .as_object_mut()
+        .unwrap()
+        .remove("virtualLibraryId");
+    null_syntax["querySyntax"] = Value::Null;
+    null_syntax["query"] = serde_json::json!("");
+    let rejected = cargo_bin_cmd!("takio")
+        .args(["library", "query", "--db"])
+        .arg(&database)
+        .args(["--request-json", &null_syntax.to_string()])
+        .output()
+        .expect("reject null query syntax");
+    assert!(!rejected.status.success());
+    assert_eq!(failure_code(&rejected.stdout), "invalid-arguments");
+    assert!(rejected.stderr.is_empty());
+}
+
+#[test]
 fn filename_metadata_candidates_are_available_without_external_backends() {
     let output = cargo_bin_cmd!("takio")
         .args([

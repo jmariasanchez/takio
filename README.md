@@ -181,6 +181,14 @@ For example, `takio library export-many --request-json
 '{"ids":["book-id"],"destinationPath":"/tmp/export","fileNameTemplate":"author-title"}'`
 uses `Author - title` names. Omitting `fileNameTemplate` or setting it to
 `title` preserves the default title-only naming.
+
+Library queries default to literal substring search. Set `querySyntax` to
+`structured-v1` to use a bounded Calibre-style subset such as
+`author:"Ursula K. Le Guin" tag:Classic not publisher:Tor`. Structured search
+supports quoted values, implicit or explicit `and`, and field selectors for
+title, authors, tags, series, publisher, languages, formats, identifiers, and
+comments. It intentionally does not yet support `or`, parentheses, regular
+expressions, numeric/date comparisons, or custom columns.
 The Rust migration currently exposes the core daily-driver and automation surface:
 
 | Command family | Purpose |

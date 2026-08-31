@@ -95,6 +95,7 @@ function props(overrides: Partial<LibraryWorkspaceProps> = {}): LibraryWorkspace
     pendingAction: null,
     preferredDeviceFormat: "pdf",
     query: "Dune",
+    querySyntax: "literal",
     savedViews,
     saveViewDialogBusy: false,
     saveViewDialogError: null,
@@ -118,6 +119,7 @@ function props(overrides: Partial<LibraryWorkspaceProps> = {}): LibraryWorkspace
     onChangeFilters: () => undefined,
     onChangePage: () => undefined,
     onChangeSearch: () => undefined,
+    onChangeSearchSyntax: () => undefined,
     onChangeSort: () => undefined,
     onChooseCover: async () => undefined,
     onClearAll: () => undefined,
@@ -147,6 +149,17 @@ function props(overrides: Partial<LibraryWorkspaceProps> = {}): LibraryWorkspace
 function renderWorkspace(overrides: Partial<LibraryWorkspaceProps> = {}): string {
   return renderToStaticMarkup(<LibraryWorkspace {...props(overrides)} />);
 }
+
+test("renders an explicit structured-search mode and syntax guidance", () => {
+  const markup = renderWorkspace({
+    querySyntax: "structured-v1",
+    query: 'author:"Ursula K. Le Guin" not tag:Modern',
+  });
+
+  expect(markup).toContain('aria-label="Search syntax"');
+  expect(markup).toContain('<option value="structured-v1" selected="">Structured</option>');
+  expect(markup).toContain('author:&quot;Name&quot; tag:Classic not publisher:Tor');
+});
 
 test("closes a compact pane before opening the saved-view modal so overlays cannot stack", () => {
   const calls: string[] = [];

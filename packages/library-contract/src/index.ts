@@ -71,9 +71,11 @@ export const LIBRARY_QUERY_SORT_FIELDS = [
   "updatedAt",
 ] as const;
 export const LIBRARY_QUERY_SORT_DIRECTIONS = ["ascending", "descending"] as const;
+export const LIBRARY_QUERY_SYNTAXES = ["literal", "structured-v1"] as const;
+export const MAX_LIBRARY_QUERY_TEXT_LENGTH = 1024;
 
-/** Literal substring text; structured search grammar is intentionally outside this contract. */
-export const libraryLiteralQuerySchema = z.string();
+export const libraryLiteralQuerySchema = z.string().max(MAX_LIBRARY_QUERY_TEXT_LENGTH);
+export const libraryQuerySyntaxSchema = z.enum(LIBRARY_QUERY_SYNTAXES);
 
 function uniqueTextValuesSchema(message: string) {
   return z
@@ -133,6 +135,7 @@ export const libraryQuerySortSchema = z
 
 export const libraryQueryDefinitionSchema = z
   .object({
+    querySyntax: libraryQuerySyntaxSchema.optional(),
     query: libraryLiteralQuerySchema,
     filters: libraryQueryFiltersSchema,
     sort: libraryQuerySortSchema,
@@ -153,6 +156,7 @@ const savedLibraryViewIdSchema = z.string().trim().min(1).max(256);
 export const queryLibraryItemsRequestSchema = z
   .object({
     virtualLibraryId: savedLibraryViewIdSchema.optional(),
+    querySyntax: libraryQuerySyntaxSchema.optional(),
     query: libraryLiteralQuerySchema,
     filters: libraryQueryFiltersSchema,
     sort: libraryQuerySortSchema,
@@ -375,6 +379,7 @@ export const reopenDuplicatePairRequestSchema = duplicatePairReviewRequestSchema
 export const savedLibraryViewDefinitionSchema = z
   .object({
     version: z.literal(1),
+    querySyntax: libraryQuerySyntaxSchema.optional(),
     query: libraryLiteralQuerySchema,
     filters: libraryQueryFiltersSchema,
     sort: libraryQuerySortSchema,
@@ -657,6 +662,7 @@ export const libraryExportReportSchema = z
 
 export type LibraryQueryFilters = z.infer<typeof libraryQueryFiltersSchema>;
 export type LibraryQuerySort = z.infer<typeof libraryQuerySortSchema>;
+export type LibraryQuerySyntax = z.infer<typeof libraryQuerySyntaxSchema>;
 export type LibraryQueryDefinition = z.infer<typeof libraryQueryDefinitionSchema>;
 export type LibraryQueryPageRequest = z.infer<typeof libraryQueryPageRequestSchema>;
 export type QueryLibraryItemsRequest = z.infer<typeof queryLibraryItemsRequestSchema>;
@@ -892,6 +898,7 @@ export const LIBRARY_STORE_ERROR_CODES = [
   "storage-unavailable",
   "incompatible-schema",
   "invalid-arguments",
+  "invalid-query",
   "cross-device-move",
   "duplicate-format",
   "last-format",

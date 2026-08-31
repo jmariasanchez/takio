@@ -8,12 +8,14 @@ import type {
   LibraryQueryPage,
   LibraryQueryPageRequest,
   LibraryQuerySort,
+  LibraryQuerySyntax,
   QueryLibraryItemsRequest,
   SavedLibraryViewDefinition,
 } from "@takio/library-contract";
 
 export const DEFAULT_LIBRARY_QUERY_REQUEST: QueryLibraryItemsRequest =
   queryLibraryItemsRequestSchema.parse({
+    querySyntax: "literal",
     query: "",
     filters: {
       authors: [],
@@ -38,6 +40,7 @@ export type LibraryQueryState = {
 
 export type LibraryQueryStateAction =
   | { readonly type: "set-query"; readonly query: string }
+  | { readonly type: "set-query-syntax"; readonly querySyntax: LibraryQuerySyntax }
   | { readonly type: "set-filters"; readonly filters: LibraryQueryFilters }
   | { readonly type: "set-sort"; readonly sort: LibraryQuerySort }
   | { readonly type: "set-page"; readonly page: LibraryQueryPageRequest }
@@ -88,6 +91,12 @@ export function libraryQueryStateReducer(
         query: action.query,
         page: { ...state.request.page, offset: 0 },
       });
+    case "set-query-syntax":
+      return withRequest(state, {
+        ...state.request,
+        querySyntax: action.querySyntax,
+        page: { ...state.request.page, offset: 0 },
+      });
     case "set-filters":
       return withRequest(state, {
         ...state.request,
@@ -106,6 +115,7 @@ export function libraryQueryStateReducer(
       const definition = savedLibraryViewDefinitionSchema.parse(action.definition);
       return withRequest(state, {
         ...(action.id === null ? {} : { virtualLibraryId: action.id }),
+        querySyntax: "literal",
         query: "",
         filters: DEFAULT_LIBRARY_QUERY_REQUEST.filters,
         sort: definition.sort,

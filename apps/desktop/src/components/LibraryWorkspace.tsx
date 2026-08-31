@@ -10,6 +10,7 @@ import type {
   LibraryMetadataPatch,
   LibraryQueryFilters,
   LibraryQuerySort,
+  LibraryQuerySyntax,
   SavedLibraryView,
 } from "@takio/library-contract";
 import { useEffect, useRef, useState, type FormEvent, type RefObject } from "react";
@@ -121,6 +122,7 @@ export type LibraryWorkspaceProps = {
   readonly pendingAction: string | null;
   readonly preferredDeviceFormat: FormatId | null;
   readonly query: string;
+  readonly querySyntax: LibraryQuerySyntax;
   readonly savedViews: readonly SavedLibraryView[];
   readonly saveViewDialogBusy: boolean;
   readonly saveViewDialogError: string | null;
@@ -143,6 +145,7 @@ export type LibraryWorkspaceProps = {
   readonly onChangeFilters: (filters: LibraryQueryFilters) => void;
   readonly onChangePage: (offset: number) => void;
   readonly onChangeSearch: (query: string) => void;
+  readonly onChangeSearchSyntax: (querySyntax: LibraryQuerySyntax) => void;
   readonly onChangeSort: (sort: LibraryQuerySort) => void;
   readonly onChooseCover: (item: LibraryItem) => Promise<void>;
   readonly onClearAll: () => void;
@@ -545,6 +548,7 @@ export function LibraryWorkspace({
   pendingAction,
   preferredDeviceFormat,
   query,
+  querySyntax,
   savedViews,
   saveViewDialogBusy,
   saveViewDialogError,
@@ -563,6 +567,7 @@ export function LibraryWorkspace({
   onChangeFilters,
   onChangePage,
   onChangeSearch,
+  onChangeSearchSyntax,
   onChangeSort,
   onChooseCover,
   onClearAll,
@@ -673,6 +678,21 @@ export function LibraryWorkspace({
         </span>
       </div>
       <div className="library-workspace__toolbar-actions">
+        <label className="library-workspace__search-mode">
+          <span className="visually-hidden">Search syntax</span>
+          <select
+            value={querySyntax}
+            disabled={actionsPending || firstUse}
+            aria-label="Search syntax"
+            title="Structured search supports field:value, quoted values, implicit AND, and not"
+            onChange={(event) =>
+              onChangeSearchSyntax(event.currentTarget.value as LibraryQuerySyntax)
+            }
+          >
+            <option value="literal">Literal</option>
+            <option value="structured-v1">Structured</option>
+          </select>
+        </label>
         <label className="library-workspace__search" htmlFor="library-search">
           <span className="visually-hidden">Search library</span>
           <input
@@ -681,7 +701,11 @@ export function LibraryWorkspace({
             type="search"
             value={query}
             disabled={actionsPending || firstUse}
-            placeholder="Search your library"
+            placeholder={
+              querySyntax === "structured-v1"
+                ? 'author:"Name" tag:Classic not publisher:Tor'
+                : "Search your library"
+            }
             onChange={(event) => onChangeSearch(event.currentTarget.value)}
           />
         </label>

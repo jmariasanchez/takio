@@ -88,6 +88,18 @@
   font-weight: 600;
 }
 
+.library-workspace__search-mode select {
+  min-height: 34px;
+  padding: 6px 24px 6px 8px;
+  border: 1px solid #d0d5dd;
+  border-radius: 5px;
+  background: #fff;
+  color: #475467;
+  font: inherit;
+  font-size: 0.75rem;
+  font-weight: 650;
+}
+
 .library-workspace__maintenance-button {
   min-height: 34px;
   padding: 6px 10px;
@@ -113,6 +125,7 @@
 }
 
 .library-workspace__search input:focus-visible,
+.library-workspace__search-mode select:focus-visible,
 .library-workspace__more summary:focus-visible,
 .library-workspace__maintenance-button:focus-visible,
 .library-workspace__management button:focus-visible,

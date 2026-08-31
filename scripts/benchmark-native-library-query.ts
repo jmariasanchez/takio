@@ -41,7 +41,7 @@ const tags = [
 ] as const;
 const languages = ["en", "fr", "de"] as const;
 
-const request = {
+const literalRequest = {
   query: "Signal",
   filters: {
     authors: authors.slice(0, 50),
@@ -54,7 +54,13 @@ const request = {
   page: { offset: 0, limit: 100 },
 } as const;
 
-function runQuery(): number {
+const structuredRequest = {
+  ...literalRequest,
+  querySyntax: "structured-v1",
+  query: "title:Signal",
+} as const;
+
+function runQuery(request: typeof literalRequest | typeof structuredRequest): number {
   const started = performance.now();
   const result = spawnSync(
     binary,
@@ -149,10 +155,22 @@ try {
   database.exec("COMMIT;");
   database.close();
 
-  for (let index = 0; index < WARMUP_COUNT; index += 1) runQuery();
-  const samples = Array.from({ length: SAMPLE_COUNT }, runQuery).sort((left, right) => left - right);
-  const p50 = samples[Math.floor(SAMPLE_COUNT * 0.5) - 1]!;
-  const p95 = samples[Math.ceil(SAMPLE_COUNT * 0.95) - 1]!;
+  for (const request of [literalRequest, structuredRequest]) {
+    for (let index = 0; index < WARMUP_COUNT; index += 1) runQuery(request);
+  }
+  const benchmark = (request: typeof literalRequest | typeof structuredRequest) => {
+    const samples = Array.from({ length: SAMPLE_COUNT }, () => runQuery(request)).sort(
+      (left, right) => left - right,
+    );
+    return {
+      p50: samples[Math.floor(SAMPLE_COUNT * 0.5) - 1]!,
+      p95: samples[Math.ceil(SAMPLE_COUNT * 0.95) - 1]!,
+    };
+  };
+  const literal = benchmark(literalRequest);
+  const structured = benchmark(structuredRequest);
+  const p50 = Math.max(literal.p50, structured.p50);
+  const p95 = Math.max(literal.p95, structured.p95);
   const result = {
     implementation: "rust",
     items: ITEM_COUNT,
@@ -160,6 +178,8 @@ try {
     samples: SAMPLE_COUNT,
     p50Milliseconds: Number(p50.toFixed(2)),
     p95Milliseconds: Number(p95.toFixed(2)),
+    literalP95Milliseconds: Number(literal.p95.toFixed(2)),
+    structuredP95Milliseconds: Number(structured.p95.toFixed(2)),
     budgetMilliseconds: P95_BUDGET_MILLISECONDS,
     roadmapTargetMilliseconds: 150,
   };

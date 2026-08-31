@@ -130,7 +130,7 @@ pub(super) fn migrate(
         }
         let matches = reopened
             .serialize("main")
-            .map(|snapshot| snapshot.as_ref() == before.as_slice())
+            .map(|snapshot| snapshot.to_vec() == before)
             .unwrap_or(false);
         *connection = reopened;
         Ok(matches)

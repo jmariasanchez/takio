@@ -653,6 +653,8 @@ export function describeLibraryError(code: string): string {
   switch (code) {
     case "invalid-arguments":
       return "That file or metadata could not be used.";
+    case "invalid-query":
+      return "That structured search is invalid. Use field:value, quotes, implicit AND, and not.";
     case "invalid-stored-data":
       return "The library contains data Takio cannot read.";
     case "incompatible-schema":

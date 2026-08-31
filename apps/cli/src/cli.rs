@@ -25,8 +25,8 @@ use crate::paths::LibraryPaths;
 use crate::portable_library;
 use crate::store::{
     DuplicatePairReviewRequest, LIBRARY_SCHEMA_VERSION, LibraryQueryFilters, LibraryQueryScope,
-    LibraryStore, ListDuplicateCandidatesRequest, METADATA_AUDIT_KEY, MergeDuplicatePairRequest,
-    VerifyReport, validate_candidate_patch,
+    LibraryQuerySyntax, LibraryStore, ListDuplicateCandidatesRequest, METADATA_AUDIT_KEY,
+    MergeDuplicatePairRequest, VerifyReport, validate_candidate_patch,
 };
 
 #[derive(Parser)]
@@ -2881,7 +2881,7 @@ fn library_query_value(store: &LibraryStore, request: &Value) -> AppResult<Value
         .as_object()
         .filter(|object| {
             object.len() >= 4
-                && object.len() <= 5
+                && object.len() <= 6
                 && object.contains_key("query")
                 && object.contains_key("filters")
                 && object.contains_key("sort")
@@ -2889,7 +2889,7 @@ fn library_query_value(store: &LibraryStore, request: &Value) -> AppResult<Value
                 && object.keys().all(|key| {
                     matches!(
                         key.as_str(),
-                        "virtualLibraryId" | "query" | "filters" | "sort" | "page"
+                        "virtualLibraryId" | "querySyntax" | "query" | "filters" | "sort" | "page"
                     )
                 })
         })
@@ -2897,7 +2897,9 @@ fn library_query_value(store: &LibraryStore, request: &Value) -> AppResult<Value
     let query = request
         .get("query")
         .and_then(Value::as_str)
+        .filter(|query| query.encode_utf16().count() <= 1024)
         .ok_or_else(|| AppError::new("invalid-arguments"))?;
+    let session_query_syntax = query_syntax(request_object.get("querySyntax"))?;
     let filters = request
         .get("filters")
         .ok_or_else(|| AppError::new("invalid-arguments"))?;
@@ -2929,6 +2931,11 @@ fn library_query_value(store: &LibraryStore, request: &Value) -> AppResult<Value
                 .ok_or_else(|| AppError::new("invalid-stored-data"))
         })
         .transpose()?;
+    let virtual_query_syntax = virtual_definition
+        .as_ref()
+        .map(|definition| query_syntax(definition.get("querySyntax")))
+        .transpose()?
+        .unwrap_or(LibraryQuerySyntax::Literal);
     let virtual_filters = virtual_definition
         .as_ref()
         .map(|definition| {
@@ -2961,6 +2968,7 @@ fn library_query_value(store: &LibraryStore, request: &Value) -> AppResult<Value
     if let Some(virtual_query) = virtual_query {
         scopes.push(LibraryQueryScope {
             query: virtual_query,
+            syntax: virtual_query_syntax,
             filters: LibraryQueryFilters {
                 authors: &virtual_authors,
                 tags: &virtual_tags,
@@ -2972,6 +2980,7 @@ fn library_query_value(store: &LibraryStore, request: &Value) -> AppResult<Value
     }
     scopes.push(LibraryQueryScope {
         query,
+        syntax: session_query_syntax,
         filters: LibraryQueryFilters {
             authors: &authors,
             tags: &tags,
@@ -3030,6 +3039,17 @@ fn library_query_value(store: &LibraryStore, request: &Value) -> AppResult<Value
         .take(limit)
         .collect::<Vec<_>>();
     Ok(json!({"items":items,"total":total,"page":{"offset":offset,"limit":limit},"facets":facets}))
+}
+
+fn query_syntax(value: Option<&Value>) -> AppResult<LibraryQuerySyntax> {
+    match value {
+        None => Ok(LibraryQuerySyntax::Literal),
+        Some(Value::String(value)) if value == "literal" => Ok(LibraryQuerySyntax::Literal),
+        Some(Value::String(value)) if value == "structured-v1" => {
+            Ok(LibraryQuerySyntax::StructuredV1)
+        }
+        Some(_) => Err(AppError::new("invalid-arguments")),
+    }
 }
 
 fn string_filter(filters: &Value, name: &str) -> AppResult<Vec<String>> {

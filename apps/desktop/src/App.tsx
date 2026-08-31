@@ -24,6 +24,7 @@ import type {
   LibraryMetadataPatch,
   LibraryQueryFilters,
   LibraryQuerySort,
+  LibraryQuerySyntax,
   MergeDuplicatePairRequest,
   ReopenDuplicatePairRequest,
   SavedLibraryView,
@@ -882,6 +883,11 @@ export default function App() {
     }, searchDebounceMilliseconds);
   }
 
+  function changeSearchSyntax(querySyntax: LibraryQuerySyntax): void {
+    dispatchLibrarySelection({ type: "query-changed" });
+    runImmediateLibraryQuery({ type: "set-query-syntax", querySyntax });
+  }
+
   function runImmediateLibraryQuery(action: LibraryQueryStateAction): void {
     if (searchDebounce.current !== null) {
       window.clearTimeout(searchDebounce.current);
@@ -994,6 +1000,7 @@ export default function App() {
         name,
         definition: {
           version: 1,
+          querySyntax: request.querySyntax ?? "literal",
           query: request.query,
           filters: request.filters,
           sort: request.sort,
@@ -3308,6 +3315,7 @@ export default function App() {
           pendingAction={pendingAction}
           preferredDeviceFormat={preferredDeviceFormat}
           query={query}
+          querySyntax={libraryQuery.request.querySyntax ?? "literal"}
           savedViews={savedViews}
           saveViewDialogBusy={pendingAction === "saved-view-save"}
           saveViewDialogError={saveViewDialogError}
@@ -3329,6 +3337,7 @@ export default function App() {
           onChangeFilters={changeFilters}
           onChangePage={changePage}
           onChangeSearch={changeSearch}
+          onChangeSearchSyntax={changeSearchSyntax}
           onChangeSort={changeSort}
           onChooseCover={chooseCover}
           onClearAll={clearLibraryQuery}
