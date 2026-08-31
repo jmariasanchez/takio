@@ -40,6 +40,11 @@ describe("Electron engine boundary", () => {
       "--request-json",
       JSON.stringify(request),
     ]);
+    expect(await buildEngineArguments("library_custom_columns_list", undefined)).toEqual([
+      "library",
+      "custom-columns",
+      "list",
+    ]);
     expect(await buildEngineArguments("destination_send", {
       id: "item-1",
       format: "epub",

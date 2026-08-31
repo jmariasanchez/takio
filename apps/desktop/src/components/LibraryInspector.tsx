@@ -11,6 +11,10 @@ import {
   type ConversionChoice,
 } from "../lib/conversion-choices";
 import { coverFileSource } from "../lib/desktop";
+import {
+  definitionByKey,
+  type CustomColumnDefinition,
+} from "../lib/custom-columns";
 import { MetadataCandidateReview } from "./MetadataCandidateReview";
 
 import "./LibraryInspector.css";
@@ -37,6 +41,7 @@ export function conversionControlId(
 
 export type LibraryInspectorProps = {
   readonly actionsDisabled?: boolean;
+  readonly definitions?: readonly CustomColumnDefinition[];
   readonly item: LibraryItem | null;
   readonly onConvertFormat: ConversionAction;
   readonly onMetadataCandidateApplied?: (item: LibraryItem) => void;
@@ -72,6 +77,7 @@ function coverFallbackLabel(title: string): string {
 
 export function LibraryInspector({
   actionsDisabled = false,
+  definitions = [],
   item,
   onConvertFormat,
   onMetadataCandidateApplied = () => undefined,
@@ -93,6 +99,7 @@ export function LibraryInspector({
   const authors = authorLabel(item);
   const choices = conversionChoices(item.formats);
   const identifiers = Object.entries(item.identifiers ?? {});
+  const definitionsByKey = definitionByKey(definitions);
   const customMetadata = Object.entries(item.customMetadata ?? {})
     .filter(([key]) => key !== METADATA_CANDIDATE_AUDIT_KEY)
     .sort(([left], [right]) => left.localeCompare(right));
@@ -171,7 +178,11 @@ export function LibraryInspector({
             )}
             {customMetadata.map(([key, value]) => (
               <div key={key}>
-                <dt>#{key}</dt>
+                <dt>
+                  {definitionsByKey.has(key)
+                    ? `${definitionsByKey.get(key)?.label} (#${key})`
+                    : `Custom field #${key}`}
+                </dt>
                 <dd>{value}</dd>
               </div>
             ))}

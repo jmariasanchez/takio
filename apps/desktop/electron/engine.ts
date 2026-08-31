@@ -107,6 +107,8 @@ export async function buildEngineArguments(
     }
     case "library_list":
       return ["library", "list"];
+    case "library_custom_columns_list":
+      return ["library", "custom-columns", "list"];
     case "library_get":
       return nonempty(id) ? ["library", "get", "--id", id] : null;
     case "metadata_candidates_list": {

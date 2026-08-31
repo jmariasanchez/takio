@@ -40,6 +40,7 @@ const items = [
     description: "A novel",
     coverPath: "/Covers/left-hand.jpg",
     tags: ["Science fiction"],
+    customMetadata: { shelf: "Favorites" },
   },
   {
     id: "item-2",
@@ -129,6 +130,41 @@ test("renders rich authors, a real cover with escaped alt text, and legacy fallb
   expect(markup).not.toContain('alt="/Covers/left-hand.jpg"');
   expect(markup).toContain("EPUB");
   expect(markup).toContain("PDF");
+});
+
+test("renders at most one non-sortable custom column immediately before Added", () => {
+  const markup = renderToStaticMarkup(
+    <LibraryTable
+      items={items}
+      definitions={[
+        { key: "shelf", label: "Shelf", type: "text", position: 0 },
+        { key: "source_note", label: "Source note", type: "text", position: 1 },
+      ]}
+      visibleCustomColumnKey="shelf"
+      sort={titleSort}
+      total={items.length}
+      pageOffset={0}
+      pageLimit={25}
+      selectedItemId="item-1"
+      selectedItemIds={[]}
+      onChangePage={() => undefined}
+      onChangeSort={() => undefined}
+      onOpenItem={() => undefined}
+      onSelectItem={() => undefined}
+      onToggleItem={() => undefined}
+      onSelectRange={() => undefined}
+      onTogglePage={() => undefined}
+    />,
+  );
+
+  expect(markup).toContain('aria-label="Visible custom column"');
+  expect(markup).toContain("Shelf <span>#shelf</span>");
+  expect(markup.indexOf('class="library-table__custom-cell" scope="col"')).toBeLessThan(
+    markup.indexOf('class="library-table__added-cell"'),
+  );
+  expect(markup).toContain("Favorites");
+  expect(markup).toContain("Not set");
+  expect(markup).not.toContain("Sort by Shelf");
 });
 
 test("reports truthful page ranges and only emits offsets inside the result set", () => {

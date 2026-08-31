@@ -136,6 +136,29 @@ test("renders the complete dense metadata contract without a reading surface", (
   expect(markup).not.toContain("Reader");
 });
 
+test("labels defined fields while retaining undeclared legacy fields", () => {
+  const markup = renderToStaticMarkup(
+    <MetadataEditor
+      {...props()}
+      definitions={[{ key: "shelf", label: "Shelf", type: "text", position: 0 }]}
+      draft={{
+        ...draftFor(item),
+        customMetadata: {
+          state: "concrete",
+          value: [
+            { key: "shelf", value: "Favorites" },
+            { key: "legacy_note", value: "Old data" },
+          ],
+        },
+      }}
+    />,
+  );
+
+  expect(markup).toContain("Shelf (#shelf)");
+  expect(markup).toContain('aria-label="Shelf key, #shelf"');
+  expect(markup).toContain('aria-label="Custom field 2 key"');
+});
+
 test("controlled collection and title actions emit exact concrete drafts", () => {
   const changes: MetadataDraft[] = [];
   const draft = concreteDraft();

@@ -4,11 +4,15 @@ import { useEffect, useRef, type KeyboardEvent } from "react";
 
 import { libraryPageSelectionState } from "../lib/library-selection";
 import { coverFileSource } from "../lib/desktop";
+import type { CustomColumnDefinition } from "../lib/custom-columns";
 
 import "./LibraryTable.css";
 
 export type LibraryTableProps = {
   readonly busy?: boolean;
+  readonly definitions?: readonly CustomColumnDefinition[];
+  readonly visibleCustomColumnKey?: string | null;
+  readonly onChangeVisibleCustomColumn?: (key: string | null) => void;
   readonly items: readonly LibraryItem[];
   readonly sort: LibraryQuerySort;
   readonly total: number;
@@ -141,6 +145,9 @@ function sortDirectionLabel(direction: LibraryQuerySort["direction"]): string {
 
 export function LibraryTable({
   busy = false,
+  definitions = [],
+  visibleCustomColumnKey = null,
+  onChangeVisibleCustomColumn = () => undefined,
   items,
   sort,
   total,
@@ -166,6 +173,7 @@ export function LibraryTable({
   const range = libraryPageRange(pageOffset, items.length, total);
   const previousPage = libraryPageTarget("previous", pageOffset, pageLimit, total);
   const nextPage = libraryPageTarget("next", pageOffset, pageLimit, total);
+  const visibleCustomColumn = definitions.find(({ key }) => key === visibleCustomColumnKey) ?? null;
 
   useEffect(() => {
     if (pageCheckboxRef.current) {
@@ -254,6 +262,21 @@ export function LibraryTable({
         >
           {sortDirectionLabel(sort.direction)}
         </button>
+        <label>
+          <span>Custom column</span>
+          <select
+            aria-label="Visible custom column"
+            value={visibleCustomColumn?.key ?? ""}
+            onChange={(event) => onChangeVisibleCustomColumn(event.currentTarget.value || null)}
+          >
+            <option value="">None</option>
+            {definitions.map(({ key, label }) => (
+              <option key={key} value={key}>
+                {label} (#{key})
+              </option>
+            ))}
+          </select>
+        </label>
       </div>
 
       <div className="library-table-frame">
@@ -265,6 +288,7 @@ export function LibraryTable({
             <col className="library-table__title-column" />
             <col className="library-table__author-column" />
             <col className="library-table__formats-column" />
+            {visibleCustomColumn && <col className="library-table__custom-column" />}
             <col className="library-table__added-column" />
           </colgroup>
           <thead>
@@ -311,6 +335,11 @@ export function LibraryTable({
               <th className="library-table__formats-cell" scope="col">
                 Formats
               </th>
+              {visibleCustomColumn && (
+                <th className="library-table__custom-cell" scope="col">
+                  {visibleCustomColumn.label} <span>#{visibleCustomColumn.key}</span>
+                </th>
+              )}
               <th
                 className="library-table__added-cell"
                 aria-sort={sort.field === "addedAt" ? sort.direction : undefined}
@@ -401,6 +430,11 @@ export function LibraryTable({
                       ))}
                     </span>
                   </td>
+                  {visibleCustomColumn && (
+                    <td className="library-table__custom-cell">
+                      {item.customMetadata?.[visibleCustomColumn.key] ?? "Not set"}
+                    </td>
+                  )}
                   <td className="library-table__added-cell library-table__secondary">
                     <time dateTime={item.addedAt}>{addedDate(item.addedAt)}</time>
                   </td>

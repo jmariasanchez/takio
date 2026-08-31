@@ -6,12 +6,17 @@ import {
   type ClearableMetadataDraftField,
   type MetadataDraft,
 } from "../lib/metadata-draft";
+import {
+  definitionByKey,
+  type CustomColumnDefinition,
+} from "../lib/custom-columns";
 import "./MetadataEditor.css";
 
 export type MetadataEditorProps = Readonly<{
   draft: MetadataDraft;
   busy?: boolean;
   disabled?: boolean;
+  definitions?: readonly CustomColumnDefinition[];
   idPrefix?: string;
   onCancel: () => void;
   onChange: (draft: MetadataDraft) => void;
@@ -195,6 +200,7 @@ function GroupHeading({
 
 export function MetadataEditor({
   draft,
+  definitions = [],
   busy = false,
   disabled = false,
   idPrefix = "metadata-editor",
@@ -202,6 +208,7 @@ export function MetadataEditor({
   onChange,
   onSave,
 }: MetadataEditorProps) {
+  const definitionsByKey = definitionByKey(definitions);
   const validation = parseMetadataDraft(draft);
   const fieldErrors = validation.ok ? {} : validation.fieldErrors;
   const controlsDisabled = disabled || busy;
@@ -784,17 +791,25 @@ export function MetadataEditor({
               {draft.customMetadata.value.map((field, index) => {
                 const keyPath = `customMetadata.${index}.key`;
                 const valuePath = `customMetadata.${index}.value`;
+                const definition = definitionsByKey.get(field.key);
                 return (
                   <li key={index}>
                     <div className="metadata-editor__row-fields metadata-editor__row-fields--custom">
                       <label>
-                        <span>Key</span>
+                        <span>
+                          {definition ? `${definition.label} (#${definition.key})` : "Key"}
+                        </span>
                         <input
                           id={controlId(idPrefix, keyPath)}
                           type="text"
                           value={field.key}
                           disabled={draft.customMetadata.state !== "concrete"}
-                          aria-label={`Custom field ${index + 1} key`}
+                          readOnly={definition !== undefined}
+                          aria-label={
+                            definition
+                              ? `${definition.label} key, #${definition.key}`
+                              : `Custom field ${index + 1} key`
+                          }
                           onChange={(event) =>
                             change("customMetadata", {
                               state: "concrete",
@@ -808,7 +823,7 @@ export function MetadataEditor({
                         />
                       </label>
                       <label>
-                        <span>Value</span>
+                        <span>{definition ? `${definition.label} value` : "Value"}</span>
                         <textarea
                           id={controlId(idPrefix, valuePath)}
                           value={field.value}

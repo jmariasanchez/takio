@@ -17,6 +17,10 @@ import { useEffect, useRef, useState, type FormEvent, type RefObject } from "rea
 
 import type { ConversionChoice } from "../lib/conversion-choices";
 import {
+  listCustomColumnDefinitions,
+  type CustomColumnDefinition,
+} from "../lib/custom-columns";
+import {
   resolveDeviceFormatPreference,
   type DeviceFormatPreference,
 } from "../lib/device-format-preference";
@@ -235,6 +239,7 @@ export function restoreSaveViewDialogFocus(
 function InspectorManagement({
   actionsPending,
   conversionDraft,
+  definitions,
   draft,
   item,
   pendingAction,
@@ -255,6 +260,7 @@ function InspectorManagement({
 }: Readonly<{
   actionsPending: boolean;
   conversionDraft: ConversionDraft | null;
+  definitions: readonly CustomColumnDefinition[];
   draft: MetadataDraft | null;
   item: LibraryItem | null;
   pendingAction: string | null;
@@ -319,6 +325,7 @@ function InspectorManagement({
           busy={pendingAction === `edit:${item.id}`}
           disabled={actionsPending}
           draft={draft}
+          definitions={definitions}
           idPrefix={`metadata-${item.id}`}
           onCancel={() => onSetDraft(null)}
           onChange={(nextDraft) => onSetDraft({ id: item.id, ...nextDraft })}
@@ -328,6 +335,7 @@ function InspectorManagement({
         <>
           <LibraryInspector
             actionsDisabled={actionsPending}
+            definitions={definitions}
             item={item}
             onMetadataCandidateApplied={onMetadataCandidateApplied}
             onConvertFormat={chooseConversion}
@@ -594,12 +602,37 @@ export function LibraryWorkspace({
   onToggleSelectedItem,
 }: LibraryWorkspaceProps) {
   const [openPane, setOpenPane] = useState<CompactPane | null>(null);
+  const [customColumnDefinitions, setCustomColumnDefinitions] = useState<
+    readonly CustomColumnDefinition[]
+  >([]);
+  const [visibleCustomColumnKey, setVisibleCustomColumnKey] = useState<string | null>(null);
   const previousSaveViewDialogOpen = useRef(saveViewDialogOpen);
   const selectedItem = items.find(({ id }) => id === selectedItemId) ?? null;
   const busy = libraryState === "loading" || searchPending;
   const interactionsDisabled = busy || actionsPending;
   const filtered = query.trim() !== "" || hasActiveFilters(filters);
   const firstUse = libraryState === "ready" && !busy && total === 0 && !filtered;
+
+  useEffect(() => {
+    let active = true;
+    void listCustomColumnDefinitions()
+      .then((result) => {
+        if (active && result.ok) setCustomColumnDefinitions(result.value.definitions);
+      })
+      .catch(() => undefined);
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (
+      visibleCustomColumnKey !== null &&
+      !customColumnDefinitions.some(({ key }) => key === visibleCustomColumnKey)
+    ) {
+      setVisibleCustomColumnKey(null);
+    }
+  }, [customColumnDefinitions, visibleCustomColumnKey]);
 
   useEffect(() => {
     if (conversionDraft !== null) {
@@ -644,6 +677,7 @@ export function LibraryWorkspace({
     <InspectorManagement
       actionsPending={actionsPending}
       conversionDraft={conversionDraft}
+      definitions={customColumnDefinitions}
       draft={draft}
       item={selectedItem}
       pendingAction={pendingAction}
@@ -857,6 +891,7 @@ export function LibraryWorkspace({
               {libraryState !== "error" ? (
                 <LibraryTable
                   busy={interactionsDisabled}
+                  definitions={customColumnDefinitions}
                   items={items}
                   pageLimit={pageLimit}
                   pageOffset={pageOffset}
@@ -864,8 +899,10 @@ export function LibraryWorkspace({
                   selectedItemIds={selectedItemIds}
                   sort={sort}
                   total={total}
+                  visibleCustomColumnKey={visibleCustomColumnKey}
                   onChangePage={onChangePage}
                   onChangeSort={onChangeSort}
+                  onChangeVisibleCustomColumn={setVisibleCustomColumnKey}
                   onOpenItem={(item) => {
                     const primaryFormat = item.formats[0];
                     if (primaryFormat) {

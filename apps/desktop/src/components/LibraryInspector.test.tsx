@@ -126,6 +126,21 @@ test("renders selected metadata and every real format without a reading surface"
   expect(markup).not.toContain("Reader");
 });
 
+test("separates defined labels from undeclared legacy custom fields", () => {
+  const markup = renderToStaticMarkup(
+    <LibraryInspector
+      definitions={[{ key: "shelf", label: "Shelf", type: "text", position: 0 }]}
+      item={item}
+      onConvertFormat={() => undefined}
+      onOpenFormat={() => undefined}
+      onSendFormat={() => undefined}
+    />,
+  );
+
+  expect(markup).toContain("Shelf (#shelf)");
+  expect(markup).toContain("Custom field #z_note");
+});
+
 test("renders a fallback monogram when the selected book has no cover", () => {
   const markup = renderToStaticMarkup(
     <LibraryInspector
