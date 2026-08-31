@@ -142,7 +142,9 @@ pub fn send(
     let canonical_directory = directory
         .canonicalize()
         .map_err(|_| AppError::new("copy-failed"))?;
-    ensure_contained(&destination.path, &canonical_directory)?;
+    if canonical_directory != destination.path {
+        ensure_contained(&destination.path, &canonical_directory)?;
+    }
 
     let safe_name =
         sanitize_file_name(file_name).ok_or_else(|| AppError::new("invalid-arguments"))?;
@@ -436,6 +438,44 @@ mod tests {
                 .unwrap_err()
                 .code(),
             "invalid-arguments"
+        );
+    }
+
+    #[test]
+    fn kobo_delivery_can_publish_directly_to_the_authorized_mount_root() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let mount = temporary.path().join("Kobo Reader");
+        fs::create_dir(&mount).expect("create mount");
+        let mount = mount.canonicalize().expect("canonical mount");
+        let source = temporary.path().join("book.epub");
+        fs::write(&source, b"epub bytes").expect("write source");
+        let destination = Destination {
+            id: "Kobo Reader".to_owned(),
+            name: "Kobo Reader".to_owned(),
+            path: mount.clone(),
+            kind: DestinationKind::Kobo,
+            features: Vec::new(),
+        };
+
+        let result = send(
+            &destination,
+            "book-1",
+            &source,
+            "Book.epub",
+            "epub",
+            None,
+            false,
+        )
+        .expect("deliver to mount root");
+
+        assert_eq!(result.path, mount.join("Book.epub"));
+        assert_eq!(
+            fs::read(&result.path).expect("read delivered book"),
+            b"epub bytes"
+        );
+        assert_eq!(
+            inventory(&destination).expect("inventory")[0].status,
+            "present"
         );
     }
 }

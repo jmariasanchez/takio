@@ -2982,3 +2982,63 @@ fn malformed_candidate_apply_never_creates_a_library_as_a_side_effect() {
         "malformed cover descriptors must be rejected before library creation"
     );
 }
+
+#[test]
+fn send_delivers_to_the_default_kobo_mount_root() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let database = temp.path().join("library.sqlite");
+    let source = temp.path().join("Kindred.epub");
+    fs::write(&source, b"device delivery bytes").expect("write source ebook");
+    let imported = cargo_bin_cmd!("takio")
+        .args(["library", "import", "--db"])
+        .arg(&database)
+        .args(["--source-path"])
+        .arg(&source)
+        .args(["--title", "Kindred"])
+        .output()
+        .expect("import ebook");
+    let item_id = success_value(&imported.stdout)["item"]["id"]
+        .as_str()
+        .expect("item id")
+        .to_owned();
+
+    let volumes = temp.path().join("Volumes");
+    let kobo = volumes.join("Kobo Reader");
+    fs::create_dir_all(kobo.join(".kobo")).expect("create Kobo mount marker");
+    let sent = cargo_bin_cmd!("takio")
+        .args(["send", "--db"])
+        .arg(&database)
+        .args(["--id", &item_id, "--format", "epub", "--dest"])
+        .arg(&kobo)
+        .args(["--volumes-root"])
+        .arg(&volumes)
+        .output()
+        .expect("send ebook");
+
+    assert!(
+        sent.status.success(),
+        "{}",
+        String::from_utf8_lossy(&sent.stdout)
+    );
+    assert!(sent.stderr.is_empty());
+    let delivery = success_value(&sent.stdout);
+    assert_eq!(delivery["itemId"], item_id);
+    let delivered_path = delivery["path"].as_str().expect("delivery path");
+    assert_eq!(
+        fs::read(delivered_path).expect("read delivered ebook"),
+        b"device delivery bytes"
+    );
+
+    let inventory = cargo_bin_cmd!("takio")
+        .args(["destination", "inventory", "--dest"])
+        .arg(&kobo)
+        .args(["--volumes-root"])
+        .arg(&volumes)
+        .output()
+        .expect("inventory Kobo");
+    assert!(inventory.status.success());
+    assert_eq!(
+        success_value(&inventory.stdout)["entries"][0]["status"],
+        "present"
+    );
+}
