@@ -10,7 +10,8 @@ const ITEM_COUNT = 10_000;
 const SECONDARY_FORMAT_COUNT = 5_000;
 const SAMPLE_COUNT = 20;
 const WARMUP_COUNT = 3;
-const INITIAL_P95_BUDGET_MILLISECONDS = 300;
+const EXPECTED_MATCH_COUNT = 513;
+const P95_BUDGET_MILLISECONDS = 150;
 const mode = process.env.TAKIO_NATIVE_LIBRARY_QUERY_BENCHMARK;
 
 if (mode !== "report" && mode !== "enforce") {
@@ -67,7 +68,11 @@ function runQuery(): number {
   const envelope = JSON.parse(result.stdout) as { ok?: unknown; value?: unknown };
   if (envelope.ok !== true) throw new Error("Native query returned a failure envelope.");
   const parsed = libraryQueryPageSchema.safeParse(envelope.value);
-  if (!parsed.success || parsed.data.items.length === 0 || parsed.data.total < parsed.data.items.length) {
+  if (
+    !parsed.success ||
+    parsed.data.items.length !== request.page.limit ||
+    parsed.data.total !== EXPECTED_MATCH_COUNT
+  ) {
     throw new Error("Native query returned an invalid or empty result page.");
   }
   return elapsed;
@@ -155,13 +160,13 @@ try {
     samples: SAMPLE_COUNT,
     p50Milliseconds: Number(p50.toFixed(2)),
     p95Milliseconds: Number(p95.toFixed(2)),
-    budgetMilliseconds: INITIAL_P95_BUDGET_MILLISECONDS,
+    budgetMilliseconds: P95_BUDGET_MILLISECONDS,
     roadmapTargetMilliseconds: 150,
   };
   console.log(JSON.stringify(result));
-  if (mode === "enforce" && p95 > INITIAL_P95_BUDGET_MILLISECONDS) {
+  if (mode === "enforce" && p95 > P95_BUDGET_MILLISECONDS) {
     throw new Error(
-      `Native library query p95 ${p95.toFixed(2)} ms exceeded ${INITIAL_P95_BUDGET_MILLISECONDS} ms.`,
+      `Native library query p95 ${p95.toFixed(2)} ms exceeded ${P95_BUDGET_MILLISECONDS} ms.`,
     );
   }
 } finally {

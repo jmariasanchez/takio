@@ -24,7 +24,7 @@ use crate::output::{AppError, AppResult, print_success};
 use crate::paths::LibraryPaths;
 use crate::portable_library;
 use crate::store::{
-    DuplicatePairReviewRequest, LIBRARY_SCHEMA_VERSION, LibraryStore,
+    DuplicatePairReviewRequest, LIBRARY_SCHEMA_VERSION, LibraryQueryFilters, LibraryStore,
     ListDuplicateCandidatesRequest, METADATA_AUDIT_KEY, MergeDuplicatePairRequest, VerifyReport,
     validate_candidate_patch,
 };
@@ -2885,11 +2885,16 @@ fn library_query_value(store: &LibraryStore, request: &Value) -> AppResult<Value
     let series = string_filter(filters, "series")?;
     let languages = string_filter(filters, "languages")?;
     let formats = string_filter(filters, "formats")?;
-    let mut items = if query.is_empty() {
-        store.list(false)?
-    } else {
-        store.search(query)?
-    };
+    let mut items = store.query_items(
+        query,
+        LibraryQueryFilters {
+            authors: &authors,
+            tags: &tags,
+            series: &series,
+            languages: &languages,
+            formats: &formats,
+        },
+    )?;
     items.retain(|item| {
         matches_filter(
             &authors,

@@ -7,8 +7,10 @@ use std::path::{Path, PathBuf};
 use std::cell::Cell;
 
 use chrono::{NaiveDate, Utc};
+use rusqlite::types::Value as SqlValue;
 use rusqlite::{
     Connection, OpenFlags, OptionalExtension, Transaction, TransactionBehavior, params,
+    params_from_iter,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -39,6 +41,14 @@ thread_local! {
 pub struct LibraryStore {
     connection: Connection,
     paths: LibraryPaths,
+}
+
+pub struct LibraryQueryFilters<'a> {
+    pub authors: &'a [String],
+    pub tags: &'a [String],
+    pub series: &'a [String],
+    pub languages: &'a [String],
+    pub formats: &'a [String],
 }
 
 pub(crate) fn validate_candidate_patch(patch: &LibraryPatch) -> AppResult<()> {
@@ -295,6 +305,93 @@ impl LibraryStore {
         )?;
         let ids = statement
             .query_map([needle], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        ids.into_iter()
+            .map(|id| {
+                self.read_item(&id)?
+                    .ok_or_else(|| AppError::new("invalid-stored-data"))
+            })
+            .collect()
+    }
+
+    pub fn query_items(
+        &self,
+        query: &str,
+        filters: LibraryQueryFilters<'_>,
+    ) -> AppResult<Vec<LibraryItem>> {
+        let mut sql =
+            String::from("SELECT li.id FROM library_items li WHERE li.trashed_at IS NULL");
+        let mut values = Vec::<SqlValue>::new();
+        if !query.is_empty() {
+            let needle = format!(
+                "%{}%",
+                query
+                    .replace('\\', "\\\\")
+                    .replace('%', "\\%")
+                    .replace('_', "\\_")
+            );
+            sql.push_str(
+                " AND (li.title LIKE ? ESCAPE '\\' COLLATE NOCASE
+                   OR li.author LIKE ? ESCAPE '\\' COLLATE NOCASE
+                   OR EXISTS(SELECT 1 FROM library_item_authors qa
+                             WHERE qa.library_item_id=li.id
+                               AND qa.name LIKE ? ESCAPE '\\' COLLATE NOCASE)
+                   OR li.series LIKE ? ESCAPE '\\' COLLATE NOCASE
+                   OR EXISTS(SELECT 1 FROM library_item_tags qit
+                             JOIN tags qt ON qt.normalized_name=qit.tag_normalized_name
+                             WHERE qit.library_item_id=li.id
+                               AND qt.name LIKE ? ESCAPE '\\' COLLATE NOCASE))",
+            );
+            values.extend(std::iter::repeat_n(SqlValue::Text(needle), 5));
+        }
+        if !filters.authors.is_empty() {
+            let legacy = query_placeholders(filters.authors, &mut values);
+            let ordered = query_placeholders(filters.authors, &mut values);
+            sql.push_str(&format!(
+                " AND (li.author COLLATE NOCASE IN ({legacy})
+                   OR EXISTS(SELECT 1 FROM library_item_authors fa
+                             WHERE fa.library_item_id=li.id
+                               AND fa.name COLLATE NOCASE IN ({ordered})))"
+            ));
+        }
+        if !filters.tags.is_empty() {
+            let placeholders = query_placeholders(filters.tags, &mut values);
+            sql.push_str(&format!(
+                " AND EXISTS(SELECT 1 FROM library_item_tags fit
+                             JOIN tags ft ON ft.normalized_name=fit.tag_normalized_name
+                             WHERE fit.library_item_id=li.id
+                               AND ft.name COLLATE NOCASE IN ({placeholders}))"
+            ));
+        }
+        if !filters.series.is_empty() {
+            let placeholders = query_placeholders(filters.series, &mut values);
+            sql.push_str(&format!(
+                " AND li.series COLLATE NOCASE IN ({placeholders})"
+            ));
+        }
+        if !filters.languages.is_empty() {
+            let placeholders = query_placeholders(filters.languages, &mut values);
+            sql.push_str(&format!(
+                " AND EXISTS(SELECT 1 FROM library_item_languages fl
+                             WHERE fl.library_item_id=li.id
+                               AND fl.language COLLATE NOCASE IN ({placeholders}))"
+            ));
+        }
+        if !filters.formats.is_empty() {
+            let placeholders = query_placeholders(filters.formats, &mut values);
+            sql.push_str(&format!(
+                " AND EXISTS(SELECT 1 FROM library_item_formats ff
+                             WHERE ff.library_item_id=li.id
+                               AND ff.format IN ({placeholders}))"
+            ));
+        }
+        sql.push_str(" ORDER BY li.title COLLATE NOCASE, li.id");
+
+        let mut statement = self.connection.prepare(&sql)?;
+        let ids = statement
+            .query_map(params_from_iter(values.iter()), |row| {
+                row.get::<_, String>(0)
+            })?
             .collect::<Result<Vec<_>, _>>()?;
         ids.into_iter()
             .map(|id| {
@@ -1744,6 +1841,13 @@ fn read_item_from(connection: &Connection, id: &str) -> AppResult<Option<Library
         tags: read_tags(connection, id)?,
         updated_at: base.updated_at,
     }))
+}
+
+fn query_placeholders(values: &[String], parameters: &mut Vec<SqlValue>) -> String {
+    parameters.extend(values.iter().cloned().map(SqlValue::Text));
+    std::iter::repeat_n("?", values.len())
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 struct BaseRow {
