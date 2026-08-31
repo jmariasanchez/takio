@@ -135,8 +135,8 @@ Windows rather than inferring it from cross-platform dependencies.
 #### B1. Candidate review in desktop and TUI
 
 Status: selected-book desktop slice delivered in `663541e` and hardened in
-`3db7264`, `e944aee`, `4a8e3ad`, and `8582eee`. TUI and bounded bulk review
-remain open.
+`3db7264`, `e944aee`, `4a8e3ad`, `8582eee`, and `a99670a`. TUI and bounded
+bulk review remain open.
 
 Deliver:
 
