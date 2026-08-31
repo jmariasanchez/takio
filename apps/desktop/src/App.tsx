@@ -55,7 +55,7 @@ import {
   type DuplicateReviewPendingAction,
 } from "./components/LibraryDuplicateReviewDialog";
 import { LibraryImportDialog } from "./components/LibraryImportDialog";
-import type { LibraryExportFileNameTemplate } from "./components/LibraryExportDialog";
+import type { LibraryExportLayout } from "./components/LibraryExportDialog";
 import {
   LibraryTrashDialog,
   type LibraryTrashPendingAction,
@@ -2665,9 +2665,10 @@ export default function App() {
     }
   }
 
-  async function saveBulkSelectionToDisk(
-    fileNameTemplate: LibraryExportFileNameTemplate,
-  ): Promise<void> {
+  async function saveBulkSelectionToDisk({
+    fileNameTemplate,
+    directoryTemplate,
+  }: LibraryExportLayout): Promise<void> {
     const selectedIds = [...bulkExportItemIds];
     if (
       selectedIds.length === 0 ||
@@ -2703,6 +2704,7 @@ export default function App() {
         ids: selectedIds,
         destinationPath: selection,
         fileNameTemplate,
+        directoryTemplate,
       });
       if (!result.ok) {
         setNotice({ kind: "error", text: describeLibraryError(result.error.code) });

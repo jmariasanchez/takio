@@ -802,6 +802,244 @@ fn import_list_and_search_round_trip_through_the_binary() {
 }
 
 #[test]
+fn export_many_organizes_every_format_and_uses_stable_collision_safe_names() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let database = temp.path().join("library.sqlite");
+    let first_epub = temp.path().join("first.epub");
+    let first_pdf = temp.path().join("first.pdf");
+    let second_epub = temp.path().join("second.epub");
+    fs::write(&first_epub, b"first epub").expect("write first epub");
+    fs::write(&first_pdf, b"first pdf").expect("write first pdf");
+    fs::write(&second_epub, b"second epub").expect("write second epub");
+
+    let first_id = add_book(&database, &first_epub);
+    let second_id = add_book(&database, &second_epub);
+    for (id, patch) in [
+        (
+            &first_id,
+            serde_json::json!({
+                "title":"Shared title",
+                "authors":[{"name":"Author/One:*?"}],
+                "series":"Series/One:*?"
+            }),
+        ),
+        (
+            &second_id,
+            serde_json::json!({
+                "title":"Shared title",
+                "authors":[{"name":"Author/One:*?"}]
+            }),
+        ),
+    ] {
+        let updated = cargo_bin_cmd!("takio")
+            .args(["library", "update", "--db"])
+            .arg(&database)
+            .args(["--id", id, "--patch-json", &patch.to_string()])
+            .output()
+            .expect("update export metadata");
+        assert!(updated.status.success());
+    }
+    let attached = cargo_bin_cmd!("takio")
+        .args(["library", "format", "import", "--db"])
+        .arg(&database)
+        .args(["--id", &first_id, "--source-path"])
+        .arg(&first_pdf)
+        .output()
+        .expect("attach second format");
+    assert!(attached.status.success());
+
+    let author_destination = temp.path().join("by-author");
+    let request = serde_json::json!({
+        "ids":[first_id,second_id],
+        "destinationPath":author_destination,
+        "fileNameTemplate":"title",
+        "directoryTemplate":"author"
+    });
+    let exported = cargo_bin_cmd!("takio")
+        .args(["library", "export-many", "--db"])
+        .arg(&database)
+        .args(["--request-json", &request.to_string()])
+        .output()
+        .expect("export organized library items");
+    assert!(exported.status.success());
+    assert!(exported.stderr.is_empty());
+    let value = success_value(&exported.stdout);
+    assert_eq!(
+        value["counts"],
+        serde_json::json!({"total":3,"exported":3,"skipped":0,"failed":0})
+    );
+    let outcomes = value["outcomes"].as_array().expect("export outcomes");
+    assert_eq!(
+        outcomes
+            .iter()
+            .filter(|outcome| outcome["itemId"] == first_id)
+            .count(),
+        2
+    );
+    let paths = outcomes
+        .iter()
+        .map(|outcome| {
+            std::path::PathBuf::from(
+                outcome["destinationPath"]
+                    .as_str()
+                    .expect("export destination path"),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert!(paths.iter().all(|path| path.exists()));
+    assert!(paths.iter().all(|path| {
+        path.parent()
+            .and_then(std::path::Path::file_name)
+            .and_then(|name| name.to_str())
+            == Some("AuthorOne")
+    }));
+    assert_eq!(
+        paths
+            .iter()
+            .collect::<std::collections::BTreeSet<_>>()
+            .len(),
+        3
+    );
+    for (id, path) in [
+        (&first_id, &paths[0]),
+        (&first_id, &paths[1]),
+        (&second_id, &paths[2]),
+    ] {
+        let identity = format!("{:x}", Sha256::digest(id.as_bytes()));
+        assert!(
+            path.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .contains(&identity)
+        );
+    }
+
+    let repeated = cargo_bin_cmd!("takio")
+        .args(["library", "export-many", "--db"])
+        .arg(&database)
+        .args(["--request-json", &request.to_string()])
+        .output()
+        .expect("repeat organized export");
+    assert_eq!(
+        success_value(&repeated.stdout)["counts"],
+        serde_json::json!({"total":3,"exported":0,"skipped":3,"failed":0})
+    );
+
+    let series_destination = temp.path().join("by-series");
+    let series_request = serde_json::json!({
+        "ids":[first_id,second_id],
+        "destinationPath":series_destination,
+        "directoryTemplate":"series"
+    });
+    let by_series = cargo_bin_cmd!("takio")
+        .args(["library", "export-many", "--db"])
+        .arg(&database)
+        .args(["--request-json", &series_request.to_string()])
+        .output()
+        .expect("export by series");
+    let series_value = success_value(&by_series.stdout);
+    assert_eq!(series_value["counts"]["exported"], 3);
+    let parents = series_value["outcomes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|outcome| {
+            std::path::Path::new(outcome["destinationPath"].as_str().unwrap())
+                .parent()
+                .unwrap()
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        parents,
+        std::collections::BTreeSet::from(["SeriesOne".to_owned(), "Unsorted".to_owned()])
+    );
+
+    let invalid = serde_json::json!({
+        "ids":[first_id],
+        "destinationPath":temp.path().join("invalid"),
+        "directoryTemplate":"author/title"
+    });
+    let rejected = cargo_bin_cmd!("takio")
+        .args(["library", "export-many", "--db"])
+        .arg(&database)
+        .args(["--request-json", &invalid.to_string()])
+        .output()
+        .expect("reject arbitrary export template");
+    assert!(!rejected.status.success());
+    assert_eq!(failure_code(&rejected.stdout), "invalid-arguments");
+    assert!(rejected.stderr.is_empty());
+
+    let duplicate_destination = temp.path().join("duplicate-request");
+    let duplicate = serde_json::json!({
+        "ids":[first_id,first_id],
+        "destinationPath":duplicate_destination
+    });
+    let rejected = cargo_bin_cmd!("takio")
+        .args(["library", "export-many", "--db"])
+        .arg(&database)
+        .args(["--request-json", &duplicate.to_string()])
+        .output()
+        .expect("reject duplicate export ids");
+    assert!(!rejected.status.success());
+    assert_eq!(failure_code(&rejected.stdout), "invalid-arguments");
+    assert!(rejected.stderr.is_empty());
+    assert!(!duplicate_destination.exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn export_many_rejects_symlinked_organization_directories() {
+    use std::os::unix::fs::symlink;
+
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let database = temp.path().join("library.sqlite");
+    let source = temp.path().join("book.epub");
+    fs::write(&source, b"book").expect("write source");
+    let id = add_book(&database, &source);
+    let updated = cargo_bin_cmd!("takio")
+        .args(["library", "update", "--db"])
+        .arg(&database)
+        .args([
+            "--id",
+            &id,
+            "--patch-json",
+            r#"{"authors":[{"name":"Escape"}]}"#,
+        ])
+        .output()
+        .expect("set author");
+    assert!(updated.status.success());
+
+    let destination = temp.path().join("destination");
+    let outside = temp.path().join("outside");
+    fs::create_dir(&destination).unwrap();
+    fs::create_dir(&outside).unwrap();
+    symlink(&outside, destination.join("Escape")).unwrap();
+    let request = serde_json::json!({
+        "ids":[id],
+        "destinationPath":destination,
+        "directoryTemplate":"author"
+    });
+    let output = cargo_bin_cmd!("takio")
+        .args(["library", "export-many", "--db"])
+        .arg(&database)
+        .args(["--request-json", &request.to_string()])
+        .output()
+        .expect("reject symlinked author directory");
+    assert!(output.status.success());
+    let value = success_value(&output.stdout);
+    assert_eq!(
+        value["counts"],
+        serde_json::json!({"total":1,"exported":0,"skipped":0,"failed":1})
+    );
+    assert_eq!(value["outcomes"][0]["code"], "destination-unavailable");
+    assert!(fs::read_dir(&outside).unwrap().next().is_none());
+}
+
+#[test]
 fn move_import_consumes_the_source_file() {
     let temp = tempfile::tempdir().expect("temporary directory");
     let database = temp.path().join("library.sqlite");

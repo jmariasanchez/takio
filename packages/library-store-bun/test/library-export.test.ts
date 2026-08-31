@@ -62,7 +62,7 @@ describe("BunSqliteLibraryStore export", () => {
     title: string,
     format: FormatId,
     sourcePath: string,
-    metadata: Pick<LibraryItem, "author" | "authors"> = {},
+    metadata: Pick<LibraryItem, "author" | "authors" | "series"> = {},
   ): Promise<LibraryItem> {
     const item: LibraryItem = {
       id,
@@ -263,6 +263,60 @@ describe("BunSqliteLibraryStore export", () => {
     expect(await readFile(join(destinationPath, structuredName), "utf8")).toBe(
       "structured author",
     );
+  });
+
+  it("organizes exports into bounded author and series directories", async () => {
+    const store = await openStore();
+    const source = join(directory, "organized.epub");
+    await writeFile(source, "organized");
+    await addReferenced(store, "organized-id", "Organized", "epub", source, {
+      authors: [{ name: "Ada/Lovelace:*?" }],
+      series: "Analytical/Engine:*?",
+    });
+
+    const byAuthor = await store.exportMany({
+      ids: ["organized-id"],
+      destinationPath,
+      directoryTemplate: "author",
+    });
+    expect(byAuthor).toMatchObject({
+      ok: true,
+      value: {
+        outcomes: [
+          {
+            status: "exported",
+            destinationPath: join(
+              await realpath(destinationPath),
+              "AdaLovelace",
+              exportedName("Organized", "organized-id", "epub"),
+            ),
+          },
+        ],
+      },
+    });
+
+    const seriesDestination = join(directory, "series-exports");
+    await mkdir(seriesDestination);
+    const bySeries = await store.exportMany({
+      ids: ["organized-id"],
+      destinationPath: seriesDestination,
+      directoryTemplate: "series",
+    });
+    expect(bySeries).toMatchObject({
+      ok: true,
+      value: {
+        outcomes: [
+          {
+            status: "exported",
+            destinationPath: join(
+              await realpath(seriesDestination),
+              "AnalyticalEngine",
+              exportedName("Organized", "organized-id", "epub"),
+            ),
+          },
+        ],
+      },
+    });
   });
 
   it("continues after per-format source failures and preserves collision bytes", async () => {

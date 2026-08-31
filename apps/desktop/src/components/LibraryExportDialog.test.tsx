@@ -22,6 +22,11 @@ test("renders an accessible filename choice for the snapshotted selection", () =
   expect(markup).toContain("3 books");
   expect(markup).toMatch(/checked="" value="title"/);
   expect(markup).toContain('value="author-title"');
+  expect(markup).toMatch(/checked="" value="flat"/);
+  expect(markup).toContain('value="author"');
+  expect(markup).toContain('value="series"');
+  expect(markup).toContain("Folders by author");
+  expect(markup).toContain("Folders by series");
   expect(markup).toContain("Choose folder…");
   expect(markup).toContain("stable suffix");
 });

@@ -10,13 +10,18 @@ import {
 import "./LibraryExportDialog.css";
 
 export type LibraryExportFileNameTemplate = "title" | "author-title";
+export type LibraryExportDirectoryTemplate = "flat" | "author" | "series";
+export type LibraryExportLayout = {
+  readonly fileNameTemplate: LibraryExportFileNameTemplate;
+  readonly directoryTemplate: LibraryExportDirectoryTemplate;
+};
 
 export type LibraryExportDialogProps = {
   readonly open: boolean;
   readonly selectedCount: number;
   readonly pending: boolean;
   readonly onClose: () => void;
-  readonly onConfirm: (template: LibraryExportFileNameTemplate) => void;
+  readonly onConfirm: (layout: LibraryExportLayout) => void;
 };
 
 const focusableSelector = [
@@ -60,6 +65,8 @@ export function LibraryExportDialog({
   const returnFocusRef = useRef<HTMLElement | null>(null);
   const wasOpen = useRef(false);
   const [template, setTemplate] = useState<LibraryExportFileNameTemplate>("title");
+  const [directoryTemplate, setDirectoryTemplate] =
+    useState<LibraryExportDirectoryTemplate>("flat");
   const selectionLabel = `${selectedCount} ${selectedCount === 1 ? "book" : "books"}`;
 
   useEffect(() => {
@@ -71,6 +78,7 @@ export function LibraryExportDialog({
       returnFocusRef.current =
         document.activeElement instanceof HTMLElement ? document.activeElement : null;
       setTemplate("title");
+      setDirectoryTemplate("flat");
       const frame = window.requestAnimationFrame(() => firstOptionRef.current?.focus());
       return () => window.cancelAnimationFrame(frame);
     }
@@ -108,7 +116,7 @@ export function LibraryExportDialog({
   function handleSubmit(event: FormEvent<HTMLFormElement>): void {
     event.preventDefault();
     if (!pending) {
-      onConfirm(template);
+      onConfirm({ fileNameTemplate: template, directoryTemplate });
     }
   }
 
@@ -167,6 +175,48 @@ export function LibraryExportDialog({
                 <span>
                   <strong>Author - title</strong>
                   <small>Ursula K. Le Guin - The Left Hand of Darkness</small>
+                </span>
+              </label>
+            </fieldset>
+            <fieldset disabled={pending}>
+              <legend>Folder organization</legend>
+              <label>
+                <input
+                  type="radio"
+                  name="directory-template"
+                  value="flat"
+                  checked={directoryTemplate === "flat"}
+                  onChange={() => setDirectoryTemplate("flat")}
+                />
+                <span>
+                  <strong>One folder</strong>
+                  <small>Save every exported format directly in the chosen folder</small>
+                </span>
+              </label>
+              <label>
+                <input
+                  type="radio"
+                  name="directory-template"
+                  value="author"
+                  checked={directoryTemplate === "author"}
+                  onChange={() => setDirectoryTemplate("author")}
+                />
+                <span>
+                  <strong>Folders by author</strong>
+                  <small>Ursula K. Le Guin / …</small>
+                </span>
+              </label>
+              <label>
+                <input
+                  type="radio"
+                  name="directory-template"
+                  value="series"
+                  checked={directoryTemplate === "series"}
+                  onChange={() => setDirectoryTemplate("series")}
+                />
+                <span>
+                  <strong>Folders by series</strong>
+                  <small>Earthsea Cycle / …, with Unsorted for books outside a series</small>
                 </span>
               </label>
             </fieldset>

@@ -49,6 +49,7 @@ export const LIBRARY_EXPORT_METADATA_STATES = [
   "backend-unavailable",
 ] as const;
 export const LIBRARY_EXPORT_FILE_NAME_TEMPLATES = ["title", "author-title"] as const;
+export const LIBRARY_EXPORT_DIRECTORY_TEMPLATES = ["flat", "author", "series"] as const;
 export const LIBRARY_HEALTH_ERROR_CODES = [
   "invalid-arguments",
   "storage-unavailable",
@@ -565,6 +566,7 @@ export const exportLibraryItemsRequestSchema = z
       .readonly(),
     destinationPath: libraryExportPathSchema,
     fileNameTemplate: z.enum(LIBRARY_EXPORT_FILE_NAME_TEMPLATES).optional(),
+    directoryTemplate: z.enum(LIBRARY_EXPORT_DIRECTORY_TEMPLATES).optional(),
   })
   .strict()
   .readonly();

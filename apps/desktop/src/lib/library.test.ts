@@ -228,6 +228,7 @@ const batchImportReport = {
 const exportRequest = {
   ids: [validItem.id, duplicateItem.id],
   destinationPath: "/Exports",
+  directoryTemplate: "author",
 } as const satisfies ExportLibraryItemsRequest;
 
 const exportReport = {

@@ -7,6 +7,7 @@ use std::time::Duration;
 use clap::{CommandFactory, Parser, Subcommand};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
+use unicode_normalization::UnicodeNormalization;
 
 use crate::calibre_import::import_calibre_library;
 use crate::conversion::{
@@ -2757,11 +2758,33 @@ fn import_paths_overlap(source: &Path, protected: &Path) -> bool {
 }
 
 fn export_many(store: &LibraryStore, request: &Value) -> AppResult<Value> {
-    let ids = request
+    let object = request
+        .as_object()
+        .filter(|object| {
+            object.keys().all(|key| {
+                matches!(
+                    key.as_str(),
+                    "ids" | "destinationPath" | "fileNameTemplate" | "directoryTemplate"
+                )
+            })
+        })
+        .ok_or_else(|| AppError::new("invalid-arguments"))?;
+    let raw_ids = request
         .get("ids")
         .and_then(Value::as_array)
         .filter(|ids| !ids.is_empty() && ids.len() <= 256)
         .ok_or_else(|| AppError::new("invalid-arguments"))?;
+    let ids = raw_ids
+        .iter()
+        .map(|id| {
+            id.as_str()
+                .filter(|id| !id.trim().is_empty())
+                .ok_or_else(|| AppError::new("invalid-arguments"))
+        })
+        .collect::<AppResult<Vec<_>>>()?;
+    if ids.iter().collect::<BTreeSet<_>>().len() != ids.len() {
+        return Err(AppError::new("invalid-arguments"));
+    }
     let destination = request
         .get("destinationPath")
         .and_then(Value::as_str)
@@ -2775,21 +2798,30 @@ fn export_many(store: &LibraryStore, request: &Value) -> AppResult<Value> {
     if !matches!(template, "title" | "author-title") {
         return Err(AppError::new("invalid-arguments"));
     }
+    let directory_template = object
+        .get("directoryTemplate")
+        .and_then(Value::as_str)
+        .unwrap_or("flat");
+    if !matches!(directory_template, "flat" | "author" | "series") {
+        return Err(AppError::new("invalid-arguments"));
+    }
     std::fs::create_dir_all(&destination).map_err(|_| AppError::new("destination-unavailable"))?;
+    let destination = destination
+        .canonicalize()
+        .map_err(|_| AppError::new("destination-unavailable"))?;
+    if !destination.is_dir() {
+        return Err(AppError::new("destination-unavailable"));
+    }
     let mut outcomes = Vec::new();
     for id in ids {
-        let id = id
-            .as_str()
-            .filter(|id| !id.trim().is_empty())
-            .ok_or_else(|| AppError::new("invalid-arguments"))?;
         let Some(item) = store.get(id)? else {
             outcomes.push(json!({"status":"failed","itemId":id,"code":"item-not-found"}));
             continue;
         };
-        let Some(format) = item.formats.first() else {
+        if item.formats.is_empty() {
             outcomes.push(json!({"status":"failed","itemId":id,"code":"source-unavailable"}));
             continue;
-        };
+        }
         let author = if template == "author-title" {
             item.authors
                 .first()
@@ -2798,42 +2830,60 @@ fn export_many(store: &LibraryStore, request: &Value) -> AppResult<Value> {
         } else {
             None
         };
-        let file_name =
-            destinations::destination_file_name(&item.title, author, format.format.extension());
-        let target = destination.join(file_name);
-        let target_shape = json!({
-            "itemId":id,
-            "format":format.format,
-            "provenance":format.provenance,
-            "destinationPath":target
-        });
-        if target.exists() {
-            outcomes.push(merge_json(
-                target_shape,
-                json!({"status":"skipped","reason":"destination-exists"}),
-            ));
-            continue;
-        }
-        match std::fs::copy(&format.source_path, &target) {
-            Ok(bytes) => match sha256_file(&target) {
-                Ok(sha256) => outcomes.push(merge_json(
-                    target_shape,
+        let relative_directory = export_relative_directory(directory_template, &item);
+        for format in &item.formats {
+            let file_name =
+                export_file_name(&item.title, author, &item.id, format.format.extension());
+            let requested_directory = relative_directory
+                .as_ref()
+                .map_or_else(|| destination.clone(), |segment| destination.join(segment));
+            let target = requested_directory.join(&file_name);
+            let target_shape = json!({
+                "itemId":id,
+                "format":format.format,
+                "provenance":format.provenance,
+                "destinationPath":target
+            });
+            let directory =
+                match prepare_export_directory(&destination, relative_directory.as_deref()) {
+                    Ok(directory) => directory,
+                    Err(_) => {
+                        outcomes.push(merge_json(
+                            target_shape,
+                            json!({"status":"failed","code":"destination-unavailable"}),
+                        ));
+                        continue;
+                    }
+                };
+            let target = directory.join(file_name);
+            match copy_export_file(&format.source_path, &target) {
+                ExportCopy::Exported { bytes, sha256 } => outcomes.push(merge_json(
+                    json!({
+                        "itemId":id,
+                        "format":format.format,
+                        "provenance":format.provenance,
+                        "destinationPath":target
+                    }),
                     json!({"status":"exported","bytes":bytes,"sha256":sha256,"metadata":"unsupported"}),
                 )),
-                Err(_) => {
-                    let _ = std::fs::remove_file(&target);
-                    outcomes.push(merge_json(
-                        target_shape,
-                        json!({"status":"failed","code":"source-changed"}),
-                    ));
-                }
-            },
-            Err(_) => {
-                let _ = std::fs::remove_file(&target);
-                outcomes.push(merge_json(
-                    target_shape,
-                    json!({"status":"failed","code":"source-unavailable"}),
-                ));
+                ExportCopy::Skipped => outcomes.push(merge_json(
+                    json!({
+                        "itemId":id,
+                        "format":format.format,
+                        "provenance":format.provenance,
+                        "destinationPath":target
+                    }),
+                    json!({"status":"skipped","reason":"destination-exists"}),
+                )),
+                ExportCopy::Failed(code) => outcomes.push(merge_json(
+                    json!({
+                        "itemId":id,
+                        "format":format.format,
+                        "provenance":format.provenance,
+                        "destinationPath":target
+                    }),
+                    json!({"status":"failed","code":code}),
+                )),
             }
         }
     }
@@ -2853,6 +2903,173 @@ fn export_many(store: &LibraryStore, request: &Value) -> AppResult<Value> {
         "outcomes":outcomes,
         "counts":{"total":outcomes.len(),"exported":exported,"skipped":skipped,"failed":failed}
     }))
+}
+
+enum ExportCopy {
+    Exported { bytes: u64, sha256: String },
+    Skipped,
+    Failed(&'static str),
+}
+
+fn export_relative_directory(template: &str, item: &crate::model::LibraryItem) -> Option<String> {
+    match template {
+        "author" => Some(export_path_segment(
+            item.authors
+                .first()
+                .map(|author| author.name.as_str())
+                .or(item.author.as_deref())
+                .unwrap_or("Unknown author"),
+            "Unknown author",
+        )),
+        "series" => Some(export_path_segment(
+            item.series.as_deref().unwrap_or("Unsorted"),
+            "Unsorted",
+        )),
+        _ => None,
+    }
+}
+
+fn export_path_segment(value: &str, fallback: &str) -> String {
+    let clean = value
+        .nfc()
+        .filter(|character| {
+            !character.is_control()
+                && !matches!(
+                    character,
+                    '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*'
+                )
+        })
+        .collect::<String>();
+    let clean = clean.trim().trim_end_matches(['.', ' ']);
+    let clean = if clean.is_empty() || matches!(clean, "." | "..") {
+        fallback
+    } else {
+        clean
+    };
+    truncate_utf8_bytes(clean, 128)
+}
+
+fn export_file_name(title: &str, author: Option<&str>, item_id: &str, extension: &str) -> String {
+    let base = destinations::destination_file_name(title, author, extension);
+    let stem = base
+        .strip_suffix(&format!(".{extension}"))
+        .unwrap_or(base.as_str());
+    let identity = format!("{:x}", Sha256::digest(item_id.as_bytes()));
+    let suffix = format!(" [{identity}].{extension}");
+    let keep = 240usize.saturating_sub(suffix.len());
+    let stem = truncate_utf8_bytes(&stem.nfc().collect::<String>(), keep);
+    format!("{}{}", stem.trim_end_matches(['.', ' ']), suffix)
+}
+
+fn truncate_utf8_bytes(value: &str, maximum_bytes: usize) -> String {
+    let mut end = 0;
+    for (index, character) in value.char_indices() {
+        let next = index + character.len_utf8();
+        if next > maximum_bytes {
+            break;
+        }
+        end = next;
+    }
+    value[..end].to_owned()
+}
+
+fn prepare_export_directory(destination: &Path, segment: Option<&str>) -> AppResult<PathBuf> {
+    let Some(segment) = segment else {
+        return Ok(destination.to_path_buf());
+    };
+    let directory = destination.join(segment);
+    match std::fs::symlink_metadata(&directory) {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
+            return Err(AppError::new("destination-unavailable"));
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            std::fs::create_dir(&directory)
+                .map_err(|_| AppError::new("destination-unavailable"))?;
+        }
+        Err(_) => return Err(AppError::new("destination-unavailable")),
+    }
+    let canonical = directory
+        .canonicalize()
+        .map_err(|_| AppError::new("destination-unavailable"))?;
+    if canonical == destination || !canonical.starts_with(destination) {
+        return Err(AppError::new("destination-unavailable"));
+    }
+    Ok(canonical)
+}
+
+fn copy_export_file(source: &Path, target: &Path) -> ExportCopy {
+    if std::fs::symlink_metadata(target).is_ok() {
+        return ExportCopy::Skipped;
+    }
+    let source = match source.canonicalize() {
+        Ok(source) => source,
+        Err(_) => return ExportCopy::Failed("source-unavailable"),
+    };
+    let mut input = match std::fs::File::open(&source) {
+        Ok(input) => input,
+        Err(_) => return ExportCopy::Failed("source-unavailable"),
+    };
+    let before = match input.metadata() {
+        Ok(metadata) if metadata.is_file() && metadata.len() > 0 => metadata,
+        _ => return ExportCopy::Failed("source-unavailable"),
+    };
+    let partial = target.with_file_name(format!(".takio-export-{}.partial", uuid::Uuid::new_v4()));
+    let mut output = match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&partial)
+    {
+        Ok(output) => output,
+        Err(_) => return ExportCopy::Failed("destination-unavailable"),
+    };
+    let result = (|| -> Result<(u64, String), &'static str> {
+        let mut hash = Sha256::new();
+        let mut bytes = 0u64;
+        let mut buffer = vec![0u8; 64 * 1024];
+        loop {
+            let read = input.read(&mut buffer).map_err(|_| "source-unavailable")?;
+            if read == 0 {
+                break;
+            }
+            output
+                .write_all(&buffer[..read])
+                .map_err(|_| "destination-unavailable")?;
+            hash.update(&buffer[..read]);
+            bytes += u64::try_from(read).map_err(|_| "source-unavailable")?;
+        }
+        let after = input.metadata().map_err(|_| "source-changed")?;
+        if bytes != before.len()
+            || after.len() != before.len()
+            || after.modified().ok() != before.modified().ok()
+        {
+            return Err("source-changed");
+        }
+        output.sync_all().map_err(|_| "destination-unavailable")?;
+        drop(output);
+        let sha256 = format!("{:x}", hash.finalize());
+        if sha256_file(&partial).map_err(|_| "destination-unavailable")? != sha256 {
+            return Err("destination-unavailable");
+        }
+        match std::fs::hard_link(&partial, target) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                return Err("destination-exists");
+            }
+            Err(_) => return Err("destination-unavailable"),
+        }
+        if sha256_file(target).map_err(|_| "destination-unavailable")? != sha256 {
+            let _ = std::fs::remove_file(target);
+            return Err("destination-unavailable");
+        }
+        Ok((bytes, sha256))
+    })();
+    let _ = std::fs::remove_file(&partial);
+    match result {
+        Ok((bytes, sha256)) => ExportCopy::Exported { bytes, sha256 },
+        Err("destination-exists") => ExportCopy::Skipped,
+        Err(code) => ExportCopy::Failed(code),
+    }
 }
 
 fn merge_json(mut base: Value, extra: Value) -> Value {

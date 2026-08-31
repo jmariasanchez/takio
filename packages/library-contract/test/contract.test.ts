@@ -11,6 +11,7 @@ import {
   LIBRARY_IMPORT_SKIPPED_REASONS,
   LIBRARY_EXPORT_FAILURE_CODES,
   LIBRARY_EXPORT_FILE_NAME_TEMPLATES,
+  LIBRARY_EXPORT_DIRECTORY_TEMPLATES,
   LIBRARY_EXPORT_METADATA_STATES,
   LIBRARY_EXPORT_SKIPPED_REASONS,
   MAX_LIBRARY_QUERY_PAGE_SIZE,
@@ -344,11 +345,18 @@ describe("LibraryStore", () => {
       "backend-unavailable",
     ]);
     expect(LIBRARY_EXPORT_FILE_NAME_TEMPLATES).toEqual(["title", "author-title"]);
+    expect(LIBRARY_EXPORT_DIRECTORY_TEMPLATES).toEqual(["flat", "author", "series"]);
     expect(exportLibraryItemsRequestSchema.parse(request)).toEqual(request);
     for (const fileNameTemplate of LIBRARY_EXPORT_FILE_NAME_TEMPLATES) {
       expect(exportLibraryItemsRequestSchema.parse({ ...request, fileNameTemplate })).toEqual({
         ...request,
         fileNameTemplate,
+      });
+    }
+    for (const directoryTemplate of LIBRARY_EXPORT_DIRECTORY_TEMPLATES) {
+      expect(exportLibraryItemsRequestSchema.parse({ ...request, directoryTemplate })).toEqual({
+        ...request,
+        directoryTemplate,
       });
     }
     expect(outcomes.map((outcome) => libraryExportEntryOutcomeSchema.parse(outcome))).toEqual(
@@ -369,6 +377,7 @@ describe("LibraryStore", () => {
       },
       { ids: [canonicalItem.id], destinationPath: "   " },
       { ...request, fileNameTemplate: "author/title" },
+      { ...request, directoryTemplate: "author/title" },
       { ...request, overwrite: true },
     ]) {
       expect(exportLibraryItemsRequestSchema.safeParse(invalid).success).toBe(false);

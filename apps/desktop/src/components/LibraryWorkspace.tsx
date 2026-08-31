@@ -32,7 +32,7 @@ import {
 } from "./LibraryBulkActionBar";
 import {
   LibraryExportDialog,
-  type LibraryExportFileNameTemplate,
+  type LibraryExportLayout,
 } from "./LibraryExportDialog";
 import { LibraryBulkMetadataDialog } from "./LibraryBulkMetadataDialog";
 import { LibraryBulkMetadataCandidateDialog } from "./LibraryBulkMetadataCandidateDialog";
@@ -98,7 +98,7 @@ export type LibraryWorkspaceBulkActions = {
   readonly onCloseMetadataDialog: () => void;
   readonly onCloseMetadataCandidateDialog: () => void;
   readonly onCloseExportDialog: () => void;
-  readonly onConfirmExport: (template: LibraryExportFileNameTemplate) => void;
+  readonly onConfirmExport: (layout: LibraryExportLayout) => void;
   readonly onApplyTags: (
     operation: LibraryBulkTagsOperation,
     tags: readonly string[],

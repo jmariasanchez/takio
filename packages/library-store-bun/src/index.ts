@@ -483,6 +483,60 @@ function exportFileName(
   return `${stem || "Untitled"}${suffix}`;
 }
 
+function exportDirectorySegment(value: string | null, fallback: string): string {
+  const segment =
+    sanitizeDestinationFileName((value ?? fallback).normalize("NFC").replace(/[\\/]/g, ""))
+      ?.trim()
+      .replace(/[. ]+$/u, "") || fallback;
+  return truncateUtf8(segment, 128).replace(/[. ]+$/u, "") || fallback;
+}
+
+function requestedExportDirectory(
+  destinationDirectory: string,
+  template: ExportLibraryItemsRequest["directoryTemplate"],
+  author: string | null,
+  series: string | null,
+): string {
+  if (template === undefined || template === "flat") {
+    return destinationDirectory;
+  }
+  const segment =
+    template === "author"
+      ? exportDirectorySegment(author, "Unknown author")
+      : exportDirectorySegment(series, "Unsorted");
+  return join(destinationDirectory, segment);
+}
+
+function prepareExportDirectory(
+  destinationDirectory: string,
+  requestedDirectory: string,
+): string | null {
+  if (requestedDirectory === destinationDirectory) {
+    return destinationDirectory;
+  }
+  try {
+    const metadata = lstatSync(requestedDirectory);
+    if (metadata.isSymbolicLink() || !metadata.isDirectory()) {
+      return null;
+    }
+  } catch (error) {
+    if (!hasErrorCode(error, "ENOENT")) {
+      return null;
+    }
+    try {
+      mkdirSync(requestedDirectory);
+    } catch {
+      return null;
+    }
+  }
+  try {
+    const canonical = realpathSync(requestedDirectory);
+    return isInside(destinationDirectory, canonical) ? canonical : null;
+  } catch {
+    return null;
+  }
+}
+
 function copyExportFile(sourcePath: string, destinationPath: string): ExportCopyResult {
   try {
     lstatSync(destinationPath);
@@ -4753,6 +4807,7 @@ export class BunSqliteLibraryStore
           missing: false;
           title: string;
           author: string | null;
+          series: string | null;
           formats: PreparedFormat[];
         };
     let items: PreparedItem[];
@@ -4760,7 +4815,7 @@ export class BunSqliteLibraryStore
       items = this.#database.transaction(() =>
         parsedRequest.data.ids.map((itemId): PreparedItem => {
           const item = this.#database!
-            .query<{ title: unknown; author: unknown }, [string]>(`
+            .query<{ title: unknown; author: unknown; series: unknown }, [string]>(`
               SELECT library_items.title,
                 COALESCE(
                   (SELECT name
@@ -4769,7 +4824,8 @@ export class BunSqliteLibraryStore
                     ORDER BY position
                     LIMIT 1),
                   library_items.author
-                ) AS author
+                ) AS author,
+                library_items.series
               FROM library_items
               WHERE library_items.id = ? AND library_items.trashed_at IS NULL
             `)
@@ -4785,6 +4841,9 @@ export class BunSqliteLibraryStore
             item.author !== null &&
             (typeof item.author !== "string" || item.author.length === 0)
           ) {
+            throw invalidStoredExport;
+          }
+          if (item.series !== null && (typeof item.series !== "string" || item.series.length === 0)) {
             throw invalidStoredExport;
           }
 
@@ -4833,6 +4892,7 @@ export class BunSqliteLibraryStore
             missing: false,
             title: item.title,
             author: typeof item.author === "string" ? item.author : null,
+            series: typeof item.series === "string" ? item.series : null,
             formats,
           };
         }),
@@ -4847,9 +4907,16 @@ export class BunSqliteLibraryStore
         outcomes.push({ status: "failed", itemId: item.itemId, code: "item-not-found" });
         continue;
       }
+      const requestedDirectory = requestedExportDirectory(
+        destinationDirectory,
+        parsedRequest.data.directoryTemplate,
+        item.author,
+        item.series,
+      );
+      const exportDirectory = prepareExportDirectory(destinationDirectory, requestedDirectory);
       for (const format of item.formats) {
         const destinationPath = join(
-          destinationDirectory,
+          exportDirectory ?? requestedDirectory,
           exportFileName(
             item.title,
             item.author,
@@ -4864,6 +4931,10 @@ export class BunSqliteLibraryStore
           provenance: format.provenance,
           destinationPath,
         } as const;
+        if (exportDirectory === null) {
+          outcomes.push({ status: "failed", ...target, code: "destination-unavailable" });
+          continue;
+        }
         if (format.sourcePath === null) {
           outcomes.push({
             status: "failed",
