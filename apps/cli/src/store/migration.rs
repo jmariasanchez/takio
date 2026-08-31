@@ -11,6 +11,10 @@ use crate::paths::LibraryPaths;
 
 use super::LIBRARY_SCHEMA_VERSION;
 
+type TableInfoSignature = Vec<(String, String, String, i64, Option<String>, i64)>;
+type ForeignKeySignature = Vec<(String, String, String, String, String, String)>;
+type SchemaSignature = Vec<(String, String, String, String)>;
+
 const V1_SCHEMA: &str = include_str!("../../tests/fixtures/legacy-library-schemas/schema-v1.sql");
 const V2_SCHEMA: &str =
     include_str!("../../../../packages/library-store-bun/test/fixtures/schema-v2.sql");
@@ -87,7 +91,7 @@ pub(super) fn migrate(
         .serialize("main")
         .map_err(|_| AppError::new("migration-failed"))?
         .to_vec();
-    create_verified_backup(&snapshot, paths, version)?;
+    create_or_verify_backup(&snapshot, paths, version)?;
     drop(snapshot);
 
     let result = (|| -> Result<(), rusqlite::Error> {
@@ -139,7 +143,7 @@ pub(super) fn migrate(
     }))
 }
 
-fn create_verified_backup(
+fn create_or_verify_backup(
     source: &Connection,
     paths: &LibraryPaths,
     version: i64,
@@ -148,8 +152,14 @@ fn create_verified_backup(
     let reservation = OpenOptions::new()
         .write(true)
         .create_new(true)
-        .open(&backup_path)
-        .map_err(|_| AppError::new("backup-failed"))?;
+        .open(&backup_path);
+    let reservation = match reservation {
+        Ok(reservation) => reservation,
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            return verify_existing_backup(source, &backup_path, version);
+        }
+        Err(_) => return Err(AppError::new("backup-failed")),
+    };
     drop(reservation);
     let result = (|| -> Result<(), rusqlite::Error> {
         let mut destination = Connection::open(&backup_path)?;
@@ -169,6 +179,94 @@ fn create_verified_backup(
         return Err(AppError::new("backup-failed"));
     }
     Ok(())
+}
+
+fn verify_existing_backup(source: &Connection, backup_path: &Path, version: i64) -> AppResult<()> {
+    let backup =
+        Connection::open_with_flags(backup_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .map_err(|_| AppError::new("backup-failed"))?;
+    let backup_version: i64 = backup
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .map_err(|_| AppError::new("backup-failed"))?;
+    if backup_version != version
+        || verify_sqlite(&backup).is_err()
+        || !schema_matches_version(&backup, version)
+    {
+        return Err(AppError::new("backup-failed"));
+    }
+    let source_digest =
+        logical_database_digest(source).map_err(|_| AppError::new("backup-failed"))?;
+    let backup_digest =
+        logical_database_digest(&backup).map_err(|_| AppError::new("backup-failed"))?;
+    if source_digest != backup_digest {
+        return Err(AppError::new("backup-failed"));
+    }
+    Ok(())
+}
+
+fn logical_database_digest(connection: &Connection) -> Result<[u8; 32], rusqlite::Error> {
+    let mut digest = Sha256::new();
+    let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
+    digest.update(version.to_le_bytes());
+    for (kind, name, table, sql) in schema_signature(connection)? {
+        digest_field(&mut digest, kind.as_bytes());
+        digest_field(&mut digest, name.as_bytes());
+        digest_field(&mut digest, table.as_bytes());
+        digest_field(&mut digest, sql.as_bytes());
+    }
+
+    for (kind, table) in object_names(connection)? {
+        if kind != "table" {
+            continue;
+        }
+        digest_field(&mut digest, table.as_bytes());
+        let escaped_table = table.replace('"', "\"\"");
+        let mut columns_statement =
+            connection.prepare(&format!("PRAGMA table_info(\"{escaped_table}\")"))?;
+        let columns = columns_statement
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<Result<Vec<_>, _>>()?;
+        let selection = columns
+            .iter()
+            .map(|column| format!("\"{}\"", column.replace('"', "\"\"")))
+            .collect::<Vec<_>>()
+            .join(",");
+        let mut statement = connection.prepare(&format!(
+            "SELECT {selection} FROM \"{escaped_table}\" ORDER BY {selection}"
+        ))?;
+        let mut rows = statement.query([])?;
+        while let Some(row) = rows.next()? {
+            digest.update([0xff]);
+            for index in 0..columns.len() {
+                use rusqlite::types::ValueRef;
+                match row.get_ref(index)? {
+                    ValueRef::Null => digest.update([0]),
+                    ValueRef::Integer(value) => {
+                        digest.update([1]);
+                        digest.update(value.to_le_bytes());
+                    }
+                    ValueRef::Real(value) => {
+                        digest.update([2]);
+                        digest.update(value.to_bits().to_le_bytes());
+                    }
+                    ValueRef::Text(value) => {
+                        digest.update([3]);
+                        digest_field(&mut digest, value);
+                    }
+                    ValueRef::Blob(value) => {
+                        digest.update([4]);
+                        digest_field(&mut digest, value);
+                    }
+                }
+            }
+        }
+    }
+    Ok(digest.finalize().into())
+}
+
+fn digest_field(digest: &mut Sha256, value: &[u8]) {
+    digest.update((value.len() as u64).to_le_bytes());
+    digest.update(value);
 }
 
 fn verify_sqlite(connection: &Connection) -> Result<(), rusqlite::Error> {
@@ -302,9 +400,8 @@ fn table_index_contract(connection: &Connection) -> Result<Vec<String>, rusqlite
             let details = columns
                 .query_map([], |row| {
                     Ok(format!(
-                        "{}:{}:{:?}:{}:{:?}:{}",
+                        "{}:{:?}:{}:{:?}:{}",
                         row.get::<_, i64>(0)?,
-                        row.get::<_, i64>(1)?,
                         row.get::<_, Option<String>>(2)?,
                         row.get::<_, i64>(3)?,
                         row.get::<_, Option<String>>(4)?,
@@ -331,9 +428,7 @@ fn object_names(connection: &Connection) -> Result<Vec<(String, String)>, rusqli
         .collect()
 }
 
-fn table_info_signature(
-    connection: &Connection,
-) -> Result<Vec<(String, String, String, i64, Option<String>, i64)>, rusqlite::Error> {
+fn table_info_signature(connection: &Connection) -> Result<TableInfoSignature, rusqlite::Error> {
     let tables = object_names(connection)?
         .into_iter()
         .filter_map(|(kind, name)| (kind == "table").then_some(name));
@@ -360,9 +455,7 @@ fn table_info_signature(
     Ok(signature)
 }
 
-fn foreign_key_signature(
-    connection: &Connection,
-) -> Result<Vec<(String, String, String, String, String, String)>, rusqlite::Error> {
+fn foreign_key_signature(connection: &Connection) -> Result<ForeignKeySignature, rusqlite::Error> {
     let tables = object_names(connection)?
         .into_iter()
         .filter_map(|(kind, name)| (kind == "table").then_some(name));
@@ -400,9 +493,7 @@ fn index_signature(connection: &Connection) -> Result<Vec<(String, String)>, rus
         .collect()
 }
 
-fn reference_schema(
-    version: i64,
-) -> Result<Vec<(String, String, String, String)>, rusqlite::Error> {
+fn reference_schema(version: i64) -> Result<SchemaSignature, rusqlite::Error> {
     let reference = Connection::open_in_memory()?;
     match version {
         1 => reference.execute_batch(V1_SCHEMA)?,
@@ -421,9 +512,7 @@ fn reference_schema(
     schema_signature(&reference)
 }
 
-fn schema_signature(
-    connection: &Connection,
-) -> Result<Vec<(String, String, String, String)>, rusqlite::Error> {
+fn schema_signature(connection: &Connection) -> Result<SchemaSignature, rusqlite::Error> {
     let mut statement = connection.prepare(
         "SELECT type,name,tbl_name,sql FROM sqlite_schema
          WHERE name NOT GLOB 'sqlite_*' AND sql IS NOT NULL
@@ -1196,6 +1285,41 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM library_items", [], |row| row.get(0))
             .unwrap();
         assert!(rows > 0);
+    }
+
+    #[test]
+    fn failed_migration_reuses_only_a_matching_verified_backup() {
+        let temp = tempfile::tempdir().unwrap();
+        let library_paths = paths(&temp);
+        install_fixture(&library_paths, 9);
+        fail_after_step(Some(10));
+        let error = LibraryStore::open(library_paths.clone(), true)
+            .err()
+            .unwrap();
+        fail_after_step(None);
+        assert_eq!(error.code(), "migration-failed");
+
+        let backup = PathBuf::from(format!("{}.v9.backup", library_paths.database.display()));
+        assert!(backup.is_file());
+        let store = LibraryStore::open(library_paths.clone(), true).unwrap();
+        verify_current(&store.connection, &library_paths).unwrap();
+        drop(store);
+
+        let changed = tempfile::tempdir().unwrap();
+        let changed_paths = paths(&changed);
+        install_fixture(&changed_paths, 9);
+        fail_after_step(Some(10));
+        let error = LibraryStore::open(changed_paths.clone(), true)
+            .err()
+            .unwrap();
+        fail_after_step(None);
+        assert_eq!(error.code(), "migration-failed");
+        Connection::open(&changed_paths.database)
+            .unwrap()
+            .execute("UPDATE library_items SET title=title || ' changed'", [])
+            .unwrap();
+        let error = LibraryStore::open(changed_paths, true).err().unwrap();
+        assert_eq!(error.code(), "backup-failed");
     }
 
     #[test]

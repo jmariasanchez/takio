@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 use std::io::{BufRead, IsTerminal, Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 
 use clap::{CommandFactory, Parser, Subcommand};
@@ -1376,8 +1376,15 @@ fn library(command: LibraryCommand, library: Option<&str>) -> AppResult<()> {
                 _ => return Err(AppError::new("invalid-arguments")),
             };
             let paths = LibraryPaths::resolve(library, db.as_deref())?;
+            validate_import_sources(&paths, &source_paths)?;
             let mut store = LibraryStore::open(paths, true)?;
-            print_success(scan_imports(&mut store, &source_paths, move_source, false)?)
+            print_success(scan_imports(
+                &mut store,
+                &source_paths,
+                move_source,
+                false,
+                || false,
+            )?)
         }
         LibraryCommand::ExportMany { db, request_json } => {
             let request = read_json(&request_json)?;
@@ -2222,6 +2229,7 @@ fn import_watch(
     use std::sync::mpsc;
 
     let paths = LibraryPaths::resolve(library, db)?;
+    validate_import_sources(&paths, source_paths)?;
     let mut store = LibraryStore::open(paths, true)?;
     let mut signals = Signals::new([SIGINT, SIGTERM])?;
     let handle = signals.handle();
@@ -2236,10 +2244,12 @@ fn import_watch(
     let mut counts = ImportCounts::default();
     let mut stopped = false;
     loop {
-        let scan = scan_imports(&mut store, source_paths, false, true)?;
+        let scan = scan_imports(&mut store, source_paths, false, true, || {
+            receiver.try_recv().is_ok()
+        })?;
         cycles += 1;
         counts.add(scan.counts);
-        if receiver.try_recv().is_ok() {
+        if scan.stopped || receiver.try_recv().is_ok() {
             stopped = true;
             break;
         }
@@ -2260,6 +2270,64 @@ fn import_watch(
         .join()
         .map_err(|_| AppError::new("storage-unavailable"))?;
     print_success(json!({"cycles":cycles,"stopped":stopped,"counts":counts}))
+}
+
+fn validate_import_sources(paths: &LibraryPaths, sources: &[PathBuf]) -> AppResult<()> {
+    let protected = [&paths.database, &paths.jobs, &paths.items, &paths.covers]
+        .into_iter()
+        .map(|path| path_for_overlap(path))
+        .collect::<AppResult<Vec<_>>>()?;
+    for source in sources {
+        let source = path_for_overlap(source)?;
+        if protected
+            .iter()
+            .any(|path| source.starts_with(path) || path.starts_with(&source))
+        {
+            return Err(AppError::new("invalid-arguments"));
+        }
+    }
+    Ok(())
+}
+
+fn path_for_overlap(path: &Path) -> AppResult<PathBuf> {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()?.join(path)
+    };
+    let mut normalized = PathBuf::new();
+    for component in absolute.components() {
+        match component {
+            Component::Prefix(_) | Component::RootDir | Component::Normal(_) => {
+                normalized.push(component.as_os_str());
+            }
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !normalized.pop() {
+                    return Err(AppError::new("invalid-arguments"));
+                }
+            }
+        }
+    }
+
+    let mut ancestor = normalized.as_path();
+    let mut missing = Vec::new();
+    while std::fs::symlink_metadata(ancestor).is_err() {
+        let leaf = ancestor
+            .file_name()
+            .ok_or_else(|| AppError::new("invalid-arguments"))?;
+        missing.push(leaf.to_os_string());
+        ancestor = ancestor
+            .parent()
+            .ok_or_else(|| AppError::new("invalid-arguments"))?;
+    }
+    let mut resolved = ancestor
+        .canonicalize()
+        .map_err(|_| AppError::new("invalid-arguments"))?;
+    for component in missing.into_iter().rev() {
+        resolved.push(component);
+    }
+    Ok(resolved)
 }
 
 fn export_many(store: &LibraryStore, request: &Value) -> AppResult<Value> {

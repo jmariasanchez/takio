@@ -412,6 +412,86 @@ fn import_watch_rejects_historical_bound_violations() {
 }
 
 #[test]
+fn scanned_imports_reject_library_source_overlap_before_side_effects() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let source = temp.path().join("watched");
+    fs::create_dir(&source).expect("source directory");
+    fs::write(source.join("book.epub"), b"ebook").expect("source ebook");
+    let nested_database = source.join(".takio/library.sqlite");
+
+    for subcommand in ["import-many", "import-watch"] {
+        let mut command = cargo_bin_cmd!("takio");
+        command
+            .args(["library", subcommand, "--db"])
+            .arg(&nested_database)
+            .arg("--source-path")
+            .arg(&source);
+        if subcommand == "import-watch" {
+            command.args(["--max-cycles", "1"]);
+        }
+        let output = command.output().expect("reject nested library");
+        assert!(!output.status.success());
+        assert!(output.stderr.is_empty());
+        assert_eq!(failure_code(&output.stdout), "invalid-arguments");
+        assert!(!nested_database.exists());
+        assert!(!source.join(".takio/items").exists());
+        assert!(!source.join(".takio/covers").exists());
+    }
+
+    let library_root = temp.path().join("library");
+    let nested_source = library_root.join("items/inbox");
+    fs::create_dir_all(&nested_source).expect("nested source directory");
+    fs::write(nested_source.join("book.epub"), b"ebook").expect("nested source ebook");
+    let database = library_root.join("library.sqlite");
+    let output = cargo_bin_cmd!("takio")
+        .args(["library", "import-watch", "--db"])
+        .arg(&database)
+        .arg("--source-path")
+        .arg(&nested_source)
+        .args(["--max-cycles", "1"])
+        .output()
+        .expect("reject source nested in library");
+    assert!(!output.status.success());
+    assert!(output.stderr.is_empty());
+    assert_eq!(failure_code(&output.stdout), "invalid-arguments");
+    assert!(!database.exists());
+    assert_eq!(
+        fs::read_dir(library_root.join("items"))
+            .expect("pre-existing items directory")
+            .count(),
+        1
+    );
+    assert!(!library_root.join("covers").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn scanned_imports_reject_symlinked_library_source_aliases() {
+    use std::os::unix::fs::symlink;
+
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let library_root = temp.path().join("library");
+    fs::create_dir(&library_root).expect("library root");
+    let alias = temp.path().join("library-alias");
+    symlink(&library_root, &alias).expect("library alias");
+    let database = library_root.join("library.sqlite");
+    let output = cargo_bin_cmd!("takio")
+        .args(["library", "import-watch", "--db"])
+        .arg(&database)
+        .arg("--source-path")
+        .arg(&alias)
+        .args(["--max-cycles", "1"])
+        .output()
+        .expect("reject symlink alias");
+    assert!(!output.status.success());
+    assert!(output.stderr.is_empty());
+    assert_eq!(failure_code(&output.stdout), "invalid-arguments");
+    assert!(!database.exists());
+    assert!(!library_root.join("items").exists());
+    assert!(!library_root.join("covers").exists());
+}
+
+#[test]
 fn import_watch_two_cycles_and_restart_do_not_recount_accounted_files() {
     let temp = tempfile::tempdir().expect("temporary directory");
     let database = temp.path().join("library.sqlite");
@@ -541,6 +621,53 @@ fn import_many_reports_existing_and_earlier_request_duplicates() {
     assert_eq!(value["outcomes"][3]["existing"]["format"], "epub");
 }
 
+#[test]
+fn import_many_reports_the_fingerprint_matched_format() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let database = temp.path().join("library.sqlite");
+    let epub = temp.path().join("book.epub");
+    let pdf = temp.path().join("book.pdf");
+    let duplicate_pdf = temp.path().join("duplicate.pdf");
+    fs::write(&epub, b"epub bytes").expect("epub");
+    fs::write(&pdf, b"pdf bytes").expect("pdf");
+    fs::write(&duplicate_pdf, b"pdf bytes").expect("duplicate pdf");
+
+    let added = cargo_bin_cmd!("takio")
+        .args(["library", "add", "--db"])
+        .arg(&database)
+        .arg("--source-path")
+        .arg(&epub)
+        .output()
+        .expect("add epub");
+    assert!(added.status.success());
+    let id = success_value(&added.stdout)["item"]["id"]
+        .as_str()
+        .expect("item id")
+        .to_owned();
+    let attached = cargo_bin_cmd!("takio")
+        .args(["library", "format", "import", "--db"])
+        .arg(&database)
+        .args(["--id", &id])
+        .arg("--source-path")
+        .arg(&pdf)
+        .output()
+        .expect("attach managed pdf");
+    assert!(attached.status.success());
+
+    let output = cargo_bin_cmd!("takio")
+        .args(["library", "import-many", "--db"])
+        .arg(&database)
+        .arg("--source-path")
+        .arg(&duplicate_pdf)
+        .output()
+        .expect("import duplicate pdf");
+    assert!(output.status.success());
+    let value = success_value(&output.stdout);
+    assert_eq!(value["outcomes"][0]["status"], "duplicate");
+    assert_eq!(value["outcomes"][0]["existing"]["itemId"], id);
+    assert_eq!(value["outcomes"][0]["existing"]["format"], "pdf");
+}
+
 #[cfg(unix)]
 #[test]
 fn import_many_reports_symlinks_and_unsupported_non_files() {
@@ -585,8 +712,12 @@ fn import_watch_signal_wakes_wait_and_returns_one_stopped_envelope() {
 
     let temp = tempfile::tempdir().expect("temporary directory");
     let database = temp.path().join("library.sqlite");
-    let source = temp.path().join("book.epub");
-    fs::write(&source, b"signal test").expect("ebook");
+    let source = temp.path().join("watch");
+    fs::create_dir(&source).expect("watch directory");
+    let entry_count = 2_000_u64;
+    for index in 0..entry_count {
+        fs::write(source.join(format!("book-{index:04}.epub")), b"signal test").expect("ebook");
+    }
     let binary = assert_cmd::cargo::cargo_bin!("takio");
     let child = Command::new(binary)
         .args(["library", "import-watch", "--db"])
@@ -598,7 +729,12 @@ fn import_watch_signal_wakes_wait_and_returns_one_stopped_envelope() {
         .stderr(Stdio::piped())
         .spawn()
         .expect("spawn import watch");
-    std::thread::sleep(Duration::from_secs(1));
+    let ready_deadline = Instant::now() + Duration::from_secs(3);
+    while !database.exists() && Instant::now() < ready_deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(database.exists(), "watch library should initialize");
+    std::thread::sleep(Duration::from_millis(100));
     let started = Instant::now();
     let status = Command::new("kill")
         .args(["-TERM", &child.id().to_string()])
@@ -613,6 +749,10 @@ fn import_watch_signal_wakes_wait_and_returns_one_stopped_envelope() {
     let value = success_value(&output.stdout);
     assert_eq!(value["cycles"], 1);
     assert_eq!(value["stopped"], true);
+    assert!(
+        value["counts"]["total"].as_u64().expect("total") < entry_count,
+        "signal should stop the active scan before all entries are imported"
+    );
 }
 
 fn run_import_watch(database: &std::path::Path, source: &std::path::Path, cycles: u64) -> Value {

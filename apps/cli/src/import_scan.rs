@@ -67,21 +67,31 @@ impl ImportCounts {
 pub struct ImportScan {
     pub outcomes: Vec<ImportOutcome>,
     pub counts: ImportCounts,
+    #[serde(skip)]
+    pub stopped: bool,
 }
 
-pub fn scan_imports(
+pub fn scan_imports<F>(
     store: &mut LibraryStore,
     roots: &[PathBuf],
     move_source: bool,
     observe: bool,
-) -> AppResult<ImportScan> {
+    mut should_stop: F,
+) -> AppResult<ImportScan>
+where
+    F: FnMut() -> bool,
+{
     let mut encountered = HashSet::new();
-    let mut entries = collect_entries(roots);
+    let (mut entries, mut stopped) = collect_entries(roots, &mut should_stop);
     let mut seen = HashSet::new();
     entries.retain(|entry| seen.insert(entry.path().to_path_buf()));
 
     let mut outcomes = Vec::new();
     for entry in entries {
+        if should_stop() {
+            stopped = true;
+            break;
+        }
         match entry {
             ScanEntry::Outcome(outcome) => outcomes.push(*outcome),
             ScanEntry::File(source) => {
@@ -110,7 +120,9 @@ pub fn scan_imports(
                 }
 
                 let (outcome, observed) = if detect_format(&canonical).is_some() {
-                    if let Some(existing) = store.find_managed_duplicate(&canonical)? {
+                    if let Some((existing, existing_format)) =
+                        store.find_managed_duplicate(&canonical)?
+                    {
                         let reason = if encountered.contains(&fingerprint) {
                             "earlier-in-request"
                         } else {
@@ -122,7 +134,7 @@ pub fn scan_imports(
                                 source_path: source,
                                 existing: ExistingImport {
                                     item_id: existing.id,
-                                    format: existing.format,
+                                    format: existing_format,
                                 },
                                 reason,
                             },
@@ -181,7 +193,11 @@ pub fn scan_imports(
             ImportOutcome::Failed { .. } => counts.failed += 1,
         }
     }
-    Ok(ImportScan { outcomes, counts })
+    Ok(ImportScan {
+        outcomes,
+        counts,
+        stopped,
+    })
 }
 
 #[derive(Debug)]
@@ -204,15 +220,24 @@ impl ScanEntry {
     }
 }
 
-fn collect_entries(roots: &[PathBuf]) -> Vec<ScanEntry> {
+fn collect_entries<F>(roots: &[PathBuf], should_stop: &mut F) -> (Vec<ScanEntry>, bool)
+where
+    F: FnMut() -> bool,
+{
     let mut entries = Vec::new();
     for root in roots {
+        if should_stop() {
+            return (entries, true);
+        }
         match fs::symlink_metadata(root) {
             Ok(metadata) if metadata.is_dir() => {
                 for entry in walkdir::WalkDir::new(root)
                     .follow_links(false)
                     .sort_by_file_name()
                 {
+                    if should_stop() {
+                        return (entries, true);
+                    }
                     match entry {
                         Ok(entry) if entry.file_type().is_dir() => {}
                         Ok(entry) if entry.file_type().is_symlink() => {
@@ -258,7 +283,7 @@ fn collect_entries(roots: &[PathBuf]) -> Vec<ScanEntry> {
             }))),
         }
     }
-    entries
+    (entries, false)
 }
 
 fn fingerprint(path: &Path) -> Result<(u64, String), &'static str> {

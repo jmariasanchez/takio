@@ -6,7 +6,7 @@ use regex::Regex;
 use rusqlite::{Connection, OpenFlags};
 use serde_json::{Value, json};
 
-use crate::conversion::{FormatId, detect_format};
+use crate::conversion::detect_format;
 use crate::model::{BookAuthor, LibraryPatch, Patch};
 use crate::output::{AppError, AppResult};
 use crate::paths::LibraryPaths;
@@ -17,7 +17,6 @@ const MAX_CUSTOM_VALUE_BYTES: usize = 16 * 1024;
 
 #[derive(Debug)]
 struct CalibreFormat {
-    format: FormatId,
     path: PathBuf,
 }
 
@@ -80,7 +79,7 @@ pub fn import_calibre_library(paths: LibraryPaths, library_root: &Path) -> AppRe
                 continue;
             }
         }
-        if let Some(existing) = store.find_managed_duplicate(&primary.path)? {
+        if let Some((existing, existing_format)) = store.find_managed_duplicate(&primary.path)? {
             let reason = if original_ids.contains(&existing.id) {
                 "existing-library"
             } else {
@@ -89,7 +88,7 @@ pub fn import_calibre_library(paths: LibraryPaths, library_root: &Path) -> AppRe
             outcomes.push(json!({
                 "status":"duplicate",
                 "sourcePath":primary.path,
-                "existing":{"itemId":existing.id,"format":primary.format},
+                "existing":{"itemId":existing.id,"format":existing_format},
                 "reason":reason
             }));
             continue;
@@ -306,11 +305,11 @@ fn read_books(database: &Connection, root: &Path) -> rusqlite::Result<Vec<Calibr
                 continue;
             }
             let path = book_dir.join(leaf_path);
-            if let Some(format) = detect_format(&path) {
+            if detect_format(&path).is_some() {
                 if book_formats.is_empty() {
-                    book_formats.push(CalibreFormat { format, path });
+                    book_formats.push(CalibreFormat { path });
                 } else if let Some(path) = safe_existing_file(root, &path) {
-                    book_formats.push(CalibreFormat { format, path });
+                    book_formats.push(CalibreFormat { path });
                 }
             }
         }

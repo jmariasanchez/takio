@@ -327,24 +327,34 @@ impl LibraryStore {
             .ok_or_else(|| AppError::new("storage-unavailable"))
     }
 
-    pub fn find_managed_duplicate(&self, source: &Path) -> AppResult<Option<LibraryItem>> {
+    pub fn find_managed_duplicate(
+        &self,
+        source: &Path,
+    ) -> AppResult<Option<(LibraryItem, FormatId)>> {
         let source = canonical_file(source)?;
         let fingerprint = hash_file(&source)?;
-        let id = self
+        let duplicate = self
             .connection
             .query_row(
-                "SELECT library_item_id FROM library_item_formats
+                "SELECT library_item_id,format FROM library_item_formats
                  WHERE provenance = 'managed' AND content_bytes = ?1 AND content_sha256 = ?2
+                 ORDER BY library_item_id,position
                  LIMIT 1",
                 params![as_i64(fingerprint.0)?, fingerprint.1],
-                |row| row.get::<_, String>(0),
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
             )
             .optional()?;
-        id.map(|id| {
-            self.read_item(&id)?
-                .ok_or_else(|| AppError::new("invalid-stored-data"))
-        })
-        .transpose()
+        duplicate
+            .map(|(id, format)| {
+                let item = self
+                    .read_item(&id)?
+                    .ok_or_else(|| AppError::new("invalid-stored-data"))?;
+                let format = format
+                    .parse::<FormatId>()
+                    .map_err(|_| AppError::new("invalid-stored-data"))?;
+                Ok((item, format))
+            })
+            .transpose()
     }
 
     pub fn import_watch_accounted(
