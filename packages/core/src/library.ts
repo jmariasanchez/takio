@@ -46,8 +46,14 @@ export const bookCustomMetadataSchema = z
     z.string().trim().regex(/^[a-z][a-z0-9_]{0,63}$/),
     z.string().max(16 * 1024),
   )
-  .refine((metadata) => Object.keys(metadata).length <= 64, {
-    message: "Books can have at most 64 custom metadata fields.",
+  .refine(
+    (metadata) => Object.keys(metadata).filter((key) => key !== "takio_metadata_audit").length <= 64,
+    {
+      message: "Books can have at most 64 user custom metadata fields.",
+    },
+  )
+  .refine((metadata) => Object.keys(metadata).length <= 65, {
+    message: "Books can have at most one reserved Takio metadata field.",
   })
   .readonly();
 

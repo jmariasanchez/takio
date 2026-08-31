@@ -1042,7 +1042,11 @@ fn merge_metadata_audit(
     if encoded.len() > MAX_CUSTOM_METADATA_VALUE_BYTES {
         return Err(AppError::new("invalid-arguments"));
     }
-    if !merged.contains_key(METADATA_AUDIT_KEY) && merged.len() >= MAX_CUSTOM_METADATA_ENTRIES {
+    let user_entries = merged
+        .keys()
+        .filter(|key| key.as_str() != METADATA_AUDIT_KEY)
+        .count();
+    if user_entries > MAX_CUSTOM_METADATA_ENTRIES {
         return Err(AppError::new("invalid-arguments"));
     }
     merged.insert(METADATA_AUDIT_KEY.to_owned(), encoded);

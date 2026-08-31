@@ -2087,6 +2087,54 @@ fn candidate_apply_honors_custom_metadata_patch_semantics_and_always_records_the
 }
 
 #[test]
+fn candidate_audit_does_not_consume_user_custom_metadata_capacity() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let (database, id) = seed_candidate_library(temp.path());
+    let metadata = (0..64)
+        .map(|index| {
+            (
+                format!("field_{index}"),
+                serde_json::json!(format!("value-{index}")),
+            )
+        })
+        .collect::<serde_json::Map<_, _>>();
+    let seeded = cargo_bin_cmd!("takio")
+        .args(["library", "update", "--db"])
+        .arg(&database)
+        .args([
+            "--id",
+            &id,
+            "--patch-json",
+            &serde_json::json!({"customMetadata": metadata}).to_string(),
+        ])
+        .output()
+        .expect("seed full custom metadata");
+    assert!(seeded.status.success());
+
+    let candidate = candidate_for(&id);
+    let applied = cargo_bin_cmd!("takio")
+        .args(["metadata", "candidates", "apply", "--db"])
+        .arg(&database)
+        .args([
+            "--id",
+            &id,
+            "--candidate-json",
+            &candidate.to_string(),
+            "--provenance",
+            "desktop-candidate-review:filename",
+        ])
+        .output()
+        .expect("apply candidate at user capacity");
+    assert!(applied.status.success());
+    let value = success_value(&applied.stdout);
+    let custom = value["item"]["customMetadata"]
+        .as_object()
+        .expect("custom metadata");
+    assert_eq!(custom.len(), 65);
+    assert!(custom.contains_key("takio_metadata_audit"));
+}
+
+#[test]
 fn candidate_apply_rejects_malformed_candidate_records() {
     let temp = tempfile::tempdir().expect("temporary directory");
     let (database, id) = seed_candidate_library(temp.path());

@@ -221,6 +221,14 @@ describe("libraryItemSchema", () => {
         Object.fromEntries(Array.from({ length: 65 }, (_, index) => [`field_${index}`, "value"])),
       ).success,
     ).toBe(false);
+    expect(
+      bookCustomMetadataSchema.safeParse({
+        ...Object.fromEntries(
+          Array.from({ length: 64 }, (_, index) => [`field_${index}`, "value"]),
+        ),
+        takio_metadata_audit: "{}",
+      }).success,
+    ).toBe(true);
   });
 
   it("preserves language order and publication-date precision", () => {
