@@ -1006,15 +1006,19 @@ export function metadataCandidateApplyValueSchemaFor(itemId: string) {
   });
 }
 
-const bulkMetadataCandidateItemIdSchema = z
-  .string()
-  .trim()
-  .min(1)
-  .max(MAX_BULK_METADATA_CANDIDATE_ITEM_ID_LENGTH)
-  .regex(/^[A-Za-z0-9._-]+$/)
-  .refine((itemId) => itemId !== "." && itemId !== "..", {
-    message: "Bulk metadata candidate item ids must be safe stored item ids.",
-  });
+const bulkMetadataCandidateItemIdSchema = z.preprocess(
+  (itemId) => typeof itemId === "string"
+    ? itemId.replace(/^[\t\n\v\f\r ]+|[\t\n\v\f\r ]+$/g, "")
+    : itemId,
+  z
+    .string()
+    .min(1)
+    .max(MAX_BULK_METADATA_CANDIDATE_ITEM_ID_LENGTH)
+    .regex(/^[A-Za-z0-9._-]+$/)
+    .refine((itemId) => itemId !== "." && itemId !== "..", {
+      message: "Bulk metadata candidate item ids must be safe stored item ids.",
+    }),
+);
 const bulkMetadataCandidateFailureCodeSchema = z.string().trim().min(1).max(120);
 
 export const bulkMetadataCandidateDiscoveryRequestSchema = z

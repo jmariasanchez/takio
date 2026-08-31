@@ -246,6 +246,10 @@ describe("bulk metadata candidate contract", () => {
 
   it("matches the safe ASCII item id domain", () => {
     const boundary = "x".repeat(MAX_BULK_METADATA_CANDIDATE_ITEM_ID_LENGTH);
+    expect(bulkMetadataCandidateDiscoveryRequestSchema.parse({
+      ...request,
+      itemIds: ["\t book-1 \r\n"],
+    }).itemIds).toEqual(["book-1"]);
     expect(bulkMetadataCandidateDiscoveryRequestSchema.safeParse({
       ...request,
       itemIds: [boundary],
@@ -254,6 +258,12 @@ describe("bulk metadata candidate contract", () => {
       ...request,
       itemIds: [`${boundary}x`],
     }).success).toBe(false);
+    for (const unicodeWhitespace of ["\u0085", "\ufeff"] as const) {
+      expect(bulkMetadataCandidateDiscoveryRequestSchema.safeParse({
+        ...request,
+        itemIds: [`${unicodeWhitespace}book-1${unicodeWhitespace}`],
+      }).success).toBe(false);
+    }
   });
 
   it("accepts all discovery outcomes with exact ordered identity and counts", () => {

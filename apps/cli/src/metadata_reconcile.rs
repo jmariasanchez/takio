@@ -29,7 +29,10 @@ impl ReconcileRequest {
         request.item_ids = request
             .item_ids
             .into_iter()
-            .map(|id| id.trim().to_owned())
+            .map(|id| {
+                id.trim_matches(|character: char| character.is_ascii_whitespace())
+                    .to_owned()
+            })
             .collect();
         let mut unique = HashSet::with_capacity(request.item_ids.len());
         if request.schema_version != 1
@@ -368,10 +371,22 @@ mod tests {
     #[test]
     fn request_trims_item_ids_before_use() {
         let request = ReconcileRequest::parse(json!({
-            "schemaVersion":1,"itemIds":["  first  ","second\n"],"includeOnline":false,"concurrency":1
+            "schemaVersion":1,"itemIds":["  first  ","second\n","\tthird\r"],"includeOnline":false,"concurrency":1
         }))
         .expect("valid request");
-        assert_eq!(request.item_ids(), ["first", "second"]);
+        assert_eq!(request.item_ids(), ["first", "second", "third"]);
+
+        for unicode_whitespace in ['\u{85}', '\u{feff}'] {
+            assert!(
+                ReconcileRequest::parse(json!({
+                    "schemaVersion":1,
+                    "itemIds":[format!("{unicode_whitespace}book{unicode_whitespace}")],
+                    "includeOnline":false,
+                    "concurrency":1
+                }))
+                .is_err()
+            );
+        }
     }
 
     #[test]
