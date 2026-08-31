@@ -42,6 +42,7 @@ jobs:
           bun run check
           bun run test
           bun run test:performance:library
+          bun run test:performance:native:library
 
   build:
     name: Build ${{ matrix.os }} CLI

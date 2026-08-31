@@ -48,7 +48,9 @@ jobs:
         run: bun run test
 
       - name: Test library performance gates
-        run: bun run test:performance:library
+        run: |
+          bun run test:performance:library
+          bun run test:performance:native:library
 
       - name: Package and smoke-test standalone CLI
         shell: bash
