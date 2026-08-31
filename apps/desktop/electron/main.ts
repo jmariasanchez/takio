@@ -1,6 +1,5 @@
-import { existsSync } from "node:fs";
 import { homedir } from "node:os";
-import { isAbsolute, join, normalize, resolve, sep } from "node:path";
+import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
   app,
@@ -8,7 +7,6 @@ import {
   dialog,
   ipcMain,
   Menu,
-  net,
   protocol,
   shell,
   type MenuItemConstructorOptions,
@@ -17,7 +15,7 @@ import {
 } from "electron";
 
 import { invokeEngine, libraryServiceClient } from "./engine";
-import { candidateCoverResponse } from "./candidate-cover-protocol";
+import { candidateCoverResponse, discardCandidateCovers, localCoverResponse } from "./candidate-cover-protocol";
 
 protocol.registerSchemesAsPrivileged([
   { scheme: "takio-cover", privileges: { standard: true, secure: true, supportFetchAPI: true } },
@@ -73,23 +71,20 @@ function libraryRoot(): string {
   return join(process.env.XDG_DATA_HOME ?? join(homedir(), ".local", "share"), "takio");
 }
 
-function isManagedCover(path: string): boolean {
-  const normalized = normalize(path);
-  const root = normalize(libraryRoot()) + sep;
-  return (
-    isAbsolute(normalized) &&
-    normalized.startsWith(root) &&
-    normalized.split(sep).includes("covers") &&
-    /\.(?:gif|jpe?g|png|webp)$/i.test(normalized)
-  );
-}
-
 function registerIpc() {
-  ipcMain.handle("takio:invoke", (_event, command: unknown, args: unknown) =>
-    typeof command === "string"
+  ipcMain.handle("takio:invoke", async (_event, command: unknown, args: unknown) => {
+    if (command === "candidate_covers_discard") {
+      const artifactIds: unknown[] | null = typeof args === "object" && args !== null && Array.isArray((args as Record<string, unknown>).artifactIds)
+        ? (args as Record<string, unknown>).artifactIds as unknown[]
+        : null;
+      if (!artifactIds || !artifactIds.every((id) => typeof id === "string" && /^[0-9a-f]{32}$/.test(id))) return { ok: false, error: { code: "invalid-arguments" } };
+      await discardCandidateCovers(libraryRoot(), artifactIds as string[]);
+      return { ok: true, value: {} };
+    }
+    return typeof command === "string"
       ? invokeEngine(command, typeof args === "object" && args !== null ? args as Record<string, unknown> : undefined)
-      : { ok: false, error: { code: "invalid-arguments" } },
-  );
+      : { ok: false, error: { code: "invalid-arguments" } };
+  });
   ipcMain.handle("takio:open-dialog", async (_event, input: Record<string, unknown>) => {
     const properties: OpenDialogOptions["properties"] = [
       input.directory === true ? "openDirectory" : "openFile",
@@ -173,10 +168,7 @@ app.whenReady().then(async () => {
     if (url.hostname === "candidate") {
       return candidateCoverResponse(request.url, libraryRoot());
     }
-    const path = decodeURIComponent(new URL(request.url).pathname.slice(1));
-    return isManagedCover(path) && existsSync(path)
-      ? net.fetch(pathToFileURL(path).href)
-      : new Response("Not found", { status: 404 });
+    return localCoverResponse(request.url, libraryRoot());
   });
   registerIpc();
   Menu.setApplicationMenu(buildMenu());

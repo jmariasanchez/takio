@@ -5,6 +5,7 @@ import {
   bulkMetadataCandidateDiscoveryRequestSchema,
   bulkMetadataCandidateDiscoveryResultSchemaFor,
   bulkMetadataCandidateReviewResultSchemaFor,
+  metadataCandidateApplyValueSchemaForRequest,
   type MetadataCandidate,
 } from "@takio/library-contract";
 import { useEffect, useId, useRef, useState } from "react";
@@ -16,6 +17,7 @@ import {
 import {
   applyMetadataCandidate,
   describeLibraryError,
+  discardMetadataCandidateCovers,
   getLibraryItem,
   listMetadataCandidates,
 } from "../lib/library";
@@ -206,6 +208,9 @@ export function LibraryBulkMetadataCandidateDialog({
     };
     const validated = bulkMetadataCandidateDiscoveryResultSchemaFor(parsed.data).safeParse(contractResult);
     if (!validated.success) {
+      await Promise.all(result.outcomes.flatMap((outcome) =>
+        outcome.status === "ready" ? [discardMetadataCandidateCovers(outcome.candidates)] : [],
+      ));
       setError("The metadata discovery report was invalid.");
       setPhase("complete");
       return;
@@ -260,15 +265,16 @@ export function LibraryBulkMetadataCandidateDialog({
     setError(null);
     setLive(`Applying ${fields.length} selected field${fields.length === 1 ? "" : "s"}${cover ? `${fields.length > 0 ? " and" : ""} cover` : ""} to ${current.item.title}.`);
     try {
-      const result = await applyCandidate({
+      const applyRequest = {
         itemId: current.itemId,
         candidate,
         fields,
         cover,
         provenance: `desktop-bulk-candidate-review:${candidate.source}`,
-      });
-      if (!result.ok || result.value.item.id !== current.itemId) {
-        setError(!result.ok ? describeLibraryError(result.error.code) : "The applied book did not match the review target.");
+      } as const;
+      const result = await applyCandidate(applyRequest);
+      if (!result.ok || !metadataCandidateApplyValueSchemaForRequest(applyRequest).safeParse(result.value).success) {
+        setError(!result.ok ? describeLibraryError(result.error.code) : "The metadata apply response did not match the selected candidate.");
         return;
       }
       onApplied(result.value.item);

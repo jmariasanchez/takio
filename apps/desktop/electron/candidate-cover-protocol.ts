@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
-import { lstat, readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { constants } from "node:fs";
+import { lstat, open, realpath, unlink } from "node:fs/promises";
+import { dirname, extname, isAbsolute, join, normalize, relative, resolve } from "node:path";
 
 const ARTIFACT_ID = /^[0-9a-f]{32}$/;
 const SHA256 = /^[0-9a-f]{64}$/;
@@ -51,14 +52,51 @@ function notFound(): Response {
 }
 
 async function readRegular(path: string, maxBytes: number): Promise<Buffer | null> {
+  let handle;
   try {
-    const metadata = await lstat(path);
-    if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.size > maxBytes) return null;
-    const bytes = await readFile(path);
+    handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    const metadata = await handle.stat();
+    const linked = await lstat(path);
+    if (!metadata.isFile() || linked.isSymbolicLink() || metadata.dev !== linked.dev || metadata.ino !== linked.ino || metadata.size > maxBytes) return null;
+    const bytes = await handle.readFile();
     return bytes.length <= maxBytes ? bytes : null;
   } catch {
     return null;
+  } finally {
+    await handle?.close().catch(() => undefined);
   }
+}
+
+function contained(root: string, path: string): boolean {
+  const suffix = relative(root, path);
+  return suffix !== "" && !suffix.startsWith("..") && !isAbsolute(suffix);
+}
+
+export async function localCoverResponse(requestUrl: string, libraryRoot: string): Promise<Response> {
+  try {
+    const url = new URL(requestUrl);
+    if (url.protocol !== "takio-cover:" || url.hostname !== "local" || url.search || url.hash || url.username || url.password || url.port) return notFound();
+    const path = normalize(decodeURIComponent(url.pathname.slice(1)));
+    const root = resolve(libraryRoot, "covers");
+    if (!isAbsolute(path) || !contained(root, path)) return notFound();
+    const rootInfo = await lstat(root);
+    if (!rootInfo.isDirectory() || rootInfo.isSymbolicLink()) return notFound();
+    const [openedRoot, openedParent] = await Promise.all([realpath(root), realpath(dirname(path))]);
+    if (!contained(openedRoot, path) || (openedParent !== openedRoot && !contained(openedRoot, openedParent))) return notFound();
+    const bytes = await readRegular(path, MAX_COVER_BYTES);
+    if (!bytes) return notFound();
+    const mediaType = new Map([[".jpg", "image/jpeg"], [".jpeg", "image/jpeg"], [".png", "image/png"], [".gif", "image/gif"], [".webp", "image/webp"]]).get(extname(path).toLowerCase());
+    return mediaType ? new Response(new Uint8Array(bytes), { headers: { "Content-Type": mediaType, "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" } }) : notFound();
+  } catch {
+    return notFound();
+  }
+}
+
+export async function discardCandidateCovers(libraryRoot: string, artifactIds: readonly string[]): Promise<void> {
+  const root = join(libraryRoot, "candidate-covers");
+  await Promise.all(artifactIds.filter((id) => ARTIFACT_ID.test(id)).flatMap((id) =>
+    ["json", "bin"].map((extension) => unlink(join(root, `${id}.${extension}`)).catch(() => undefined)),
+  ));
 }
 
 function decodeManifest(bytes: Buffer, artifactId: string): Manifest | null {

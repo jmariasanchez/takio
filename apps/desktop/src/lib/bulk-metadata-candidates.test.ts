@@ -79,6 +79,7 @@ test("cancellation stops scheduling, lets in-flight work settle, and accounts ev
   const gates = [deferred<void>(), deferred<void>()];
   let canceled = false;
   const started: string[] = [];
+  const discarded: string[] = [];
   const pending = discoverBulkMetadataCandidates(
     { itemIds: ["one", "two", "three", "four", "five"], includeOnline: true },
     {
@@ -89,6 +90,9 @@ test("cancellation stops scheduling, lets in-flight work settle, and accounts ev
       },
       listCandidates: async ({ itemId }) => candidates(itemId),
       isCanceled: () => canceled,
+      discardCandidates: async (values) => {
+        discarded.push(...values.map(({ id }) => id));
+      },
     },
   );
 
@@ -100,20 +104,21 @@ test("cancellation stops scheduling, lets in-flight work settle, and accounts ev
 
   expect(started).toEqual(["one", "two"]);
   expect(result.outcomes.map(({ status }) => status)).toEqual([
-    "ready",
-    "ready",
+    "canceled",
+    "canceled",
     "canceled",
     "canceled",
     "canceled",
   ]);
   expect(result.counts).toEqual({
     total: 5,
-    ready: 2,
+    ready: 0,
     "no-candidates": 0,
     missing: 0,
     failed: 0,
-    canceled: 3,
+    canceled: 5,
   });
+  expect(discarded).toEqual(["candidate-one", "candidate-two"]);
 });
 
 test("classifies missing, failed, no-candidate, and thrown lookups exactly", async () => {

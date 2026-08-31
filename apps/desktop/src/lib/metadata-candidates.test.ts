@@ -95,6 +95,11 @@ describe("metadata candidate renderer decoder", () => {
       returns({ ok: true, value: { itemId: "book-2", candidates: [] } }),
     )).toEqual({ ok: false, error: { code: "protocol-error" } });
 
+    expect(await listMetadataCandidates(
+      { itemId: "book-1", includeOnline: false },
+      returns({ ok: true, value: { itemId: "book-1", candidates: [candidate, { ...candidate, patch: { title: "Other" } }] } }),
+    )).toEqual({ ok: false, error: { code: "protocol-error" } });
+
     // The response answers this item but smuggles a foreign candidate.
     expect(await listMetadataCandidates(
       { itemId: "book-1", includeOnline: false },
@@ -139,6 +144,26 @@ describe("metadata candidate renderer decoder", () => {
       },
       returns({ ok: true, value: { item, applied: { ...applied, itemId: "book-9" } } }),
     )).toEqual({ ok: false, error: { code: "protocol-error" } });
+  });
+
+  test("rejects apply responses that do not exactly match the request", async () => {
+    const request = {
+      itemId: "book-1",
+      candidate,
+      fields: ["title"],
+      cover: false,
+      provenance: "desktop-candidate-review:filename",
+    } as const;
+    for (const mismatch of [
+      { ...applied, candidateId: "filename:2" },
+      { ...applied, source: "embedded" },
+      { ...applied, provenance: "other" },
+      { ...applied, fields: ["publisher"] },
+      { ...applied, coverApplied: true, cover: { mediaType: "image/jpeg", extension: ".jpg", bytes: 6, sha256: "a".repeat(64) } },
+    ]) {
+      expect(await applyMetadataCandidate(request, returns({ ok: true, value: { item, applied: mismatch } })))
+        .toEqual({ ok: false, error: { code: "protocol-error" } });
+    }
   });
 
   test("requires exact coverApplied and cover summary accounting", async () => {

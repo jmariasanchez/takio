@@ -5,6 +5,7 @@ import type {
   DesktopLibraryGetResult,
   DesktopMetadataCandidateListResult,
 } from "./library";
+import { discardMetadataCandidateCovers } from "./library";
 
 export const BULK_METADATA_DISCOVERY_CONCURRENCY = 2;
 
@@ -37,6 +38,7 @@ type Dependencies = Readonly<{
   }) => Promise<DesktopMetadataCandidateListResult>;
   isCanceled?: () => boolean;
   onProgress?: (completed: number, total: number) => void;
+  discardCandidates?: (candidates: readonly MetadataCandidate[]) => Promise<void>;
 }>;
 
 export function countBulkMetadataDiscoveryOutcomes(
@@ -76,6 +78,10 @@ async function discoverOne(
     const candidates = listResult.value.candidates.filter(
       (candidate) => candidate.provenance.itemId === itemId,
     );
+    if (dependencies.isCanceled?.()) {
+      await (dependencies.discardCandidates ?? discardMetadataCandidateCovers)(candidates);
+      return { itemId, status: "canceled" };
+    }
     return candidates.length === 0
       ? { itemId, status: "no-candidates", item: itemResult.value.item }
       : { itemId, status: "ready", item: itemResult.value.item, candidates };

@@ -10,7 +10,7 @@ import {
   libraryImportReportSchema,
   libraryQueryPageSchema,
   libraryTrashPageSchema,
-  metadataCandidateApplyValueSchemaFor,
+  metadataCandidateApplyValueSchemaForRequest,
   metadataCandidateListValueSchemaFor,
   listMetadataCandidatesRequestSchema,
   listLibraryTrashRequestSchema,
@@ -40,6 +40,7 @@ import type {
   LibraryListWireResult,
   LibraryMetadataPatch,
   MetadataCandidateApplyWireResult,
+  MetadataCandidate,
   MetadataCandidateListWireResult,
   ListMetadataCandidatesRequest,
   LibraryQueryWireResult,
@@ -302,6 +303,16 @@ export async function listMetadataCandidates(
   );
 }
 
+export async function discardMetadataCandidateCovers(
+  candidates: readonly MetadataCandidate[],
+  invokeCommand: LibraryInvoker = invokeDesktop,
+): Promise<void> {
+  const artifactIds = candidates.flatMap((candidate) => candidate.cover ? [candidate.cover.artifactId] : []);
+  if (artifactIds.length > 0) {
+    await invokeCommand("candidate_covers_discard", { artifactIds: [...new Set(artifactIds)] }).catch(() => undefined);
+  }
+}
+
 export async function applyMetadataCandidate(
   request: ApplyMetadataCandidateRequest,
   invokeCommand: LibraryInvoker = invokeDesktop,
@@ -310,7 +321,7 @@ export async function applyMetadataCandidate(
   if (!parsed.success) return invalidArguments();
   const result = await invokeCommand<unknown>("metadata_candidates_apply", { request: parsed.data });
   return decodeLibraryResult<MetadataCandidateApplyWireResult>(result, (value) =>
-    metadataCandidateApplyValueSchemaFor(parsed.data.itemId).safeParse(value).success,
+    metadataCandidateApplyValueSchemaForRequest(parsed.data).safeParse(value).success,
   );
 }
 

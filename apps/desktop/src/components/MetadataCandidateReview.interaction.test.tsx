@@ -196,6 +196,28 @@ test("ignores a stale list response that resolves after the selection changed", 
   expect(statusText(host)).toBe("");
 });
 
+test("releases cover stages from a stale list response", async () => {
+  type ListResult = Awaited<ReturnType<ListCandidates>>;
+  let resolveFirst: ((value: ListResult) => void) | null = null;
+  const discarded: string[][] = [];
+  Object.defineProperty(window, "takio", { configurable: true, value: {
+    invoke: async (command: string, args?: Record<string, unknown>) => {
+      if (command === "candidate_covers_discard") discarded.push(args?.artifactIds as string[]);
+      return { ok: true, value: {} };
+    },
+  } });
+  const list: ListCandidates = async () => await new Promise<ListResult>((resolve) => { resolveFirst = resolve; });
+  const host = mount(<MetadataCandidateReview item={item("book-1", "First")} onApplied={() => undefined} listCandidates={list} />);
+  act(() => button(host, "Review").click());
+  render(<MetadataCandidateReview item={item("book-2", "Second")} onApplied={() => undefined} listCandidates={list} />);
+  await act(async () => {
+    resolveFirst?.({ ok: true, value: { itemId: "book-1", candidates: [candidate("book-1", "Stale", true)] } });
+    await Promise.resolve();
+  });
+  expect(discarded).toEqual([["0123456789abcdef0123456789abcdef"]]);
+  delete (window as { takio?: unknown }).takio;
+});
+
 test("ignores a stale apply response and never reports it as applied", async () => {
   const applied: string[] = [];
   const list: ListCandidates = async (request) => ({
@@ -255,6 +277,38 @@ test("ignores a stale apply response and never reports it as applied", async () 
 
   expect(applied).toEqual([]);
   expect(statusText(host)).toBe("");
+});
+
+test("rejects a mismatched apply response before reporting UI success", async () => {
+  const applied: string[] = [];
+  const list: ListCandidates = async (request) => ({
+    ok: true,
+    value: { itemId: request.itemId, candidates: [candidate(request.itemId, "Discovered title")] },
+  });
+  const host = mount(<MetadataCandidateReview
+    item={item("book-1", "Current")}
+    onApplied={(value) => applied.push(value.id)}
+    listCandidates={list}
+    applyCandidate={async (request) => ({
+      ok: true,
+      value: {
+        item: item(request.itemId, "Wrong success"),
+        applied: {
+          itemId: request.itemId,
+          candidateId: "filename:other",
+          source: request.candidate.source,
+          provenance: request.provenance,
+          fields: request.fields,
+          coverApplied: request.cover,
+        },
+      },
+    })}
+  />);
+  await act(async () => button(host, "Review").click());
+  await act(async () => host.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')[1]?.click());
+  await act(async () => button(host, "Apply selection").click());
+  expect(applied).toEqual([]);
+  expect(statusText(host)).toContain("did not match the selected candidate");
 });
 
 test("drops candidates provenance-bound to a different item and never applies them", async () => {

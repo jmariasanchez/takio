@@ -12,6 +12,7 @@ import {
   bulkMetadataCandidateReviewResultSchemaFor,
   metadataCandidateApplyValueSchema,
   metadataCandidateApplyValueSchemaFor,
+  metadataCandidateApplyValueSchemaForRequest,
   metadataCandidateListValueSchema,
   metadataCandidateListValueSchemaFor,
   metadataCandidateSchema,
@@ -191,6 +192,42 @@ describe("metadata candidate contract", () => {
       itemId: "book-1",
       candidates: [candidate],
     }).success).toBe(false);
+    expect(metadataCandidateListValueSchema.safeParse({
+      itemId: "book-1",
+      candidates: [candidate, { ...candidate, patch: { title: "Other" } }],
+    }).success).toBe(false);
+  });
+
+  it("binds apply results to the exact requested candidate selection", () => {
+    const request = applyMetadataCandidateRequestSchema.parse({
+      itemId: "book-1",
+      candidate: { ...candidate, cover: candidateCover },
+      fields: ["title", "publisher"],
+      cover: true,
+      provenance: "desktop-candidate-review:embedded",
+    });
+    const cover = (({ artifactId: _artifactId, ...summary }) => summary)(candidateCover);
+    const applied = {
+      itemId: request.itemId,
+      candidateId: request.candidate.id,
+      source: request.candidate.source,
+      provenance: request.provenance,
+      fields: request.fields,
+      coverApplied: true,
+      cover,
+    };
+    const schema = metadataCandidateApplyValueSchemaForRequest(request);
+    expect(schema.safeParse({ item, applied }).success).toBe(true);
+    for (const mismatch of [
+      { ...applied, candidateId: "embedded:2" },
+      { ...applied, source: "online" },
+      { ...applied, provenance: "other" },
+      { ...applied, fields: ["publisher", "title"] },
+      { ...applied, coverApplied: false, cover: undefined },
+      { ...applied, cover: { ...cover, sha256: "b".repeat(64) } },
+    ]) {
+      expect(schema.safeParse({ item, applied: mismatch }).success).toBe(false);
+    }
   });
 
   it("keeps standalone filename candidates without an item valid", () => {

@@ -156,6 +156,24 @@ test("bulk review keeps cover explicit and supports cover-only apply with final 
   expect(host!.textContent).not.toContain("final review report did not account");
 });
 
+test("bulk review rejects mismatched apply responses before advancing", async () => {
+  const list: ListCandidates = async (request) => ({ ok: true, value: { itemId: request.itemId, candidates: [candidate(request.itemId)] } });
+  const mismatch: ApplyCandidate = async (request) => {
+    const result = await applyCandidate(request);
+    if (!result.ok) return result;
+    return { ...result, value: { ...result.value, applied: { ...result.value.applied, source: "embedded" } } } as never;
+  };
+  mount(<LibraryBulkMetadataCandidateDialog open itemIds={["one"]} onClose={() => undefined} onApplied={() => undefined} getItem={getItem} listCandidates={list} applyCandidate={mismatch} />);
+  act(() => button("Start review").click());
+  await flush();
+  const publisher = [...host!.querySelectorAll("label")].find((label) => label.textContent?.includes("publisher"))!.querySelector("input")!;
+  act(() => publisher.click());
+  act(() => button("Apply selection").click());
+  await flush();
+  expect(host!.querySelector('[role="alert"]')?.textContent).toContain("did not match the selected candidate");
+  expect(host!.textContent).not.toContain("Review complete");
+});
+
 test("skip advances one book at a time and leaves candidates unapplied", async () => {
   const list: ListCandidates = async (request) => ({ ok: true, value: { itemId: request.itemId, candidates: [candidate(request.itemId)] } });
   mount(<LibraryBulkMetadataCandidateDialog open itemIds={["one", "two"]} onClose={() => undefined} onApplied={() => undefined} getItem={getItem} listCandidates={list} applyCandidate={applyCandidate} />);
@@ -192,7 +210,7 @@ test("cancel stops scheduling, announces settling, and restores opener focus on 
   release();
   await flush();
   expect(started).toEqual(["one", "two"]);
-  expect(host!.textContent).toContain("canceled2");
+  expect(host!.textContent).toContain("canceled4");
 
   act(() => root?.render(<LibraryBulkMetadataCandidateDialog open={false} itemIds={[]} onClose={() => undefined} onApplied={() => undefined} />));
   expect(document.activeElement).toBe(opener);

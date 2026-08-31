@@ -971,7 +971,16 @@ export const metadataCandidateListValueSchema = z
   })
   .strict()
   .superRefine((value, context) => {
+    const candidateIds = new Set<string>();
     for (const [index, candidate] of value.candidates.entries()) {
+      if (candidateIds.has(candidate.id)) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["candidates", index, "id"],
+          message: "Candidate ids must be unique within a list.",
+        });
+      }
+      candidateIds.add(candidate.id);
       if (candidate.provenance.itemId !== value.itemId) {
         context.addIssue({
           code: z.ZodIssueCode.custom,
@@ -1084,6 +1093,47 @@ export const metadataCandidateApplyValueSchema = z
 export function metadataCandidateApplyValueSchemaFor(itemId: string) {
   return metadataCandidateApplyValueSchema.refine((value) => value.applied.itemId === itemId, {
     message: "Apply result must answer the requested item.",
+  });
+}
+
+export function metadataCandidateApplyValueSchemaForRequest(
+  request: ApplyMetadataCandidateRequest,
+) {
+  const expectedCover = request.candidate.cover === undefined
+    ? undefined
+    : {
+        mediaType: request.candidate.cover.mediaType,
+        extension: request.candidate.cover.extension,
+        bytes: request.candidate.cover.bytes,
+        sha256: request.candidate.cover.sha256,
+      };
+  return metadataCandidateApplyValueSchema.superRefine((value, context) => {
+    const applied = value.applied;
+    const coverMismatch = request.cover && (
+      applied.cover === undefined ||
+      expectedCover === undefined ||
+      applied.cover.mediaType !== expectedCover.mediaType ||
+      applied.cover.extension !== expectedCover.extension ||
+      applied.cover.bytes !== expectedCover.bytes ||
+      applied.cover.sha256 !== expectedCover.sha256
+    );
+    const mismatch =
+      applied.itemId !== request.itemId ||
+      value.item.id !== request.itemId ||
+      applied.candidateId !== request.candidate.id ||
+      applied.source !== request.candidate.source ||
+      applied.provenance !== request.provenance ||
+      applied.coverApplied !== request.cover ||
+      applied.fields.length !== request.fields.length ||
+      applied.fields.some((field, index) => field !== request.fields[index]) ||
+      coverMismatch;
+    if (mismatch) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["applied"],
+        message: "Apply result must exactly answer the requested candidate selection.",
+      });
+    }
   });
 }
 

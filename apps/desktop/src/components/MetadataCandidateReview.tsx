@@ -1,9 +1,10 @@
 import type { LibraryItem } from "@takio/core";
-import type { MetadataCandidate } from "@takio/library-contract";
+import { metadataCandidateApplyValueSchemaForRequest, type MetadataCandidate } from "@takio/library-contract";
 import { useEffect, useRef, useState, type FormEvent } from "react";
 
 import {
   applyMetadataCandidate,
+  discardMetadataCandidateCovers,
   describeLibraryError,
   listMetadataCandidates,
 } from "../lib/library";
@@ -68,7 +69,10 @@ export function MetadataCandidateReview({
     setStatus("Looking for metadata candidates.");
     try {
       const result = await listCandidates({ itemId: issued.itemId, includeOnline });
-      if (!isCurrent(issued)) return;
+      if (!isCurrent(issued)) {
+        if (result.ok) await discardMetadataCandidateCovers(result.value.candidates);
+        return;
+      }
       if (!result.ok) {
         setStatus(describeLibraryError(result.error.code));
         return;
@@ -122,16 +126,21 @@ export function MetadataCandidateReview({
       ? "Applying the selected cover."
       : `Applying ${fields.length} selected field${fields.length === 1 ? "" : "s"}${cover ? " and cover" : ""}.`);
     try {
-      const result = await applyCandidate({
+      const applyRequest = {
         itemId: issued.itemId,
         candidate,
         fields,
         cover,
         provenance: `desktop-candidate-review:${candidate.source}`,
-      });
+      } as const;
+      const result = await applyCandidate(applyRequest);
       if (!isCurrent(issued)) return;
       if (!result.ok) {
         setStatus(describeLibraryError(result.error.code));
+        return;
+      }
+      if (!metadataCandidateApplyValueSchemaForRequest(applyRequest).safeParse(result.value).success) {
+        setStatus("The metadata apply response did not match the selected candidate.");
         return;
       }
       onApplied(result.value.item);

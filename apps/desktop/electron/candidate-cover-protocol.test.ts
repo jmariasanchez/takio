@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
 
-import { candidateCoverResponse, candidateCoverUrl } from "./candidate-cover-protocol";
+import { candidateCoverResponse, candidateCoverUrl, localCoverResponse } from "./candidate-cover-protocol";
 
 const token = "0123456789abcdef0123456789abcdef";
 const otherToken = "fedcba9876543210fedcba9876543210";
@@ -35,6 +35,22 @@ async function fixture(overrides: Record<string, unknown> = {}) {
 }
 
 describe("candidate cover protocol", () => {
+  test("local covers never follow a file or directory symlink outside the cover root", async () => {
+    const root = await mkdtemp(join(tmpdir(), "takio-local-cover-test-"));
+    const covers = join(root, "covers");
+    const outside = await mkdtemp(join(tmpdir(), "takio-local-cover-outside-"));
+    await mkdir(covers);
+    await writeFile(join(covers, "safe.jpg"), bytes);
+    await writeFile(join(outside, "secret.jpg"), bytes);
+    expect((await localCoverResponse(`takio-cover://local/${encodeURIComponent(join(covers, "safe.jpg"))}`, root)).status).toBe(200);
+
+    await symlink(join(outside, "secret.jpg"), join(covers, "linked-file.jpg"));
+    await symlink(outside, join(covers, "linked-directory"));
+    for (const path of [join(covers, "linked-file.jpg"), join(covers, "linked-directory", "secret.jpg"), join(outside, "secret.jpg")]) {
+      expect((await localCoverResponse(`takio-cover://local/${encodeURIComponent(path)}`, root)).status).toBe(404);
+    }
+  });
+
   test("builds path-free URLs and serves an exact verified media response", async () => {
     const { root } = await fixture();
     expect(candidateCoverUrl(token)).toBe(`takio-cover://candidate/${token}`);
