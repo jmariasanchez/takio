@@ -14,6 +14,9 @@ interface.
 Conversion-engine independence is not part of this program. Takio continues to
 use public Calibre executables where they remain the strongest bounded backend.
 
+The latest whole-program public-interface evidence is recorded in
+[`calibre-gap-closure-acceptance-audit.md`](calibre-gap-closure-acceptance-audit.md).
+
 ## Operating principles
 
 1. Deliver vertical slices through the Rust store, CLI/service protocol, desktop,
@@ -301,7 +304,7 @@ Delivered evidence:
   envelope, includes process startup, schema verification, hydration, sorting,
   facets, paging, and JSON serialization, and enforces an initial 300 ms p95
   regression ceiling.
-- Exact-head local samples measured native p95 between 202 and 216 ms. This is a
+- Exact-head local samples measured native p95 between 202 and 220 ms. This is a
   reproducible improvement baseline, not completion of the 150 ms roadmap target;
   query-path optimization remains required. The TypeScript reference-store gate
   continued to pass at 112 ms p95.
@@ -472,7 +475,7 @@ journeys.
 
 1. Complete C1 durable operation audits and broader queue/server/device health
    summaries, add import/merge/server latency gates, and optimize the native Rust
-   query path from its 202-216 ms p95 baseline toward the 150 ms target.
+   query path from its 202-220 ms p95 baseline toward the 150 ms target.
 2. Extend B2 with virtual libraries, structured queries, and richer reusable bulk
    organization workflows.
 3. Specify D1 device identity and simulator using real remount evidence.
