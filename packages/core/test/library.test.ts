@@ -118,6 +118,21 @@ describe("libraryItemSchema", () => {
     });
   });
 
+  it("accepts RFC3339 offsets emitted by native engines", () => {
+    expect(
+      libraryItemSchema.parse({
+        ...item,
+        addedAt: "2026-07-18T12:00:00+00:00",
+        updatedAt: "2026-07-18T08:00:00-04:00",
+        formats: [{ ...epubFormat, addedAt: "2026-07-18T14:00:00+02:00" }],
+      }),
+    ).toMatchObject({
+      addedAt: "2026-07-18T12:00:00+00:00",
+      updatedAt: "2026-07-18T08:00:00-04:00",
+      formats: [{ addedAt: "2026-07-18T14:00:00+02:00" }],
+    });
+  });
+
   it("rejects duplicate book format IDs", () => {
     expect(() =>
       bookFormatsSchema.parse([

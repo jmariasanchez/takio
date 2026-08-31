@@ -88,7 +88,7 @@ export const bookFormatSchema = z
   .object({
     sourcePath: z.string().min(1),
     format: z.enum(FORMAT_IDS),
-    addedAt: z.string().datetime(),
+    addedAt: z.string().datetime({ offset: true }),
     provenance: z.enum(BOOK_FORMAT_PROVENANCES),
   })
   .strict()
@@ -120,7 +120,7 @@ export const libraryItemSchema = z
     title: z.string().min(1),
     sourcePath: z.string().min(1),
     format: z.enum(FORMAT_IDS),
-    addedAt: z.string().datetime(),
+    addedAt: z.string().datetime({ offset: true }),
     formats: bookFormatsSchema,
     author: optionalText,
     authors: z.array(bookAuthorSchema).min(1).readonly().optional(),
@@ -135,7 +135,7 @@ export const libraryItemSchema = z
     description: optionalText,
     coverPath: optionalText,
     tags: tagsSchema,
-    updatedAt: z.string().datetime().optional(),
+    updatedAt: z.string().datetime({ offset: true }).optional(),
   })
   .superRefine((item, context) => {
     const primaryFormat = item.formats[0];

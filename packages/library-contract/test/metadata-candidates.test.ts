@@ -94,6 +94,16 @@ describe("metadata candidate contract", () => {
       .toBe(true);
     expect(metadataCandidateApplyValueSchemaFor("book-2").safeParse({ item, applied }).success)
       .toBe(false);
+
+    const nativeItem = {
+      ...item,
+      addedAt: "2026-08-30T20:00:00+00:00",
+      formats: [{ ...item.formats[0], addedAt: "2026-08-30T16:00:00-04:00" }],
+    };
+    expect(metadataCandidateApplyValueSchemaFor("book-1").safeParse({
+      item: nativeItem,
+      applied,
+    }).success).toBe(true);
   });
 
   it("binds every listed candidate to the requested item", () => {
@@ -132,6 +142,10 @@ describe("metadata candidate contract", () => {
       ...candidate,
       source: "filename",
       provenance: { generatedAt: "1970-01-01T00:00:00.000Z" },
+    }).success).toBe(true);
+    expect(metadataCandidateSchema.safeParse({
+      ...candidate,
+      provenance: { ...candidate.provenance, generatedAt: "1970-01-01T01:00:00+01:00" },
     }).success).toBe(true);
   });
 

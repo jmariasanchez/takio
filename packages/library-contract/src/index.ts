@@ -387,8 +387,8 @@ export const savedLibraryViewSchema = z
     id: z.string().min(1),
     name: savedLibraryViewNameSchema,
     definition: savedLibraryViewDefinitionSchema,
-    createdAt: z.string().datetime(),
-    updatedAt: z.string().datetime(),
+    createdAt: z.string().datetime({ offset: true }),
+    updatedAt: z.string().datetime({ offset: true }),
   })
   .strict()
   .readonly();
@@ -832,7 +832,7 @@ export const replaceLibraryFormatRequestSchema = z
     expectedCurrent: z
       .object({
         sourcePath: z.string().min(1),
-        addedAt: z.string().datetime(),
+        addedAt: z.string().datetime({ offset: true }),
         provenance: z.enum(BOOK_FORMAT_PROVENANCES),
       })
       .strict()
@@ -876,7 +876,7 @@ export const METADATA_CANDIDATE_AUDIT_KEY = "takio_metadata_audit";
 
 export const metadataCandidateProvenanceSchema = z
   .object({
-    generatedAt: z.string().datetime(),
+    generatedAt: z.string().datetime({ offset: true }),
     // Standalone `metadata candidates filename` output has no item context, so
     // the base schema stays nullable. Item-scoped list responses and apply
     // requests separately require exact, non-null identity with the item.
