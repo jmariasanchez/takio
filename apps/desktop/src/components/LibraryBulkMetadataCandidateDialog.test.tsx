@@ -210,24 +210,35 @@ test("discards staged covers when review closes", async () => {
 });
 
 test("ignores and cleans discovery results from a prior dialog lifetime", async () => {
-  const first = deferred<Awaited<ReturnType<ListCandidates>>>();
+  const gate = deferred<void>();
   const discarded: string[] = [];
-  const list: ListCandidates = async (request) => request.itemId === "one"
-    ? first.promise
-    : { ok: true, value: { itemId: request.itemId, candidates: [candidate(request.itemId, true)] } };
+  const started: string[] = [];
+  const listed: string[] = [];
+  const oldIds = ["old-one", "old-two", "old-three", "old-four"];
+  const get: GetItem = async (id) => {
+    started.push(id);
+    if (oldIds.includes(id)) await gate.promise;
+    return { ok: true, value: { item: item(id) } };
+  };
+  const list: ListCandidates = async (request) => {
+    listed.push(request.itemId);
+    return { ok: true, value: { itemId: request.itemId, candidates: [candidate(request.itemId, true)] } };
+  };
   const discardCandidates: NonNullable<Props["discardCandidates"]> = async (values) => { discarded.push(...values.map(({ id }) => id)); };
-  const common = { onClose: () => undefined, onApplied: () => undefined, getItem, listCandidates: list, applyCandidate, discardCandidates };
-  mount(<LibraryBulkMetadataCandidateDialog open itemIds={["one"]} {...common} />);
+  const common = { onClose: () => undefined, onApplied: () => undefined, getItem: get, listCandidates: list, applyCandidate, discardCandidates };
+  mount(<LibraryBulkMetadataCandidateDialog open itemIds={oldIds} {...common} />);
   act(() => button("Start review").click());
   await flush();
+  expect(started).toEqual(["old-one", "old-two"]);
   act(() => root?.render(<LibraryBulkMetadataCandidateDialog open={false} itemIds={[]} {...common} />));
-  act(() => root?.render(<LibraryBulkMetadataCandidateDialog open itemIds={["two"]} {...common} />));
+  act(() => root?.render(<LibraryBulkMetadataCandidateDialog open itemIds={["fresh"]} {...common} />));
   await flush();
-  first.resolve({ ok: true, value: { itemId: "one", candidates: [candidate("one", true)] } });
+  gate.resolve();
   await flush();
   expect(host!.textContent).toContain("Ready to review 1 selected books");
-  expect(host!.textContent).not.toContain("Discovered one");
-  expect(discarded).toContain("filename:one");
+  expect(started).toEqual(["old-one", "old-two"]);
+  expect(listed).toEqual([]);
+  expect(discarded).toEqual([]);
 });
 
 test("cancel stops scheduling, announces settling, and restores opener focus on close", async () => {

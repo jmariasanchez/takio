@@ -118,7 +118,7 @@ test("cancellation stops scheduling, lets in-flight work settle, and accounts ev
     failed: 0,
     canceled: 5,
   });
-  expect(discarded).toEqual(["candidate-one", "candidate-two"]);
+  expect(discarded).toEqual([]);
 });
 
 test("classifies missing, failed, no-candidate, and thrown lookups exactly", async () => {

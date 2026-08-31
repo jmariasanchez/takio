@@ -65,6 +65,7 @@ async function discoverOne(
     const itemResult = await dependencies.getItem(itemId);
     if (!itemResult.ok) return { itemId, status: "failed", code: itemResult.error.code };
     if (!itemResult.value.item) return { itemId, status: "missing" };
+    if (dependencies.isCanceled?.()) return { itemId, status: "canceled" };
 
     const listResult = await dependencies.listCandidates({ itemId, includeOnline });
     if (!listResult.ok) {

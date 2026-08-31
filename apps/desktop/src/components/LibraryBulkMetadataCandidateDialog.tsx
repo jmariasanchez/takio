@@ -90,7 +90,7 @@ export function LibraryBulkMetadataCandidateDialog({
   const descriptionId = useId();
   const dialogRef = useRef<HTMLDivElement>(null);
   const openerRef = useRef<HTMLElement | null>(null);
-  const cancelRef = useRef(false);
+  const cancellationRef = useRef({ canceled: false });
   const lifetimeRef = useRef(0);
   const retainedCandidatesRef = useRef<readonly MetadataCandidate[]>([]);
   const [phase, setPhase] = useState<"setup" | "discovery" | "review" | "complete">("setup");
@@ -127,8 +127,9 @@ export function LibraryBulkMetadataCandidateDialog({
     if (!open) return;
     const lifetime = lifetimeRef.current + 1;
     lifetimeRef.current = lifetime;
+    const cancellation = { canceled: false };
+    cancellationRef.current = cancellation;
     openerRef.current = document.activeElement as HTMLElement | null;
-    cancelRef.current = false;
     retainedCandidatesRef.current = [];
     setPhase("setup");
     setIncludeOnline(false);
@@ -144,7 +145,7 @@ export function LibraryBulkMetadataCandidateDialog({
     requestAnimationFrame(() => dialogRef.current?.focus());
     return () => {
       if (lifetimeRef.current === lifetime) lifetimeRef.current += 1;
-      cancelRef.current = true;
+      cancellation.canceled = true;
       const candidates = retainedCandidatesRef.current;
       retainedCandidatesRef.current = [];
       void discard(candidates);
@@ -188,6 +189,7 @@ export function LibraryBulkMetadataCandidateDialog({
 
   async function startDiscovery() {
     const lifetime = lifetimeRef.current;
+    const cancellation = cancellationRef.current;
     const request = {
       schemaVersion: BULK_METADATA_CANDIDATE_SCHEMA_VERSION,
       itemIds: [...itemIds],
@@ -205,7 +207,7 @@ export function LibraryBulkMetadataCandidateDialog({
     const result = await discoverBulkMetadataCandidates(parsed.data, {
       getItem,
       listCandidates,
-      isCanceled: () => cancelRef.current,
+      isCanceled: () => cancellation.canceled,
       onProgress: (nextCompleted, total) => {
         if (lifetimeRef.current !== lifetime) return;
         setCompleted(nextCompleted);
@@ -256,7 +258,7 @@ export function LibraryBulkMetadataCandidateDialog({
   }
 
   function cancelDiscovery() {
-    cancelRef.current = true;
+    cancellationRef.current.canceled = true;
     setLive("Canceling discovery. Waiting for active book checks to finish.");
   }
 
@@ -320,7 +322,7 @@ export function LibraryBulkMetadataCandidateDialog({
 
   function closeDialog() {
     lifetimeRef.current += 1;
-    cancelRef.current = true;
+    cancellationRef.current.canceled = true;
     const candidates = retainedCandidatesRef.current;
     retainedCandidatesRef.current = [];
     void discard(candidates);
@@ -403,7 +405,7 @@ export function LibraryBulkMetadataCandidateDialog({
             <section className="library-bulk-candidate-dialog__discovery">
               <strong>{completed} of {itemIds.length} books checked</strong>
               <progress value={completed} max={itemIds.length}>{completed} of {itemIds.length}</progress>
-              <button type="button" onClick={cancelDiscovery} disabled={cancelRef.current}>Cancel discovery</button>
+              <button type="button" onClick={cancelDiscovery} disabled={cancellationRef.current.canceled}>Cancel discovery</button>
             </section>
           ) : null}
 

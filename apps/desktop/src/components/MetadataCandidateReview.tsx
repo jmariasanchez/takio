@@ -24,6 +24,7 @@ type Props = {
   /** Injectable for tests; defaults to the real bridge calls. */
   readonly listCandidates?: typeof listMetadataCandidates;
   readonly applyCandidate?: typeof applyMetadataCandidate;
+  readonly discardCandidates?: typeof discardMetadataCandidateCovers;
 };
 
 export function MetadataCandidateReview({
@@ -32,6 +33,7 @@ export function MetadataCandidateReview({
   onApplied,
   listCandidates = listMetadataCandidates,
   applyCandidate = applyMetadataCandidate,
+  discardCandidates = discardMetadataCandidateCovers,
 }: Props) {
   const [includeOnline, setIncludeOnline] = useState(false);
   const [candidates, setCandidates] = useState<readonly MetadataCandidate[]>([]);
@@ -43,15 +45,33 @@ export function MetadataCandidateReview({
   // monotonic token, so responses that arrive after the selection changed (or
   // after a newer request started) are discarded instead of applied.
   const request = useRef({ itemId: item.id, token: 0 });
+  const retainedCandidates = useRef<readonly MetadataCandidate[]>([]);
+
+  async function discard(values: readonly MetadataCandidate[]): Promise<void> {
+    try {
+      await discardCandidates(values);
+    } catch {
+      // Candidate stages are also bounded by TTL and garbage collection.
+    }
+  }
 
   useEffect(() => {
     request.current = { itemId: item.id, token: request.current.token + 1 };
+    const retained = retainedCandidates.current;
+    retainedCandidates.current = [];
+    void discard(retained);
     setCandidates([]);
     setSelected({});
     setSelectedCovers({});
     setStatus("");
     setBusy(false);
-  }, [item.id]);
+    return () => {
+      request.current = { itemId: item.id, token: request.current.token + 1 };
+      const abandoned = retainedCandidates.current;
+      retainedCandidates.current = [];
+      void discard(abandoned);
+    };
+  }, [discardCandidates, item.id]);
 
   function issue() {
     const token = request.current.token + 1;
@@ -65,23 +85,31 @@ export function MetadataCandidateReview({
 
   async function loadCandidates() {
     const issued = issue();
+    const previous = retainedCandidates.current;
+    retainedCandidates.current = [];
+    setCandidates([]);
     setBusy(true);
     setStatus("Looking for metadata candidates.");
     try {
+      if (previous.length > 0) await discard(previous);
+      if (!isCurrent(issued)) return;
       const result = await listCandidates({ itemId: issued.itemId, includeOnline });
       if (!isCurrent(issued)) {
-        if (result.ok) await discardMetadataCandidateCovers(result.value.candidates);
+        if (result.ok) await discard(result.value.candidates);
         return;
       }
       if (!result.ok) {
         setStatus(describeLibraryError(result.error.code));
         return;
       }
-      const candidates = result.value.itemId === issued.itemId
-        ? result.value.candidates.filter(
-            (candidate) => candidate.provenance.itemId === issued.itemId,
-          )
-        : [];
+      const candidates = result.value.candidates;
+      if (result.value.itemId !== issued.itemId
+        || candidates.some((candidate) => candidate.provenance.itemId !== issued.itemId)) {
+        await discard(candidates);
+        setStatus("The metadata candidate response did not match the selected book.");
+        return;
+      }
+      retainedCandidates.current = candidates;
       setCandidates(candidates);
       setSelected({});
       setSelectedCovers({});
@@ -140,9 +168,14 @@ export function MetadataCandidateReview({
         return;
       }
       if (!metadataCandidateApplyValueSchemaForRequest(applyRequest).safeParse(result.value).success) {
+        await discard(candidates);
+        retainedCandidates.current = [];
+        setCandidates([]);
         setStatus("The metadata apply response did not match the selected candidate.");
         return;
       }
+      await discard(candidates);
+      retainedCandidates.current = [];
       onApplied(result.value.item);
       setCandidates([]);
       setSelected({});

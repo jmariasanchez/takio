@@ -1125,7 +1125,7 @@ export function metadataCandidateApplyValueSchemaForRequest(
       applied.provenance !== request.provenance ||
       applied.coverApplied !== request.cover ||
       applied.fields.length !== request.fields.length ||
-      applied.fields.some((field, index) => field !== request.fields[index]) ||
+      applied.fields.some((field) => !request.fields.includes(field)) ||
       coverMismatch;
     if (mismatch) {
       context.addIssue({

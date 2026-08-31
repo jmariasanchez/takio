@@ -222,12 +222,13 @@ describe("metadata candidate contract", () => {
       { ...applied, candidateId: "embedded:2" },
       { ...applied, source: "online" },
       { ...applied, provenance: "other" },
-      { ...applied, fields: ["publisher", "title"] },
+      { ...applied, fields: ["publisher"] },
       { ...applied, coverApplied: false, cover: undefined },
       { ...applied, cover: { ...cover, sha256: "b".repeat(64) } },
     ]) {
       expect(schema.safeParse({ item, applied: mismatch }).success).toBe(false);
     }
+    expect(schema.safeParse({ item, applied: { ...applied, fields: ["publisher", "title"] } }).success).toBe(true);
   });
 
   it("keeps standalone filename candidates without an item valid", () => {
