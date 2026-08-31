@@ -135,8 +135,9 @@ Windows rather than inferring it from cross-platform dependencies.
 #### B1. Candidate review in desktop and TUI
 
 Status: selected-book desktop slice delivered in `663541e` and hardened in
-`3db7264`, `e944aee`, `4a8e3ad`, `8582eee`, and `a99670a`. TUI and bounded
-bulk review remain open.
+`3db7264`, `e944aee`, `4a8e3ad`, `8582eee`, and `a99670a`. Equivalent
+selected-book TUI review delivered in `67d36f1`. Bounded bulk review remains
+open.
 
 Deliver:
 
@@ -174,10 +175,15 @@ Delivered evidence:
   status. The final checksummed package covers managed filename discovery, item
   identity, invalid-value rejection without mutation, null clearing, audit
   persistence and ownership, and stable one-line machine envelopes.
+- The Rust TUI discovers local candidates without blocking terminal input, keeps
+  online lookup behind an explicit action, compares current and proposed values,
+  supports candidate and field selection, confirms application, and records the
+  same bounded provenance audit as CLI and desktop. Wide and compact render tests,
+  state tests, and a packaged PTY workflow prove selective application, cancel
+  safety, terminal restoration, and command-palette access.
 
 Remaining acceptance work:
 
-- Add equivalent candidate review to the TUI.
 - Add bounded, cancellable bulk reconciliation with per-book outcomes.
 - Integrate fetched cover choice into the candidate contract and review surface.
 
