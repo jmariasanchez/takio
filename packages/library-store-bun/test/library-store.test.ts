@@ -167,6 +167,7 @@ function createFrozenV1Fixture(): void {
       ],
     );
   }
+  database.run("DROP TABLE IF EXISTS library_custom_column_definitions");
   database.run("PRAGMA user_version = 1");
 }
 
@@ -184,6 +185,7 @@ async function createSchemaV9Fixture(): Promise<Buffer> {
   using database = new Database(databasePath, { strict: true });
   database.run("DROP INDEX library_adoptions_by_state");
   database.run("DROP TABLE library_adoptions");
+  database.run("DROP TABLE IF EXISTS library_custom_column_definitions");
   database.run("PRAGMA user_version = 9");
   database.run("PRAGMA wal_checkpoint(TRUNCATE)");
   return readFile(databasePath);
@@ -442,13 +444,13 @@ describe("BunSqliteLibraryStore", () => {
     expect(await Bun.file(sourcePath).exists()).toBe(false);
   });
 
-  it("persists add, get, list, and remove across injected-path reopenings at schema v11", async () => {
+  it("persists add, get, list, and remove across injected-path reopenings at schema v12", async () => {
     const first = createStore();
     expect(await first.open({ config: {} })).toEqual({ ok: true, value: null });
     expect(await first.add({ item })).toEqual({ ok: true, value: item });
     first.close();
 
-    expect(schemaVersion()).toBe(11);
+    expect(schemaVersion()).toBe(12);
     using stored = new Database(databasePath, { strict: true });
     expect(
       stored
@@ -495,7 +497,7 @@ describe("BunSqliteLibraryStore", () => {
     expect(await third.list({})).toEqual({ ok: true, value: [] });
     third.close();
 
-    expect(schemaVersion()).toBe(11);
+    expect(schemaVersion()).toBe(12);
     expect(stored.query("SELECT * FROM library_item_formats").all()).toEqual([]);
   });
 
@@ -508,7 +510,7 @@ describe("BunSqliteLibraryStore", () => {
     expect(await readFile(`${databasePath}.v9.backup`)).toEqual(databaseBefore);
     using database = new Database(databasePath, { strict: true });
     expect(database.query<{ user_version: number }, []>("PRAGMA user_version").get()).toEqual({
-      user_version: 11,
+      user_version: 12,
     });
     expect(database.query("SELECT * FROM library_adoptions").all()).toEqual([]);
     database.run(
@@ -696,7 +698,7 @@ describe("BunSqliteLibraryStore", () => {
     });
     store.close();
 
-    expect(schemaVersion()).toBe(11);
+    expect(schemaVersion()).toBe(12);
     expect(await readFile(`${databasePath}.v2.backup`)).toEqual(databaseBefore);
     using migrated = new Database(databasePath, { strict: true });
     expect(migrated.query("PRAGMA foreign_key_check").all()).toEqual([]);
@@ -788,7 +790,7 @@ describe("BunSqliteLibraryStore", () => {
     });
     store.close();
 
-    expect(schemaVersion()).toBe(11);
+    expect(schemaVersion()).toBe(12);
     expect(await readFile(`${databasePath}.v4.backup`)).toEqual(databaseBefore);
     using backup = new Database(`${databasePath}.v4.backup`, { strict: true });
     expect(backup.query<{ user_version: number }, []>("PRAGMA user_version").get()).toEqual({
@@ -844,7 +846,7 @@ describe("BunSqliteLibraryStore", () => {
     });
     store.close();
 
-    expect(schemaVersion()).toBe(11);
+    expect(schemaVersion()).toBe(12);
     expect(await readFile(`${databasePath}.v5.backup`)).toEqual(databaseBefore);
     using migrated = new Database(databasePath, { strict: true });
     expect(
@@ -937,7 +939,7 @@ describe("BunSqliteLibraryStore", () => {
     });
     store.close();
 
-    expect(schemaVersion()).toBe(11);
+    expect(schemaVersion()).toBe(12);
     using migrated = new Database(databasePath, { strict: true });
     expect(
       migrated.query<{ integrity_check: string }, []>("PRAGMA integrity_check").get()
@@ -1031,6 +1033,8 @@ describe("BunSqliteLibraryStore", () => {
       downgrade.run("DROP INDEX library_adoptions_by_state");
       downgrade.run("DROP TABLE library_adoptions");
       downgrade.run("DROP TABLE library_item_custom_metadata");
+      downgrade.run("DROP TABLE IF EXISTS library_custom_column_definitions");
+
       downgrade.run("PRAGMA user_version = 8");
     }).immediate();
     downgrade.close();
@@ -1042,7 +1046,7 @@ describe("BunSqliteLibraryStore", () => {
     migrated.close();
 
     expect(await readFile(`${databasePath}.v8.backup`)).toEqual(before);
-    expect(schemaVersion()).toBe(11);
+    expect(schemaVersion()).toBe(12);
   });
 
   it("rolls a v1 library back when the v2-to-v3 migration is interrupted", async () => {
@@ -2362,7 +2366,7 @@ describe("BunSqliteLibraryStore", () => {
     expect(
       initializedDatabase.query<{ user_version: number }, []>("PRAGMA user_version").get()
         ?.user_version,
-    ).toBe(11);
+    ).toBe(12);
     expect(
       initializedDatabase
         .query<{ name: string; type: string }, []>(
@@ -2374,6 +2378,7 @@ describe("BunSqliteLibraryStore", () => {
     ).toEqual([
       { name: "duplicate_pair_reviews", type: "table" },
       { name: "library_adoptions", type: "table" },
+      { name: "library_custom_column_definitions", type: "table" },
       { name: "library_item_authors", type: "table" },
       { name: "library_item_custom_metadata", type: "table" },
       { name: "library_item_formats", type: "table" },
@@ -2381,7 +2386,6 @@ describe("BunSqliteLibraryStore", () => {
       { name: "library_item_languages", type: "table" },
       { name: "library_item_tags", type: "table" },
       { name: "library_items", type: "table" },
-      { name: "library_text_column_definitions", type: "table" },
       { name: "managed_file_cleanup", type: "table" },
       { name: "saved_library_views", type: "table" },
       { name: "source_file_cleanup", type: "table" },

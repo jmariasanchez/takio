@@ -163,7 +163,7 @@ describe("BunSqliteLibraryStore schema-v4 provenance", () => {
     store.close();
 
     const backupPath = `${databasePath}.v3.backup`;
-    expect(schemaVersion()).toBe(11);
+    expect(schemaVersion()).toBe(12);
     expect(await readFile(backupPath)).toEqual(databaseBefore);
     expect(schemaVersion(backupPath)).toBe(3);
     expect(formatColumns(backupPath)).not.toContain("provenance");

@@ -619,6 +619,8 @@ describe("BunSqliteLibraryStore duplicate review", () => {
       downgrade.run("DROP TABLE library_adoptions");
       downgrade.run("DROP TABLE library_item_custom_metadata");
       downgrade.run("DROP TABLE duplicate_pair_reviews");
+      downgrade.run("DROP TABLE IF EXISTS library_custom_column_definitions");
+
       downgrade.run("PRAGMA user_version = 7");
     }).immediate();
     downgrade.close();
@@ -629,7 +631,7 @@ describe("BunSqliteLibraryStore duplicate review", () => {
     expect(await readFile(`${databasePath}.v7.backup`)).toEqual(before);
     using current = new Database(databasePath, { strict: true });
     expect(current.query<{ user_version: number }, []>("PRAGMA user_version").get()).toEqual({
-      user_version: 11,
+      user_version: 12,
     });
     expect(
       current

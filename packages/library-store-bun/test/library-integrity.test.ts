@@ -45,7 +45,7 @@ describe("library integrity verification", () => {
     expect(verifyLibraryIntegrity(databasePath)).toEqual({
       ok: true,
       value: {
-        schemaVersion: 11,
+        schemaVersion: 12,
         items: { total: 1, active: 1, trashed: 0 },
         formats: { total: 1, managed: 1, referenced: 0 },
       },
@@ -82,6 +82,66 @@ describe("library integrity verification", () => {
     ).toBe(99);
   });
 
+  for (const [name, replacementDdl] of [
+    ["missing", null],
+    [
+      "weakened",
+      `CREATE TABLE library_custom_column_definitions (
+        key TEXT PRIMARY KEY,
+        label TEXT NOT NULL,
+        type TEXT NOT NULL CHECK(type='text'),
+        position INTEGER NOT NULL UNIQUE
+      ) STRICT`,
+    ],
+    [
+      "constraint-divergent",
+      `CREATE TABLE library_custom_column_definitions (
+        key TEXT PRIMARY KEY CHECK(length(key) BETWEEN 1 AND 64),
+        label TEXT NOT NULL CHECK(length(label)>=0),
+        type TEXT NOT NULL CHECK(type='text'),
+        position INTEGER NOT NULL UNIQUE CHECK(position>=0)
+      ) STRICT`,
+    ],
+  ] as const) {
+    it(`rejects a ${name} canonical definition table`, async () => {
+      const store = new BunSqliteLibraryStore(databasePath);
+      expect(await store.open({ config: {} })).toEqual({ ok: true, value: null });
+      store.close();
+      using database = new Database(databasePath, { strict: true });
+      database.run("DROP TABLE library_custom_column_definitions");
+      if (replacementDdl) database.run(replacementDdl);
+
+      expect(verifyLibraryIntegrity(databasePath)).toEqual({
+        ok: false,
+        error: { code: "integrity-failed" },
+      });
+      const reopened = new BunSqliteLibraryStore(databasePath);
+      expect(await reopened.open({ config: {} })).toEqual({
+        ok: false,
+        error: { code: "storage-unavailable" },
+      });
+    });
+  }
+
+  it("rejects invalid definition rows even when a weakened table permits them", async () => {
+    const store = new BunSqliteLibraryStore(databasePath);
+    expect(await store.open({ config: {} })).toEqual({ ok: true, value: null });
+    store.close();
+    using database = new Database(databasePath, { strict: true });
+    database.run("DROP TABLE library_custom_column_definitions");
+    database.run(`CREATE TABLE library_custom_column_definitions (
+      key TEXT PRIMARY KEY, label TEXT NOT NULL, type TEXT NOT NULL, position INTEGER NOT NULL UNIQUE
+    ) STRICT`);
+    database.run(
+      "INSERT INTO library_custom_column_definitions (key,label,type,position) VALUES ('Bad Key','', 'number', -1)",
+    );
+
+    expect(verifyLibraryIntegrity(databasePath)).toEqual({
+      ok: false,
+      error: { code: "integrity-failed" },
+    });
+  });
+
   it("backs up owned files and restores them into a new library root", async () => {
     const sourceRoot = join(root, "source-library");
     await mkdir(sourceRoot);
@@ -115,7 +175,7 @@ describe("library integrity verification", () => {
       value: {
         path: backupPath,
         report: {
-          schemaVersion: 11,
+          schemaVersion: 12,
           items: { total: 1, active: 1, trashed: 0 },
           formats: { total: 2, managed: 1, referenced: 1 },
         },
@@ -131,7 +191,7 @@ describe("library integrity verification", () => {
       value: {
         path: restoredDatabasePath,
         report: {
-          schemaVersion: 11,
+          schemaVersion: 12,
           items: { total: 1, active: 1, trashed: 0 },
           formats: { total: 2, managed: 1, referenced: 1 },
         },
