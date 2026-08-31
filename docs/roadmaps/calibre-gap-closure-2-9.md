@@ -143,7 +143,8 @@ delivered in `0c4dd6b` and hardened in `4bd9019` and `a171891`. Native discovery
 was hardened in `61527de`, with the final cross-runtime item-id alignment in
 `c1a955e`. Path-free candidate-cover contracts and Rust staging were delivered in
 `0805fbf`, `f219c40`, and `9be1e1c`; desktop and selected-book TUI review landed
-in `8786f15` and `0e9eff0`, with application and cleanup hardening in `15279ec`.
+in `8786f15` and `0e9eff0`, with application and cleanup hardening in
+`15279ec` and failed-discovery stage cleanup in `d2495de`.
 
 Deliver:
 
