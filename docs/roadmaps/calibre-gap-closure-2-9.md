@@ -243,6 +243,11 @@ Remaining acceptance work:
 
 #### B2. Virtual libraries and advanced organization
 
+Status: the virtual-library and native-query vertical slices are delivered in
+`48caa27`, `ffaf197`, and `d5aaeb5`. Structured query grammar, custom metadata
+columns, reusable group rules, save-to-disk templates, and richer bulk
+organization remain open.
+
 Deliver:
 
 - Saved views promoted to named virtual libraries.
@@ -256,6 +261,29 @@ Accept when:
 - A 10,000-book fixture keeps warm query and facet p95 within 150 ms.
 - Virtual-library state survives relaunch and named-library switching.
 - Every bulk request accounts for every selected item.
+
+Delivered evidence:
+
+- Saved definitions are exposed as named virtual libraries through the shared
+  contract, Rust CLI/store, and desktop library sidebar. The legacy
+  `saved-views` command and response vocabulary remain compatible.
+- A selected virtual library contributes a persisted base query and facet scope.
+  Session search and filters are applied conjunctively inside it, while session
+  sort and paging remain independently changeable. `All books` explicitly exits
+  the scope.
+- The checksummed standalone release and packaged desktop sidecar both passed an
+  external public-interface workflow that saved and reopened a virtual library,
+  combined it with session text and author filters, proved same-facet
+  contradictions return zero items, rejected a missing scope as `not-found`, and
+  emitted one JSON envelope with empty stderr.
+- Fresh packaged processes saved the same virtual-library ID with different
+  definitions in two named libraries and reopened the correct isolated
+  definition for each selector. Desktop reducer, storage, and DOM tests cover
+  restoration of the active virtual-library ID; the rebuilt macOS ARM64 desktop
+  bundle passed local bundle verification.
+- The exact-head 10,000-book public Rust query gate measured 64.18 ms p95 after
+  this change. The TypeScript reference-store gate measured 110.0 ms p95. Both
+  remain below the 150 ms roadmap target.
 
 ### Track C: Operational maturity foundation
 
@@ -477,8 +505,8 @@ journeys.
 
 1. Complete C1 durable operation audits and broader queue/server/device health
    summaries, then add import, merge, and server latency gates.
-2. Extend B2 with virtual libraries, structured queries, and richer reusable bulk
-   organization workflows.
+2. Extend B2 with structured queries, custom organization columns/templates, and
+   richer reusable bulk workflows.
 3. Specify D1 device identity and simulator using real remount evidence.
 4. Prototype E1 secure EPUB reader resource isolation.
 5. Specify F1 recipe manifest and operation registry.

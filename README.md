@@ -190,7 +190,7 @@ The Rust migration currently exposes the core daily-driver and automation surfac
 | `takio formats`, `devices`, `plan`, `convert` | Inspect formats and execution targets, plan work, or run an advertised Calibre conversion synchronously. |
 | `takio library path`, `verify`, `backup`, `restore-backup`, `portable-export`, `rebuild` | Locate, audit, snapshot, portably export, and safely restore a schema-v11 library and its managed files. |
 | `takio library import`, `import-many`, `list`, `get`, `search`, `query`, `update`, `update-many`, `remove`, `export-many` | Import, browse, filter, edit, remove, and export the local catalogue. |
-| `takio library catalog`, `content-search`, `validate`, `saved-views` | Publish JSON, CSV, or HTML catalogues, inspect book contents, validate attached formats, and persist reusable views. |
+| `takio library catalog`, `content-search`, `validate`, `virtual-libraries` (`saved-views` alias) | Publish JSON, CSV, or HTML catalogues, inspect book contents, validate attached formats, and persist named virtual-library scopes. |
 | `takio library format import`, `attach`, `remove`, `replace` | Manage owned copies and caller-owned format references, including guarded atomic replacement. |
 | `takio library cover set`, `remove` | Manage Takio-owned cover images. |
 | `takio library trash list`, `move`, `restore`, `purge` | Remove items recoverably or purge them permanently. |
@@ -221,7 +221,7 @@ The caller chooses and owns the output path. Takio refuses to overwrite an
 existing file. The Rust CLI currently advertises the five Calibre-backed
 pairs only: EPUB to PDF, EPUB to AZW3, and DOCX, HTML, or TXT to EPUB. Native
 EPUB-to-KEPUB remains unavailable. Metadata automation, polishing, attachment
-reconciliation, saved views, backup restore, loopback content serving, and rooted
+reconciliation, virtual libraries, backup restore, loopback content serving, and rooted
 Kindle SSH are implemented natively. Portable rebuild, Calibre-library import,
 watched import, and duplicate review remain explicit migration gaps.
 
