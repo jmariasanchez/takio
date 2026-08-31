@@ -136,8 +136,8 @@ Windows rather than inferring it from cross-platform dependencies.
 
 Status: selected-book desktop slice delivered in `663541e` and hardened in
 `3db7264`, `e944aee`, `4a8e3ad`, `8582eee`, and `a99670a`. Equivalent
-selected-book TUI review delivered in `67d36f1`. Bounded bulk review remains
-open.
+selected-book TUI review delivered in `67d36f1` and hardened in `cbce02b` and
+`502b8c5`. Bounded bulk review remains open.
 
 Deliver:
 
@@ -180,7 +180,9 @@ Delivered evidence:
   supports candidate and field selection, confirms application, and records the
   same bounded provenance audit as CLI and desktop. Wide and compact render tests,
   state tests, and a packaged PTY workflow prove selective application, cancel
-  safety, terminal restoration, and command-palette access.
+  safety, stable item selection after title reordering, stale-result recovery,
+  terminal control sanitization, compact confirmation affordances, Ctrl-C exit,
+  terminal restoration, and command-palette access.
 
 Remaining acceptance work:
 
