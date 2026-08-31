@@ -192,6 +192,61 @@ test("rejects a stale definition response after the active library changes", asy
   expect(container?.textContent).not.toContain("Stale shelf");
 });
 
+test("clears the previous generation's custom column when definition refresh fails", async () => {
+  let rejectRefresh!: (reason?: unknown) => void;
+  let call = 0;
+  Object.defineProperty(window, "takio", {
+    configurable: true,
+    value: {
+      invoke: () => {
+        call += 1;
+        if (call === 1) {
+          return Promise.resolve({
+            ok: true,
+            value: {
+              definitions: [{ key: "shelf", label: "Old shelf", type: "text", position: 0 }],
+            },
+          });
+        }
+        return new Promise((_, reject) => {
+          rejectRefresh = reject;
+        });
+      },
+    },
+  });
+  mount();
+
+  await act(async () => root?.render(<LibraryWorkspace {...workspaceProps(0)} />));
+  await flush();
+  const chooser = container?.querySelector<HTMLSelectElement>(
+    '[aria-label="Visible custom column"]',
+  );
+  if (!chooser) throw new Error("Expected accessible custom column chooser");
+  act(() => {
+    chooser.value = "shelf";
+    chooser.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  expect(container?.textContent).toContain("Old shelf #shelf");
+  expect(container?.querySelector("td.library-table__custom-cell")?.textContent).toBe("Favorites");
+
+  await act(async () => root?.render(<LibraryWorkspace {...workspaceProps(1)} />));
+  expect(chooser.value).toBe("");
+  expect(chooser.options).toHaveLength(1);
+  expect(chooser.getAttribute("aria-label")).toBe("Visible custom column");
+  expect(container?.querySelector("th.library-table__custom-cell")).toBeNull();
+  expect(container?.querySelector("td.library-table__custom-cell")).toBeNull();
+  expect(container?.textContent).not.toContain("Old shelf");
+
+  rejectRefresh(new Error("definition refresh failed"));
+  await flush();
+
+  expect(chooser.value).toBe("");
+  expect(chooser.options).toHaveLength(1);
+  expect(container?.querySelector("th.library-table__custom-cell")).toBeNull();
+  expect(container?.querySelector("td.library-table__custom-cell")).toBeNull();
+  expect(container?.textContent).not.toContain("Old shelf");
+});
+
 test("uses a defined custom value's visible label as its accessible name", () => {
   mount();
   const draft = draftFor(item);

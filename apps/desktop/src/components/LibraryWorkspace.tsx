@@ -604,10 +604,11 @@ export function LibraryWorkspace({
   onToggleSelectedItem,
 }: LibraryWorkspaceProps) {
   const [openPane, setOpenPane] = useState<CompactPane | null>(null);
-  const [customColumnDefinitions, setCustomColumnDefinitions] = useState<
-    readonly CustomColumnDefinition[]
-  >([]);
-  const [visibleCustomColumnKey, setVisibleCustomColumnKey] = useState<string | null>(null);
+  const [customColumnState, setCustomColumnState] = useState<{
+    readonly generation: number;
+    readonly definitions: readonly CustomColumnDefinition[];
+    readonly visibleKey: string | null;
+  }>({ generation: definitionGeneration, definitions: [], visibleKey: null });
   const definitionRequestSequence = useRef(0);
   const previousSaveViewDialogOpen = useRef(saveViewDialogOpen);
   const selectedItem = items.find(({ id }) => id === selectedItemId) ?? null;
@@ -615,13 +616,22 @@ export function LibraryWorkspace({
   const interactionsDisabled = busy || actionsPending;
   const filtered = query.trim() !== "" || hasActiveFilters(filters);
   const firstUse = libraryState === "ready" && !busy && total === 0 && !filtered;
+  const customColumnDefinitions =
+    customColumnState.generation === definitionGeneration ? customColumnState.definitions : [];
+  const visibleCustomColumnKey =
+    customColumnState.generation === definitionGeneration ? customColumnState.visibleKey : null;
 
   useEffect(() => {
     const request = ++definitionRequestSequence.current;
+    setCustomColumnState({ generation: definitionGeneration, definitions: [], visibleKey: null });
     void listCustomColumnDefinitions()
       .then((result) => {
         if (request === definitionRequestSequence.current && result.ok) {
-          setCustomColumnDefinitions(result.value.definitions);
+          setCustomColumnState({
+            generation: definitionGeneration,
+            definitions: result.value.definitions,
+            visibleKey: null,
+          });
         }
       })
       .catch(() => undefined);
@@ -635,7 +645,7 @@ export function LibraryWorkspace({
       visibleCustomColumnKey !== null &&
       !customColumnDefinitions.some(({ key }) => key === visibleCustomColumnKey)
     ) {
-      setVisibleCustomColumnKey(null);
+      setCustomColumnState((state) => ({ ...state, visibleKey: null }));
     }
   }, [customColumnDefinitions, visibleCustomColumnKey]);
 
@@ -907,7 +917,13 @@ export function LibraryWorkspace({
                   visibleCustomColumnKey={visibleCustomColumnKey}
                   onChangePage={onChangePage}
                   onChangeSort={onChangeSort}
-                  onChangeVisibleCustomColumn={setVisibleCustomColumnKey}
+                  onChangeVisibleCustomColumn={(visibleKey) =>
+                    setCustomColumnState({
+                      generation: definitionGeneration,
+                      definitions: customColumnDefinitions,
+                      visibleKey,
+                    })
+                  }
                   onOpenItem={(item) => {
                     const primaryFormat = item.formats[0];
                     if (primaryFormat) {
