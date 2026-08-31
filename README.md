@@ -125,7 +125,7 @@ do not require Bun at runtime. A pushed `v<package-version>` tag publishes the
 macOS and Linux artifacts through the release workflow. Calibre remains an
 external runtime dependency for the advertised conversions.
 
-## Library storage and schema v11
+## Library storage and schema v12
 
 Importing with the default `copy` mode or attaching a format as a copy leaves
 the selected source in place and creates a Takio-managed copy. Importing with `--mode move`
@@ -134,8 +134,8 @@ before removing the original. Attaching a reference records the external file
 without copying it. Removing a format or item deletes only Takio-managed copies;
 referenced files remain caller-owned and are never deleted.
 
-The Rust store creates schema-v11 libraries and explicitly migrates supported
-schema-v1 through schema-v10 libraries. It creates a verified, no-overwrite
+The Rust store creates schema-v12 libraries and explicitly migrates supported
+schema-v1 through schema-v11 libraries. It creates a verified, no-overwrite
 pre-migration backup, applies adjacent migrations under one locked transaction,
 and proves rollback before reporting a failed migration. Foreign schemas and
 future versions are rejected rather than guessed at.
@@ -158,7 +158,9 @@ cover, and a machine-readable manifest. It never overwrites a destination.
 rebases that snapshot into an absent library path without retaining paths to the
 original library or disturbing unrelated files in an existing parent directory.
 Portable OPF export and verified rebuild preserve item IDs, metadata, format
-order, exact bytes, covers, and per-format timestamps in native Rust.
+order, exact bytes, covers, per-format timestamps, and library-defined text
+column definitions in native Rust. Portable v2 carries definitions while rebuild
+continues to accept v1 sources.
 
 ## CLI for skills and agents
 
@@ -201,9 +203,11 @@ typed custom values, custom sorting, or custom facets.
 
 The desktop metadata editor can keep, replace, or clear up to 64 bounded custom
 text fields per book, and the inspector shows them as sorted `#key` entries.
-This is not yet Calibre's full custom-column system: Takio does not currently
-have library-level column definitions, types, table-column configuration,
-custom facets, or bulk delta editing.
+Libraries can define up to 64 labeled, single-valued text columns. Definitions
+survive migration, Calibre import, portable export/rebuild, and reopen; the desktop
+uses their labels and can show one session-selected, non-sortable custom column in
+the table. Typed or multi-valued columns, custom sorting and facets, persistent
+column preferences, and bulk delta editing remain intentionally unsupported.
 The Rust migration currently exposes the core daily-driver and automation surface:
 
 | Command family | Purpose |
@@ -211,11 +215,12 @@ The Rust migration currently exposes the core daily-driver and automation surfac
 | `takio`, `takio tui` | Open the interactive terminal library with search, details, import, metadata review, trash, jobs, devices, and keyboard help. |
 | `takio doctor`, `capabilities` | Report Rust implementation details, schema versions, limits, and live Calibre availability. |
 | `takio formats`, `devices`, `plan`, `convert` | Inspect formats and execution targets, plan work, or run an advertised Calibre conversion synchronously. |
-| `takio library path`, `verify`, `backup`, `restore-backup`, `portable-export`, `rebuild` | Locate, audit, snapshot, portably export, and safely restore a schema-v11 library and its managed files. |
+| `takio library path`, `verify`, `backup`, `restore-backup`, `portable-export`, `rebuild` | Locate, audit, snapshot, portably export, and safely restore a schema-v12 library and its managed files. |
 | `takio library import`, `import-many`, `list`, `get`, `search`, `query`, `update`, `update-many`, `remove`, `export-many` | Import, browse, filter, edit, remove, and export the local catalogue. |
 | `takio library catalog`, `content-search`, `validate`, `virtual-libraries` (`saved-views` alias) | Publish JSON, CSV, or HTML catalogues, inspect book contents, validate attached formats, and persist named virtual-library scopes. |
 | `takio library format import`, `attach`, `remove`, `replace` | Manage owned copies and caller-owned format references, including guarded atomic replacement. |
 | `takio library cover set`, `remove` | Manage Takio-owned cover images. |
+| `takio library custom-columns list`, `create`, `rename`, `remove` | Manage bounded library-defined text-column labels while preserving per-book values on definition removal. |
 | `takio library trash list`, `move`, `restore`, `purge` | Remove items recoverably or purge them permanently. |
 | `takio library import-calibre`, `import-watch`; `takio metadata extract`, `fetch`, `candidates`; `takio polish` | Import or watch libraries, use bounded Calibre metadata and polishing tools, and explicitly review local or online metadata candidates. Candidate covers use opaque, expiring descriptors and require a separate apply choice. `metadata candidates reconcile` performs ordered, cancellable, read-only discovery for up to 64 books with at most four workers. |
 | `takio jobs enqueue`, `list`, `get`, `cancel`, `retry`, `retry-attachment`, `run-next`, `drain` | Manage the schema-v4 durable foreground conversion queue and reconcile completed outputs with library items. |
@@ -246,9 +251,9 @@ pairs only: EPUB to PDF, EPUB to AZW3, and DOCX, HTML, or TXT to EPUB. Native
 EPUB-to-KEPUB remains unavailable. Metadata automation, polishing, attachment
 reconciliation, virtual libraries, backup restore, portable rebuild,
 Calibre-library import, watched import, duplicate review, loopback content
-serving, and rooted Kindle SSH are implemented natively. Full typed custom
-columns, arbitrary save-to-disk expressions, richer device transports, and
-built-in reading/editing remain product gaps.
+serving, and rooted Kindle SSH are implemented natively. Typed or multi-valued
+custom columns, custom sorting and facets, arbitrary save-to-disk expressions,
+richer device transports, and built-in reading/editing remain product gaps.
 
 Mounted-volume delivery uses a private partial file, verifies bytes and SHA-256,
 then records the delivery in `.takio/deliveries.json`. Removal verifies the file

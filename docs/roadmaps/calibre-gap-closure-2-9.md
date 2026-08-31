@@ -243,12 +243,13 @@ Remaining acceptance work:
 
 #### B2. Virtual libraries and advanced organization
 
-Status: the virtual-library, native-query, bounded structured-query, bounded
-custom text-field, and bounded save-to-disk organization vertical slices are
+Status: the virtual-library, native-query, bounded structured-query, library-
+defined text-column, and bounded save-to-disk organization vertical slices are
 delivered in `48caa27`, `ffaf197`, `d5aaeb5`, `428fdc4`, `edd69a6`, `0f3774d`,
-`3e892ec`, `cde5a4b`, and `f5aaf11`. Library-defined typed custom columns,
-reusable group rules, arbitrary user-authored save-to-disk grammar, and richer
-bulk organization remain open.
+`3e892ec`, `cde5a4b`, `f5aaf11`, `5c78ef5`, `a01b2db`, `7f84c14`, `a2c2785`,
+`78378f4`, `90078c4`, `ba36cf0`, and `2b33b74`. Typed or multi-valued custom
+columns, reusable group rules, arbitrary user-authored save-to-disk grammar, and
+richer bulk organization remain open.
 
 Deliver:
 
@@ -335,10 +336,32 @@ Delivered evidence:
   Calibre-style save-to-disk grammar remains blocked on a separately designed,
   bounded template language rather than exposing filesystem paths or shell-like
   interpolation.
-- Bounded per-book text fields are not full Calibre custom-column parity. A
-  future slice still needs library-level definitions and labels, typed or
-  multi-valued data, delta bulk updates, table columns, sorting, facets,
-  definition-aware Calibre import, and portable definition round-trip.
+- Libraries now carry up to 64 strict, ordered definitions for single-valued
+  text columns. Rust schema v12 and Bun schema v12 create byte-equivalent
+  canonical tables, cleanup/review/watch constraints, and indexes; a Bun-created
+  database with a real definition passed `library verify` through both packaged
+  Rust executables. UTF-8 canonical duplicate ordering is shared across SQLite,
+  Rust, Bun, and the public contract, including non-BMP IDs.
+- The public CLI and service provide strict list/create/rename/remove operations.
+  Definitions and values survive v11-to-v12 migration with a verified backup,
+  reopen, removal with legacy values retained, real-shaped Calibre definition
+  and value import, and portable v2 export/rebuild. Portable v1 remains accepted,
+  while padded labels and forged reserved metadata are rejected before mutation.
+- Desktop metadata editing and the inspector use definition labels while retaining
+  undeclared legacy fields. Users can choose one session-only, non-sortable text
+  column for the table; stale refreshes clear the prior library generation rather
+  than displaying or editing mismatched definitions.
+- The exact-head checksummed standalone release and packaged desktop sidecar both
+  completed the external public workflow for CRUD, service envelopes, migration,
+  Calibre import, portable v1/v2 behavior, and value preservation. Every machine
+  command produced one JSON envelope and empty stderr. The rebuilt macOS ARM64
+  bundle passed local verification.
+- The final packaged 10,000-book, 15,000-format gate measured 62.64 ms p95 for
+  the standalone release and 69.48 ms for the desktop sidecar, below the 150 ms
+  target.
+- This text-only slice is not full Calibre custom-column parity. Remaining work is
+  typed or multi-valued data, custom sorting and facets, persistent column
+  preferences, bulk delta updates, computed columns, and arbitrary templates.
 
 ### Track C: Operational maturity foundation
 
@@ -560,8 +583,9 @@ journeys.
 
 1. Complete C1 durable operation audits and broader queue/server/device health
    summaries, then add import, merge, and server latency gates.
-2. Extend B2 with custom organization columns/templates and richer reusable
-   bulk workflows.
+2. Extend B2 with typed or multi-valued custom columns, custom sorting/facets,
+   persistent table preferences, arbitrary templates, and richer reusable bulk
+   workflows.
 3. Specify D1 device identity and simulator using real remount evidence.
 4. Prototype E1 secure EPUB reader resource isolation.
 5. Specify F1 recipe manifest and operation registry.
