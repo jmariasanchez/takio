@@ -13,6 +13,7 @@ use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 use tempfile::Builder;
 
+use crate::candidate_cover::CapturedCover;
 use crate::output::{AppError, AppResult};
 
 const MAX_OPF_BYTES: u64 = 2 * 1024 * 1024;
@@ -21,8 +22,8 @@ const MAX_COVER_BYTES: u64 = 32 * 1024 * 1024;
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CoverSummary {
-    pub media_type: &'static str,
-    pub extension: &'static str,
+    pub media_type: String,
+    pub extension: String,
     pub bytes: u64,
 }
 
@@ -42,12 +43,16 @@ pub struct ExtractedMetadata {
     pub source_path: PathBuf,
     pub metadata: Value,
     pub cover: Option<CoverSummary>,
+    #[serde(skip)]
+    pub(crate) cover_data: Option<CapturedCover>,
 }
 
 #[derive(Clone, Debug, Serialize)]
 pub struct FetchedMetadata {
     pub metadata: Value,
     pub cover: Option<PublishedCover>,
+    #[serde(skip)]
+    pub(crate) cover_data: Option<CapturedCover>,
 }
 
 #[must_use]
@@ -118,11 +123,22 @@ fn extract_with_cancellation(
         canceled,
     )?;
     let metadata = parse_opf(&read_bounded(&opf, MAX_OPF_BYTES)?)?;
-    let cover = optional_cover(&cover)?;
+    let cover_data =
+        optional_cover_data(&cover)?.map(|(bytes, extension, media_type)| CapturedCover {
+            bytes,
+            extension: extension.to_owned(),
+            media_type: media_type.to_owned(),
+        });
+    let cover = cover_data.as_ref().map(|cover| CoverSummary {
+        media_type: cover.media_type.clone(),
+        extension: cover.extension.clone(),
+        bytes: cover.bytes.len() as u64,
+    });
     Ok(ExtractedMetadata {
         source_path: source,
         metadata,
         cover,
+        cover_data,
     })
 }
 
@@ -133,7 +149,15 @@ pub fn fetch(
     cover_output: Option<&Path>,
     timeout: Duration,
 ) -> AppResult<FetchedMetadata> {
-    fetch_with_cancellation(title, authors, identifiers, cover_output, timeout, None)
+    fetch_with_cancellation(
+        title,
+        authors,
+        identifiers,
+        cover_output,
+        timeout,
+        None,
+        false,
+    )
 }
 
 pub fn fetch_cancellable(
@@ -151,6 +175,25 @@ pub fn fetch_cancellable(
         cover_output,
         timeout,
         Some(canceled),
+        false,
+    )
+}
+
+pub(crate) fn fetch_candidate_cancellable(
+    title: Option<&str>,
+    authors: &[String],
+    identifiers: &BTreeMap<String, String>,
+    timeout: Duration,
+    canceled: &AtomicBool,
+) -> AppResult<FetchedMetadata> {
+    fetch_with_cancellation(
+        title,
+        authors,
+        identifiers,
+        None,
+        timeout,
+        Some(canceled),
+        true,
     )
 }
 
@@ -161,6 +204,7 @@ fn fetch_with_cancellation(
     cover_output: Option<&Path>,
     timeout: Duration,
     canceled: Option<&AtomicBool>,
+    capture_cover: bool,
 ) -> AppResult<FetchedMetadata> {
     let title = title.map(str::trim).filter(|value| !value.is_empty());
     if timeout.is_zero()
@@ -201,7 +245,7 @@ fn fetch_with_cancellation(
             command.arg(format!("--identifier={kind}:{value}"));
         }
     }
-    if cover_output.is_some() {
+    if cover_output.is_some() || capture_cover {
         command.arg(format!("--cover={}", cover.display()));
     }
     command
@@ -212,13 +256,26 @@ fn fetch_with_cancellation(
         .stderr(Stdio::null());
     run_bounded(&mut command, timeout, "metadata-fetch-failed", canceled)?;
     let metadata = parse_opf(&read_bounded(&opf, MAX_OPF_BYTES)?)?;
-    let cover = match (optional_cover_data(&cover)?, cover_output) {
-        (Some((bytes, extension, media_type)), Some(output)) => {
-            Some(publish_cover(output, &bytes, extension, media_type)?)
-        }
+    let captured =
+        optional_cover_data(&cover)?.map(|(bytes, extension, media_type)| CapturedCover {
+            bytes,
+            extension: extension.to_owned(),
+            media_type: media_type.to_owned(),
+        });
+    let cover = match (&captured, cover_output) {
+        (Some(captured), Some(output)) => Some(publish_cover(
+            output,
+            &captured.bytes,
+            Box::leak(captured.extension.clone().into_boxed_str()),
+            Box::leak(captured.media_type.clone().into_boxed_str()),
+        )?),
         _ => None,
     };
-    Ok(FetchedMetadata { metadata, cover })
+    Ok(FetchedMetadata {
+        metadata,
+        cover,
+        cover_data: captured,
+    })
 }
 
 pub fn parse_opf(bytes: &[u8]) -> AppResult<Value> {
@@ -364,16 +421,6 @@ fn normalize_date(value: String) -> Option<String> {
                 || !matches!(index, 4 | 7) && value.is_ascii_digit()
         })
         .then(|| candidate.to_owned())
-}
-
-fn optional_cover(path: &Path) -> AppResult<Option<CoverSummary>> {
-    Ok(
-        optional_cover_data(path)?.map(|(bytes, extension, media_type)| CoverSummary {
-            media_type,
-            extension,
-            bytes: u64::try_from(bytes.len()).unwrap_or(u64::MAX),
-        }),
-    )
 }
 
 fn optional_cover_data(path: &Path) -> AppResult<Option<(Vec<u8>, &'static str, &'static str)>> {

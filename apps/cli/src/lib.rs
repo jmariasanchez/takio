@@ -1,4 +1,5 @@
 pub mod calibre_import;
+pub(crate) mod candidate_cover;
 pub mod cli;
 pub mod conversion;
 pub mod destinations;

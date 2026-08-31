@@ -13,6 +13,7 @@ use sha2::{Digest, Sha256};
 use unicode_normalization::UnicodeNormalization;
 use uuid::Uuid;
 
+use crate::candidate_cover::{self, CandidateCoverDescriptor};
 use crate::conversion::{FormatId, detect_format};
 use crate::model::{BookAuthor, BookFormat, LibraryItem, LibraryPatch, Patch, Provenance};
 use crate::output::{AppError, AppResult};
@@ -1041,6 +1042,77 @@ impl LibraryStore {
         patch: LibraryPatch,
     ) -> AppResult<LibraryItem> {
         self.update_inner(id, patch, true)
+    }
+
+    pub(crate) fn apply_metadata_candidate(
+        &mut self,
+        id: &str,
+        patch: LibraryPatch,
+        cover: Option<&CandidateCoverDescriptor>,
+        candidate_id: &str,
+        source: &str,
+        provenance: &str,
+    ) -> AppResult<LibraryItem> {
+        let validated = cover
+            .map(|descriptor| {
+                candidate_cover::validate(
+                    &self.paths.root,
+                    id,
+                    candidate_id,
+                    source,
+                    provenance,
+                    descriptor,
+                )
+            })
+            .transpose()?;
+        let old_cover = self
+            .read_item(id)?
+            .ok_or_else(|| AppError::new("item-not-found"))?
+            .cover_path;
+        let published = if let Some(validated) = &validated {
+            let target = self.paths.covers.join(format!(
+                "{id}-{}.{}",
+                Uuid::new_v4(),
+                validated.descriptor.extension.trim_start_matches('.')
+            ));
+            let fingerprint = hash_file(&validated.source)?;
+            publish_copy(&validated.source, &target, &fingerprint)?;
+            Some(target)
+        } else {
+            None
+        };
+        let result = (|| {
+            let item = if patch.is_empty() {
+                self.read_item(id)?
+                    .ok_or_else(|| AppError::new("item-not-found"))?
+            } else {
+                self.update_candidate(id, patch)?
+            };
+            if let Some(target) = &published {
+                self.connection.execute(
+                    "UPDATE library_items SET cover_path=?2, updated_at=?3 WHERE id=?1",
+                    params![id, target.to_string_lossy(), Utc::now().to_rfc3339()],
+                )?;
+            }
+            Ok(item)
+        })();
+        if result.is_err() {
+            if let Some(path) = &published {
+                let _ = fs::remove_file(path);
+            }
+            return result;
+        }
+        if let Some(validated) = validated {
+            candidate_cover::consume(&self.paths.root, &validated.descriptor.artifact_id);
+            if let Some(old) = old_cover
+                && published.as_ref().is_none_or(|target| target != &old)
+                && old.starts_with(&self.paths.covers)
+            {
+                let _ = fs::remove_file(old);
+            }
+        }
+        self.read_item(id)?
+            .ok_or_else(|| AppError::new("storage-unavailable"))
     }
 
     fn update_inner(

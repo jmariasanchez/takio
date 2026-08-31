@@ -521,6 +521,8 @@ enum MetadataCandidatesCommand {
         patch_json: Option<String>,
         #[arg(long)]
         provenance: String,
+        #[arg(long)]
+        cover: bool,
     },
 }
 
@@ -851,7 +853,12 @@ fn metadata_candidates(command: MetadataCandidatesCommand, library: Option<&str>
             let item = store
                 .get(&id)?
                 .ok_or_else(|| AppError::new("item-not-found"))?;
-            let candidates = metadata_candidates_for_item(&item, include_online, timeout_seconds)?;
+            let candidates = metadata_candidates_for_item_at(
+                &item,
+                include_online,
+                timeout_seconds,
+                &store.paths().root,
+            )?;
             print_success(json!({"itemId":item.id,"candidates":candidates}))
         }
         MetadataCandidatesCommand::Reconcile {
@@ -865,6 +872,7 @@ fn metadata_candidates(command: MetadataCandidatesCommand, library: Option<&str>
             let request = ReconcileRequest::parse(read_json(&request_json)?)?;
             let signals = CancellationSignals::install()?;
             let paths = LibraryPaths::resolve(library, Some(&db))?;
+            let candidate_root = paths.root.clone();
             let store = LibraryStore::open_read_only(paths)?;
             let snapshots = request
                 .item_ids()
@@ -880,7 +888,15 @@ fn metadata_candidates(command: MetadataCandidatesCommand, library: Option<&str>
                 timeout_seconds,
                 request.concurrency(),
                 signals.flag(),
-                metadata_candidates_for_reconcile,
+                |item, online, timeout, canceled| {
+                    metadata_candidates_for_reconcile(
+                        item,
+                        online,
+                        timeout,
+                        canceled,
+                        &candidate_root,
+                    )
+                },
             );
             print_success(response)
         }
@@ -890,6 +906,7 @@ fn metadata_candidates(command: MetadataCandidatesCommand, library: Option<&str>
             candidate_json,
             patch_json,
             provenance,
+            cover,
         } => {
             if id.trim().is_empty()
                 || provenance.trim().is_empty()
@@ -908,6 +925,9 @@ fn metadata_candidates(command: MetadataCandidatesCommand, library: Option<&str>
                     .map_err(|_| AppError::new("invalid-arguments"))?;
                 let paths = LibraryPaths::resolve(library, db.as_deref())?;
                 let mut store = LibraryStore::open(paths, true)?;
+                if cover {
+                    return Err(AppError::new("invalid-arguments"));
+                }
                 let item = store.update(&id, patch)?;
                 return print_success(
                     json!({"item":item,"applied":{"itemId":id,"source":"manual","provenance":provenance}}),
@@ -917,8 +937,13 @@ fn metadata_candidates(command: MetadataCandidatesCommand, library: Option<&str>
             // The engine validates the candidate independently of any client,
             // and fully before opening or mutating a library, so malformed or
             // cross-item input has no side effect at all.
-            let prepared =
-                prepare_metadata_candidate(read_json(&candidate_input)?, &id, None, &provenance)?;
+            let prepared = prepare_metadata_candidate_with_cover(
+                read_json(&candidate_input)?,
+                &id,
+                None,
+                &provenance,
+                cover,
+            )?;
 
             let paths = LibraryPaths::resolve(library, db.as_deref())?;
             let mut store = LibraryStore::open(paths, true)?;
@@ -943,6 +968,8 @@ pub(crate) struct PreparedMetadataCandidate {
     pub fields: Vec<String>,
     patch: LibraryPatch,
     audit: Value,
+    cover: Option<crate::candidate_cover::CandidateCoverDescriptor>,
+    candidate_provenance: String,
 }
 
 pub(crate) fn metadata_candidates_for_item(
@@ -957,6 +984,24 @@ pub(crate) fn metadata_candidates_for_item(
         timeout_seconds,
         &canceled,
         false,
+        None,
+    )
+}
+
+pub(crate) fn metadata_candidates_for_item_at(
+    item: &crate::model::LibraryItem,
+    include_online: bool,
+    timeout_seconds: u64,
+    library_root: &Path,
+) -> AppResult<Vec<Value>> {
+    let canceled = AtomicBool::new(false);
+    metadata_candidates_for_item_with_policy(
+        item,
+        include_online,
+        timeout_seconds,
+        &canceled,
+        false,
+        Some(library_root),
     )
 }
 
@@ -965,8 +1010,16 @@ fn metadata_candidates_for_reconcile(
     include_online: bool,
     timeout_seconds: u64,
     canceled: &AtomicBool,
+    library_root: &Path,
 ) -> AppResult<Vec<Value>> {
-    metadata_candidates_for_item_with_policy(item, include_online, timeout_seconds, canceled, true)
+    metadata_candidates_for_item_with_policy(
+        item,
+        include_online,
+        timeout_seconds,
+        canceled,
+        true,
+        Some(library_root),
+    )
 }
 
 fn metadata_candidates_for_item_with_policy(
@@ -975,6 +1028,7 @@ fn metadata_candidates_for_item_with_policy(
     timeout_seconds: u64,
     canceled: &AtomicBool,
     require_requested_sources: bool,
+    library_root: Option<&Path>,
 ) -> AppResult<Vec<Value>> {
     if timeout_seconds == 0 {
         return Err(AppError::new("invalid-arguments"));
@@ -996,12 +1050,31 @@ fn metadata_candidates_for_item_with_policy(
         };
         match extracted {
             Ok(extracted) => {
+                let provenance = json!({"generatedAt":"1970-01-01T00:00:00.000Z","itemId":item.id,"sourcePath":extracted.source_path,"backend":"ebook-meta"});
+                let cover = if canceled.load(Ordering::Acquire) {
+                    None
+                } else if let (Some(cover), Some(library_root)) =
+                    (extracted.cover_data.as_ref(), library_root)
+                {
+                    Some(crate::candidate_cover::stage(
+                        library_root,
+                        &item.id,
+                        "embedded:1",
+                        "embedded",
+                        &serde_json::to_string(&provenance)
+                            .map_err(|_| AppError::new("metadata-invalid"))?,
+                        cover,
+                    )?)
+                } else {
+                    None
+                };
                 if let Some(candidate) = metadata_candidate(
                     "embedded:1",
                     "embedded",
                     "high",
                     extracted.metadata,
-                    json!({"generatedAt":"1970-01-01T00:00:00.000Z","itemId":item.id,"sourcePath":extracted.source_path,"backend":"ebook-meta"}),
+                    provenance,
+                    cover,
                 ) {
                     candidates.push(candidate);
                 }
@@ -1023,11 +1096,10 @@ fn metadata_candidates_for_item_with_policy(
                 .collect()
         };
         let fetched = if require_requested_sources {
-            metadata::fetch_cancellable(
+            metadata::fetch_candidate_cancellable(
                 Some(&item.title),
                 &authors,
                 &item.identifiers,
-                None,
                 Duration::from_secs(timeout_seconds),
                 canceled,
             )
@@ -1042,12 +1114,31 @@ fn metadata_candidates_for_item_with_policy(
         };
         match fetched {
             Ok(fetched) => {
+                let provenance = json!({"generatedAt":"1970-01-01T00:00:00.000Z","itemId":item.id,"backend":"fetch-ebook-metadata"});
+                let cover = if canceled.load(Ordering::Acquire) {
+                    None
+                } else if let (Some(cover), Some(library_root)) =
+                    (fetched.cover_data.as_ref(), library_root)
+                {
+                    Some(crate::candidate_cover::stage(
+                        library_root,
+                        &item.id,
+                        "online:1",
+                        "online",
+                        &serde_json::to_string(&provenance)
+                            .map_err(|_| AppError::new("metadata-invalid"))?,
+                        cover,
+                    )?)
+                } else {
+                    None
+                };
                 if let Some(candidate) = metadata_candidate(
                     "online:1",
                     "online",
                     "medium",
                     fetched.metadata,
-                    json!({"generatedAt":"1970-01-01T00:00:00.000Z","itemId":item.id,"backend":"fetch-ebook-metadata"}),
+                    provenance,
+                    cover,
                 ) {
                     candidates.push(candidate);
                 }
@@ -1068,6 +1159,22 @@ pub(crate) fn prepare_metadata_candidate(
     item_id: &str,
     selected_fields: Option<&BTreeSet<String>>,
     provenance: &str,
+) -> AppResult<PreparedMetadataCandidate> {
+    prepare_metadata_candidate_with_cover(
+        candidate_input,
+        item_id,
+        selected_fields,
+        provenance,
+        false,
+    )
+}
+
+fn prepare_metadata_candidate_with_cover(
+    candidate_input: Value,
+    item_id: &str,
+    selected_fields: Option<&BTreeSet<String>>,
+    provenance: &str,
+    apply_cover: bool,
 ) -> AppResult<PreparedMetadataCandidate> {
     if item_id.trim().is_empty() || provenance.trim().is_empty() {
         return Err(AppError::new("invalid-arguments"));
@@ -1105,7 +1212,12 @@ pub(crate) fn prepare_metadata_candidate(
         .collect::<serde_json::Map<_, _>>();
     let patch: LibraryPatch = serde_json::from_value(Value::Object(filtered_patch))
         .map_err(|_| AppError::new("invalid-arguments"))?;
-    validate_candidate_patch(&patch)?;
+    if patch.is_empty() && !(apply_cover && candidate.cover.is_some()) {
+        return Err(AppError::new("invalid-arguments"));
+    }
+    if !patch.is_empty() {
+        validate_candidate_patch(&patch)?;
+    }
     let audit = json!({
         "schemaVersion": METADATA_AUDIT_SCHEMA_VERSION,
         "candidateId": candidate.id,
@@ -1114,13 +1226,23 @@ pub(crate) fn prepare_metadata_candidate(
         "candidateProvenance": candidate.provenance,
         "selectedFields": fields,
         "applicationProvenance": provenance.trim(),
+        "cover": apply_cover.then(|| candidate.cover.as_ref().map(|cover| json!({
+            "mediaType": cover.media_type,
+            "extension": cover.extension,
+            "bytes": cover.bytes,
+            "sha256": cover.sha256,
+        }))).flatten(),
     });
+    let candidate_provenance = serde_json::to_string(&candidate.provenance)
+        .map_err(|_| AppError::new("invalid-arguments"))?;
     Ok(PreparedMetadataCandidate {
         candidate_id: candidate.id,
         source: candidate.source,
         fields,
         patch,
         audit,
+        cover: apply_cover.then_some(candidate.cover).flatten(),
+        candidate_provenance,
     })
 }
 
@@ -1138,7 +1260,14 @@ pub(crate) fn apply_prepared_metadata_candidate(
         &patch.custom_metadata,
         &prepared.audit,
     )?);
-    store.update_candidate(item_id, patch)
+    store.apply_metadata_candidate(
+        item_id,
+        patch,
+        prepared.cover.as_ref(),
+        &prepared.candidate_id,
+        &prepared.source,
+        &prepared.candidate_provenance,
+    )
 }
 
 const METADATA_AUDIT_SCHEMA_VERSION: u64 = 1;
@@ -1168,6 +1297,8 @@ struct WireCandidate {
     confidence: String,
     patch: Value,
     provenance: WireCandidateProvenance,
+    #[serde(default)]
+    cover: Option<crate::candidate_cover::CandidateCoverDescriptor>,
 }
 
 impl WireCandidate {
@@ -1346,11 +1477,15 @@ fn metadata_candidate(
     confidence: &str,
     patch: Value,
     provenance: Value,
+    cover: Option<crate::candidate_cover::CandidateCoverDescriptor>,
 ) -> Option<Value> {
-    patch
-        .as_object()
-        .is_some_and(|object| !object.is_empty())
-        .then(|| json!({"schemaVersion":1,"id":id,"source":source,"confidence":confidence,"patch":patch,"provenance":provenance}))
+    (patch.as_object().is_some_and(|object| !object.is_empty()) || cover.is_some()).then(|| {
+        let mut candidate = json!({"schemaVersion":1,"id":id,"source":source,"confidence":confidence,"patch":patch,"provenance":provenance});
+        if let Some(cover) = cover {
+            candidate["cover"] = json!(cover);
+        }
+        candidate
+    })
 }
 fn devices(as_json: bool) -> AppResult<()> {
     let backend = discover_ebook_convert();
