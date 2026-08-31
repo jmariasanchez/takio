@@ -371,7 +371,7 @@ fn metadata_candidates_reconcile_cancels_reaps_and_stops_later_stages() {
         .to_owned();
     let started = Instant::now();
     let status = Command::new("kill")
-        .args(["-INT", &child.id().to_string()])
+        .args(["-TERM", &child.id().to_string()])
         .status()
         .expect("signal reconcile");
     assert!(status.success());
