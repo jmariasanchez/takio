@@ -141,7 +141,9 @@ selected-book TUI review delivered in `67d36f1` and hardened in `cbce02b` and
 `b69e6e0`, `4620d6b`, and `1b77e9a`; the accessible desktop review workflow was
 delivered in `0c4dd6b` and hardened in `4bd9019` and `a171891`. Native discovery
 was hardened in `61527de`, with the final cross-runtime item-id alignment in
-`c1a955e`.
+`c1a955e`. Path-free candidate-cover contracts and Rust staging were delivered in
+`0805fbf`, `f219c40`, and `9be1e1c`; desktop and selected-book TUI review landed
+in `8786f15` and `0e9eff0`, with application and cleanup hardening in `15279ec`.
 
 Deliver:
 
@@ -202,10 +204,19 @@ Delivered evidence:
   field controls as the selected-book workflow. Approved mutations remain
   sequential and transactional; skipped, missing, failed, and canceled books are
   retained in the final report.
+- Candidate covers stay outside metadata patches and never expose filesystem
+  paths. Discovery stages bounded, expiring artifacts under Takio ownership and
+  returns only an opaque token plus media type, extension, byte count, and digest.
+- Desktop selected-book and bulk review show verified previews through a contained
+  `takio-cover` protocol. Desktop and TUI keep cover selection unchecked until the
+  user explicitly opts in, including cover-only application.
+- Rust binds each staged artifact to its item, candidate identity, source,
+  provenance, digest, size, and media pair. Metadata, audit, and durable cover
+  reference commit together; failures remove the unpublished durable copy while
+  retaining the stage for retry, and successful apply consumes it.
 
 Remaining acceptance work:
 
-- Integrate fetched cover choice into the candidate contract and review surfaces.
 - Consider a TUI multi-select queue for bulk review after the desktop workflow has
   accumulated real usage evidence; the selected-book TUI and public CLI already
   use the same validation and apply engine.

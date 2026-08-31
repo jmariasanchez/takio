@@ -38,6 +38,10 @@ search and facets, covers, trash/restore, and bulk export with title or
 author-title filename presets. The CLI can also transfer books to mounted macOS
 volumes and eject them after a verified copy. Export and send copy and verify the
 selected stored format without changing the stored or caller-owned source.
+Desktop and terminal metadata review can compare local or explicitly requested
+online candidates, select individual fields, and separately opt into a verified
+candidate cover. The desktop also supports bounded, cancellable multi-book
+candidate review.
 
 Conversion currently supports EPUB-to-PDF, EPUB-to-AZW3, and DOCX, HTML, or
 TXT to EPUB through a discovered Calibre `ebook-convert` backend. Conversion can
@@ -121,7 +125,7 @@ do not require Bun at runtime. A pushed `v<package-version>` tag publishes the
 macOS and Linux artifacts through the release workflow. Calibre remains an
 external runtime dependency for the advertised conversions.
 
-## Library storage and schema v10
+## Library storage and schema v11
 
 Importing with the default `copy` mode or attaching a format as a copy leaves
 the selected source in place and creates a Takio-managed copy. Importing with `--mode move`
@@ -130,10 +134,11 @@ before removing the original. Attaching a reference records the external file
 without copying it. Removing a format or item deletes only Takio-managed copies;
 referenced files remain caller-owned and are never deleted.
 
-The Rust store creates and opens schema-v10 libraries. It deliberately rejects
-older or future nonzero schema versions instead of attempting a risky migration.
-Upgrade an older library with the last compatible Takio release and retain its
-verified migration backup before opening it with this Rust version.
+The Rust store creates schema-v11 libraries and explicitly migrates supported
+schema-v1 through schema-v10 libraries. It creates a verified, no-overwrite
+pre-migration backup, applies adjacent migrations under one locked transaction,
+and proves rollback before reporting a failed migration. Foreign schemas and
+future versions are rejected rather than guessed at.
 
 Migration backups contain database metadata only. Preserve and move
 `library.sqlite` together with its sibling `items` and `covers` directories so
@@ -162,7 +167,8 @@ The Rust CLI preserves the one-line protocol while adding a human interface. Run
 Library, Jobs, Devices, and Help sections, incremental search, an import prompt,
 a command palette, safe trash confirmation, responsive small-terminal handling,
 selected-book metadata candidate review with explicit field selection and online
-opt-in, and complete terminal restoration on exit.
+opt-in, separate candidate-cover selection, and complete terminal restoration on
+exit.
 
 The CLI remains deterministic. Machine-readable successes use a one-line
 `{"ok":true,"value":...}` envelope, and every failure uses
@@ -188,7 +194,7 @@ The Rust migration currently exposes the core daily-driver and automation surfac
 | `takio library format import`, `attach`, `remove`, `replace` | Manage owned copies and caller-owned format references, including guarded atomic replacement. |
 | `takio library cover set`, `remove` | Manage Takio-owned cover images. |
 | `takio library trash list`, `move`, `restore`, `purge` | Remove items recoverably or purge them permanently. |
-| `takio library import-calibre`, `import-watch`; `takio metadata extract`, `fetch`, `candidates`; `takio polish` | Import or watch libraries, use bounded Calibre metadata and polishing tools, and explicitly review local or online metadata candidates. `metadata candidates reconcile` performs ordered, cancellable, read-only discovery for up to 64 books with at most four workers. |
+| `takio library import-calibre`, `import-watch`; `takio metadata extract`, `fetch`, `candidates`; `takio polish` | Import or watch libraries, use bounded Calibre metadata and polishing tools, and explicitly review local or online metadata candidates. Candidate covers use opaque, expiring descriptors and require a separate apply choice. `metadata candidates reconcile` performs ordered, cancellable, read-only discovery for up to 64 books with at most four workers. |
 | `takio jobs enqueue`, `list`, `get`, `cancel`, `retry`, `retry-attachment`, `run-next`, `drain` | Manage the schema-v4 durable foreground conversion queue and reconcile completed outputs with library items. |
 | `takio destination list`, `inventory`, `reconcile`, `remove`, `eject`, `rooted-kindle-send` | Discover mounted volumes, manage verified delivery records, or explicitly opt into hardened SSH/SCP delivery. |
 | `takio send` | Copy and SHA-256 verify an attached format on an authorized mounted destination. |
