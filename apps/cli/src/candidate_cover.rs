@@ -124,7 +124,13 @@ pub fn validate(
 ) -> AppResult<ValidatedCover> {
     validate_artifact_id(&descriptor.artifact_id)?;
     validate_cover_type(&descriptor.media_type, &descriptor.extension)?;
-    if descriptor.bytes == 0 || descriptor.bytes > MAX_COVER_BYTES || descriptor.sha256.len() != 64
+    if descriptor.bytes == 0
+        || descriptor.bytes > MAX_COVER_BYTES
+        || descriptor.sha256.len() != 64
+        || !descriptor
+            .sha256
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
     {
         return Err(AppError::new("candidate-cover-invalid"));
     }
@@ -218,7 +224,11 @@ fn usage(root: &Path) -> AppResult<(usize, u64)> {
 }
 
 fn validate_artifact_id(value: &str) -> AppResult<()> {
-    if value.len() == 32 && value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+    if value.len() == 32
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+    {
         Ok(())
     } else {
         Err(AppError::new("candidate-cover-invalid"))

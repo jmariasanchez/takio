@@ -948,16 +948,23 @@ fn metadata_candidates(command: MetadataCandidatesCommand, library: Option<&str>
             let paths = LibraryPaths::resolve(library, db.as_deref())?;
             let mut store = LibraryStore::open(paths, true)?;
             let item = apply_prepared_metadata_candidate(&mut store, &id, &prepared)?;
-            print_success(json!({
-                "item": item,
-                "applied": {
-                    "itemId": id,
-                    "candidateId": prepared.candidate_id,
-                    "source": prepared.source,
-                    "provenance": provenance,
-                    "fields": prepared.fields,
-                }
-            }))
+            let mut applied = json!({
+                "itemId": id,
+                "candidateId": prepared.candidate_id,
+                "source": prepared.source,
+                "provenance": provenance,
+                "fields": prepared.fields,
+                "coverApplied": prepared.cover.is_some(),
+            });
+            if let Some(cover) = prepared.cover.as_ref() {
+                applied["cover"] = json!({
+                    "mediaType": cover.media_type,
+                    "extension": cover.extension,
+                    "bytes": cover.bytes,
+                    "sha256": cover.sha256,
+                });
+            }
+            print_success(json!({"item": item, "applied": applied}))
         }
     }
 }
@@ -1095,23 +1102,13 @@ fn metadata_candidates_for_item_with_policy(
                 .map(|author| author.name.clone())
                 .collect()
         };
-        let fetched = if require_requested_sources {
-            metadata::fetch_candidate_cancellable(
-                Some(&item.title),
-                &authors,
-                &item.identifiers,
-                Duration::from_secs(timeout_seconds),
-                canceled,
-            )
-        } else {
-            metadata::fetch(
-                Some(&item.title),
-                &authors,
-                &item.identifiers,
-                None,
-                Duration::from_secs(timeout_seconds),
-            )
-        };
+        let fetched = metadata::fetch_candidate_cancellable(
+            Some(&item.title),
+            &authors,
+            &item.identifiers,
+            Duration::from_secs(timeout_seconds),
+            canceled,
+        );
         match fetched {
             Ok(fetched) => {
                 let provenance = json!({"generatedAt":"1970-01-01T00:00:00.000Z","itemId":item.id,"backend":"fetch-ebook-metadata"});
@@ -1183,7 +1180,7 @@ fn prepare_metadata_candidate_with_cover(
         serde_json::from_value(candidate_input).map_err(|_| AppError::new("invalid-arguments"))?;
     let all_fields = candidate.validated_fields(item_id)?;
     let fields = if let Some(selected_fields) = selected_fields {
-        if selected_fields.is_empty()
+        if (selected_fields.is_empty() && !(apply_cover && candidate.cover.is_some()))
             || selected_fields
                 .iter()
                 .any(|field| !all_fields.contains(field))
@@ -1333,7 +1330,7 @@ impl WireCandidate {
         }
         self.patch
             .as_object()
-            .filter(|object| !object.is_empty())
+            .filter(|object| !object.is_empty() || self.cover.is_some())
             .map(|object| object.keys().cloned().collect())
             .ok_or_else(invalid)
     }

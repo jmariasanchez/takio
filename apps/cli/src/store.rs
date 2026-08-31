@@ -1033,15 +1033,7 @@ impl LibraryStore {
     }
 
     pub fn update(&mut self, id: &str, patch: LibraryPatch) -> AppResult<LibraryItem> {
-        self.update_inner(id, patch, false)
-    }
-
-    pub(crate) fn update_candidate(
-        &mut self,
-        id: &str,
-        patch: LibraryPatch,
-    ) -> AppResult<LibraryItem> {
-        self.update_inner(id, patch, true)
+        self.update_inner(id, patch, false, None)
     }
 
     pub(crate) fn apply_metadata_candidate(
@@ -1081,21 +1073,7 @@ impl LibraryStore {
         } else {
             None
         };
-        let result = (|| {
-            let item = if patch.is_empty() {
-                self.read_item(id)?
-                    .ok_or_else(|| AppError::new("item-not-found"))?
-            } else {
-                self.update_candidate(id, patch)?
-            };
-            if let Some(target) = &published {
-                self.connection.execute(
-                    "UPDATE library_items SET cover_path=?2, updated_at=?3 WHERE id=?1",
-                    params![id, target.to_string_lossy(), Utc::now().to_rfc3339()],
-                )?;
-            }
-            Ok(item)
-        })();
+        let result = self.update_inner(id, patch, true, published.as_deref());
         if result.is_err() {
             if let Some(path) = &published {
                 let _ = fs::remove_file(path);
@@ -1107,6 +1085,9 @@ impl LibraryStore {
             if let Some(old) = old_cover
                 && published.as_ref().is_none_or(|target| target != &old)
                 && old.starts_with(&self.paths.covers)
+                && self
+                    .path_is_referenced(&old.to_string_lossy())
+                    .is_ok_and(|referenced| !referenced)
             {
                 let _ = fs::remove_file(old);
             }
@@ -1120,6 +1101,7 @@ impl LibraryStore {
         id: &str,
         patch: LibraryPatch,
         allow_reserved_metadata: bool,
+        cover_path: Option<&Path>,
     ) -> AppResult<LibraryItem> {
         validate_library_patch(&patch, allow_reserved_metadata)?;
         let mut item = self
@@ -1128,7 +1110,7 @@ impl LibraryStore {
         // Patch semantics, uniform across every nullable field the contract
         // allows: `Missing` leaves the stored value untouched, `Null` clears it
         // to the documented empty value, `Set` replaces it.
-        if patch.is_empty() {
+        if patch.is_empty() && cover_path.is_none() {
             return Err(AppError::new("invalid-arguments"));
         }
         // `title` is non-nullable: an explicit null is a client error.
@@ -1253,6 +1235,12 @@ impl LibraryStore {
             params![item.id, item.title, item.author, item.series, item.series_index, item.publisher,
                 item.published_date, item.rating, item.description, item.updated_at],
         )?;
+        if let Some(cover_path) = cover_path {
+            transaction.execute(
+                "UPDATE library_items SET cover_path=?2 WHERE id=?1",
+                params![id, cover_path.to_string_lossy()],
+            )?;
+        }
         replace_metadata(&transaction, &item)?;
         transaction.commit()?;
         self.read_item(id)?
