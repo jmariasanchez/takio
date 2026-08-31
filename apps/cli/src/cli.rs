@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{BufRead, IsTerminal, Read, Write};
 use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use clap::{CommandFactory, Parser, Subcommand};
@@ -862,16 +863,16 @@ fn metadata_candidates(command: MetadataCandidatesCommand, library: Option<&str>
                 return Err(AppError::new("invalid-arguments"));
             }
             let request = ReconcileRequest::parse(read_json(&request_json)?)?;
+            let signals = CancellationSignals::install()?;
             let paths = LibraryPaths::resolve(library, Some(&db))?;
             let store = LibraryStore::open_read_only(paths)?;
             let snapshots = request
                 .item_ids()
                 .iter()
                 .map(|id| store.get(id))
-                .collect::<AppResult<Vec<_>>>()?;
+                .collect::<Vec<_>>();
             drop(store);
 
-            let signals = CancellationSignals::install()?;
             let response = reconcile(
                 request.item_ids(),
                 snapshots,
@@ -879,7 +880,7 @@ fn metadata_candidates(command: MetadataCandidatesCommand, library: Option<&str>
                 timeout_seconds,
                 request.concurrency(),
                 signals.flag(),
-                metadata_candidates_for_item,
+                metadata_candidates_for_reconcile,
             );
             print_success(response)
         }
@@ -949,23 +950,68 @@ pub(crate) fn metadata_candidates_for_item(
     include_online: bool,
     timeout_seconds: u64,
 ) -> AppResult<Vec<Value>> {
+    let canceled = AtomicBool::new(false);
+    metadata_candidates_for_item_with_policy(
+        item,
+        include_online,
+        timeout_seconds,
+        &canceled,
+        false,
+    )
+}
+
+fn metadata_candidates_for_reconcile(
+    item: &crate::model::LibraryItem,
+    include_online: bool,
+    timeout_seconds: u64,
+    canceled: &AtomicBool,
+) -> AppResult<Vec<Value>> {
+    metadata_candidates_for_item_with_policy(item, include_online, timeout_seconds, canceled, true)
+}
+
+fn metadata_candidates_for_item_with_policy(
+    item: &crate::model::LibraryItem,
+    include_online: bool,
+    timeout_seconds: u64,
+    canceled: &AtomicBool,
+    require_requested_sources: bool,
+) -> AppResult<Vec<Value>> {
     if timeout_seconds == 0 {
         return Err(AppError::new("invalid-arguments"));
     }
     let mut candidates =
         filename_candidates_for_stem(&item.title, &item.source_path, Some(&item.id), &[])?;
-    if discover_ebook_meta().is_some()
-        && let Ok(extracted) =
+    if canceled.load(Ordering::Acquire) {
+        return Err(AppError::new("operation-canceled"));
+    }
+    if discover_ebook_meta().is_some() {
+        let extracted = if require_requested_sources {
+            metadata::extract_cancellable(
+                &item.source_path,
+                Duration::from_secs(timeout_seconds),
+                canceled,
+            )
+        } else {
             metadata::extract(&item.source_path, Duration::from_secs(timeout_seconds))
-        && let Some(candidate) = metadata_candidate(
-            "embedded:1",
-            "embedded",
-            "high",
-            extracted.metadata,
-            json!({"generatedAt":"1970-01-01T00:00:00.000Z","itemId":item.id,"sourcePath":extracted.source_path,"backend":"ebook-meta"}),
-        )
-    {
-        candidates.push(candidate);
+        };
+        match extracted {
+            Ok(extracted) => {
+                if let Some(candidate) = metadata_candidate(
+                    "embedded:1",
+                    "embedded",
+                    "high",
+                    extracted.metadata,
+                    json!({"generatedAt":"1970-01-01T00:00:00.000Z","itemId":item.id,"sourcePath":extracted.source_path,"backend":"ebook-meta"}),
+                ) {
+                    candidates.push(candidate);
+                }
+            }
+            Err(error) if require_requested_sources => return Err(error),
+            Err(_) => {}
+        }
+    }
+    if canceled.load(Ordering::Acquire) {
+        return Err(AppError::new("operation-canceled"));
     }
     if include_online && discover_fetch_ebook_metadata().is_some() {
         let authors = if item.authors.is_empty() {
@@ -976,21 +1022,42 @@ pub(crate) fn metadata_candidates_for_item(
                 .map(|author| author.name.clone())
                 .collect()
         };
-        if let Ok(fetched) = metadata::fetch(
-            Some(&item.title),
-            &authors,
-            &item.identifiers,
-            None,
-            Duration::from_secs(timeout_seconds),
-        ) && let Some(candidate) = metadata_candidate(
-            "online:1",
-            "online",
-            "medium",
-            fetched.metadata,
-            json!({"generatedAt":"1970-01-01T00:00:00.000Z","itemId":item.id,"backend":"fetch-ebook-metadata"}),
-        ) {
-            candidates.push(candidate);
+        let fetched = if require_requested_sources {
+            metadata::fetch_cancellable(
+                Some(&item.title),
+                &authors,
+                &item.identifiers,
+                None,
+                Duration::from_secs(timeout_seconds),
+                canceled,
+            )
+        } else {
+            metadata::fetch(
+                Some(&item.title),
+                &authors,
+                &item.identifiers,
+                None,
+                Duration::from_secs(timeout_seconds),
+            )
+        };
+        match fetched {
+            Ok(fetched) => {
+                if let Some(candidate) = metadata_candidate(
+                    "online:1",
+                    "online",
+                    "medium",
+                    fetched.metadata,
+                    json!({"generatedAt":"1970-01-01T00:00:00.000Z","itemId":item.id,"backend":"fetch-ebook-metadata"}),
+                ) {
+                    candidates.push(candidate);
+                }
+            }
+            Err(error) if require_requested_sources => return Err(error),
+            Err(_) => {}
         }
+    }
+    if canceled.load(Ordering::Acquire) {
+        return Err(AppError::new("operation-canceled"));
     }
     candidates.truncate(8);
     Ok(candidates)

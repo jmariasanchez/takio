@@ -3,6 +3,7 @@ import { describe, expect, it } from "bun:test";
 import {
   BULK_METADATA_CANDIDATE_SCHEMA_VERSION,
   MAX_BULK_METADATA_CANDIDATE_CONCURRENCY,
+  MAX_BULK_METADATA_CANDIDATE_ITEM_ID_LENGTH,
   MAX_BULK_METADATA_CANDIDATE_ITEMS,
   applyMetadataCandidateRequestSchema,
   bulkMetadataCandidateDiscoveryRequestSchema,
@@ -212,7 +213,40 @@ describe("bulk metadata candidate contract", () => {
     }).success).toBe(false);
     expect(bulkMetadataCandidateDiscoveryRequestSchema.safeParse({
       ...request,
-      itemIds: [" ".repeat(257)],
+      itemIds: ["x".repeat(MAX_BULK_METADATA_CANDIDATE_ITEM_ID_LENGTH + 1)],
+    }).success).toBe(false);
+    expect(bulkMetadataCandidateDiscoveryRequestSchema.safeParse({
+      ...request,
+      itemIds: ["😀"],
+    }).success).toBe(false);
+  });
+
+  it("keeps every schema-valid compact request within the structured transport cap", () => {
+    const itemIds = Array.from({ length: MAX_BULK_METADATA_CANDIDATE_ITEMS }, (_, index) =>
+      `${index.toString().padStart(2, "0")}${"x".repeat(MAX_BULK_METADATA_CANDIDATE_ITEM_ID_LENGTH - 2)}`
+    );
+    const maximumRequest = {
+      schemaVersion: BULK_METADATA_CANDIDATE_SCHEMA_VERSION,
+      itemIds,
+      includeOnline: true,
+      concurrency: MAX_BULK_METADATA_CANDIDATE_CONCURRENCY,
+    } as const;
+
+    expect(bulkMetadataCandidateDiscoveryRequestSchema.safeParse(maximumRequest).success).toBe(true);
+    expect(new TextEncoder().encode(JSON.stringify(maximumRequest)).byteLength).toBeLessThanOrEqual(
+      16 * 1024,
+    );
+  });
+
+  it("matches the safe ASCII item id domain", () => {
+    const boundary = "x".repeat(MAX_BULK_METADATA_CANDIDATE_ITEM_ID_LENGTH);
+    expect(bulkMetadataCandidateDiscoveryRequestSchema.safeParse({
+      ...request,
+      itemIds: [boundary],
+    }).success).toBe(true);
+    expect(bulkMetadataCandidateDiscoveryRequestSchema.safeParse({
+      ...request,
+      itemIds: [`${boundary}x`],
     }).success).toBe(false);
   });
 

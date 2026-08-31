@@ -875,6 +875,7 @@ export const MAX_METADATA_CANDIDATE_FIELDS = 13;
 export const METADATA_CANDIDATE_AUDIT_KEY = "takio_metadata_audit";
 export const BULK_METADATA_CANDIDATE_SCHEMA_VERSION = 1;
 export const MAX_BULK_METADATA_CANDIDATE_ITEMS = 64;
+export const MAX_BULK_METADATA_CANDIDATE_ITEM_ID_LENGTH = 128;
 export const MAX_BULK_METADATA_CANDIDATE_CONCURRENCY = 4;
 
 export const metadataCandidateProvenanceSchema = z
@@ -1005,7 +1006,12 @@ export function metadataCandidateApplyValueSchemaFor(itemId: string) {
   });
 }
 
-const bulkMetadataCandidateItemIdSchema = z.string().trim().min(1).max(256);
+const bulkMetadataCandidateItemIdSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(MAX_BULK_METADATA_CANDIDATE_ITEM_ID_LENGTH)
+  .regex(/^[A-Za-z0-9._-]+$/);
 const bulkMetadataCandidateFailureCodeSchema = z.string().trim().min(1).max(120);
 
 export const bulkMetadataCandidateDiscoveryRequestSchema = z

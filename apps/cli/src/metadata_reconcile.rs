@@ -9,6 +9,9 @@ use signal_hook::iterator::{Handle, Signals};
 
 use crate::model::LibraryItem;
 use crate::output::{AppError, AppResult};
+use crate::portable_library::valid_item_id;
+
+const MAX_RECONCILE_ITEMS: usize = 64;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -30,12 +33,12 @@ impl ReconcileRequest {
             .collect();
         let mut unique = HashSet::with_capacity(request.item_ids.len());
         if request.schema_version != 1
-            || !(1..=64).contains(&request.item_ids.len())
+            || !(1..=MAX_RECONCILE_ITEMS).contains(&request.item_ids.len())
             || !(1..=4).contains(&request.concurrency)
             || request
                 .item_ids
                 .iter()
-                .any(|id| id.is_empty() || id.chars().count() > 256 || !unique.insert(id.clone()))
+                .any(|id| !valid_item_id(id) || !unique.insert(id.clone()))
         {
             return Err(AppError::new("invalid-arguments"));
         }
@@ -147,7 +150,7 @@ impl Drop for CancellationSignals {
 
 pub(crate) fn reconcile<F>(
     item_ids: &[String],
-    snapshots: Vec<Option<LibraryItem>>,
+    snapshots: Vec<AppResult<Option<LibraryItem>>>,
     include_online: bool,
     timeout_seconds: u64,
     concurrency: usize,
@@ -155,7 +158,7 @@ pub(crate) fn reconcile<F>(
     discover: F,
 ) -> ReconcileResponse
 where
-    F: Fn(&LibraryItem, bool, u64) -> AppResult<Vec<Value>> + Sync,
+    F: Fn(&LibraryItem, bool, u64, &AtomicBool) -> AppResult<Vec<Value>> + Sync,
 {
     debug_assert_eq!(item_ids.len(), snapshots.len());
     let total = item_ids.len();
@@ -163,11 +166,18 @@ where
     let jobs = snapshots
         .into_iter()
         .enumerate()
-        .filter_map(|(index, item)| match item {
-            Some(item) => Some((index, item)),
-            None => {
+        .filter_map(|(index, snapshot)| match snapshot {
+            Ok(Some(item)) => Some((index, item)),
+            Ok(None) => {
                 outcomes[index] = Some(ReconcileOutcome::Missing {
                     item_id: item_ids[index].clone(),
+                });
+                None
+            }
+            Err(error) => {
+                outcomes[index] = Some(ReconcileOutcome::Failed {
+                    item_id: item_ids[index].clone(),
+                    code: error.code(),
                 });
                 None
             }
@@ -184,13 +194,18 @@ where
                 let receiver = Arc::clone(&job_receiver);
                 let sender = result_sender.clone();
                 let discover = &discover;
+                let canceled = Arc::clone(&canceled);
                 scope.spawn(move || {
                     loop {
                         let job = receiver.lock().expect("job receiver poisoned").recv();
                         let Ok((index, item)) = job else {
                             break;
                         };
-                        let result = discover(&item, include_online, timeout_seconds);
+                        let result = if canceled.load(Ordering::Acquire) {
+                            Err(AppError::new("operation-canceled"))
+                        } else {
+                            discover(&item, include_online, timeout_seconds, canceled.as_ref())
+                        };
                         if sender.send((index, result)).is_err() {
                             break;
                         }
@@ -229,6 +244,9 @@ where
                             item_id: item_ids[index].clone(),
                             candidates,
                         },
+                        Err(error) if error.code() == "operation-canceled" => {
+                            ReconcileOutcome::canceled(item_ids[index].clone())
+                        }
                         Err(error) => ReconcileOutcome::Failed {
                             item_id: item_ids[index].clone(),
                             code: error.code(),
@@ -323,7 +341,8 @@ mod tests {
             json!({"schemaVersion":1,"itemIds":["a","a"],"includeOnline":false,"concurrency":1}),
             json!({"schemaVersion":1,"itemIds":[" a ","a"],"includeOnline":false,"concurrency":1}),
             json!({"schemaVersion":1,"itemIds":["  "],"includeOnline":false,"concurrency":1}),
-            json!({"schemaVersion":1,"itemIds":["x".repeat(257)],"includeOnline":false,"concurrency":1}),
+            json!({"schemaVersion":1,"itemIds":["x".repeat(129)],"includeOnline":false,"concurrency":1}),
+            json!({"schemaVersion":1,"itemIds":["😀"],"includeOnline":false,"concurrency":1}),
             json!({"schemaVersion":1,"itemIds":["a"],"includeOnline":false,"concurrency":0}),
             json!({"schemaVersion":1,"itemIds":["a"],"includeOnline":false,"concurrency":5}),
             json!({"schemaVersion":1,"itemIds":["a"],"includeOnline":false,"concurrency":1,"extra":true}),
@@ -356,6 +375,24 @@ mod tests {
     }
 
     #[test]
+    fn request_uses_the_safe_item_id_domain() {
+        let boundary = "x".repeat(128);
+        assert!(
+            ReconcileRequest::parse(json!({
+                "schemaVersion":1,"itemIds":[boundary],"includeOnline":false,"concurrency":1
+            }))
+            .is_ok()
+        );
+        assert!(
+            ReconcileRequest::parse(json!({
+                "schemaVersion":1,"itemIds":["x".repeat(129)],
+                "includeOnline":false,"concurrency":1
+            }))
+            .is_err()
+        );
+    }
+
+    #[test]
     fn reconciliation_preserves_order_and_exact_counts() {
         let ids = ["ready", "missing", "none", "failed"]
             .map(str::to_owned)
@@ -363,16 +400,16 @@ mod tests {
         let response = reconcile(
             &ids,
             vec![
-                Some(item("ready")),
-                None,
-                Some(item("none")),
-                Some(item("failed")),
+                Ok(Some(item("ready"))),
+                Ok(None),
+                Ok(Some(item("none"))),
+                Ok(Some(item("failed"))),
             ],
             false,
             30,
             3,
             Arc::new(AtomicBool::new(false)),
-            |item, _, _| match item.id.as_str() {
+            |item, _, _, _| match item.id.as_str() {
                 "ready" => Ok(vec![json!({"provenance":{"itemId":"ready"}})]),
                 "none" => Ok(Vec::new()),
                 _ => Err(AppError::new("metadata-unavailable")),
@@ -398,11 +435,38 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_hydration_failure_is_an_ordered_item_outcome() {
+        let ids = ["corrupt", "missing", "ready"].map(str::to_owned).to_vec();
+        let response = reconcile(
+            &ids,
+            vec![
+                Err(AppError::new("invalid-stored-data")),
+                Ok(None),
+                Ok(Some(item("ready"))),
+            ],
+            false,
+            30,
+            1,
+            Arc::new(AtomicBool::new(false)),
+            |_, _, _, _| Ok(vec![json!({"candidate":true})]),
+        );
+        let value = serde_json::to_value(response).expect("response JSON");
+        assert_eq!(
+            value["outcomes"],
+            json!([
+                {"status":"failed","itemId":"corrupt","code":"invalid-stored-data"},
+                {"status":"missing","itemId":"missing"},
+                {"status":"ready","itemId":"ready","candidates":[{"candidate":true}]}
+            ])
+        );
+    }
+
+    #[test]
     fn worker_pool_never_exceeds_four_concurrent_calls() {
         let ids = (0..16)
             .map(|index| format!("item-{index}"))
             .collect::<Vec<_>>();
-        let snapshots = ids.iter().map(|id| Some(item(id))).collect();
+        let snapshots = ids.iter().map(|id| Ok(Some(item(id)))).collect();
         let active = AtomicUsize::new(0);
         let maximum = AtomicUsize::new(0);
         let response = reconcile(
@@ -412,7 +476,7 @@ mod tests {
             30,
             4,
             Arc::new(AtomicBool::new(false)),
-            |_, _, _| {
+            |_, _, _, _| {
                 let current = active.fetch_add(1, Ordering::SeqCst) + 1;
                 maximum.fetch_max(current, Ordering::SeqCst);
                 std::thread::sleep(Duration::from_millis(10));
@@ -429,7 +493,7 @@ mod tests {
         let ids = (0..10)
             .map(|index| format!("item-{index}"))
             .collect::<Vec<_>>();
-        let snapshots = ids.iter().map(|id| Some(item(id))).collect();
+        let snapshots = ids.iter().map(|id| Ok(Some(item(id)))).collect();
         let canceled = Arc::new(AtomicBool::new(false));
         let calls = AtomicUsize::new(0);
         let response = reconcile(
@@ -439,7 +503,7 @@ mod tests {
             30,
             2,
             Arc::clone(&canceled),
-            |_, _, _| {
+            |_, _, _, _| {
                 calls.fetch_add(1, Ordering::SeqCst);
                 canceled.store(true, Ordering::Release);
                 Ok(vec![json!({"candidate":true})])

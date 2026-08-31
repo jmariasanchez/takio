@@ -4,6 +4,29 @@ use assert_cmd::cargo::cargo_bin_cmd;
 use rusqlite::Connection;
 use serde_json::Value;
 
+fn add_book(database: &std::path::Path, source: &std::path::Path) -> String {
+    let added = cargo_bin_cmd!("takio")
+        .args(["library", "add", "--db"])
+        .arg(database)
+        .args(["--source-path"])
+        .arg(source)
+        .output()
+        .expect("add item");
+    assert!(added.status.success());
+    success_value(&added.stdout)["item"]["id"]
+        .as_str()
+        .expect("item id")
+        .to_owned()
+}
+
+#[cfg(unix)]
+fn write_executable(path: &std::path::Path, contents: &str) {
+    use std::os::unix::fs::PermissionsExt;
+
+    fs::write(path, contents).expect("write executable");
+    fs::set_permissions(path, fs::Permissions::from_mode(0o700)).expect("make executable");
+}
+
 fn success_value(output: &[u8]) -> Value {
     let envelope: Value = serde_json::from_slice(output).expect("valid JSON response");
     assert_eq!(envelope["ok"], true);
@@ -98,6 +121,10 @@ fn metadata_candidates_reconcile_returns_one_ordered_envelope_without_mutation()
         .args(["metadata", "candidates", "reconcile", "--db"])
         .arg(&database)
         .args(["--request-json", &request.to_string()])
+        .env(
+            "TAKIO_EBOOK_META",
+            temp.path().join("unavailable-ebook-meta"),
+        )
         .output()
         .expect("reconcile candidates");
 
@@ -134,6 +161,292 @@ fn metadata_candidates_reconcile_returns_one_ordered_envelope_without_mutation()
         fs::read(&database).expect("database after reconcile"),
         before
     );
+}
+
+#[test]
+fn metadata_candidates_reconcile_keeps_corrupt_hydration_as_an_ordered_failure() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let database = temp.path().join("library.sqlite");
+    let corrupt_epub = temp.path().join("Corrupt.epub");
+    let ready_epub = temp.path().join("Ready.epub");
+    fs::write(&corrupt_epub, b"corrupt fixture").expect("corrupt epub fixture");
+    fs::write(&ready_epub, b"ready fixture").expect("ready epub fixture");
+    let corrupt_id = add_book(&database, &corrupt_epub);
+    let ready_id = add_book(&database, &ready_epub);
+    let connection = Connection::open(&database).expect("open library");
+    connection
+        .execute(
+            "DELETE FROM library_item_formats WHERE library_item_id=?1",
+            [&corrupt_id],
+        )
+        .expect("corrupt one item");
+    drop(connection);
+    let before = fs::read(&database).expect("database before reconcile");
+    let request = serde_json::json!({
+        "schemaVersion":1,
+        "itemIds":[corrupt_id, ready_id, "missing-item"],
+        "includeOnline":false,
+        "concurrency":2
+    });
+
+    let output = cargo_bin_cmd!("takio")
+        .args(["metadata", "candidates", "reconcile", "--db"])
+        .arg(&database)
+        .args(["--request-json", &request.to_string()])
+        .env(
+            "TAKIO_EBOOK_META",
+            temp.path().join("unavailable-ebook-meta"),
+        )
+        .output()
+        .expect("reconcile corrupt item");
+
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+    let value = success_value(&output.stdout);
+    assert_eq!(
+        value["outcomes"][0],
+        serde_json::json!({
+            "status":"failed","itemId":request["itemIds"][0],"code":"invalid-stored-data"
+        })
+    );
+    assert_eq!(value["outcomes"][1]["status"], "no-candidates");
+    assert_eq!(value["outcomes"][1]["itemId"], request["itemIds"][1]);
+    assert_eq!(
+        value["outcomes"][2],
+        serde_json::json!({"status":"missing","itemId":"missing-item"})
+    );
+    assert_eq!(
+        value["counts"],
+        serde_json::json!({
+            "total":3,"ready":0,"noCandidates":1,"missing":1,"failed":1,"canceled":0
+        })
+    );
+    assert_eq!(
+        fs::read(&database).expect("database after reconcile"),
+        before
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn metadata_candidates_reconcile_reports_attempted_backend_failures_without_mutation() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let database = temp.path().join("library.sqlite");
+    let epub = temp.path().join("Backend Failure.epub");
+    let embedded_failure = temp.path().join("ebook-meta-failure");
+    let embedded_success = temp.path().join("ebook-meta-success");
+    let online_failure = temp.path().join("fetch-ebook-metadata-failure");
+    fs::write(&epub, b"backend failure fixture").expect("epub fixture");
+    write_executable(&embedded_failure, "#!/bin/sh\nexit 7\n");
+    write_executable(
+        &embedded_success,
+        "#!/bin/sh\nfor argument in \"$@\"; do\n  case \"$argument\" in\n    --to-opf=*) opf=${argument#--to-opf=} ;;\n  esac\ndone\ncat > \"$opf\" <<'EOF'\n<?xml version=\"1.0\"?><package xmlns:dc=\"http://purl.org/dc/elements/1.1/\"><metadata><dc:title>Embedded title</dc:title></metadata></package>\nEOF\n",
+    );
+    write_executable(&online_failure, "#!/bin/sh\nexit 9\n");
+    let item_id = add_book(&database, &epub);
+    let before = fs::read(&database).expect("database before reconcile");
+    let request = serde_json::json!({
+        "schemaVersion":1,"itemIds":[item_id],"includeOnline":false,"concurrency":1
+    });
+
+    let output = cargo_bin_cmd!("takio")
+        .args(["metadata", "candidates", "reconcile", "--db"])
+        .arg(&database)
+        .args(["--request-json", &request.to_string()])
+        .env("TAKIO_EBOOK_META", &embedded_failure)
+        .output()
+        .expect("reconcile failing backend");
+
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+    let value = success_value(&output.stdout);
+    assert_eq!(
+        value["outcomes"],
+        serde_json::json!([{
+            "status":"failed","itemId":request["itemIds"][0],"code":"metadata-extraction-failed"
+        }])
+    );
+    assert_eq!(
+        value["counts"],
+        serde_json::json!({
+            "total":1,"ready":0,"noCandidates":0,"missing":0,"failed":1,"canceled":0
+        })
+    );
+    assert_eq!(
+        fs::read(&database).expect("database after reconcile"),
+        before
+    );
+
+    let online_request = serde_json::json!({
+        "schemaVersion":1,
+        "itemIds":[request["itemIds"][0]],
+        "includeOnline":true,
+        "concurrency":1
+    });
+    let online_output = cargo_bin_cmd!("takio")
+        .args(["metadata", "candidates", "reconcile", "--db"])
+        .arg(&database)
+        .args(["--request-json", &online_request.to_string()])
+        .env("TAKIO_EBOOK_META", &embedded_success)
+        .env("TAKIO_FETCH_EBOOK_METADATA", &online_failure)
+        .output()
+        .expect("reconcile failing online backend");
+    assert!(online_output.status.success());
+    assert!(online_output.stderr.is_empty());
+    let online_value = success_value(&online_output.stdout);
+    assert_eq!(
+        online_value["outcomes"],
+        serde_json::json!([{
+            "status":"failed",
+            "itemId":online_request["itemIds"][0],
+            "code":"metadata-fetch-failed"
+        }])
+    );
+    assert_eq!(
+        fs::read(&database).expect("database after online reconcile"),
+        before
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn metadata_candidates_reconcile_cancels_reaps_and_stops_later_stages() {
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
+
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let database = temp.path().join("library.sqlite");
+    let first_epub = temp.path().join("First.epub");
+    let second_epub = temp.path().join("Second.epub");
+    fs::write(&first_epub, b"first fixture").expect("first epub fixture");
+    fs::write(&second_epub, b"second fixture").expect("second epub fixture");
+    let first_id = add_book(&database, &first_epub);
+    let second_id = add_book(&database, &second_epub);
+    let embedded_backend = temp.path().join("ebook-meta-blocking");
+    let online_backend = temp.path().join("fetch-ebook-metadata-marker");
+    let backend_pid = temp.path().join("backend.pid");
+    let embedded_log = temp.path().join("embedded.log");
+    let online_marker = temp.path().join("online.started");
+    write_executable(
+        &embedded_backend,
+        "#!/bin/sh\nprintf 'started\\n' >> \"$TAKIO_TEST_EMBEDDED_LOG\"\nprintf '%s\\n' \"$$\" > \"$TAKIO_TEST_BACKEND_PID\"\nexec sleep 30\n",
+    );
+    write_executable(
+        &online_backend,
+        "#!/bin/sh\nprintf 'started\\n' > \"$TAKIO_TEST_ONLINE_MARKER\"\nexit 7\n",
+    );
+    let request = serde_json::json!({
+        "schemaVersion":1,
+        "itemIds":[first_id, second_id],
+        "includeOnline":true,
+        "concurrency":1
+    });
+    let binary = assert_cmd::cargo::cargo_bin!("takio");
+    let child = Command::new(binary)
+        .args(["metadata", "candidates", "reconcile", "--db"])
+        .arg(&database)
+        .args([
+            "--request-json",
+            &request.to_string(),
+            "--timeout-seconds",
+            "30",
+        ])
+        .env("TAKIO_EBOOK_META", &embedded_backend)
+        .env("TAKIO_FETCH_EBOOK_METADATA", &online_backend)
+        .env("TAKIO_TEST_BACKEND_PID", &backend_pid)
+        .env("TAKIO_TEST_EMBEDDED_LOG", &embedded_log)
+        .env("TAKIO_TEST_ONLINE_MARKER", &online_marker)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn reconcile");
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while !backend_pid.exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(backend_pid.exists(), "embedded backend should start");
+    let backend_process = fs::read_to_string(&backend_pid)
+        .expect("backend pid")
+        .trim()
+        .to_owned();
+    let started = Instant::now();
+    let status = Command::new("kill")
+        .args(["-INT", &child.id().to_string()])
+        .status()
+        .expect("signal reconcile");
+    assert!(status.success());
+    let output = child.wait_with_output().expect("wait for reconcile");
+
+    assert!(started.elapsed() < Duration::from_secs(3));
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+    let value = success_value(&output.stdout);
+    assert_eq!(
+        value["outcomes"],
+        serde_json::json!([
+            {"status":"canceled","itemId":request["itemIds"][0]},
+            {"status":"canceled","itemId":request["itemIds"][1]}
+        ])
+    );
+    assert_eq!(value["counts"]["canceled"], 2);
+    assert_eq!(
+        fs::read_to_string(&embedded_log)
+            .expect("embedded log")
+            .lines()
+            .count(),
+        1
+    );
+    assert!(
+        !online_marker.exists(),
+        "online stage must not start after cancellation"
+    );
+    let backend_alive = Command::new("kill")
+        .args(["-0", &backend_process])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .expect("probe backend process");
+    assert!(
+        !backend_alive.success(),
+        "backend child must be terminated and reaped"
+    );
+}
+
+#[test]
+fn metadata_candidates_reconcile_accepts_the_maximum_transport_safe_request() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let database = temp.path().join("library.sqlite");
+    let seed = temp.path().join("Seed.epub");
+    fs::write(&seed, b"seed fixture").expect("seed epub fixture");
+    let _ = add_book(&database, &seed);
+    let item_ids = (0..64)
+        .map(|index| format!("{index:02}{}", "x".repeat(126)))
+        .collect::<Vec<_>>();
+    assert!(item_ids.iter().all(|id| id.len() == 128));
+    let request = serde_json::json!({
+        "schemaVersion":1,"itemIds":item_ids,"includeOnline":true,"concurrency":4
+    });
+    let encoded = request.to_string();
+    assert!(encoded.len() <= 16 * 1024);
+
+    let output = cargo_bin_cmd!("takio")
+        .args(["metadata", "candidates", "reconcile", "--db"])
+        .arg(&database)
+        .args(["--request-json", &encoded])
+        .output()
+        .expect("reconcile maximum request");
+
+    assert!(
+        output.status.success(),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.stderr.is_empty());
+    let value = success_value(&output.stdout);
+    assert_eq!(value["counts"]["total"], 64);
+    assert_eq!(value["counts"]["missing"], 64);
+    assert_eq!(value["outcomes"].as_array().expect("outcomes").len(), 64);
 }
 
 #[test]

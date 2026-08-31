@@ -186,9 +186,12 @@ Delivered evidence:
   terminal control sanitization, compact confirmation affordances, Ctrl-C exit,
   terminal restoration, and command-palette access.
 - Bulk discovery accepts one strict schema-versioned request for at most 64 unique
-  books, preserves request order, uses no more than four Rust workers, produces
-  exactly one terminal outcome per book, and does not mutate the library. Signal
-  cancellation accounts for unfinished books explicitly.
+  books with safe ASCII item ids up to 128 bytes, matching the stored item domain
+  while keeping every compact schema-valid request within the 16 KiB structured-
+  input transport. It preserves request order, uses no
+  more than four Rust workers, produces exactly one terminal outcome per book,
+  and does not mutate the library. Signal cancellation accounts for unfinished
+  books explicitly and terminates active metadata backends.
 - The desktop bulk workflow uses fixed concurrency two, keeps online lookup behind
   explicit opt-in, stops scheduling on cancellation, preserves bridge failure
   codes, treats deletion during discovery as missing, and validates exact ordered

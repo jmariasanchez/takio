@@ -3,6 +3,7 @@ use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -68,6 +69,22 @@ pub fn discover_fetch_ebook_metadata() -> Option<PathBuf> {
 }
 
 pub fn extract(source: &Path, timeout: Duration) -> AppResult<ExtractedMetadata> {
+    extract_with_cancellation(source, timeout, None)
+}
+
+pub fn extract_cancellable(
+    source: &Path,
+    timeout: Duration,
+    canceled: &AtomicBool,
+) -> AppResult<ExtractedMetadata> {
+    extract_with_cancellation(source, timeout, Some(canceled))
+}
+
+fn extract_with_cancellation(
+    source: &Path,
+    timeout: Duration,
+    canceled: Option<&AtomicBool>,
+) -> AppResult<ExtractedMetadata> {
     if timeout.is_zero() {
         return Err(AppError::new("invalid-arguments"));
     }
@@ -94,7 +111,12 @@ pub fn extract(source: &Path, timeout: Duration) -> AppResult<ExtractedMetadata>
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
-    run_bounded(&mut command, timeout, "metadata-extraction-failed")?;
+    run_bounded(
+        &mut command,
+        timeout,
+        "metadata-extraction-failed",
+        canceled,
+    )?;
     let metadata = parse_opf(&read_bounded(&opf, MAX_OPF_BYTES)?)?;
     let cover = optional_cover(&cover)?;
     Ok(ExtractedMetadata {
@@ -110,6 +132,35 @@ pub fn fetch(
     identifiers: &BTreeMap<String, String>,
     cover_output: Option<&Path>,
     timeout: Duration,
+) -> AppResult<FetchedMetadata> {
+    fetch_with_cancellation(title, authors, identifiers, cover_output, timeout, None)
+}
+
+pub fn fetch_cancellable(
+    title: Option<&str>,
+    authors: &[String],
+    identifiers: &BTreeMap<String, String>,
+    cover_output: Option<&Path>,
+    timeout: Duration,
+    canceled: &AtomicBool,
+) -> AppResult<FetchedMetadata> {
+    fetch_with_cancellation(
+        title,
+        authors,
+        identifiers,
+        cover_output,
+        timeout,
+        Some(canceled),
+    )
+}
+
+fn fetch_with_cancellation(
+    title: Option<&str>,
+    authors: &[String],
+    identifiers: &BTreeMap<String, String>,
+    cover_output: Option<&Path>,
+    timeout: Duration,
+    canceled: Option<&AtomicBool>,
 ) -> AppResult<FetchedMetadata> {
     let title = title.map(str::trim).filter(|value| !value.is_empty());
     if timeout.is_zero()
@@ -159,7 +210,7 @@ pub fn fetch(
         .stdin(Stdio::null())
         .stdout(stdout)
         .stderr(Stdio::null());
-    run_bounded(&mut command, timeout, "metadata-fetch-failed")?;
+    run_bounded(&mut command, timeout, "metadata-fetch-failed", canceled)?;
     let metadata = parse_opf(&read_bounded(&opf, MAX_OPF_BYTES)?)?;
     let cover = match (optional_cover_data(&cover)?, cover_output) {
         (Some((bytes, extension, media_type)), Some(output)) => {
@@ -408,7 +459,15 @@ fn read_bounded(path: &Path, maximum: u64) -> AppResult<Vec<u8>> {
     Ok(bytes)
 }
 
-fn run_bounded(command: &mut Command, timeout: Duration, failure: &'static str) -> AppResult<()> {
+fn run_bounded(
+    command: &mut Command,
+    timeout: Duration,
+    failure: &'static str,
+    canceled: Option<&AtomicBool>,
+) -> AppResult<()> {
+    if canceled.is_some_and(|flag| flag.load(Ordering::Acquire)) {
+        return Err(AppError::new("operation-canceled"));
+    }
     let mut child = command
         .spawn()
         .map_err(|_| AppError::new("backend-unavailable"))?;
@@ -421,13 +480,21 @@ fn run_bounded(command: &mut Command, timeout: Duration, failure: &'static str) 
                 Err(AppError::new(failure))
             };
         }
+        if canceled.is_some_and(|flag| flag.load(Ordering::Acquire)) {
+            terminate_and_reap(&mut child);
+            return Err(AppError::new("operation-canceled"));
+        }
         if started.elapsed() >= timeout {
-            let _ = child.kill();
-            let _ = child.wait();
+            terminate_and_reap(&mut child);
             return Err(AppError::new("metadata-timeout"));
         }
         thread::sleep(Duration::from_millis(25));
     }
+}
+
+fn terminate_and_reap(child: &mut std::process::Child) {
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 fn discover_executable(env_name: &str, name: &str, macos_path: &str) -> Option<PathBuf> {
