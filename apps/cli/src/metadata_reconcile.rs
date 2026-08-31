@@ -21,15 +21,21 @@ pub(crate) struct ReconcileRequest {
 
 impl ReconcileRequest {
     pub(crate) fn parse(value: Value) -> AppResult<Self> {
-        let request: Self =
+        let mut request: Self =
             serde_json::from_value(value).map_err(|_| AppError::new("invalid-arguments"))?;
+        request.item_ids = request
+            .item_ids
+            .into_iter()
+            .map(|id| id.trim().to_owned())
+            .collect();
         let mut unique = HashSet::with_capacity(request.item_ids.len());
         if request.schema_version != 1
             || !(1..=64).contains(&request.item_ids.len())
             || !(1..=4).contains(&request.concurrency)
-            || request.item_ids.iter().any(|id| {
-                id.trim().is_empty() || id.chars().count() > 256 || !unique.insert(id.clone())
-            })
+            || request
+                .item_ids
+                .iter()
+                .any(|id| id.is_empty() || id.chars().count() > 256 || !unique.insert(id.clone()))
         {
             return Err(AppError::new("invalid-arguments"));
         }
@@ -94,7 +100,9 @@ pub(crate) struct ReconcileCounts {
 }
 
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct ReconcileResponse {
+    schema_version: u8,
     outcomes: Vec<ReconcileOutcome>,
     counts: ReconcileCounts,
 }
@@ -259,7 +267,11 @@ where
             ReconcileOutcome::Canceled { .. } => counts.canceled += 1,
         }
     }
-    ReconcileResponse { outcomes, counts }
+    ReconcileResponse {
+        schema_version: 1,
+        outcomes,
+        counts,
+    }
 }
 
 #[cfg(test)]
@@ -309,6 +321,7 @@ mod tests {
             json!({"schemaVersion":2,"itemIds":["a"],"includeOnline":false,"concurrency":1}),
             json!({"schemaVersion":1,"itemIds":[],"includeOnline":false,"concurrency":1}),
             json!({"schemaVersion":1,"itemIds":["a","a"],"includeOnline":false,"concurrency":1}),
+            json!({"schemaVersion":1,"itemIds":[" a ","a"],"includeOnline":false,"concurrency":1}),
             json!({"schemaVersion":1,"itemIds":["  "],"includeOnline":false,"concurrency":1}),
             json!({"schemaVersion":1,"itemIds":["x".repeat(257)],"includeOnline":false,"concurrency":1}),
             json!({"schemaVersion":1,"itemIds":["a"],"includeOnline":false,"concurrency":0}),
@@ -331,6 +344,15 @@ mod tests {
             }))
             .is_err()
         );
+    }
+
+    #[test]
+    fn request_trims_item_ids_before_use() {
+        let request = ReconcileRequest::parse(json!({
+            "schemaVersion":1,"itemIds":["  first  ","second\n"],"includeOnline":false,"concurrency":1
+        }))
+        .expect("valid request");
+        assert_eq!(request.item_ids(), ["first", "second"]);
     }
 
     #[test]
@@ -357,6 +379,7 @@ mod tests {
             },
         );
         let value = serde_json::to_value(response).expect("response JSON");
+        assert_eq!(value["schemaVersion"], 1);
         assert_eq!(
             value["outcomes"],
             json!([

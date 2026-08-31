@@ -86,9 +86,10 @@ fn metadata_candidates_reconcile_returns_one_ordered_envelope_without_mutation()
         .expect("item id")
         .to_owned();
     let before = fs::read(&database).expect("database before reconcile");
+    let padded_item_id = format!("  {item_id}  ");
     let request = serde_json::json!({
         "schemaVersion": 1,
-        "itemIds": [item_id, "missing-item"],
+        "itemIds": [padded_item_id, "missing-item"],
         "includeOnline": false,
         "concurrency": 2
     });
@@ -107,8 +108,9 @@ fn metadata_candidates_reconcile_returns_one_ordered_envelope_without_mutation()
         1
     );
     let value = success_value(&output.stdout);
+    assert_eq!(value["schemaVersion"], 1);
     assert_eq!(value["outcomes"][0]["status"], "ready");
-    assert_eq!(value["outcomes"][0]["itemId"], request["itemIds"][0]);
+    assert_eq!(value["outcomes"][0]["itemId"], item_id);
     assert!(
         value["outcomes"][0]["candidates"]
             .as_array()
@@ -116,7 +118,7 @@ fn metadata_candidates_reconcile_returns_one_ordered_envelope_without_mutation()
     );
     assert_eq!(
         value["outcomes"][0]["candidates"][0]["provenance"]["itemId"],
-        request["itemIds"][0]
+        item_id
     );
     assert_eq!(
         value["outcomes"][1],
