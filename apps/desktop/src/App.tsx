@@ -788,6 +788,7 @@ export default function App() {
         commitCurrentSavedViewId(persistedView.id);
         reduceLibraryQuery({
           type: "apply-saved-view",
+          id: persistedView.id,
           definition: persistedView.definition,
         });
       } else if (views !== null && persistedId !== null) {
@@ -871,7 +872,6 @@ export default function App() {
   function changeSearch(searchQuery: string): void {
     dispatchLibrarySelection({ type: "query-changed" });
     reduceLibraryQuery({ type: "set-query", query: searchQuery });
-    commitCurrentSavedViewId(null);
     setSearchPending(true);
     if (searchDebounce.current !== null) {
       window.clearTimeout(searchDebounce.current);
@@ -894,13 +894,11 @@ export default function App() {
 
   function changeFilters(filters: LibraryQueryFilters): void {
     dispatchLibrarySelection({ type: "query-changed" });
-    commitCurrentSavedViewId(null);
     runImmediateLibraryQuery({ type: "set-filters", filters });
   }
 
   function changeSort(sort: LibraryQuerySort): void {
     dispatchLibrarySelection({ type: "sort-changed" });
-    commitCurrentSavedViewId(null);
     runImmediateLibraryQuery({ type: "set-sort", sort });
   }
 
@@ -917,6 +915,7 @@ export default function App() {
     commitCurrentSavedViewId(null);
     runImmediateLibraryQuery({
       type: "apply-saved-view",
+      id: null,
       definition: {
         version: 1,
         query: DEFAULT_LIBRARY_QUERY_REQUEST.query,
@@ -930,14 +929,18 @@ export default function App() {
     const view = savedViews.find((candidate) => candidate.id === id);
     if (!view) {
       commitCurrentSavedViewId(null);
-      setNotice({ kind: "error", text: "That saved view is no longer available." });
+      setNotice({ kind: "error", text: "That virtual library is no longer available." });
       void loadSavedViews();
       return;
     }
 
     dispatchLibrarySelection({ type: "query-changed" });
     commitCurrentSavedViewId(view.id);
-    runImmediateLibraryQuery({ type: "apply-saved-view", definition: view.definition });
+    runImmediateLibraryQuery({
+      type: "apply-saved-view",
+      id: view.id,
+      definition: view.definition,
+    });
   }
 
   function toggleSelectedLibraryItem(id: string): void {
@@ -958,6 +961,13 @@ export default function App() {
   }
 
   function openSaveViewDialog(): void {
+    if (currentSavedViewIdRef.current !== null) {
+      setNotice({
+        kind: "error",
+        text: "Switch to All books before saving a new virtual library.",
+      });
+      return;
+    }
     setSaveViewDialogError(null);
     setSaveViewDialogOpen(true);
   }
@@ -994,7 +1004,7 @@ export default function App() {
         return;
       }
       if (!result.value.view) {
-        setSaveViewDialogError("The saved view could not be returned by the library.");
+        setSaveViewDialogError("The virtual library could not be returned by the library.");
         return;
       }
 
@@ -1002,7 +1012,7 @@ export default function App() {
       setSavedViews((current) => [...current.filter(({ id }) => id !== savedView.id), savedView]);
       commitCurrentSavedViewId(savedView.id);
       setSaveViewDialogOpen(false);
-      setNotice({ kind: "status", text: `Saved view “${savedView.name}”.` });
+      setNotice({ kind: "status", text: `Saved virtual library “${savedView.name}”.` });
     } catch (error) {
       setSaveViewDialogError(describeUnexpectedLibraryError(error));
     } finally {
@@ -1026,11 +1036,13 @@ export default function App() {
       }
       setSavedViews((current) => current.filter((candidate) => candidate.id !== id));
       if (currentSavedViewId === id) {
-        commitCurrentSavedViewId(null);
+        clearLibraryQuery();
       }
       setNotice({
         kind: "status",
-        text: view ? `Removed saved view “${view.name}”.` : "Removed the saved view.",
+        text: view
+          ? `Removed virtual library “${view.name}”.`
+          : "Removed the virtual library.",
       });
     } catch (error) {
       setNotice({ kind: "error", text: describeUnexpectedLibraryError(error) });

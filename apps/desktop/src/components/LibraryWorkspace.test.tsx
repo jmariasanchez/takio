@@ -246,7 +246,7 @@ test("composes authoritative facets, table query state, selection, and inspector
   const markup = renderWorkspace();
 
   expect(markup).toContain('aria-label="Library workspace"');
-  expect(markup).toContain('aria-label="Library filters and saved views"');
+  expect(markup).toContain('aria-label="Library filters and virtual libraries"');
   expect(markup).toContain('aria-label="Author, 17 books"');
   expect(markup).toContain('aria-pressed="true"');
   expect(markup).toContain('value="Dune"');

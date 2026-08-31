@@ -47,6 +47,7 @@ import {
   type QueryLibraryItemsRequest,
   type RestoreLibraryItemResult,
   type SavedLibraryViewStore,
+  type VirtualLibraryStore,
   type LibraryStore,
   type LibraryStoreResult,
   type RemoveLibraryFormatRequest,
@@ -82,6 +83,7 @@ import {
   reopenDuplicatePairRequestSchema,
   saveSavedLibraryViewRequestSchema,
   savedLibraryViewSchema,
+  virtualLibrarySchema,
   trashLibraryItemRequestSchema,
 } from "../src/index.js";
 
@@ -818,6 +820,40 @@ describe("LibraryStore", () => {
     ).toBe(false);
     expect(removeSavedLibraryViewRequestSchema.safeParse({ id: "" }).success).toBe(false);
     expect(savedLibraryViewSchema.safeParse({ ...saved, definition: { ...saved.definition, version: 2 } }).success).toBe(false);
+  });
+
+  it("promotes saved definitions to virtual-library scopes without breaking legacy stores", () => {
+    const request = queryLibraryItemsRequestSchema.parse({
+      virtualLibraryId: " classics ",
+      query: "earthsea",
+      filters: { authors: [], tags: [], series: [], languages: [], formats: [] },
+      sort: { field: "title", direction: "ascending" },
+      page: { offset: 0, limit: 25 },
+    });
+    expect(request.virtualLibraryId).toBe("classics");
+    expect(
+      queryLibraryItemsRequestSchema.safeParse({
+        ...request,
+        virtualLibraryId: "v".repeat(257),
+      }).success,
+    ).toBe(false);
+    expect(
+      saveSavedLibraryViewRequestSchema.safeParse({
+        id: "v".repeat(257),
+        name: "Too long",
+        definition: {
+          version: 1,
+          query: "",
+          filters: { authors: [], tags: [], series: [], languages: [], formats: [] },
+          sort: { field: "title", direction: "ascending" },
+        },
+      }).success,
+    ).toBe(false);
+
+    const legacyStore = {} as SavedLibraryViewStore;
+    const virtualStore: VirtualLibraryStore = legacyStore;
+    expect(virtualStore).toBe(legacyStore);
+    expect(virtualLibrarySchema).toBe(savedLibraryViewSchema);
   });
 
   it("bounds saved-view names after trimming", () => {

@@ -24,9 +24,9 @@ use crate::output::{AppError, AppResult, print_success};
 use crate::paths::LibraryPaths;
 use crate::portable_library;
 use crate::store::{
-    DuplicatePairReviewRequest, LIBRARY_SCHEMA_VERSION, LibraryQueryFilters, LibraryStore,
-    ListDuplicateCandidatesRequest, METADATA_AUDIT_KEY, MergeDuplicatePairRequest, VerifyReport,
-    validate_candidate_patch,
+    DuplicatePairReviewRequest, LIBRARY_SCHEMA_VERSION, LibraryQueryFilters, LibraryQueryScope,
+    LibraryStore, ListDuplicateCandidatesRequest, METADATA_AUDIT_KEY, MergeDuplicatePairRequest,
+    VerifyReport, validate_candidate_patch,
 };
 
 #[derive(Parser)]
@@ -334,6 +334,8 @@ enum LibraryCommand {
     Duplicates(DuplicateCommand),
     #[command(subcommand)]
     SavedViews(SavedViewsCommand),
+    #[command(subcommand)]
+    VirtualLibraries(SavedViewsCommand),
 }
 
 #[derive(Subcommand)]
@@ -1866,7 +1868,9 @@ fn library(command: LibraryCommand, library: Option<&str>) -> AppResult<()> {
             let paths = LibraryPaths::resolve(library, db.as_deref())?;
             print_success(json!({"restore":LibraryStore::restore_backup(&source, paths)?}))
         }
-        LibraryCommand::SavedViews(command) => library_saved_views(command, library),
+        LibraryCommand::SavedViews(command) | LibraryCommand::VirtualLibraries(command) => {
+            library_saved_views(command, library)
+        }
         LibraryCommand::Duplicates(command) => library_duplicates(command, library),
         LibraryCommand::ImportWatch {
             db,
@@ -1911,7 +1915,7 @@ fn library_saved_views(command: SavedViewsCommand, library: Option<&str>) -> App
                 .get("id")
                 .and_then(Value::as_str)
                 .map(str::trim)
-                .filter(|id| !id.is_empty())
+                .filter(|id| !id.is_empty() && id.encode_utf16().count() <= 256)
                 .ok_or_else(|| AppError::new("invalid-arguments"))?;
             let paths = LibraryPaths::resolve(library, db.as_deref())?;
             print_success(json!({"view":LibraryStore::open(paths, true)?.remove_view(id)?}))
@@ -2873,6 +2877,23 @@ fn sha256_file(path: &Path) -> std::io::Result<String> {
 }
 
 fn library_query_value(store: &LibraryStore, request: &Value) -> AppResult<Value> {
+    let request_object = request
+        .as_object()
+        .filter(|object| {
+            object.len() >= 4
+                && object.len() <= 5
+                && object.contains_key("query")
+                && object.contains_key("filters")
+                && object.contains_key("sort")
+                && object.contains_key("page")
+                && object.keys().all(|key| {
+                    matches!(
+                        key.as_str(),
+                        "virtualLibraryId" | "query" | "filters" | "sort" | "page"
+                    )
+                })
+        })
+        .ok_or_else(|| AppError::new("invalid-arguments"))?;
     let query = request
         .get("query")
         .and_then(Value::as_str)
@@ -2885,16 +2906,81 @@ fn library_query_value(store: &LibraryStore, request: &Value) -> AppResult<Value
     let series = string_filter(filters, "series")?;
     let languages = string_filter(filters, "languages")?;
     let formats = string_filter(filters, "formats")?;
-    let mut items = store.query_items(
+    let virtual_definition = request_object
+        .get("virtualLibraryId")
+        .map(|value| {
+            let id = value
+                .as_str()
+                .map(str::trim)
+                .filter(|id| !id.is_empty() && id.encode_utf16().count() <= 256)
+                .ok_or_else(|| AppError::new("invalid-arguments"))?;
+            store
+                .saved_view(id)?
+                .map(|view| view.definition)
+                .ok_or_else(|| AppError::new("not-found"))
+        })
+        .transpose()?;
+    let virtual_query = virtual_definition
+        .as_ref()
+        .map(|definition| {
+            definition
+                .get("query")
+                .and_then(Value::as_str)
+                .ok_or_else(|| AppError::new("invalid-stored-data"))
+        })
+        .transpose()?;
+    let virtual_filters = virtual_definition
+        .as_ref()
+        .map(|definition| {
+            definition
+                .get("filters")
+                .ok_or_else(|| AppError::new("invalid-stored-data"))
+        })
+        .transpose()?;
+    let virtual_authors = virtual_filters
+        .map(|filters| string_filter(filters, "authors"))
+        .transpose()?
+        .unwrap_or_default();
+    let virtual_tags = virtual_filters
+        .map(|filters| string_filter(filters, "tags"))
+        .transpose()?
+        .unwrap_or_default();
+    let virtual_series = virtual_filters
+        .map(|filters| string_filter(filters, "series"))
+        .transpose()?
+        .unwrap_or_default();
+    let virtual_languages = virtual_filters
+        .map(|filters| string_filter(filters, "languages"))
+        .transpose()?
+        .unwrap_or_default();
+    let virtual_formats = virtual_filters
+        .map(|filters| string_filter(filters, "formats"))
+        .transpose()?
+        .unwrap_or_default();
+    let mut scopes = Vec::with_capacity(2);
+    if let Some(virtual_query) = virtual_query {
+        scopes.push(LibraryQueryScope {
+            query: virtual_query,
+            filters: LibraryQueryFilters {
+                authors: &virtual_authors,
+                tags: &virtual_tags,
+                series: &virtual_series,
+                languages: &virtual_languages,
+                formats: &virtual_formats,
+            },
+        });
+    }
+    scopes.push(LibraryQueryScope {
         query,
-        LibraryQueryFilters {
+        filters: LibraryQueryFilters {
             authors: &authors,
             tags: &tags,
             series: &series,
             languages: &languages,
             formats: &formats,
         },
-    )?;
+    });
+    let mut items = store.query_items_scoped(&scopes)?;
     items.retain(|item| {
         matches_filter(
             &authors,

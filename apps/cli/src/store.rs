@@ -43,12 +43,19 @@ pub struct LibraryStore {
     paths: LibraryPaths,
 }
 
+#[derive(Clone, Copy)]
 pub struct LibraryQueryFilters<'a> {
     pub authors: &'a [String],
     pub tags: &'a [String],
     pub series: &'a [String],
     pub languages: &'a [String],
     pub formats: &'a [String],
+}
+
+#[derive(Clone, Copy)]
+pub struct LibraryQueryScope<'a> {
+    pub query: &'a str,
+    pub filters: LibraryQueryFilters<'a>,
 }
 
 pub(crate) fn validate_candidate_patch(patch: &LibraryPatch) -> AppResult<()> {
@@ -319,71 +326,18 @@ impl LibraryStore {
         query: &str,
         filters: LibraryQueryFilters<'_>,
     ) -> AppResult<Vec<LibraryItem>> {
+        self.query_items_scoped(&[LibraryQueryScope { query, filters }])
+    }
+
+    pub fn query_items_scoped(
+        &self,
+        scopes: &[LibraryQueryScope<'_>],
+    ) -> AppResult<Vec<LibraryItem>> {
         let mut sql =
             String::from("SELECT li.id FROM library_items li WHERE li.trashed_at IS NULL");
         let mut values = Vec::<SqlValue>::new();
-        if !query.is_empty() {
-            let needle = format!(
-                "%{}%",
-                query
-                    .replace('\\', "\\\\")
-                    .replace('%', "\\%")
-                    .replace('_', "\\_")
-            );
-            sql.push_str(
-                " AND (li.title LIKE ? ESCAPE '\\' COLLATE NOCASE
-                   OR li.author LIKE ? ESCAPE '\\' COLLATE NOCASE
-                   OR EXISTS(SELECT 1 FROM library_item_authors qa
-                             WHERE qa.library_item_id=li.id
-                               AND qa.name LIKE ? ESCAPE '\\' COLLATE NOCASE)
-                   OR li.series LIKE ? ESCAPE '\\' COLLATE NOCASE
-                   OR EXISTS(SELECT 1 FROM library_item_tags qit
-                             JOIN tags qt ON qt.normalized_name=qit.tag_normalized_name
-                             WHERE qit.library_item_id=li.id
-                               AND qt.name LIKE ? ESCAPE '\\' COLLATE NOCASE))",
-            );
-            values.extend(std::iter::repeat_n(SqlValue::Text(needle), 5));
-        }
-        if !filters.authors.is_empty() {
-            let legacy = query_placeholders(filters.authors, &mut values);
-            let ordered = query_placeholders(filters.authors, &mut values);
-            sql.push_str(&format!(
-                " AND (li.author COLLATE NOCASE IN ({legacy})
-                   OR EXISTS(SELECT 1 FROM library_item_authors fa
-                             WHERE fa.library_item_id=li.id
-                               AND fa.name COLLATE NOCASE IN ({ordered})))"
-            ));
-        }
-        if !filters.tags.is_empty() {
-            let placeholders = query_placeholders(filters.tags, &mut values);
-            sql.push_str(&format!(
-                " AND EXISTS(SELECT 1 FROM library_item_tags fit
-                             JOIN tags ft ON ft.normalized_name=fit.tag_normalized_name
-                             WHERE fit.library_item_id=li.id
-                               AND ft.name COLLATE NOCASE IN ({placeholders}))"
-            ));
-        }
-        if !filters.series.is_empty() {
-            let placeholders = query_placeholders(filters.series, &mut values);
-            sql.push_str(&format!(
-                " AND li.series COLLATE NOCASE IN ({placeholders})"
-            ));
-        }
-        if !filters.languages.is_empty() {
-            let placeholders = query_placeholders(filters.languages, &mut values);
-            sql.push_str(&format!(
-                " AND EXISTS(SELECT 1 FROM library_item_languages fl
-                             WHERE fl.library_item_id=li.id
-                               AND fl.language COLLATE NOCASE IN ({placeholders}))"
-            ));
-        }
-        if !filters.formats.is_empty() {
-            let placeholders = query_placeholders(filters.formats, &mut values);
-            sql.push_str(&format!(
-                " AND EXISTS(SELECT 1 FROM library_item_formats ff
-                             WHERE ff.library_item_id=li.id
-                               AND ff.format IN ({placeholders}))"
-            ));
+        for scope in scopes {
+            append_query_scope(&mut sql, &mut values, *scope);
         }
         sql.push_str(" ORDER BY li.title COLLATE NOCASE, li.id");
 
@@ -399,6 +353,38 @@ impl LibraryStore {
                     .ok_or_else(|| AppError::new("invalid-stored-data"))
             })
             .collect()
+    }
+
+    pub fn saved_view(&self, id: &str) -> AppResult<Option<SavedView>> {
+        self.connection
+            .query_row(
+                "SELECT id,name,definition_json,created_at,updated_at FROM saved_library_views WHERE id=?1",
+                [id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                    ))
+                },
+            )
+            .optional()?
+            .map(|(id, name, definition, created_at, updated_at)| {
+                let definition = serde_json::from_str(&definition)
+                    .map_err(|_| AppError::new("invalid-stored-data"))?;
+                validate_saved_view_definition(&definition)
+                    .map_err(|_| AppError::new("invalid-stored-data"))?;
+                Ok(SavedView {
+                    id,
+                    name,
+                    definition,
+                    created_at,
+                    updated_at,
+                })
+            })
+            .transpose()
     }
 
     pub fn import(
@@ -1697,7 +1683,7 @@ impl LibraryStore {
             .get("id")
             .and_then(Value::as_str)
             .map(str::trim)
-            .filter(|value| !value.is_empty())
+            .filter(|value| !value.is_empty() && value.encode_utf16().count() <= 256)
             .ok_or_else(|| AppError::new("invalid-arguments"))?;
         let name = request
             .get("name")
@@ -1841,6 +1827,73 @@ fn read_item_from(connection: &Connection, id: &str) -> AppResult<Option<Library
         tags: read_tags(connection, id)?,
         updated_at: base.updated_at,
     }))
+}
+
+fn append_query_scope(sql: &mut String, values: &mut Vec<SqlValue>, scope: LibraryQueryScope<'_>) {
+    if !scope.query.is_empty() {
+        let needle = format!(
+            "%{}%",
+            scope
+                .query
+                .replace('\\', "\\\\")
+                .replace('%', "\\%")
+                .replace('_', "\\_")
+        );
+        sql.push_str(
+            " AND (li.title LIKE ? ESCAPE '\\' COLLATE NOCASE
+               OR li.author LIKE ? ESCAPE '\\' COLLATE NOCASE
+               OR EXISTS(SELECT 1 FROM library_item_authors qa
+                         WHERE qa.library_item_id=li.id
+                           AND qa.name LIKE ? ESCAPE '\\' COLLATE NOCASE)
+               OR li.series LIKE ? ESCAPE '\\' COLLATE NOCASE
+               OR EXISTS(SELECT 1 FROM library_item_tags qit
+                         JOIN tags qt ON qt.normalized_name=qit.tag_normalized_name
+                         WHERE qit.library_item_id=li.id
+                           AND qt.name LIKE ? ESCAPE '\\' COLLATE NOCASE))",
+        );
+        values.extend(std::iter::repeat_n(SqlValue::Text(needle), 5));
+    }
+    if !scope.filters.authors.is_empty() {
+        let legacy = query_placeholders(scope.filters.authors, values);
+        let ordered = query_placeholders(scope.filters.authors, values);
+        sql.push_str(&format!(
+            " AND (li.author COLLATE NOCASE IN ({legacy})
+               OR EXISTS(SELECT 1 FROM library_item_authors fa
+                         WHERE fa.library_item_id=li.id
+                           AND fa.name COLLATE NOCASE IN ({ordered})))"
+        ));
+    }
+    if !scope.filters.tags.is_empty() {
+        let placeholders = query_placeholders(scope.filters.tags, values);
+        sql.push_str(&format!(
+            " AND EXISTS(SELECT 1 FROM library_item_tags fit
+                         JOIN tags ft ON ft.normalized_name=fit.tag_normalized_name
+                         WHERE fit.library_item_id=li.id
+                           AND ft.name COLLATE NOCASE IN ({placeholders}))"
+        ));
+    }
+    if !scope.filters.series.is_empty() {
+        let placeholders = query_placeholders(scope.filters.series, values);
+        sql.push_str(&format!(
+            " AND li.series COLLATE NOCASE IN ({placeholders})"
+        ));
+    }
+    if !scope.filters.languages.is_empty() {
+        let placeholders = query_placeholders(scope.filters.languages, values);
+        sql.push_str(&format!(
+            " AND EXISTS(SELECT 1 FROM library_item_languages fl
+                         WHERE fl.library_item_id=li.id
+                           AND fl.language COLLATE NOCASE IN ({placeholders}))"
+        ));
+    }
+    if !scope.filters.formats.is_empty() {
+        let placeholders = query_placeholders(scope.filters.formats, values);
+        sql.push_str(&format!(
+            " AND EXISTS(SELECT 1 FROM library_item_formats ff
+                         WHERE ff.library_item_id=li.id
+                           AND ff.format IN ({placeholders}))"
+        ));
+    }
 }
 
 fn query_placeholders(values: &[String], parameters: &mut Vec<SqlValue>) -> String {

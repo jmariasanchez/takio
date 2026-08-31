@@ -2237,6 +2237,166 @@ fn catalog_saved_views_and_content_search_work_without_calibre() {
 }
 
 #[test]
+fn virtual_libraries_constrain_session_queries_and_keep_saved_view_compatibility() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let database = temp.path().join("library.sqlite");
+    let books = [
+        ("Classic Earthsea.txt", "Ursula K. Le Guin", "Classic"),
+        ("Modern Earthsea.txt", "Ursula K. Le Guin", "Modern"),
+        ("Classic Kindred.txt", "Octavia E. Butler", "Classic"),
+    ];
+    for (name, author, tag) in books {
+        let source = temp.path().join(name);
+        fs::write(&source, name.as_bytes()).expect("write source");
+        let id = add_book(&database, &source);
+        let patch = serde_json::json!({
+            "authors":[{"name":author}],
+            "tags":[tag]
+        });
+        let updated = cargo_bin_cmd!("takio")
+            .args(["library", "update", "--db"])
+            .arg(&database)
+            .args(["--id", &id, "--patch-json", &patch.to_string()])
+            .output()
+            .expect("update item");
+        assert!(updated.status.success());
+    }
+
+    let definition = serde_json::json!({
+        "id":"classics",
+        "name":"Classics",
+        "definition":{
+            "version":1,
+            "query":"",
+            "filters":{"authors":[],"tags":["Classic"],"series":[],"languages":[],"formats":[]},
+            "sort":{"field":"title","direction":"ascending"}
+        }
+    });
+    let saved = cargo_bin_cmd!("takio")
+        .args(["library", "virtual-libraries", "save", "--db"])
+        .arg(&database)
+        .args(["--request-json", &definition.to_string()])
+        .output()
+        .expect("save virtual library");
+    assert!(saved.status.success());
+
+    let legacy_list = cargo_bin_cmd!("takio")
+        .args(["library", "saved-views", "list", "--db"])
+        .arg(&database)
+        .output()
+        .expect("list legacy saved views");
+    assert_eq!(
+        success_value(&legacy_list.stdout)["views"][0]["id"],
+        "classics"
+    );
+
+    let request = serde_json::json!({
+        "virtualLibraryId":"classics",
+        "query":"Earthsea",
+        "filters":{"authors":["Ursula K. Le Guin"],"tags":[],"series":[],"languages":[],"formats":[]},
+        "sort":{"field":"title","direction":"ascending"},
+        "page":{"offset":0,"limit":25}
+    });
+    let queried = cargo_bin_cmd!("takio")
+        .args(["library", "query", "--db"])
+        .arg(&database)
+        .args(["--request-json", &request.to_string()])
+        .output()
+        .expect("query virtual library");
+    assert!(queried.status.success());
+    let page = success_value(&queried.stdout);
+    assert_eq!(page["total"], 1);
+    assert_eq!(page["items"][0]["title"], "Classic Earthsea");
+    assert_eq!(page["facets"]["tags"][0]["value"], "Classic");
+
+    let mut incompatible = request.clone();
+    incompatible["query"] = serde_json::json!("");
+    incompatible["filters"]["authors"] = serde_json::json!([]);
+    incompatible["filters"]["tags"] = serde_json::json!(["Modern"]);
+    let empty = cargo_bin_cmd!("takio")
+        .args(["library", "query", "--db"])
+        .arg(&database)
+        .args(["--request-json", &incompatible.to_string()])
+        .output()
+        .expect("combine virtual and session tag filters");
+    assert_eq!(success_value(&empty.stdout)["total"], 0);
+
+    let mut missing = request.clone();
+    missing["virtualLibraryId"] = serde_json::json!("missing");
+    let rejected = cargo_bin_cmd!("takio")
+        .args(["library", "query", "--db"])
+        .arg(&database)
+        .args(["--request-json", &missing.to_string()])
+        .output()
+        .expect("reject missing virtual library");
+    assert!(!rejected.status.success());
+    assert_eq!(failure_code(&rejected.stdout), "not-found");
+    assert!(rejected.stderr.is_empty());
+}
+
+#[test]
+fn virtual_libraries_persist_independently_across_named_library_switches() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let data_home = temp.path().join("data");
+    let run = |library: &str, arguments: &[&str]| {
+        cargo_bin_cmd!("takio")
+            .env("HOME", temp.path())
+            .env("XDG_DATA_HOME", &data_home)
+            .env("LOCALAPPDATA", &data_home)
+            .env("APPDATA", &data_home)
+            .args(["--library", library, "library"])
+            .args(arguments)
+            .output()
+            .expect("run named library command")
+    };
+    for (library, name, query) in [
+        ("alpha", "Alpha shelf", "Alpha"),
+        ("beta", "Beta shelf", "Beta"),
+    ] {
+        let request = serde_json::json!({
+            "id":"shelf",
+            "name":name,
+            "definition":{
+                "version":1,
+                "query":query,
+                "filters":{"authors":[],"tags":[],"series":[],"languages":[],"formats":[]},
+                "sort":{"field":"title","direction":"ascending"}
+            }
+        });
+        let saved = run(
+            library,
+            &[
+                "virtual-libraries",
+                "save",
+                "--request-json",
+                &request.to_string(),
+            ],
+        );
+        assert!(saved.status.success());
+        assert!(saved.stderr.is_empty());
+    }
+
+    let alpha = run("alpha", &["virtual-libraries", "list"]);
+    let beta = run("beta", &["virtual-libraries", "list"]);
+    assert_eq!(
+        success_value(&alpha.stdout)["views"][0]["name"],
+        "Alpha shelf"
+    );
+    assert_eq!(
+        success_value(&alpha.stdout)["views"][0]["definition"]["query"],
+        "Alpha"
+    );
+    assert_eq!(
+        success_value(&beta.stdout)["views"][0]["name"],
+        "Beta shelf"
+    );
+    assert_eq!(
+        success_value(&beta.stdout)["views"][0]["definition"]["query"],
+        "Beta"
+    );
+}
+
+#[test]
 fn filename_metadata_candidates_are_available_without_external_backends() {
     let output = cargo_bin_cmd!("takio")
         .args([

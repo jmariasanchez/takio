@@ -27,18 +27,18 @@ function render(
 test("renders a labelled modal form with the suggested name", () => {
   const markup = render();
   const titleId = markup.match(/aria-labelledby="([^"]+)"/)?.[1];
-  const inputId = markup.match(/<label for="([^"]+)">View name<\/label>/)?.[1];
+  const inputId = markup.match(/<label for="([^"]+)">Virtual library name<\/label>/)?.[1];
 
   expect(titleId).toBeDefined();
   expect(inputId).toBeDefined();
   expect(markup).toContain(`role="dialog" aria-modal="true" aria-labelledby="${titleId}"`);
   expect(markup).toContain('tabindex="-1"');
-  expect(markup).toContain(`<h2 id="${titleId}">Save current view</h2>`);
+  expect(markup).toContain(`<h2 id="${titleId}">Save virtual library</h2>`);
   expect(markup).toContain(`<input id="${inputId}" type="text"`);
   expect(markup).toContain('name="saved-library-view-name"');
   expect(markup).toContain(`maxLength="${MAX_SAVED_LIBRARY_VIEW_NAME_LENGTH}"`);
   expect(markup).toContain('value="Science fiction"');
-  expect(markup).toContain('<button type="submit">Save view</button>');
+  expect(markup).toContain('<button type="submit">Save virtual library</button>');
 });
 
 test("does not render dialog controls while closed", () => {
@@ -72,11 +72,11 @@ test("wraps modal focus at both boundaries and handles an empty control set", ()
 test("validates exactly the contract name rule and returns the trimmed value", () => {
   expect(validateSavedLibraryViewName("")).toEqual({
     name: null,
-    error: "Enter a name for this saved view.",
+    error: "Enter a name for this virtual library.",
   });
   expect(validateSavedLibraryViewName("  \n\t ")).toEqual({
     name: null,
-    error: "Enter a name for this saved view.",
+    error: "Enter a name for this virtual library.",
   });
   expect(validateSavedLibraryViewName("  Recent EPUBs  ")).toEqual({
     name: "Recent EPUBs",

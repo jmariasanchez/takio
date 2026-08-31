@@ -96,7 +96,7 @@ test("renders authoritative counts for every supplied facet and accessible multi
   const markup = renderToStaticMarkup(tree);
   const controls = elements(tree);
 
-  expect(markup).toContain('aria-label="Library filters and saved views"');
+  expect(markup).toContain('aria-label="Library filters and virtual libraries"');
   for (const heading of ["Authors", "Tags", "Series", "Languages", "Formats"]) {
     expect(markup).toContain(`>${heading}</h2>`);
   }
@@ -158,12 +158,12 @@ test("All books and saved-view controls emit exact controlled actions", () => {
 
   const buttons = controls.filter((element) => element.type === "button");
   buttons
-    .find((element) => element.props["aria-label"] === "All books, clear current query")
+    .find((element) => element.props["aria-label"] === "All books, leave the virtual library and clear the current query")
     ?.props.onClick?.();
   buttons.find((element) => element.props.children === "Save current")?.props.onClick?.();
   buttons.find((element) => element.props.children === "Unread")?.props.onClick?.();
   buttons
-    .find((element) => element.props["aria-label"] === "Remove saved view Favourites")
+    .find((element) => element.props["aria-label"] === "Remove virtual library Favourites")
     ?.props.onClick?.();
 
   expect(actions).toEqual(["clear", "save", "apply:unread", "remove:favourites"]);
@@ -187,7 +187,7 @@ test("omits empty facet groups and does not fabricate library categories", () =>
   );
 
   expect(markup).toContain("All books");
-  expect(markup).toContain("No saved views");
+  expect(markup).toContain("No virtual libraries");
   for (const absent of [
     "Authors",
     "Tags",

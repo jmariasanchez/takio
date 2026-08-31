@@ -148,8 +148,11 @@ export const libraryQueryPageRequestSchema = z
   .strict()
   .readonly();
 
+const savedLibraryViewIdSchema = z.string().trim().min(1).max(256);
+
 export const queryLibraryItemsRequestSchema = z
   .object({
+    virtualLibraryId: savedLibraryViewIdSchema.optional(),
     query: libraryLiteralQuerySchema,
     filters: libraryQueryFiltersSchema,
     sort: libraryQuerySortSchema,
@@ -387,7 +390,7 @@ const savedLibraryViewNameSchema = z
 
 export const savedLibraryViewSchema = z
   .object({
-    id: z.string().min(1),
+    id: savedLibraryViewIdSchema,
     name: savedLibraryViewNameSchema,
     definition: savedLibraryViewDefinitionSchema,
     createdAt: z.string().datetime({ offset: true }),
@@ -400,7 +403,7 @@ export const listSavedLibraryViewsRequestSchema = z.object({}).strict().readonly
 
 export const saveSavedLibraryViewRequestSchema = z
   .object({
-    id: z.string().min(1),
+    id: savedLibraryViewIdSchema,
     name: savedLibraryViewNameSchema,
     definition: savedLibraryViewDefinitionSchema,
   })
@@ -408,9 +411,18 @@ export const saveSavedLibraryViewRequestSchema = z
   .readonly();
 
 export const removeSavedLibraryViewRequestSchema = z
-  .object({ id: z.string().min(1) })
+  .object({ id: savedLibraryViewIdSchema })
   .strict()
   .readonly();
+
+// Saved views are the persisted definitions behind virtual libraries. Keep the
+// original names for protocol compatibility while exposing the product-domain
+// vocabulary to new callers.
+export const virtualLibraryDefinitionSchema = savedLibraryViewDefinitionSchema;
+export const virtualLibrarySchema = savedLibraryViewSchema;
+export const listVirtualLibrariesRequestSchema = listSavedLibraryViewsRequestSchema;
+export const saveVirtualLibraryRequestSchema = saveSavedLibraryViewRequestSchema;
+export const removeVirtualLibraryRequestSchema = removeSavedLibraryViewRequestSchema;
 
 const libraryItemLifecycleRequestSchema = z
   .object({ id: z.string().min(1) })
@@ -666,6 +678,11 @@ export type SavedLibraryView = z.infer<typeof savedLibraryViewSchema>;
 export type ListSavedLibraryViewsRequest = z.infer<typeof listSavedLibraryViewsRequestSchema>;
 export type SaveSavedLibraryViewRequest = z.infer<typeof saveSavedLibraryViewRequestSchema>;
 export type RemoveSavedLibraryViewRequest = z.infer<typeof removeSavedLibraryViewRequestSchema>;
+export type VirtualLibraryDefinition = SavedLibraryViewDefinition;
+export type VirtualLibrary = SavedLibraryView;
+export type ListVirtualLibrariesRequest = ListSavedLibraryViewsRequest;
+export type SaveVirtualLibraryRequest = SaveSavedLibraryViewRequest;
+export type RemoveVirtualLibraryRequest = RemoveSavedLibraryViewRequest;
 export type TrashLibraryItemRequest = z.infer<typeof trashLibraryItemRequestSchema>;
 export type RestoreLibraryItemRequest = z.infer<typeof restoreLibraryItemRequestSchema>;
 export type PurgeLibraryItemRequest = z.infer<typeof purgeLibraryItemRequestSchema>;
@@ -1668,6 +1685,8 @@ export interface SavedLibraryViewStore {
   saveSavedView(request: SaveSavedLibraryViewRequest): Promise<SaveSavedLibraryViewResult>;
   removeSavedView(request: RemoveSavedLibraryViewRequest): Promise<RemoveSavedLibraryViewResult>;
 }
+
+export type VirtualLibraryStore = SavedLibraryViewStore;
 
 export interface LibraryFormatReplacementStore {
   replaceFormat(request: ReplaceLibraryFormatRequest): Promise<ReplaceLibraryFormatResult>;

@@ -127,6 +127,7 @@ const duplicateCandidatePage = {
 } as const;
 
 const queryRequest = {
+  virtualLibraryId: "classics",
   query: "title",
   filters: {
     authors: ["An author"],

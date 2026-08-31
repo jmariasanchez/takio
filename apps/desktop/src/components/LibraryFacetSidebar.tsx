@@ -96,7 +96,7 @@ export function LibraryFacetSidebar({
   );
 
   return (
-    <nav className="library-facets" aria-label="Library filters and saved views">
+    <nav className="library-facets" aria-label="Library filters and virtual libraries">
       <div className="library-facets__heading">
         <span className="library-facets__mark" aria-hidden="true">
           T
@@ -108,7 +108,7 @@ export function LibraryFacetSidebar({
         <button
           type="button"
           className="library-facets__all"
-          aria-label="All books, clear current query"
+          aria-label="All books, leave the virtual library and clear the current query"
           onClick={onClearAll}
         >
           <span>All books</span>
@@ -122,7 +122,18 @@ export function LibraryFacetSidebar({
           >
             <div className="library-facets__group-heading">
               <h2 id="library-active-filters-heading">Active filters</h2>
-              <button type="button" onClick={onClearAll}>
+              <button
+                type="button"
+                onClick={() =>
+                  onChangeFilters({
+                    authors: [],
+                    tags: [],
+                    series: [],
+                    languages: [],
+                    formats: [],
+                  })
+                }
+              >
                 Clear all
               </button>
             </div>
@@ -151,16 +162,25 @@ export function LibraryFacetSidebar({
 
         <section
           className="library-facets__group library-facets__saved"
-          aria-labelledby="library-saved-views-heading"
+          aria-labelledby="library-virtual-libraries-heading"
         >
           <div className="library-facets__group-heading">
-            <h2 id="library-saved-views-heading">Saved views</h2>
-            <button type="button" onClick={onSaveSavedView}>
+            <h2 id="library-virtual-libraries-heading">Virtual libraries</h2>
+            <button
+              type="button"
+              disabled={currentSavedViewId !== null}
+              title={
+                currentSavedViewId === null
+                  ? "Save the current query as a virtual library"
+                  : "Switch to All books before saving another virtual library"
+              }
+              onClick={onSaveSavedView}
+            >
               Save current
             </button>
           </div>
           {savedViews.length === 0 ? (
-            <p className="library-facets__empty">No saved views</p>
+            <p className="library-facets__empty">No virtual libraries</p>
           ) : (
             <ul>
               {savedViews.map((view) => {
@@ -178,7 +198,7 @@ export function LibraryFacetSidebar({
                     <button
                       type="button"
                       className="library-facets__remove"
-                      aria-label={`Remove saved view ${view.name}`}
+                      aria-label={`Remove virtual library ${view.name}`}
                       onClick={() => onRemoveSavedView(view.id)}
                     >
                       ×

@@ -43,6 +43,7 @@ export type LibraryQueryStateAction =
   | { readonly type: "set-page"; readonly page: LibraryQueryPageRequest }
   | {
       readonly type: "apply-saved-view";
+      readonly id: string | null;
       readonly definition: SavedLibraryViewDefinition;
     }
   | { readonly type: "select-item"; readonly id: string | null };
@@ -104,8 +105,9 @@ export function libraryQueryStateReducer(
     case "apply-saved-view": {
       const definition = savedLibraryViewDefinitionSchema.parse(action.definition);
       return withRequest(state, {
-        query: definition.query,
-        filters: definition.filters,
+        ...(action.id === null ? {} : { virtualLibraryId: action.id }),
+        query: "",
+        filters: DEFAULT_LIBRARY_QUERY_REQUEST.filters,
         sort: definition.sort,
         page: { ...state.request.page, offset: 0 },
       });

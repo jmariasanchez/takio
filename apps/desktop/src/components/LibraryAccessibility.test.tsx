@@ -201,7 +201,7 @@ test("preserves table sorting, paging, and facet semantics in compact compositio
   expect(markup).toMatch(/<button type="button" disabled="">Previous<\/button>/);
   expect(markup).toMatch(/<button type="button">Next<\/button>/);
   expect(markup).toContain(
-    '<nav class="library-facets" aria-label="Library filters and saved views">',
+    '<nav class="library-facets" aria-label="Library filters and virtual libraries">',
   );
   expect(markup).toMatch(
     /<input type="checkbox"[^>]*aria-label="Octavia E\. Butler, 1 book"[^>]*checked=""/,

@@ -110,7 +110,7 @@ describe("library query state", () => {
     expect(state.request.sort).toEqual({ field: "author", direction: "descending" });
   });
 
-  test("applies a saved definition as a new result set without letting views persist session paging", () => {
+  test("activates a virtual-library scope without letting definitions persist session paging", () => {
     const definition: SavedLibraryViewDefinition = {
       version: 1,
       query: "classic",
@@ -128,15 +128,23 @@ describe("library query state", () => {
         ...DEFAULT_LIBRARY_QUERY_REQUEST,
         page: { offset: 75, limit: 25 },
       }),
-      { type: "apply-saved-view", definition },
+      { type: "apply-saved-view", id: "classics", definition },
     );
 
     expect(state.request).toEqual({
-      query: definition.query,
-      filters: definition.filters,
+      virtualLibraryId: "classics",
+      query: "",
+      filters: DEFAULT_LIBRARY_QUERY_REQUEST.filters,
       sort: definition.sort,
       page: { offset: 0, limit: 25 },
     });
+
+    const searched = libraryQueryStateReducer(state, {
+      type: "set-query",
+      query: "earthsea",
+    });
+    expect(searched.request.virtualLibraryId).toBe("classics");
+    expect(searched.request.query).toBe("earthsea");
   });
 
   test("invalidates pending work as soon as request intent changes so an old response cannot win the effect race", () => {

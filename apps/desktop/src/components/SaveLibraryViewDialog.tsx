@@ -61,7 +61,7 @@ function focusableElements(container: HTMLElement): HTMLElement[] {
 export function validateSavedLibraryViewName(value: string): SavedLibraryViewNameValidation {
   const name = value.trim();
   if (name.length === 0) {
-    return { name: null, error: "Enter a name for this saved view." };
+    return { name: null, error: "Enter a name for this virtual library." };
   }
   if (name.length > MAX_SAVED_LIBRARY_VIEW_NAME_LENGTH) {
     return {
@@ -170,11 +170,11 @@ export function SaveLibraryViewDialog({
       >
         <form onSubmit={handleSubmit}>
           <header className="save-library-view-dialog__header">
-            <h2 id={titleId}>Save current view</h2>
+            <h2 id={titleId}>Save virtual library</h2>
           </header>
 
           <div className="save-library-view-dialog__body">
-            <label htmlFor={inputId}>View name</label>
+            <label htmlFor={inputId}>Virtual library name</label>
             <input
               ref={inputRef}
               id={inputId}
@@ -203,7 +203,7 @@ export function SaveLibraryViewDialog({
               Cancel
             </button>
             <button type="submit" disabled={busy}>
-              {busy ? "Saving…" : "Save view"}
+              {busy ? "Saving…" : "Save virtual library"}
             </button>
           </footer>
         </form>
