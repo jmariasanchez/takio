@@ -290,6 +290,10 @@ impl App {
             self.status = "Select a book to review metadata".to_owned();
             return;
         };
+        self.load_candidate_review(item, include_online);
+    }
+
+    fn load_candidate_review(&mut self, item: LibraryItem, include_online: bool) {
         self.mode = Mode::CandidateReview;
         self.candidate_review = Some(CandidateReview {
             item_id: item.id.clone(),
@@ -315,6 +319,21 @@ impl App {
             let _ = tx.send((item.id, result));
         });
         self.candidate_rx = Some(rx);
+    }
+
+    fn refresh_candidate_review_online(&mut self) {
+        let Some(item_id) = self
+            .candidate_review
+            .as_ref()
+            .map(|review| review.item_id.clone())
+        else {
+            return;
+        };
+        match self.store.get(&item_id) {
+            Ok(Some(item)) => self.load_candidate_review(item, true),
+            Ok(None) => self.status = "The reviewed book is no longer available".to_owned(),
+            Err(error) => self.status = format!("Metadata lookup failed: {}", error.code()),
+        }
     }
 
     fn poll_candidate_loader(&mut self) {
@@ -461,7 +480,6 @@ impl App {
                 self.mode = Mode::Normal;
                 self.candidate_review = None;
                 self.candidate_rx = None;
-                self.query.clear();
                 self.refresh();
                 self.status = format!("Updated {}: {}", item.title, fields.join(", "));
             }
@@ -531,7 +549,7 @@ impl App {
                     }
                 }
                 KeyCode::Char(' ') => self.toggle_candidate_field(),
-                KeyCode::Char('o') => self.begin_candidate_review(true),
+                KeyCode::Char('o') => self.refresh_candidate_review_online(),
                 KeyCode::Enter | KeyCode::Char('a') => self.confirm_candidate(),
                 _ => {}
             },
@@ -1553,6 +1571,7 @@ mod tests {
         let review = app.candidate_review.as_mut().expect("review");
         review.selected_fields.clear();
         review.selected_fields.insert("title".to_owned());
+        app.query = "Original".to_owned();
 
         app.confirm_candidate();
         assert_eq!(app.mode, Mode::ConfirmCandidate);
@@ -1568,6 +1587,7 @@ mod tests {
         assert!(audit.contains("tui-candidate-review"));
         assert!(audit.contains("selectedFields"));
         assert!(audit.contains("title"));
+        assert_eq!(app.query, "Original");
         assert_eq!(app.mode, Mode::Normal);
     }
 
@@ -1589,6 +1609,31 @@ mod tests {
         assert_eq!(unchanged.title, "Original Title");
         assert!(unchanged.custom_metadata.is_empty());
         assert_eq!(app.mode, Mode::Normal);
+    }
+
+    #[test]
+    fn online_refresh_remains_bound_to_the_reviewed_item() {
+        let (temp, mut app, reviewed) = app_with_book();
+        let other_source = temp.path().join("Other Book.epub");
+        std::fs::write(&other_source, b"other fixture").expect("write other source");
+        let other = app
+            .store
+            .import(&other_source, None, false)
+            .expect("import other book");
+        app.refresh();
+        install_candidate_review(&mut app, &reviewed);
+        app.selected = app
+            .items
+            .iter()
+            .position(|item| item.id == other.id)
+            .expect("other selection");
+
+        app.refresh_candidate_review_online();
+
+        let review = app.candidate_review.as_ref().expect("review");
+        assert_eq!(review.item_id, reviewed.id);
+        assert!(review.include_online);
+        app.cancel_candidate_review();
     }
 
     #[test]

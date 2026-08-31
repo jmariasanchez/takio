@@ -152,7 +152,8 @@ cover, and a machine-readable manifest. It never overwrites a destination.
 `takio library restore-backup --source <backup> --db <new-path>` verifies and
 rebases that snapshot into an absent library path without retaining paths to the
 original library or disturbing unrelated files in an existing parent directory.
-Portable OPF export and rebuild remain reserved for a later Rust implementation.
+Portable OPF export and verified rebuild preserve item IDs, metadata, format
+order, exact bytes, covers, and per-format timestamps in native Rust.
 
 ## CLI for skills and agents
 
@@ -160,7 +161,8 @@ The Rust CLI preserves the one-line protocol while adding a human interface. Run
 `takio` or `takio tui` in a terminal to open the library workspace. It includes
 Library, Jobs, Devices, and Help sections, incremental search, an import prompt,
 a command palette, safe trash confirmation, responsive small-terminal handling,
-and complete terminal restoration on exit.
+selected-book metadata candidate review with explicit field selection and online
+opt-in, and complete terminal restoration on exit.
 
 The CLI remains deterministic. Machine-readable successes use a one-line
 `{"ok":true,"value":...}` envelope, and every failure uses
@@ -177,16 +179,16 @@ The Rust migration currently exposes the core daily-driver and automation surfac
 
 | Command family | Purpose |
 | --- | --- |
-| `takio`, `takio tui` | Open the interactive terminal library with search, details, import, trash, jobs, devices, and keyboard help. |
+| `takio`, `takio tui` | Open the interactive terminal library with search, details, import, metadata review, trash, jobs, devices, and keyboard help. |
 | `takio doctor`, `capabilities` | Report Rust implementation details, schema versions, limits, and live Calibre availability. |
 | `takio formats`, `devices`, `plan`, `convert` | Inspect formats and execution targets, plan work, or run an advertised Calibre conversion synchronously. |
-| `takio library path`, `verify`, `backup`, `restore-backup` | Locate, audit, snapshot, and safely restore a schema-v10 library and its managed files. |
+| `takio library path`, `verify`, `backup`, `restore-backup`, `portable-export`, `rebuild` | Locate, audit, snapshot, portably export, and safely restore a schema-v11 library and its managed files. |
 | `takio library import`, `import-many`, `list`, `get`, `search`, `query`, `update`, `update-many`, `remove`, `export-many` | Import, browse, filter, edit, remove, and export the local catalogue. |
 | `takio library catalog`, `content-search`, `validate`, `saved-views` | Publish JSON, CSV, or HTML catalogues, inspect book contents, validate attached formats, and persist reusable views. |
 | `takio library format import`, `attach`, `remove`, `replace` | Manage owned copies and caller-owned format references, including guarded atomic replacement. |
 | `takio library cover set`, `remove` | Manage Takio-owned cover images. |
 | `takio library trash list`, `move`, `restore`, `purge` | Remove items recoverably or purge them permanently. |
-| `takio metadata extract`, `fetch`, `candidates`; `takio polish` | Use bounded Calibre metadata and polishing tools, plus local filename-derived metadata candidates. |
+| `takio library import-calibre`, `import-watch`; `takio metadata extract`, `fetch`, `candidates`; `takio polish` | Import or watch libraries, use bounded Calibre metadata and polishing tools, and explicitly review local or online metadata candidates. |
 | `takio jobs enqueue`, `list`, `get`, `cancel`, `retry`, `retry-attachment`, `run-next`, `drain` | Manage the schema-v4 durable foreground conversion queue and reconcile completed outputs with library items. |
 | `takio destination list`, `inventory`, `reconcile`, `remove`, `eject`, `rooted-kindle-send` | Discover mounted volumes, manage verified delivery records, or explicitly opt into hardened SSH/SCP delivery. |
 | `takio send` | Copy and SHA-256 verify an attached format on an authorized mounted destination. |
