@@ -240,7 +240,7 @@ fn metadata_candidates_reconcile_reports_attempted_backend_failures_without_muta
     write_executable(&embedded_failure, "#!/bin/sh\nexit 7\n");
     write_executable(
         &embedded_success,
-        "#!/bin/sh\nfor argument in \"$@\"; do\n  case \"$argument\" in\n    --to-opf=*) opf=${argument#--to-opf=} ;;\n  esac\ndone\ncat > \"$opf\" <<'EOF'\n<?xml version=\"1.0\"?><package xmlns:dc=\"http://purl.org/dc/elements/1.1/\"><metadata><dc:title>Embedded title</dc:title></metadata></package>\nEOF\n",
+        "#!/bin/sh\nfor argument in \"$@\"; do\n  case \"$argument\" in\n    --to-opf=*) opf=${argument#--to-opf=} ;;\n    --get-cover=*) cover=${argument#--get-cover=} ;;\n  esac\ndone\ncat > \"$opf\" <<'EOF'\n<?xml version=\"1.0\"?><package xmlns:dc=\"http://purl.org/dc/elements/1.1/\"><metadata><dc:title>Embedded title</dc:title></metadata></package>\nEOF\nprintf '\\377\\330\\377staged-cover' > \"$cover\"\n",
     );
     write_executable(&online_failure, "#!/bin/sh\nexit 9\n");
     let item_id = add_book(&database, &epub);
@@ -305,6 +305,13 @@ fn metadata_candidates_reconcile_reports_attempted_backend_failures_without_muta
     assert_eq!(
         fs::read(&database).expect("database after online reconcile"),
         before
+    );
+    assert_eq!(
+        fs::read_dir(temp.path().join("candidate-covers"))
+            .expect("candidate stage directory")
+            .count(),
+        0,
+        "failed reconciliation must not retain inaccessible staged covers"
     );
 }
 

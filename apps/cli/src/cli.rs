@@ -979,6 +979,47 @@ pub(crate) struct PreparedMetadataCandidate {
     candidate_provenance: String,
 }
 
+struct CandidateCoverStages<'a> {
+    library_root: Option<&'a Path>,
+    artifact_ids: Vec<String>,
+    retain: bool,
+}
+
+impl<'a> CandidateCoverStages<'a> {
+    fn new(library_root: Option<&'a Path>) -> Self {
+        Self {
+            library_root,
+            artifact_ids: Vec::new(),
+            retain: false,
+        }
+    }
+
+    fn track(
+        &mut self,
+        descriptor: crate::candidate_cover::CandidateCoverDescriptor,
+    ) -> crate::candidate_cover::CandidateCoverDescriptor {
+        self.artifact_ids.push(descriptor.artifact_id.clone());
+        descriptor
+    }
+
+    fn retain(&mut self) {
+        self.retain = true;
+    }
+}
+
+impl Drop for CandidateCoverStages<'_> {
+    fn drop(&mut self) {
+        if self.retain {
+            return;
+        }
+        if let Some(root) = self.library_root {
+            for artifact_id in &self.artifact_ids {
+                crate::candidate_cover::consume(root, artifact_id);
+            }
+        }
+    }
+}
+
 pub(crate) fn metadata_candidates_for_item_at(
     item: &crate::model::LibraryItem,
     include_online: bool,
@@ -1026,6 +1067,7 @@ fn metadata_candidates_for_item_with_policy(
     }
     let mut candidates =
         filename_candidates_for_stem(&item.title, &item.source_path, Some(&item.id), &[])?;
+    let mut cover_stages = CandidateCoverStages::new(library_root);
     if canceled.load(Ordering::Acquire) {
         return Err(AppError::new("operation-canceled"));
     }
@@ -1047,14 +1089,14 @@ fn metadata_candidates_for_item_with_policy(
                 } else if let (Some(cover), Some(library_root)) =
                     (extracted.cover_data.as_ref(), library_root)
                 {
-                    Some(crate::candidate_cover::stage(
+                    Some(cover_stages.track(crate::candidate_cover::stage(
                         library_root,
                         &item.id,
                         "embedded:1",
                         "embedded",
                         &canonical_candidate_provenance(&provenance)?,
                         cover,
-                    )?)
+                    )?))
                 } else {
                     None
                 };
@@ -1100,14 +1142,14 @@ fn metadata_candidates_for_item_with_policy(
                 } else if let (Some(cover), Some(library_root)) =
                     (fetched.cover_data.as_ref(), library_root)
                 {
-                    Some(crate::candidate_cover::stage(
+                    Some(cover_stages.track(crate::candidate_cover::stage(
                         library_root,
                         &item.id,
                         "online:1",
                         "online",
                         &canonical_candidate_provenance(&provenance)?,
                         cover,
-                    )?)
+                    )?))
                 } else {
                     None
                 };
@@ -1130,6 +1172,7 @@ fn metadata_candidates_for_item_with_policy(
         return Err(AppError::new("operation-canceled"));
     }
     candidates.truncate(8);
+    cover_stages.retain();
     Ok(candidates)
 }
 
