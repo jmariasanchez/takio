@@ -261,10 +261,11 @@ Accept when:
 
 #### C1. Diagnostics and observability
 
-Status: two production vertical slices delivered in `70ea980`, `fb8d83c`,
-`def3c98`, `028964e`, and `48caa27`. C1 remains open for durable operation
-records, queue/server/device summaries, import/merge/server latency gates, and
-bringing the shipped Rust query path within the 150 ms roadmap target.
+Status: three production vertical slices delivered in `70ea980`, `fb8d83c`,
+`def3c98`, `028964e`, `48caa27`, and `ffaf197`. C1 remains open for durable
+operation records, queue/server/device summaries, and import/merge/server
+latency gates. The shipped Rust query path now satisfies the 150 ms roadmap
+target.
 
 Deliver:
 
@@ -297,17 +298,18 @@ Delivered evidence:
 - The checksummed macOS ARM64 release binary and packaged desktop sidecar both
   passed public acceptance for exact byte/digest reporting, redaction, failed-store
   capture, one-record JSON envelopes, and no-overwrite behavior. Release SHA-256:
-  `036fbf408c90ff8f9376644f54548bb359aa3ab1300b76f4eb76febe4839bd51`.
+  `5e25bbbffed92560629d69c7b766fc94ac8db101054e5893038c0e9f96ab119d`.
 - CI and release validation now execute an end-to-end native Rust query benchmark
   through the shipped CLI boundary against a deterministic 10,000-book,
   15,000-format current-schema fixture. The benchmark validates the public query
   envelope, includes process startup, schema verification, hydration, sorting,
-  facets, paging, and JSON serialization, and enforces an initial 300 ms p95
-  regression ceiling.
-- Exact-head local samples measured native p95 between 202 and 220 ms. This is a
-  reproducible improvement baseline, not completion of the 150 ms roadmap target;
-  query-path optimization remains required. The TypeScript reference-store gate
-  continued to pass at 112 ms p95.
+  facets, paging, and JSON serialization, and enforces the 150 ms p95 roadmap
+  target.
+- `ffaf197` moved author, tag, series, language, and format filtering into SQLite
+  before hydration. Three pre-fix release runs reproduced native p95 between 214
+  and 232 ms. Repeated optimized runs measured 55-60 ms, and the definitive
+  exact-head run measured 60.0 ms. The TypeScript reference-store gate measured
+  122.8 ms. Both shipped and reference paths therefore pass the same 150 ms gate.
 
 #### C2. Recovery and contention
 
@@ -474,8 +476,7 @@ journeys.
 ## Current frontier
 
 1. Complete C1 durable operation audits and broader queue/server/device health
-   summaries, add import/merge/server latency gates, and optimize the native Rust
-   query path from its 202-220 ms p95 baseline toward the 150 ms target.
+   summaries, then add import, merge, and server latency gates.
 2. Extend B2 with virtual libraries, structured queries, and richer reusable bulk
    organization workflows.
 3. Specify D1 device identity and simulator using real remount evidence.

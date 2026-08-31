@@ -2,7 +2,7 @@
 
 Date: 2026-08-31
 
-Exact head: `f8e396a`
+Accepted code head: `ffaf197`
 
 This audit closes the feedback loop over the work completed so far. It does not
 claim that Calibre gaps 2 through 9 are complete. It separates observed public
@@ -14,10 +14,10 @@ open or externally blocked.
 Two independently packaged Rust executables completed the same public workflow:
 
 - Standalone release: `dist/releases/takio-v0.1.0-macos-arm64`
-  - SHA-256: `75dc53bd765d41c8c27b0b573b51e6954750e988c1da2cfc6b36b18cd5a43ac2`
+  - SHA-256: `5e25bbbffed92560629d69c7b766fc94ac8db101054e5893038c0e9f96ab119d`
 - Desktop sidecar:
   `apps/desktop/release/mac-arm64/Takio.app/Contents/Resources/bin/takio-library-engine`
-  - SHA-256: `449c7607968aee201688ddc5768116c47a60e47c6414c56393af8045c3514913`
+  - SHA-256: `8f5f2739a34fd61a4f84953efc1811f09d113368e2994deb3442219401821d0e`
 
 The acceptance harness is retained outside the repository at
 `$JCODE_SCRATCH_DIR/takio-program-acceptance.py`. It creates isolated data, but
@@ -45,9 +45,9 @@ Gatekeeper were not exercised because distribution credentials were not used.
 | A2 backup and recovery | Called packaged `library backup`, `library restore-backup`, and `library verify` | Restored schema 11 contained two active books and two verified managed formats | Large-library retry-memory and soak evidence remain open |
 | A2 Calibre import, watch, and schema migration | Exact-head Rust integration suite exercises frozen Calibre input, live WAL, restart accounting, signal cancellation, v1-v10 migration, backups, rollback, spoofed schemas, and path rebasing | All exact-head tests passed | Real Windows migration/path execution remains open |
 | B1 explicit candidate review and exact accounting | Called packaged bulk reconciliation for an existing and missing item with online lookup disabled; full contract, desktop, TUI, and Rust tests exercise selective apply, identity, cancellation, covers, audit, and stale responses | Ordered outcomes accounted for both IDs as `no-candidates` and `missing` without mutation. All repository tests passed. | TUI bulk queue is an optional follow-up, not required by the completed selected-book workflow |
-| B2 10,000-book query and facets | Ran both committed performance gates after full build | Reference-store p95 was 128.2 ms, below 150 ms. Native release-CLI p95 was 219.88 ms and passed only the explicit 300 ms regression ceiling. | Native 150 ms target, virtual libraries, structured grammar, and richer reusable organization remain open |
+| B2 10,000-book query and facets | Ran both committed performance gates after full build. The release-CLI benchmark also asserts 513 total matches and exactly 100 page items across text, author, tag, series, language, and format filters. | Reference-store p95 was 122.8 ms. Native release-CLI p95 was 60.0 ms after filtering in SQLite before hydration. Both passed the 150 ms product gate. | Virtual libraries, structured grammar, and richer reusable organization remain open |
 | C1 redacted support diagnostics | Called packaged `library diagnostics`; compared declared bytes and SHA-256 with the published file; inspected serialized content; repeated the same destination | Exact bytes and digest matched. Library root and title were absent. The second publication failed with `destination-exists`. | Durable operation audit records and broader queue/server/device summaries remain open |
-| C1 reproducible native performance regression | Ran `test:performance:native:library` against 10,000 books and 15,000 formats through the release CLI; CI and release workflows invoke the same command | Exact-head native p95 was 219.88 ms and passed the 300 ms regression ceiling. Invalid benchmark mode fails immediately. | The 300 ms ceiling is not the 150 ms product target; import, merge, and server latency gates remain open |
+| C1 reproducible native performance regression | Ran `test:performance:native:library` against 10,000 books and 15,000 formats through the release CLI; CI and release workflows invoke the same command | Three pre-fix runs reproduced p95 of 214-232 ms. Repeated optimized runs measured 55-60 ms, the definitive exact-head run measured 60.0 ms, and the committed gate now fails above 150 ms. Invalid benchmark mode fails immediately. | Import, merge, and server latency gates remain open |
 | C2 transactional recovery | Exact-head tests cover import, duplicate merge, candidate cover publication, migration rollback, attachment races, backup, and portable publication failure paths | Full Rust suite passed after the public acceptance run | Exhaustive power-loss, disk-full, and user-facing recovery journeys remain open |
 | D1 mounted-reader workflow | Created an isolated Kobo-shaped mount, called packaged `destination list`, `send`, and `destination inventory` | Device classified as Kobo, EPUB copied and hash-tracked, inventory returned `present` | This is a simulator, not real hardware. Stable identity across remounts and real Kobo/Kindle evidence remain open |
 | D1 default Kobo delivery root | Initial public acceptance returned `invalid-arguments`; `f8e396a` corrected root publication and added unit plus public CLI regressions | Rebuilt standalone and sidecar packages both delivered successfully to the authorized mount root | Other platforms and real remount behavior remain open |
@@ -70,5 +70,6 @@ aggregate test suites had missed.
 The overall Calibre gaps 2 through 9 program remains active. Areas 5 and 6 are
 mostly future product work, area 4 still lacks real-hardware and stable-identity
 evidence, area 7 remains a narrow local service, area 9 remains macOS ARM64-only,
-and the shipped Rust query path measured 219.88 ms p95 rather than the 150 ms
-roadmap target.
+and B2 still lacks virtual libraries, structured query grammar, and richer
+reusable organization. The shipped Rust query path now passes its 150 ms target
+at 60.0 ms p95 through the release CLI boundary.
