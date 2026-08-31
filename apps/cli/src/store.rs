@@ -3001,6 +3001,71 @@ mod tests {
     }
 
     #[test]
+    fn candidate_cover_apply_rolls_back_metadata_and_keeps_stage_for_retry() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = LibraryPaths::resolve(None, Some(&temp.path().join("library.sqlite"))).unwrap();
+        let source = temp.path().join("source.epub");
+        fs::write(&source, b"epub source").unwrap();
+        let mut store = LibraryStore::open(paths, true).unwrap();
+        let item = store
+            .import(&source, Some("Original title"), false)
+            .unwrap();
+        let descriptor = crate::candidate_cover::stage(
+            &store.paths.root,
+            &item.id,
+            "embedded:cover",
+            "embedded",
+            "proof",
+            &crate::candidate_cover::CapturedCover {
+                bytes: vec![0xff, 0xd8, 0xff, 1, 2, 3],
+                media_type: "image/jpeg".to_owned(),
+                extension: ".jpg".to_owned(),
+            },
+        )
+        .unwrap();
+        store
+            .connection
+            .execute_batch(
+                "CREATE TRIGGER reject_candidate_cover
+                 BEFORE UPDATE OF cover_path ON library_items
+                 BEGIN SELECT RAISE(FAIL, 'reject candidate cover'); END;",
+            )
+            .unwrap();
+
+        let error = store
+            .apply_metadata_candidate(
+                &item.id,
+                LibraryPatch {
+                    title: Patch::Set("Changed title".to_owned()),
+                    ..LibraryPatch::default()
+                },
+                Some(&descriptor),
+                "embedded:cover",
+                "embedded",
+                "proof",
+            )
+            .unwrap_err();
+
+        assert_eq!(error.code(), "storage-unavailable");
+        let unchanged = store.get(&item.id).unwrap().unwrap();
+        assert_eq!(unchanged.title, "Original title");
+        assert!(unchanged.cover_path.is_none());
+        assert_eq!(fs::read_dir(&store.paths.covers).unwrap().count(), 0);
+        assert!(
+            crate::candidate_cover::validate(
+                &store.paths.root,
+                &item.id,
+                "embedded:cover",
+                "embedded",
+                "proof",
+                &descriptor,
+            )
+            .is_ok(),
+            "failed application must retain the staged artifact for a retry"
+        );
+    }
+
+    #[test]
     fn verified_artifact_attachment_rejects_mutation_and_is_idempotent() {
         let temp = tempfile::tempdir().unwrap();
         let paths = LibraryPaths::resolve(None, Some(&temp.path().join("library.sqlite"))).unwrap();

@@ -376,7 +376,7 @@ mod tests {
         .expect("valid request");
         assert_eq!(request.item_ids(), ["first", "second", "third"]);
 
-        for unicode_whitespace in ['\u{85}', '\u{feff}'] {
+        for unicode_whitespace in ['\u{b}', '\u{85}', '\u{feff}'] {
             assert!(
                 ReconcileRequest::parse(json!({
                     "schemaVersion":1,

@@ -2241,6 +2241,95 @@ fn candidate_for(item_id: &str) -> Value {
     })
 }
 
+#[cfg(unix)]
+#[test]
+fn embedded_candidate_cover_is_path_free_and_applies_with_bounded_audit() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let (database, id) = seed_candidate_library(temp.path());
+    let backend = temp.path().join("ebook-meta-with-cover");
+    write_executable(
+        &backend,
+        "#!/bin/sh\nfor argument in \"$@\"; do\n  case \"$argument\" in\n    --to-opf=*) opf=${argument#--to-opf=} ;;\n    --get-cover=*) cover=${argument#--get-cover=} ;;\n  esac\ndone\ncat > \"$opf\" <<'EOF'\n<?xml version=\"1.0\"?><package xmlns:dc=\"http://purl.org/dc/elements/1.1/\"><metadata><dc:title>Embedded cover title</dc:title></metadata></package>\nEOF\nprintf '\\377\\330\\377cover-bytes' > \"$cover\"\n",
+    );
+
+    let discovered = cargo_bin_cmd!("takio")
+        .args(["metadata", "candidates", "item", "--db"])
+        .arg(&database)
+        .args(["--id", &id])
+        .env("TAKIO_EBOOK_META", &backend)
+        .output()
+        .expect("discover embedded candidate cover");
+    assert!(discovered.status.success());
+    assert!(discovered.stderr.is_empty());
+    let discovery = success_value(&discovered.stdout);
+    let candidate = discovery["candidates"]
+        .as_array()
+        .and_then(|candidates| {
+            candidates
+                .iter()
+                .find(|candidate| candidate["source"] == "embedded")
+        })
+        .cloned()
+        .expect("embedded candidate");
+    let descriptor = candidate["cover"].clone();
+    assert!(descriptor["artifactId"].as_str().is_some());
+    assert!(
+        candidate.to_string().find("candidate-covers").is_none(),
+        "candidate contracts must not expose staging paths"
+    );
+
+    let applied = cargo_bin_cmd!("takio")
+        .args(["metadata", "candidates", "apply", "--db"])
+        .arg(&database)
+        .args([
+            "--id",
+            &id,
+            "--candidate-json",
+            &candidate.to_string(),
+            "--cover",
+            "--provenance",
+            "cli-candidate-review:embedded",
+        ])
+        .output()
+        .expect("apply embedded candidate cover");
+    assert!(
+        applied.status.success(),
+        "apply failed: {}",
+        String::from_utf8_lossy(&applied.stdout)
+    );
+    assert!(applied.stderr.is_empty());
+    let value = success_value(&applied.stdout);
+    assert_eq!(value["applied"]["coverApplied"], true);
+    assert_eq!(
+        value["applied"]["cover"],
+        serde_json::json!({
+            "mediaType": descriptor["mediaType"],
+            "extension": descriptor["extension"],
+            "bytes": descriptor["bytes"],
+            "sha256": descriptor["sha256"]
+        })
+    );
+    assert_eq!(value["item"]["title"], "Embedded cover title");
+    let cover_path = value["item"]["coverPath"]
+        .as_str()
+        .map(std::path::PathBuf::from)
+        .expect("durable cover path");
+    assert_eq!(
+        fs::read(&cover_path).expect("durable cover bytes"),
+        b"\xff\xd8\xffcover-bytes"
+    );
+
+    let audit = value["item"]["customMetadata"]["takio_metadata_audit"]
+        .as_str()
+        .and_then(|encoded| serde_json::from_str::<Value>(encoded).ok())
+        .expect("candidate audit");
+    assert_eq!(audit["cover"]["sha256"], descriptor["sha256"]);
+    assert!(audit.get("artifactId").is_none());
+    assert!(audit.to_string().find("candidate-covers").is_none());
+    let staged = database.parent().unwrap().join("candidate-covers");
+    assert_eq!(fs::read_dir(staged).unwrap().count(), 0);
+}
+
 #[test]
 fn candidate_apply_rejects_a_candidate_bound_to_another_item_before_mutating() {
     let temp = tempfile::tempdir().expect("temporary directory");
@@ -2751,5 +2840,34 @@ fn malformed_candidate_apply_never_creates_a_library_as_a_side_effect() {
     assert!(
         !database.exists(),
         "invalid candidate values must be rejected before library creation"
+    );
+
+    let mut invalid_cover = candidate_for("book-1");
+    invalid_cover["cover"] = serde_json::json!({
+        "artifactId": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "mediaType": "image/jpeg",
+        "extension": ".jpg",
+        "bytes": 4,
+        "sha256": "0".repeat(64)
+    });
+    let output = cargo_bin_cmd!("takio")
+        .args(["metadata", "candidates", "apply", "--db"])
+        .arg(&database)
+        .args([
+            "--id",
+            "book-1",
+            "--candidate-json",
+            &invalid_cover.to_string(),
+            "--cover",
+            "--provenance",
+            "desktop-candidate-review:embedded",
+        ])
+        .output()
+        .expect("reject malformed cover descriptor against a missing library");
+    assert_eq!(failure_code(&output.stdout), "invalid-arguments");
+    assert!(output.stderr.is_empty());
+    assert!(
+        !database.exists(),
+        "malformed cover descriptors must be rejected before library creation"
     );
 }

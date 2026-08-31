@@ -1,6 +1,8 @@
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
@@ -13,6 +15,7 @@ pub const MAX_COVER_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_ARTIFACTS: usize = 128;
 const MAX_TOTAL_BYTES: u64 = 256 * 1024 * 1024;
 const TTL_HOURS: i64 = 24;
+static STAGE_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Clone, Debug)]
 pub struct CapturedCover {
@@ -70,6 +73,9 @@ pub fn stage(
         return Err(AppError::new("candidate-cover-invalid"));
     }
     validate_cover_type(&cover.media_type, &cover.extension)?;
+    let _guard = STAGE_LOCK
+        .lock()
+        .map_err(|_| AppError::new("storage-unavailable"))?;
     let root = root(library_root);
     fs::create_dir_all(&root).map_err(|_| AppError::new("storage-unavailable"))?;
     reject_symlink(&root)?;
@@ -122,18 +128,7 @@ pub fn validate(
     provenance: &str,
     descriptor: &CandidateCoverDescriptor,
 ) -> AppResult<ValidatedCover> {
-    validate_artifact_id(&descriptor.artifact_id)?;
-    validate_cover_type(&descriptor.media_type, &descriptor.extension)?;
-    if descriptor.bytes == 0
-        || descriptor.bytes > MAX_COVER_BYTES
-        || descriptor.sha256.len() != 64
-        || !descriptor
-            .sha256
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
-    {
-        return Err(AppError::new("candidate-cover-invalid"));
-    }
+    validate_descriptor(descriptor)?;
     let root = root(library_root);
     reject_symlink(&root).map_err(|_| AppError::new("candidate-cover-unavailable"))?;
     let manifest_path = manifest_path(&root, &descriptor.artifact_id);
@@ -170,17 +165,35 @@ pub fn validate(
     })
 }
 
+pub fn validate_descriptor(descriptor: &CandidateCoverDescriptor) -> AppResult<()> {
+    validate_artifact_id(&descriptor.artifact_id)?;
+    validate_cover_type(&descriptor.media_type, &descriptor.extension)?;
+    if descriptor.bytes == 0
+        || descriptor.bytes > MAX_COVER_BYTES
+        || descriptor.sha256.len() != 64
+        || !descriptor
+            .sha256
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+    {
+        return Err(AppError::new("candidate-cover-invalid"));
+    }
+    Ok(())
+}
+
 pub fn consume(library_root: &Path, artifact_id: &str) {
     let root = root(library_root);
     let _ = fs::remove_file(data_path(&root, artifact_id));
     let _ = fs::remove_file(manifest_path(&root, artifact_id));
 }
 
-pub fn gc(root: &Path) -> AppResult<()> {
+fn gc(root: &Path) -> AppResult<()> {
     if !root.exists() {
         return Ok(());
     }
     reject_symlink(root)?;
+    let mut data_files = HashMap::new();
+    let mut manifests = Vec::new();
     for entry in fs::read_dir(root).map_err(|_| AppError::new("storage-unavailable"))? {
         let entry = entry.map_err(|_| AppError::new("storage-unavailable"))?;
         let path = entry.path();
@@ -191,16 +204,57 @@ pub fn gc(root: &Path) -> AppResult<()> {
             let _ = fs::remove_file(path);
             continue;
         }
-        if path.extension().and_then(|value| value.to_str()) == Some("json") {
-            let expired = read_regular(&path, 64 * 1024)
-                .ok()
-                .and_then(|bytes| serde_json::from_slice::<Manifest>(&bytes).ok())
-                .and_then(|manifest| DateTime::parse_from_rfc3339(&manifest.expires_at).ok())
-                .is_none_or(|expiry| expiry <= Utc::now());
-            if expired && let Some(id) = path.file_stem().and_then(|value| value.to_str()) {
-                consume(root.parent().unwrap_or(root), id);
+        let Some(id) = path.file_stem().and_then(|value| value.to_str()) else {
+            let _ = fs::remove_file(path);
+            continue;
+        };
+        if validate_artifact_id(id).is_err() {
+            let _ = fs::remove_file(path);
+            continue;
+        }
+        match path.extension().and_then(|value| value.to_str()) {
+            Some("bin") => {
+                let bytes = entry
+                    .metadata()
+                    .map_err(|_| AppError::new("storage-unavailable"))?
+                    .len();
+                data_files.insert(id.to_owned(), bytes);
+            }
+            Some("json") => manifests.push((id.to_owned(), path)),
+            _ => {
+                let _ = fs::remove_file(path);
             }
         }
+    }
+
+    let mut valid_ids = HashSet::new();
+    for (id, path) in manifests {
+        let manifest = read_regular(&path, 64 * 1024)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<Manifest>(&bytes).ok());
+        let valid = manifest.is_some_and(|manifest| {
+            manifest.schema_version == 1
+                && manifest.artifact_id == id
+                && validate_cover_type(&manifest.media_type, &manifest.extension).is_ok()
+                && manifest.bytes > 0
+                && manifest.bytes <= MAX_COVER_BYTES
+                && manifest.sha256.len() == 64
+                && manifest
+                    .sha256
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+                && DateTime::parse_from_rfc3339(&manifest.expires_at)
+                    .is_ok_and(|expiry| expiry > Utc::now())
+                && data_files.get(&id) == Some(&manifest.bytes)
+        });
+        if valid {
+            valid_ids.insert(id);
+        } else {
+            consume(root.parent().unwrap_or(root), &id);
+        }
+    }
+    for id in data_files.keys().filter(|id| !valid_ids.contains(*id)) {
+        let _ = fs::remove_file(data_path(root, id));
     }
     Ok(())
 }
@@ -448,5 +502,47 @@ mod tests {
                 .code(),
             "candidate-cover-invalid"
         );
+    }
+
+    #[test]
+    fn descriptor_wire_validation_and_gc_reject_forgery_and_orphans() {
+        let temp = tempfile::tempdir().unwrap();
+        let descriptor = stage(temp.path(), "i", "c", "s", "p", &jpeg()).unwrap();
+        assert!(validate_descriptor(&descriptor).is_ok());
+        for invalid in [
+            CandidateCoverDescriptor {
+                artifact_id: "A".repeat(32),
+                ..descriptor.clone()
+            },
+            CandidateCoverDescriptor {
+                extension: ".png".to_owned(),
+                ..descriptor.clone()
+            },
+            CandidateCoverDescriptor {
+                sha256: "A".repeat(64),
+                ..descriptor.clone()
+            },
+        ] {
+            assert_eq!(
+                validate_descriptor(&invalid).unwrap_err().code(),
+                "candidate-cover-invalid"
+            );
+        }
+
+        let orphan = "11111111111111111111111111111111";
+        fs::write(data_path(&root(temp.path()), orphan), b"orphan").unwrap();
+        fs::write(root(temp.path()).join("unexpected.txt"), b"unknown").unwrap();
+        let corrupted = stage(temp.path(), "i", "c2", "s", "p", &jpeg()).unwrap();
+        fs::write(
+            data_path(&root(temp.path()), &corrupted.artifact_id),
+            b"wrong length",
+        )
+        .unwrap();
+        gc(&root(temp.path())).unwrap();
+        assert!(!data_path(&root(temp.path()), orphan).exists());
+        assert!(!root(temp.path()).join("unexpected.txt").exists());
+        assert!(!data_path(&root(temp.path()), &corrupted.artifact_id).exists());
+        assert!(!manifest_path(&root(temp.path()), &corrupted.artifact_id).exists());
+        assert!(data_path(&root(temp.path()), &descriptor.artifact_id).exists());
     }
 }

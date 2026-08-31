@@ -979,22 +979,6 @@ pub(crate) struct PreparedMetadataCandidate {
     candidate_provenance: String,
 }
 
-pub(crate) fn metadata_candidates_for_item(
-    item: &crate::model::LibraryItem,
-    include_online: bool,
-    timeout_seconds: u64,
-) -> AppResult<Vec<Value>> {
-    let canceled = AtomicBool::new(false);
-    metadata_candidates_for_item_with_policy(
-        item,
-        include_online,
-        timeout_seconds,
-        &canceled,
-        false,
-        None,
-    )
-}
-
 pub(crate) fn metadata_candidates_for_item_at(
     item: &crate::model::LibraryItem,
     include_online: bool,
@@ -1068,8 +1052,7 @@ fn metadata_candidates_for_item_with_policy(
                         &item.id,
                         "embedded:1",
                         "embedded",
-                        &serde_json::to_string(&provenance)
-                            .map_err(|_| AppError::new("metadata-invalid"))?,
+                        &canonical_candidate_provenance(&provenance)?,
                         cover,
                     )?)
                 } else {
@@ -1122,8 +1105,7 @@ fn metadata_candidates_for_item_with_policy(
                         &item.id,
                         "online:1",
                         "online",
-                        &serde_json::to_string(&provenance)
-                            .map_err(|_| AppError::new("metadata-invalid"))?,
+                        &canonical_candidate_provenance(&provenance)?,
                         cover,
                     )?)
                 } else {
@@ -1166,7 +1148,7 @@ pub(crate) fn prepare_metadata_candidate(
     )
 }
 
-fn prepare_metadata_candidate_with_cover(
+pub(crate) fn prepare_metadata_candidate_with_cover(
     candidate_input: Value,
     item_id: &str,
     selected_fields: Option<&BTreeSet<String>>,
@@ -1285,6 +1267,12 @@ struct WireCandidateProvenance {
     backend: Option<String>,
 }
 
+fn canonical_candidate_provenance(value: &Value) -> AppResult<String> {
+    let provenance: WireCandidateProvenance =
+        serde_json::from_value(value.clone()).map_err(|_| AppError::new("metadata-invalid"))?;
+    serde_json::to_string(&provenance).map_err(|_| AppError::new("metadata-invalid"))
+}
+
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct WireCandidate {
@@ -1327,6 +1315,9 @@ impl WireCandidate {
             })
         {
             return Err(invalid());
+        }
+        if let Some(cover) = &self.cover {
+            crate::candidate_cover::validate_descriptor(cover).map_err(|_| invalid())?;
         }
         self.patch
             .as_object()
