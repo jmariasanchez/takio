@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::{BufRead, IsTerminal, Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
@@ -841,47 +841,7 @@ fn metadata_candidates(command: MetadataCandidatesCommand, library: Option<&str>
             let item = store
                 .get(&id)?
                 .ok_or_else(|| AppError::new("item-not-found"))?;
-            let mut candidates =
-                filename_candidates_for_stem(&item.title, &item.source_path, Some(&item.id), &[])?;
-            if discover_ebook_meta().is_some()
-                && let Ok(extracted) =
-                    metadata::extract(&item.source_path, Duration::from_secs(timeout_seconds))
-                && let Some(candidate) = metadata_candidate(
-                    "embedded:1",
-                    "embedded",
-                    "high",
-                    extracted.metadata,
-                    json!({"generatedAt":"1970-01-01T00:00:00.000Z","itemId":item.id,"sourcePath":extracted.source_path,"backend":"ebook-meta"}),
-                )
-            {
-                candidates.push(candidate);
-            }
-            if include_online && discover_fetch_ebook_metadata().is_some() {
-                let authors = if item.authors.is_empty() {
-                    item.author.clone().into_iter().collect::<Vec<_>>()
-                } else {
-                    item.authors
-                        .iter()
-                        .map(|author| author.name.clone())
-                        .collect()
-                };
-                if let Ok(fetched) = metadata::fetch(
-                    Some(&item.title),
-                    &authors,
-                    &item.identifiers,
-                    None,
-                    Duration::from_secs(timeout_seconds),
-                ) && let Some(candidate) = metadata_candidate(
-                    "online:1",
-                    "online",
-                    "medium",
-                    fetched.metadata,
-                    json!({"generatedAt":"1970-01-01T00:00:00.000Z","itemId":item.id,"backend":"fetch-ebook-metadata"}),
-                ) {
-                    candidates.push(candidate);
-                }
-            }
-            candidates.truncate(8);
+            let candidates = metadata_candidates_for_item(&item, include_online, timeout_seconds)?;
             print_success(json!({"itemId":item.id,"candidates":candidates}))
         }
         MetadataCandidatesCommand::Apply {
@@ -917,46 +877,162 @@ fn metadata_candidates(command: MetadataCandidatesCommand, library: Option<&str>
             // The engine validates the candidate independently of any client,
             // and fully before opening or mutating a library, so malformed or
             // cross-item input has no side effect at all.
-            let candidate: WireCandidate = serde_json::from_value(read_json(&candidate_input)?)
-                .map_err(|_| AppError::new("invalid-arguments"))?;
-            let selected_fields = candidate.validated_fields(&id)?;
-            let patch: LibraryPatch = serde_json::from_value(candidate.patch.clone())
-                .map_err(|_| AppError::new("invalid-arguments"))?;
-            validate_candidate_patch(&patch)?;
+            let prepared =
+                prepare_metadata_candidate(read_json(&candidate_input)?, &id, None, &provenance)?;
 
             let paths = LibraryPaths::resolve(library, db.as_deref())?;
             let mut store = LibraryStore::open(paths, true)?;
-            let current = store
-                .get(&id)?
-                .ok_or_else(|| AppError::new("item-not-found"))?;
-            let audit = json!({
-                "schemaVersion": METADATA_AUDIT_SCHEMA_VERSION,
-                "candidateId": candidate.id,
-                "source": candidate.source,
-                "confidence": candidate.confidence,
-                "candidateProvenance": candidate.provenance,
-                "selectedFields": selected_fields,
-                "applicationProvenance": provenance,
-            });
-            let mut patch = patch;
-            patch.custom_metadata = Patch::Set(merge_metadata_audit(
-                &current.custom_metadata,
-                &patch.custom_metadata,
-                &audit,
-            )?);
-            let item = store.update_candidate(&id, patch)?;
+            let item = apply_prepared_metadata_candidate(&mut store, &id, &prepared)?;
             print_success(json!({
                 "item": item,
                 "applied": {
                     "itemId": id,
-                    "candidateId": candidate.id,
-                    "source": candidate.source,
+                    "candidateId": prepared.candidate_id,
+                    "source": prepared.source,
                     "provenance": provenance,
-                    "fields": selected_fields,
+                    "fields": prepared.fields,
                 }
             }))
         }
     }
+}
+
+pub(crate) struct PreparedMetadataCandidate {
+    pub candidate_id: String,
+    pub source: String,
+    pub fields: Vec<String>,
+    patch: LibraryPatch,
+    audit: Value,
+}
+
+pub(crate) fn metadata_candidates_for_item(
+    item: &crate::model::LibraryItem,
+    include_online: bool,
+    timeout_seconds: u64,
+) -> AppResult<Vec<Value>> {
+    if timeout_seconds == 0 {
+        return Err(AppError::new("invalid-arguments"));
+    }
+    let mut candidates =
+        filename_candidates_for_stem(&item.title, &item.source_path, Some(&item.id), &[])?;
+    if discover_ebook_meta().is_some()
+        && let Ok(extracted) =
+            metadata::extract(&item.source_path, Duration::from_secs(timeout_seconds))
+        && let Some(candidate) = metadata_candidate(
+            "embedded:1",
+            "embedded",
+            "high",
+            extracted.metadata,
+            json!({"generatedAt":"1970-01-01T00:00:00.000Z","itemId":item.id,"sourcePath":extracted.source_path,"backend":"ebook-meta"}),
+        )
+    {
+        candidates.push(candidate);
+    }
+    if include_online && discover_fetch_ebook_metadata().is_some() {
+        let authors = if item.authors.is_empty() {
+            item.author.clone().into_iter().collect::<Vec<_>>()
+        } else {
+            item.authors
+                .iter()
+                .map(|author| author.name.clone())
+                .collect()
+        };
+        if let Ok(fetched) = metadata::fetch(
+            Some(&item.title),
+            &authors,
+            &item.identifiers,
+            None,
+            Duration::from_secs(timeout_seconds),
+        ) && let Some(candidate) = metadata_candidate(
+            "online:1",
+            "online",
+            "medium",
+            fetched.metadata,
+            json!({"generatedAt":"1970-01-01T00:00:00.000Z","itemId":item.id,"backend":"fetch-ebook-metadata"}),
+        ) {
+            candidates.push(candidate);
+        }
+    }
+    candidates.truncate(8);
+    Ok(candidates)
+}
+
+pub(crate) fn prepare_metadata_candidate(
+    candidate_input: Value,
+    item_id: &str,
+    selected_fields: Option<&BTreeSet<String>>,
+    provenance: &str,
+) -> AppResult<PreparedMetadataCandidate> {
+    if item_id.trim().is_empty() || provenance.trim().is_empty() {
+        return Err(AppError::new("invalid-arguments"));
+    }
+    let candidate: WireCandidate =
+        serde_json::from_value(candidate_input).map_err(|_| AppError::new("invalid-arguments"))?;
+    let all_fields = candidate.validated_fields(item_id)?;
+    let fields = if let Some(selected_fields) = selected_fields {
+        if selected_fields.is_empty()
+            || selected_fields
+                .iter()
+                .any(|field| !all_fields.contains(field))
+        {
+            return Err(AppError::new("invalid-arguments"));
+        }
+        all_fields
+            .into_iter()
+            .filter(|field| selected_fields.contains(field))
+            .collect::<Vec<_>>()
+    } else {
+        all_fields
+    };
+    let source_patch = candidate
+        .patch
+        .as_object()
+        .ok_or_else(|| AppError::new("invalid-arguments"))?;
+    let filtered_patch = fields
+        .iter()
+        .filter_map(|field| {
+            source_patch
+                .get(field)
+                .cloned()
+                .map(|value| (field.clone(), value))
+        })
+        .collect::<serde_json::Map<_, _>>();
+    let patch: LibraryPatch = serde_json::from_value(Value::Object(filtered_patch))
+        .map_err(|_| AppError::new("invalid-arguments"))?;
+    validate_candidate_patch(&patch)?;
+    let audit = json!({
+        "schemaVersion": METADATA_AUDIT_SCHEMA_VERSION,
+        "candidateId": candidate.id,
+        "source": candidate.source,
+        "confidence": candidate.confidence,
+        "candidateProvenance": candidate.provenance,
+        "selectedFields": fields,
+        "applicationProvenance": provenance.trim(),
+    });
+    Ok(PreparedMetadataCandidate {
+        candidate_id: candidate.id,
+        source: candidate.source,
+        fields,
+        patch,
+        audit,
+    })
+}
+
+pub(crate) fn apply_prepared_metadata_candidate(
+    store: &mut LibraryStore,
+    item_id: &str,
+    prepared: &PreparedMetadataCandidate,
+) -> AppResult<crate::model::LibraryItem> {
+    let current = store
+        .get(item_id)?
+        .ok_or_else(|| AppError::new("item-not-found"))?;
+    let mut patch = prepared.patch.clone();
+    patch.custom_metadata = Patch::Set(merge_metadata_audit(
+        &current.custom_metadata,
+        &patch.custom_metadata,
+        &prepared.audit,
+    )?);
+    store.update_candidate(item_id, patch)
 }
 
 const METADATA_AUDIT_SCHEMA_VERSION: u64 = 1;
