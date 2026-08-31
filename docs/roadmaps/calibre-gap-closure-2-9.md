@@ -245,9 +245,9 @@ Remaining acceptance work:
 
 Status: the virtual-library, native-query, bounded structured-query, and bounded
 save-to-disk organization vertical slices are delivered in `48caa27`, `ffaf197`,
-`d5aaeb5`, `428fdc4`, and `cde5a4b`. Custom metadata columns, reusable group
-rules, arbitrary user-authored save-to-disk grammar, and richer bulk organization
-remain open.
+`d5aaeb5`, `428fdc4`, `cde5a4b`, and `f5aaf11`. Custom metadata columns,
+reusable group rules, arbitrary user-authored save-to-disk grammar, and richer
+bulk organization remain open.
 
 Deliver:
 
