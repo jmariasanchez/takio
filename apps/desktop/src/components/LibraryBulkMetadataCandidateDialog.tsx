@@ -121,7 +121,13 @@ export function LibraryBulkMetadataCandidateDialog({
     setError(null);
     setLive(`Ready to review ${itemIds.length} selected books.`);
     requestAnimationFrame(() => dialogRef.current?.focus());
-    return () => openerRef.current?.focus();
+    return () => {
+      if (openerRef.current?.isConnected) {
+        openerRef.current.focus();
+      } else {
+        document.querySelector<HTMLElement>("#library-search:not([disabled])")?.focus();
+      }
+    };
   }, [open, itemIds]);
 
   useEffect(() => {
@@ -137,6 +143,11 @@ export function LibraryBulkMetadataCandidateDialog({
       if (elements.length === 0) return;
       const first = elements[0]!;
       const last = elements[elements.length - 1]!;
+      if (!elements.includes(document.activeElement as HTMLElement)) {
+        event.preventDefault();
+        (event.shiftKey ? last : first).focus();
+        return;
+      }
       if (event.shiftKey && document.activeElement === first) {
         event.preventDefault();
         last.focus();

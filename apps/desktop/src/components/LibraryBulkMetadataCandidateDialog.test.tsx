@@ -161,3 +161,86 @@ test("cancel stops scheduling, announces settling, and restores opener focus on 
   act(() => root?.render(<LibraryBulkMetadataCandidateDialog open={false} itemIds={[]} onClose={() => undefined} onApplied={() => undefined} />));
   expect(document.activeElement).toBe(opener);
 });
+
+test("restores focus to library search when applying the last book removes the opener", async () => {
+  const search = document.createElement("input");
+  search.id = "library-search";
+  document.body.append(search);
+  const opener = document.createElement("button");
+  opener.textContent = "Open review";
+  document.body.append(opener);
+  opener.focus();
+  const list: ListCandidates = async (request) => ({
+    ok: true,
+    value: { itemId: request.itemId, candidates: [candidate(request.itemId)] },
+  });
+  mount(
+    <LibraryBulkMetadataCandidateDialog
+      open
+      itemIds={["one"]}
+      onClose={() => undefined}
+      onApplied={() => opener.remove()}
+      getItem={getItem}
+      listCandidates={list}
+      applyCandidate={applyCandidate}
+    />,
+  );
+
+  act(() => button("Start review").click());
+  await flush();
+  const publisher = [...host!.querySelectorAll("label")]
+    .find((label) => label.textContent?.includes("publisher"))!
+    .querySelector("input")!;
+  act(() => publisher.click());
+  act(() => button("Apply selected fields").click());
+  await flush();
+  act(() =>
+    root?.render(
+      <LibraryBulkMetadataCandidateDialog
+        open={false}
+        itemIds={[]}
+        onClose={() => undefined}
+        onApplied={() => undefined}
+      />,
+    ),
+  );
+
+  expect(document.activeElement).toBe(search);
+});
+
+test("recaptures focus when a phase change removes the focused setup control", async () => {
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const slowGet: GetItem = async (id) => {
+    await gate;
+    return { ok: true, value: { item: item(id) } };
+  };
+  mount(
+    <LibraryBulkMetadataCandidateDialog
+      open
+      itemIds={["one"]}
+      onClose={() => undefined}
+      onApplied={() => undefined}
+      getItem={slowGet}
+      listCandidates={async (request) => ({
+        ok: true,
+        value: { itemId: request.itemId, candidates: [] },
+      })}
+      applyCandidate={applyCandidate}
+    />,
+  );
+
+  const start = button("Start review");
+  start.focus();
+  act(() => start.click());
+  await flush();
+  expect(document.activeElement).not.toBe(button("Cancel discovery"));
+  const tab = new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true });
+  document.dispatchEvent(tab);
+  expect(tab.defaultPrevented).toBe(true);
+  expect(document.activeElement).toBe(button("Cancel discovery"));
+  release();
+  await flush();
+});
