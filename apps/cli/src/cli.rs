@@ -2946,7 +2946,13 @@ fn export_path_segment(value: &str, fallback: &str) -> String {
     } else {
         clean
     };
-    truncate_utf8_bytes(clean, 128)
+    let clean = truncate_utf8_bytes(clean, 128);
+    let clean = clean.trim_end_matches(['.', ' ']);
+    if clean.is_empty() {
+        fallback.to_owned()
+    } else {
+        clean.to_owned()
+    }
 }
 
 fn export_file_name(title: &str, author: Option<&str>, item_id: &str, extension: &str) -> String {
