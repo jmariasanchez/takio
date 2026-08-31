@@ -71,6 +71,12 @@ async function flush() {
   });
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
 beforeAll(() => {
   Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
   Object.defineProperty(globalThis, "requestAnimationFrame", { configurable: true, value: (callback: FrameRequestCallback) => setTimeout(callback, 0) });
@@ -175,15 +181,53 @@ test("bulk review rejects mismatched apply responses before advancing", async ()
 });
 
 test("skip advances one book at a time and leaves candidates unapplied", async () => {
+  const discarded: string[] = [];
   const list: ListCandidates = async (request) => ({ ok: true, value: { itemId: request.itemId, candidates: [candidate(request.itemId)] } });
-  mount(<LibraryBulkMetadataCandidateDialog open itemIds={["one", "two"]} onClose={() => undefined} onApplied={() => undefined} getItem={getItem} listCandidates={list} applyCandidate={applyCandidate} />);
+  const discardCandidates: NonNullable<Props["discardCandidates"]> = async (values) => { discarded.push(...values.map(({ id }) => id)); };
+  mount(<LibraryBulkMetadataCandidateDialog open itemIds={["one", "two"]} onClose={() => undefined} onApplied={() => undefined} getItem={getItem} listCandidates={list} applyCandidate={applyCandidate} discardCandidates={discardCandidates} />);
   act(() => button("Start review").click());
   await flush();
   expect(host!.textContent).toContain("one");
   act(() => button("Skip").click());
+  await flush();
   expect(host!.textContent).toContain("two");
   act(() => button("Skip").click());
+  await flush();
   expect(host!.textContent).toContain("skipped2");
+  expect(discarded).toEqual(["filename:one", "filename:two"]);
+});
+
+test("discards staged covers when review closes", async () => {
+  const discarded: string[] = [];
+  const list: ListCandidates = async (request) => ({ ok: true, value: { itemId: request.itemId, candidates: [candidate(request.itemId, true)] } });
+  const discardCandidates: NonNullable<Props["discardCandidates"]> = async (values) => { discarded.push(...values.map(({ id }) => id)); };
+  mount(<LibraryBulkMetadataCandidateDialog open itemIds={["one"]} onClose={() => undefined} onApplied={() => undefined} getItem={getItem} listCandidates={list} applyCandidate={applyCandidate} discardCandidates={discardCandidates} />);
+  act(() => button("Start review").click());
+  await flush();
+  act(() => button("Close").click());
+  await flush();
+  expect(discarded).toEqual(["filename:one"]);
+});
+
+test("ignores and cleans discovery results from a prior dialog lifetime", async () => {
+  const first = deferred<Awaited<ReturnType<ListCandidates>>>();
+  const discarded: string[] = [];
+  const list: ListCandidates = async (request) => request.itemId === "one"
+    ? first.promise
+    : { ok: true, value: { itemId: request.itemId, candidates: [candidate(request.itemId, true)] } };
+  const discardCandidates: NonNullable<Props["discardCandidates"]> = async (values) => { discarded.push(...values.map(({ id }) => id)); };
+  const common = { onClose: () => undefined, onApplied: () => undefined, getItem, listCandidates: list, applyCandidate, discardCandidates };
+  mount(<LibraryBulkMetadataCandidateDialog open itemIds={["one"]} {...common} />);
+  act(() => button("Start review").click());
+  await flush();
+  act(() => root?.render(<LibraryBulkMetadataCandidateDialog open={false} itemIds={[]} {...common} />));
+  act(() => root?.render(<LibraryBulkMetadataCandidateDialog open itemIds={["two"]} {...common} />));
+  await flush();
+  first.resolve({ ok: true, value: { itemId: "one", candidates: [candidate("one", true)] } });
+  await flush();
+  expect(host!.textContent).toContain("Ready to review 1 selected books");
+  expect(host!.textContent).not.toContain("Discovered one");
+  expect(discarded).toContain("filename:one");
 });
 
 test("cancel stops scheduling, announces settling, and restores opener focus on close", async () => {

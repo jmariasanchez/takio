@@ -50,6 +50,7 @@ type Props = Readonly<{
   getItem?: typeof getLibraryItem;
   listCandidates?: typeof listMetadataCandidates;
   applyCandidate?: typeof applyMetadataCandidate;
+  discardCandidates?: typeof discardMetadataCandidateCovers;
 }>;
 
 const focusableSelector = "button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex='-1'])";
@@ -83,12 +84,15 @@ export function LibraryBulkMetadataCandidateDialog({
   getItem = getLibraryItem,
   listCandidates = listMetadataCandidates,
   applyCandidate = applyMetadataCandidate,
+  discardCandidates = discardMetadataCandidateCovers,
 }: Props) {
   const titleId = useId();
   const descriptionId = useId();
   const dialogRef = useRef<HTMLDivElement>(null);
   const openerRef = useRef<HTMLElement | null>(null);
   const cancelRef = useRef(false);
+  const lifetimeRef = useRef(0);
+  const retainedCandidatesRef = useRef<readonly MetadataCandidate[]>([]);
   const [phase, setPhase] = useState<"setup" | "discovery" | "review" | "complete">("setup");
   const [includeOnline, setIncludeOnline] = useState(false);
   const [completed, setCompleted] = useState(0);
@@ -111,10 +115,21 @@ export function LibraryBulkMetadataCandidateDialog({
   const current = ready.find((outcome) => outcome.itemId === currentItemId) ?? unresolved[0] ?? null;
   const currentIndex = current ? ready.findIndex((outcome) => outcome.itemId === current.itemId) : -1;
 
+  async function discard(candidates: readonly MetadataCandidate[]): Promise<void> {
+    try {
+      await discardCandidates(candidates);
+    } catch {
+      // Candidate stages are also bounded by TTL and garbage collection.
+    }
+  }
+
   useEffect(() => {
     if (!open) return;
+    const lifetime = lifetimeRef.current + 1;
+    lifetimeRef.current = lifetime;
     openerRef.current = document.activeElement as HTMLElement | null;
     cancelRef.current = false;
+    retainedCandidatesRef.current = [];
     setPhase("setup");
     setIncludeOnline(false);
     setCompleted(0);
@@ -128,20 +143,25 @@ export function LibraryBulkMetadataCandidateDialog({
     setLive(`Ready to review ${itemIds.length} selected books.`);
     requestAnimationFrame(() => dialogRef.current?.focus());
     return () => {
+      if (lifetimeRef.current === lifetime) lifetimeRef.current += 1;
+      cancelRef.current = true;
+      const candidates = retainedCandidatesRef.current;
+      retainedCandidatesRef.current = [];
+      void discard(candidates);
       if (openerRef.current?.isConnected) {
         openerRef.current.focus();
       } else {
         document.querySelector<HTMLElement>("#library-search:not([disabled])")?.focus();
       }
     };
-  }, [open, itemIds]);
+  }, [discardCandidates, open, itemIds]);
 
   useEffect(() => {
     if (!open) return;
     function keydown(event: KeyboardEvent) {
       if (event.key === "Escape" && phase !== "discovery" && !busy) {
         event.preventDefault();
-        onClose();
+        closeDialog();
         return;
       }
       if (event.key !== "Tab" || !dialogRef.current) return;
@@ -167,6 +187,7 @@ export function LibraryBulkMetadataCandidateDialog({
   }, [busy, onClose, open, phase]);
 
   async function startDiscovery() {
+    const lifetime = lifetimeRef.current;
     const request = {
       schemaVersion: BULK_METADATA_CANDIDATE_SCHEMA_VERSION,
       itemIds: [...itemIds],
@@ -186,10 +207,17 @@ export function LibraryBulkMetadataCandidateDialog({
       listCandidates,
       isCanceled: () => cancelRef.current,
       onProgress: (nextCompleted, total) => {
+        if (lifetimeRef.current !== lifetime) return;
         setCompleted(nextCompleted);
         setLive(`Discovering metadata for ${nextCompleted} of ${total} books.`);
       },
     });
+    if (lifetimeRef.current !== lifetime) {
+      await Promise.all(result.outcomes.flatMap((outcome) =>
+        outcome.status === "ready" ? [discard(outcome.candidates)] : [],
+      ));
+      return;
+    }
     const contractResult = {
       schemaVersion: BULK_METADATA_CANDIDATE_SCHEMA_VERSION,
       outcomes: result.outcomes.map((outcome) => outcome.status === "ready"
@@ -209,13 +237,16 @@ export function LibraryBulkMetadataCandidateDialog({
     const validated = bulkMetadataCandidateDiscoveryResultSchemaFor(parsed.data).safeParse(contractResult);
     if (!validated.success) {
       await Promise.all(result.outcomes.flatMap((outcome) =>
-        outcome.status === "ready" ? [discardMetadataCandidateCovers(outcome.candidates)] : [],
+        outcome.status === "ready" ? [discard(outcome.candidates)] : [],
       ));
       setError("The metadata discovery report was invalid.");
       setPhase("complete");
       return;
     }
     setOutcomes(result.outcomes);
+    retainedCandidatesRef.current = result.outcomes.flatMap((outcome) =>
+      outcome.status === "ready" ? outcome.candidates : [],
+    );
     const classified = initialReviewed(result.outcomes);
     setReviewed(classified);
     const firstReady = result.outcomes.find((outcome) => outcome.status === "ready");
@@ -229,7 +260,7 @@ export function LibraryBulkMetadataCandidateDialog({
     setLive("Canceling discovery. Waiting for active book checks to finish.");
   }
 
-  function resolveCurrent(
+  async function resolveCurrent(
     status: "skipped" | "applied",
     item?: LibraryItem,
     candidateId?: string,
@@ -238,6 +269,7 @@ export function LibraryBulkMetadataCandidateDialog({
     cover?: ReviewedOutcome["cover"],
   ) {
     if (!current) return;
+    await discard(current.candidates);
     const nextReviewed = [...reviewed, { itemId: current.itemId, status, item, candidateId, fields, coverApplied, cover }];
     setReviewed(nextReviewed);
     setSelected({});
@@ -278,12 +310,21 @@ export function LibraryBulkMetadataCandidateDialog({
         return;
       }
       onApplied(result.value.item);
-      resolveCurrent("applied", result.value.item, candidate.id, result.value.applied.fields, result.value.applied.coverApplied, result.value.applied.cover);
+      await resolveCurrent("applied", result.value.item, candidate.id, result.value.applied.fields, result.value.applied.coverApplied, result.value.applied.cover);
     } catch {
       setError("The selected metadata fields could not be applied.");
     } finally {
       setBusy(false);
     }
+  }
+
+  function closeDialog() {
+    lifetimeRef.current += 1;
+    cancelRef.current = true;
+    const candidates = retainedCandidatesRef.current;
+    retainedCandidatesRef.current = [];
+    void discard(candidates);
+    onClose();
   }
 
   function navigate(direction: -1 | 1) {
@@ -343,7 +384,7 @@ export function LibraryBulkMetadataCandidateDialog({
             <span>Bulk metadata</span>
             <h2 id={titleId}>Review metadata candidates</h2>
           </div>
-          {phase === "discovery" ? null : <button type="button" disabled={busy} onClick={onClose}>Close</button>}
+          {phase === "discovery" ? null : <button type="button" disabled={busy} onClick={closeDialog}>Close</button>}
         </header>
         <div className="library-bulk-candidate-dialog__body">
           <p id={descriptionId}>Review candidates for {itemIds.length} selected {itemIds.length === 1 ? "book" : "books"}. Nothing is applied automatically.</p>
@@ -387,7 +428,7 @@ export function LibraryBulkMetadataCandidateDialog({
               })}
               <div className="library-bulk-candidate-dialog__navigation">
                 <button type="button" disabled={busy || unresolved.length < 2} onClick={() => navigate(-1)}>Previous unresolved</button>
-                <button type="button" disabled={busy} onClick={() => resolveCurrent("skipped")}>Skip</button>
+                <button type="button" disabled={busy} onClick={() => void resolveCurrent("skipped")}>Skip</button>
                 <button type="button" disabled={busy || unresolved.length < 2} onClick={() => navigate(1)}>Next unresolved</button>
               </div>
             </section>
@@ -400,7 +441,7 @@ export function LibraryBulkMetadataCandidateDialog({
                 {(["applied", "skipped", "no-candidates", "missing", "failed", "canceled"] as const).map((status) => <div key={status}><dt>{status}</dt><dd>{counts[status]}</dd></div>)}
               </dl>
               {!reportValid ? <p role="alert">The final review report did not account for every requested book.</p> : null}
-              <button type="button" onClick={onClose}>Done</button>
+              <button type="button" onClick={closeDialog}>Done</button>
             </section>
           ) : null}
         </div>

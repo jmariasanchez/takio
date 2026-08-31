@@ -187,3 +187,29 @@ test("classifies a book removed between hydration and candidate lookup as missin
     canceled: 0,
   });
 });
+
+test("rejects and discards every candidate when any candidate belongs to another item", async () => {
+  const discarded: string[] = [];
+  const result = await discoverBulkMetadataCandidates(
+    { itemIds: ["one"], includeOnline: false },
+    {
+      getItem: async (id) => found(id),
+      listCandidates: async () => ({
+        ok: true,
+        value: {
+          itemId: "one",
+          candidates: [
+            { id: "candidate-one", provenance: { itemId: "one" } },
+            { id: "candidate-two", provenance: { itemId: "two" } },
+          ],
+        },
+      }) as never,
+      discardCandidates: async (values) => {
+        discarded.push(...values.map(({ id }) => id));
+      },
+    },
+  );
+
+  expect(result.outcomes).toEqual([{ itemId: "one", status: "failed", code: "protocol-error" }]);
+  expect(discarded).toEqual(["candidate-one", "candidate-two"]);
+});

@@ -73,11 +73,14 @@ async function discoverOne(
         : { itemId, status: "failed", code: listResult.error.code };
     }
     if (listResult.value.itemId !== itemId) {
+      await (dependencies.discardCandidates ?? discardMetadataCandidateCovers)(listResult.value.candidates);
       return { itemId, status: "failed", code: "protocol-error" };
     }
-    const candidates = listResult.value.candidates.filter(
-      (candidate) => candidate.provenance.itemId === itemId,
-    );
+    const candidates = listResult.value.candidates;
+    if (candidates.some((candidate) => candidate.provenance.itemId !== itemId)) {
+      await (dependencies.discardCandidates ?? discardMetadataCandidateCovers)(candidates);
+      return { itemId, status: "failed", code: "protocol-error" };
+    }
     if (dependencies.isCanceled?.()) {
       await (dependencies.discardCandidates ?? discardMetadataCandidateCovers)(candidates);
       return { itemId, status: "canceled" };
