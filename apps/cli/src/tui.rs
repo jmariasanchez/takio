@@ -19,7 +19,8 @@ use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragra
 use serde_json::Value;
 
 use crate::cli::{
-    apply_prepared_metadata_candidate, metadata_candidates_for_item, prepare_metadata_candidate,
+    apply_prepared_metadata_candidate, metadata_candidates_for_item_at, prepare_metadata_candidate,
+    prepare_metadata_candidate_with_cover,
 };
 use crate::destinations;
 use crate::jobs::JobStore;
@@ -91,6 +92,7 @@ struct CandidateReview {
     fields: Vec<String>,
     selected_field: usize,
     selected_fields: BTreeSet<String>,
+    selected_cover: bool,
     focus: CandidateFocus,
     include_online: bool,
     loading: bool,
@@ -303,6 +305,7 @@ impl App {
             fields: Vec::new(),
             selected_field: 0,
             selected_fields: BTreeSet::new(),
+            selected_cover: false,
             focus: CandidateFocus::Candidates,
             include_online,
             loading: true,
@@ -313,8 +316,9 @@ impl App {
             "Looking for metadata in the filename and ebook...".to_owned()
         };
         let (tx, rx) = mpsc::channel();
+        let library_root = self.paths.root.clone();
         thread::spawn(move || {
-            let result = metadata_candidates_for_item(&item, include_online, 15)
+            let result = metadata_candidates_for_item_at(&item, include_online, 15, &library_root)
                 .map_err(|error| error.code().to_owned());
             let _ = tx.send((item.id, result));
         });
@@ -400,6 +404,7 @@ impl App {
             .unwrap_or_default();
         review.selected_field = 0;
         review.selected_fields = review.fields.iter().cloned().collect();
+        review.selected_cover = false;
     }
 
     fn move_candidate(&mut self, delta: isize) {
@@ -435,6 +440,22 @@ impl App {
         }
     }
 
+    fn toggle_candidate_cover(&mut self) {
+        let Some(review) = self.candidate_review.as_mut() else {
+            return;
+        };
+        let has_cover = review
+            .candidates
+            .get(review.selected_candidate)
+            .and_then(|candidate| candidate.get("cover"))
+            .is_some_and(Value::is_object);
+        if has_cover {
+            review.selected_cover = !review.selected_cover;
+        } else {
+            self.status = "This suggestion has no cover".to_owned();
+        }
+    }
+
     fn cancel_candidate_review(&mut self) {
         self.mode = Mode::Normal;
         self.candidate_review = None;
@@ -450,8 +471,8 @@ impl App {
             self.status = "Wait for metadata lookup to finish".to_owned();
         } else if review.candidates.is_empty() {
             self.status = "No metadata suggestion selected".to_owned();
-        } else if review.selected_fields.is_empty() {
-            self.status = "Select at least one field to apply".to_owned();
+        } else if review.selected_fields.is_empty() && !review.selected_cover {
+            self.status = "Select at least one field or the cover to apply".to_owned();
         } else {
             self.mode = Mode::ConfirmCandidate;
         }
@@ -468,13 +489,24 @@ impl App {
         };
         let item_id = review.item_id.clone();
         let selected_fields = review.selected_fields.clone();
-        let result = prepare_metadata_candidate(
-            candidate,
-            &item_id,
-            Some(&selected_fields),
-            "tui-candidate-review",
-        )
-        .and_then(|prepared| {
+        let selected_cover = review.selected_cover;
+        let prepared = if selected_cover {
+            prepare_metadata_candidate_with_cover(
+                candidate,
+                &item_id,
+                Some(&selected_fields),
+                "tui-candidate-review",
+                true,
+            )
+        } else {
+            prepare_metadata_candidate(
+                candidate,
+                &item_id,
+                Some(&selected_fields),
+                "tui-candidate-review",
+            )
+        };
+        let result = prepared.and_then(|prepared| {
             let fields = prepared.fields.clone();
             apply_prepared_metadata_candidate(&mut self.store, &item_id, &prepared)
                 .map(|item| (item, fields))
@@ -493,7 +525,14 @@ impl App {
                 {
                     self.selected = index;
                 }
-                self.status = format!("Updated {}: {}", item.title, fields.join(", "));
+                let applied = if selected_cover && fields.is_empty() {
+                    "cover".to_owned()
+                } else if selected_cover {
+                    format!("{}, cover", fields.join(", "))
+                } else {
+                    fields.join(", ")
+                };
+                self.status = format!("Updated {}: {applied}", item.title);
             }
             Err(error) => {
                 self.mode = Mode::CandidateReview;
@@ -565,6 +604,7 @@ impl App {
                     }
                 }
                 KeyCode::Char(' ') => self.toggle_candidate_field(),
+                KeyCode::Char('c') => self.toggle_candidate_cover(),
                 KeyCode::Char('o') => self.refresh_candidate_review_online(),
                 KeyCode::Enter | KeyCode::Char('a') => self.confirm_candidate(),
                 _ => {}
@@ -762,9 +802,9 @@ fn draw(frame: &mut ratatui::Frame<'_>, app: &App) {
         (Mode::Palette, _) => "Enter run  Esc cancel",
         (Mode::ConfirmTrash, _) => "Enter/y move  n/Esc keep",
         (Mode::CandidateReview, _) => {
-            "Tab pane  j/k move  Space field  o online  Enter review  Esc cancel"
+            "Tab pane  j/k move  Space field  c cover  o online  Enter review  Esc cancel"
         }
-        (Mode::ConfirmCandidate, _) => "Enter/y apply selected fields  n/Esc back",
+        (Mode::ConfirmCandidate, _) => "Enter/y apply selection  n/Esc back",
     };
     frame.render_widget(
         Paragraph::new(Line::from(vec![
@@ -1265,7 +1305,11 @@ fn draw_candidate_review(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) 
         .candidates
         .get(review.selected_candidate)
         .and_then(|candidate| candidate.get("patch"));
-    let field_items = if review.fields.is_empty() {
+    let cover = review
+        .candidates
+        .get(review.selected_candidate)
+        .and_then(|candidate| candidate.get("cover"));
+    let mut field_items = if review.fields.is_empty() {
         vec![ListItem::new(Line::styled(
             if review.loading {
                 "Fields appear after lookup finishes."
@@ -1308,6 +1352,26 @@ fn draw_candidate_review(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) 
             })
             .collect()
     };
+    if let Some(cover) = cover {
+        field_items.push(ListItem::new(vec![
+            Line::from(vec![
+                Span::styled(
+                    if review.selected_cover {
+                        "[x] "
+                    } else {
+                        "[ ] "
+                    },
+                    Style::default().fg(if review.selected_cover { ACCENT } else { MUTED }),
+                ),
+                Span::styled("Cover", Style::default().add_modifier(Modifier::BOLD)),
+                Span::styled("  (c toggles)", Style::default().fg(MUTED)),
+            ]),
+            Line::styled(
+                format!("    {}", cover_summary(cover)),
+                Style::default().fg(MUTED),
+            ),
+        ]));
+    }
     let mut field_state = ListState::default()
         .with_selected((!review.fields.is_empty()).then_some(review.selected_field));
     frame.render_stateful_widget(
@@ -1335,13 +1399,18 @@ fn draw_candidate_confirm(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App)
     let Some(review) = app.candidate_review.as_ref() else {
         return;
     };
-    let popup = centered(area, 70, 12);
+    let popup = centered(area, 70, 10);
     frame.render_widget(Clear, popup);
     let fields = field_selection_summary(&review.selected_fields);
+    let cover = if review.selected_cover {
+        "selected"
+    } else {
+        "not selected"
+    };
     frame.render_widget(
         Paragraph::new(format!(
-            "Apply selected metadata to '{}'?\n\nFields: {}\nProvenance will be recorded.\n\nEnter / y  Apply    n / Esc  Back",
-            review.item_title, fields
+            "Apply selection to '{}'?\n\nFields: {}\nCover: {}\n\nEnter / y  Apply    n / Esc  Back",
+            review.item_title, fields, cover
         ))
         .alignment(Alignment::Center)
         .block(
@@ -1383,6 +1452,35 @@ fn value_summary(value: &Value) -> String {
         format!("{shortened}...")
     } else {
         shortened
+    }
+}
+
+fn cover_summary(cover: &Value) -> String {
+    let media_type = cover
+        .get("mediaType")
+        .and_then(Value::as_str)
+        .map(|value| terminal_text(value, 24))
+        .unwrap_or_else(|| "unknown type".to_owned());
+    let bytes = cover
+        .get("bytes")
+        .and_then(Value::as_u64)
+        .map(format_byte_size)
+        .unwrap_or_else(|| "size unavailable".to_owned());
+    let sha = cover
+        .get("sha256")
+        .and_then(Value::as_str)
+        .map(|value| terminal_text(value, 12))
+        .unwrap_or_else(|| "unavailable".to_owned());
+    format!("{media_type}, dimensions unavailable, {bytes}, SHA {sha}")
+}
+
+fn format_byte_size(bytes: u64) -> String {
+    if bytes < 1024 {
+        format!("{bytes} B")
+    } else if bytes < 1024 * 1024 {
+        format!("{:.1} KiB", bytes as f64 / 1024.0)
+    } else {
+        format!("{:.1} MiB", bytes as f64 / (1024.0 * 1024.0))
     }
 }
 
@@ -1508,11 +1606,48 @@ mod tests {
             fields: Vec::new(),
             selected_field: 0,
             selected_fields: BTreeSet::new(),
+            selected_cover: false,
             focus: CandidateFocus::Candidates,
             include_online: false,
             loading: true,
         });
         app.accept_candidate_results(vec![candidate_for(item)]);
+    }
+
+    fn candidate_with_cover(app: &App, item: &LibraryItem, patch: Value) -> Value {
+        let provenance = json!({
+            "generatedAt": "1970-01-01T00:00:00.000Z",
+            "itemId": item.id,
+            "sourcePath": item.source_path,
+            "backend": "ebook-meta"
+        });
+        let encoded_provenance = format!(
+            "{{\"generatedAt\":\"1970-01-01T00:00:00.000Z\",\"itemId\":{},\"sourcePath\":{},\"backend\":\"ebook-meta\"}}",
+            serde_json::to_string(&item.id).expect("encode item id"),
+            serde_json::to_string(&item.source_path).expect("encode source path")
+        );
+        let cover = crate::candidate_cover::stage(
+            &app.paths.root,
+            &item.id,
+            "embedded:1",
+            "embedded",
+            &encoded_provenance,
+            &crate::candidate_cover::CapturedCover {
+                bytes: b"cover fixture".to_vec(),
+                media_type: "image/png".to_owned(),
+                extension: ".png".to_owned(),
+            },
+        )
+        .expect("stage candidate cover");
+        json!({
+            "schemaVersion": 1,
+            "id": "embedded:1",
+            "source": "embedded",
+            "confidence": "high",
+            "patch": patch,
+            "provenance": provenance,
+            "cover": cover
+        })
     }
 
     fn rendered_text(app: &App, width: u16, height: u16) -> String {
@@ -1638,7 +1773,10 @@ mod tests {
             .clear();
         app.confirm_candidate();
         assert_eq!(app.mode, Mode::CandidateReview);
-        assert_eq!(app.status, "Select at least one field to apply");
+        assert_eq!(
+            app.status,
+            "Select at least one field or the cover to apply"
+        );
 
         app.handle_key(KeyCode::Esc, KeyModifiers::NONE);
         let unchanged = app.store.get(&item.id).expect("get").expect("item");
@@ -1768,5 +1906,119 @@ mod tests {
         assert!(compact.contains("Metadata review"));
         assert!(compact.contains("Suggestions"));
         assert!(compact.contains("Fields to apply"));
+    }
+
+    #[test]
+    fn embedded_cover_descriptor_renders_sanitized_text() {
+        let (_temp, mut app, item) = app_with_book();
+        install_candidate_review(&mut app, &item);
+        let candidate = candidate_with_cover(&app, &item, json!({"title": "Better Title"}));
+        app.accept_candidate_results(vec![candidate]);
+
+        let rendered = rendered_text(&app, 110, 32);
+        assert!(rendered.contains("Cover"));
+        assert!(rendered.contains("image/png"));
+        assert!(rendered.contains("dimensions unavailable"));
+        assert!(rendered.contains("13 B"));
+        assert!(rendered.contains("SHA "));
+
+        let unsafe_cover = json!({
+            "mediaType": "image/png\u{1b}]0;unsafe\u{7}",
+            "bytes": 12,
+            "sha256": "abc\n123"
+        });
+        assert!(!cover_summary(&unsafe_cover).chars().any(char::is_control));
+    }
+
+    #[test]
+    fn cover_toggle_is_explicit_and_preserves_field_navigation() {
+        let (_temp, mut app, item) = app_with_book();
+        install_candidate_review(&mut app, &item);
+        let candidate = candidate_with_cover(&app, &item, json!({"title": "Better Title"}));
+        app.accept_candidate_results(vec![candidate]);
+        app.candidate_review.as_mut().expect("review").focus = CandidateFocus::Fields;
+
+        app.handle_key(KeyCode::Char('c'), KeyModifiers::NONE);
+        let review = app.candidate_review.as_ref().expect("review");
+        assert!(review.selected_cover);
+        assert_eq!(review.selected_field, 0);
+
+        app.handle_key(KeyCode::Char(' '), KeyModifiers::NONE);
+        let review = app.candidate_review.as_ref().expect("review");
+        assert!(review.selected_cover);
+        assert!(review.selected_fields.is_empty());
+    }
+
+    #[test]
+    fn cover_only_candidate_can_confirm_and_apply() {
+        let (_temp, mut app, item) = app_with_book();
+        install_candidate_review(&mut app, &item);
+        let candidate = candidate_with_cover(&app, &item, json!({}));
+        app.accept_candidate_results(vec![candidate]);
+        app.handle_key(KeyCode::Char('c'), KeyModifiers::NONE);
+        app.query = "Original".to_owned();
+
+        app.confirm_candidate();
+        assert_eq!(app.mode, Mode::ConfirmCandidate);
+        app.apply_candidate();
+
+        let updated = app.store.get(&item.id).expect("get").expect("item");
+        assert!(updated.cover_path.is_some(), "{}", app.status);
+        assert_eq!(app.mode, Mode::Normal);
+        assert_eq!(app.query, "Original");
+        assert_eq!(app.selected_item().map(|item| &item.id), Some(&item.id));
+    }
+
+    #[test]
+    fn metadata_only_candidates_keep_legacy_selection_behavior() {
+        let (_temp, mut app, item) = app_with_book();
+        install_candidate_review(&mut app, &item);
+        app.handle_key(KeyCode::Char('c'), KeyModifiers::NONE);
+
+        let review = app.candidate_review.as_ref().expect("review");
+        assert!(!review.selected_cover);
+        assert_eq!(app.status, "This suggestion has no cover");
+        assert_eq!(review.selected_fields.len(), 2);
+    }
+
+    #[test]
+    fn compact_cover_confirmation_summarizes_selection() {
+        let (_temp, mut app, item) = app_with_book();
+        install_candidate_review(&mut app, &item);
+        let candidate = candidate_with_cover(&app, &item, json!({}));
+        app.accept_candidate_results(vec![candidate]);
+        app.handle_key(KeyCode::Char('c'), KeyModifiers::NONE);
+        app.confirm_candidate();
+
+        for (width, height) in [(44, 14), (60, 16)] {
+            let rendered = rendered_text(&app, width, height);
+            assert!(rendered.contains("Cover: selected"));
+            assert!(rendered.contains("Back"));
+        }
+    }
+
+    #[test]
+    fn switching_candidates_resets_cover_selection() {
+        let (_temp, mut app, item) = app_with_book();
+        install_candidate_review(&mut app, &item);
+        let first = candidate_with_cover(&app, &item, json!({"title": "First"}));
+        let mut second = candidate_with_cover(&app, &item, json!({"title": "Second"}));
+        second["id"] = json!("embedded:2");
+        app.accept_candidate_results(vec![first, second]);
+        app.handle_key(KeyCode::Char('c'), KeyModifiers::NONE);
+        assert!(
+            app.candidate_review
+                .as_ref()
+                .expect("review")
+                .selected_cover
+        );
+
+        app.move_candidate(1);
+        assert!(
+            !app.candidate_review
+                .as_ref()
+                .expect("review")
+                .selected_cover
+        );
     }
 }
