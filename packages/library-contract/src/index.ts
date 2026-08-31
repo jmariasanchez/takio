@@ -872,6 +872,14 @@ export const METADATA_CANDIDATE_SOURCES = ["filename", "embedded", "online"] as 
 export const METADATA_CANDIDATE_CONFIDENCES = ["low", "medium", "high"] as const;
 export const MAX_METADATA_CANDIDATES = 8;
 export const MAX_METADATA_CANDIDATE_FIELDS = 13;
+export const MAX_METADATA_CANDIDATE_COVER_BYTES = 32 * 1024 * 1024;
+export const METADATA_CANDIDATE_COVER_MEDIA_TYPES = [
+  "image/jpeg",
+  "image/png",
+  "image/gif",
+  "image/webp",
+] as const;
+export const METADATA_CANDIDATE_COVER_EXTENSIONS = [".jpg", ".png", ".gif", ".webp"] as const;
 export const METADATA_CANDIDATE_AUDIT_KEY = "takio_metadata_audit";
 export const BULK_METADATA_CANDIDATE_SCHEMA_VERSION = 1;
 export const MAX_BULK_METADATA_CANDIDATE_ITEMS = 64;
@@ -892,6 +900,49 @@ export const metadataCandidateProvenanceSchema = z
   .strict()
   .readonly();
 
+const metadataCandidateCoverSummaryShape = {
+  mediaType: z.enum(METADATA_CANDIDATE_COVER_MEDIA_TYPES),
+  extension: z.enum(METADATA_CANDIDATE_COVER_EXTENSIONS),
+  bytes: z.number().int().positive().max(MAX_METADATA_CANDIDATE_COVER_BYTES),
+  sha256: z.string().regex(/^[0-9a-f]{64}$/),
+} as const;
+
+function addCoverMediaTypeIssue(
+  cover: Readonly<{ mediaType: string; extension: string }>,
+  context: z.RefinementCtx,
+) {
+  const expectedExtension = {
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+    "image/gif": ".gif",
+    "image/webp": ".webp",
+  }[cover.mediaType];
+  if (cover.extension !== expectedExtension) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["extension"],
+      message: "The cover extension must match its media type.",
+    });
+  }
+}
+
+export const metadataCandidateCoverSummarySchema = z
+  .object(metadataCandidateCoverSummaryShape)
+  .strict()
+  .superRefine(addCoverMediaTypeIssue)
+  .readonly();
+
+export const metadataCandidateCoverSchema = z
+  .object({
+    artifactId: z
+      .string()
+      .regex(/^[0-9a-f]{32}$/, "Cover artifact ids must be opaque path-free tokens."),
+    ...metadataCandidateCoverSummaryShape,
+  })
+  .strict()
+  .superRefine(addCoverMediaTypeIssue)
+  .readonly();
+
 export const metadataCandidateSchema = z
   .object({
     schemaVersion: z.literal(1),
@@ -899,6 +950,7 @@ export const metadataCandidateSchema = z
     source: z.enum(METADATA_CANDIDATE_SOURCES),
     confidence: z.enum(METADATA_CANDIDATE_CONFIDENCES),
     patch: libraryMetadataPatchSchema,
+    cover: metadataCandidateCoverSchema.optional(),
     provenance: metadataCandidateProvenanceSchema,
   })
   .strict()
@@ -943,10 +995,10 @@ export const applyMetadataCandidateRequestSchema = z
     candidate: metadataCandidateSchema,
     fields: z
       .array(z.string().min(1))
-      .min(1)
       .max(MAX_METADATA_CANDIDATE_FIELDS)
       .refine((fields) => new Set(fields).size === fields.length, "Fields must be unique.")
       .readonly(),
+    cover: z.boolean(),
     provenance: z.string().trim().min(1).max(240),
   })
   .strict()
@@ -956,6 +1008,20 @@ export const applyMetadataCandidateRequestSchema = z
         code: z.ZodIssueCode.custom,
         path: ["candidate", "provenance", "itemId"],
         message: "The candidate must be provenance-bound to the requested item.",
+      });
+    }
+    if (request.fields.length === 0 && !request.cover) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["fields"],
+        message: "At least one metadata field or the candidate cover must be selected.",
+      });
+    }
+    if (request.cover && request.candidate.cover === undefined) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["candidate", "cover"],
+        message: "A selected cover requires a candidate cover descriptor.",
       });
     }
     for (const [index, field] of request.fields.entries()) {
@@ -981,9 +1047,10 @@ export const metadataCandidateApplyValueSchema = z
         provenance: z.string().min(1).max(240),
         fields: z
           .array(z.string().min(1))
-          .min(1)
           .max(MAX_METADATA_CANDIDATE_FIELDS)
           .readonly(),
+        coverApplied: z.boolean(),
+        cover: metadataCandidateCoverSummarySchema.optional(),
       })
       .strict()
       .readonly(),
@@ -997,6 +1064,20 @@ export const metadataCandidateApplyValueSchema = z
         message: "The applied result must describe the returned item.",
       });
     }
+    if (value.applied.coverApplied !== (value.applied.cover !== undefined)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["applied", "cover"],
+        message: "An applied cover summary is required exactly when coverApplied is true.",
+      });
+    }
+    if (value.applied.fields.length === 0 && !value.applied.coverApplied) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["applied", "fields"],
+        message: "An apply result must report metadata fields or an applied cover.",
+      });
+    }
   })
   .readonly();
 
@@ -1008,7 +1089,7 @@ export function metadataCandidateApplyValueSchemaFor(itemId: string) {
 
 const bulkMetadataCandidateItemIdSchema = z.preprocess(
   (itemId) => typeof itemId === "string"
-    ? itemId.replace(/^[\t\n\v\f\r ]+|[\t\n\v\f\r ]+$/g, "")
+    ? itemId.replace(/^[\t\n\f\r ]+|[\t\n\f\r ]+$/g, "")
     : itemId,
   z
     .string()
@@ -1155,10 +1236,11 @@ const appliedBulkMetadataCandidateReviewOutcomeSchema = z
     candidateId: z.string().trim().min(1).max(120),
     fields: z
       .array(z.string().trim().min(1))
-      .min(1)
       .max(MAX_METADATA_CANDIDATE_FIELDS)
       .refine((fields) => new Set(fields).size === fields.length, "Fields must be unique.")
       .readonly(),
+    coverApplied: z.boolean(),
+    cover: metadataCandidateCoverSummarySchema.optional(),
   })
   .strict();
 
@@ -1169,11 +1251,26 @@ export const bulkMetadataCandidateReviewOutcomeSchema = z
     ...bulkMetadataCandidateDiscoveryItemOutcomeSchemas,
   ])
   .superRefine((outcome, context) => {
-    if (outcome.status === "applied" && outcome.item.id !== outcome.itemId) {
+    if (outcome.status !== "applied") return;
+    if (outcome.item.id !== outcome.itemId) {
       context.addIssue({
         code: z.ZodIssueCode.custom,
         path: ["item", "id"],
         message: "The applied review item must match the outcome item id.",
+      });
+    }
+    if (outcome.coverApplied !== (outcome.cover !== undefined)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["cover"],
+        message: "An applied cover summary is required exactly when coverApplied is true.",
+      });
+    }
+    if (outcome.fields.length === 0 && !outcome.coverApplied) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["fields"],
+        message: "An applied review outcome must report metadata fields or an applied cover.",
       });
     }
   })

@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 
 import {
   BULK_METADATA_CANDIDATE_SCHEMA_VERSION,
+  MAX_METADATA_CANDIDATE_COVER_BYTES,
   MAX_BULK_METADATA_CANDIDATE_CONCURRENCY,
   MAX_BULK_METADATA_CANDIDATE_ITEM_ID_LENGTH,
   MAX_BULK_METADATA_CANDIDATE_ITEMS,
@@ -15,6 +16,14 @@ import {
   metadataCandidateListValueSchemaFor,
   metadataCandidateSchema,
 } from "../src/index.js";
+
+const candidateCover = {
+  artifactId: "0123456789abcdef0123456789abcdef",
+  mediaType: "image/jpeg",
+  extension: ".jpg",
+  bytes: 3,
+  sha256: "a".repeat(64),
+} as const;
 
 const candidate = {
   schemaVersion: 1,
@@ -57,23 +66,58 @@ describe("metadata candidate contract", () => {
     }).success).toBe(false);
   });
 
+  it("accepts legacy metadata-only candidates and strict path-free cover descriptors", () => {
+    expect(metadataCandidateSchema.safeParse(candidate).success).toBe(true);
+    expect(metadataCandidateSchema.safeParse({ ...candidate, cover: candidateCover }).success)
+      .toBe(true);
+    for (const cover of [
+      { ...candidateCover, artifactId: "../cover" },
+      { ...candidateCover, artifactId: "A".repeat(32) },
+      { ...candidateCover, extension: ".png" },
+      { ...candidateCover, bytes: 0 },
+      { ...candidateCover, bytes: MAX_METADATA_CANDIDATE_COVER_BYTES + 1 },
+      { ...candidateCover, sha256: "A".repeat(64) },
+      { ...candidateCover, path: "/tmp/cover.jpg" },
+    ]) {
+      expect(metadataCandidateSchema.safeParse({ ...candidate, cover }).success).toBe(false);
+    }
+  });
+
   it("requires explicit unique fields present in the candidate patch", () => {
     expect(applyMetadataCandidateRequestSchema.parse({
       itemId: "book-1",
       candidate,
       fields: ["title"],
+      cover: false,
       provenance: "desktop-candidate-review:embedded",
     }).fields).toEqual(["title"]);
     expect(applyMetadataCandidateRequestSchema.safeParse({
       itemId: "book-1",
       candidate,
       fields: [],
+      cover: false,
       provenance: "desktop-candidate-review:embedded",
     }).success).toBe(false);
     expect(applyMetadataCandidateRequestSchema.safeParse({
       itemId: "book-1",
       candidate,
       fields: ["description"],
+      cover: false,
+      provenance: "desktop-candidate-review:embedded",
+    }).success).toBe(false);
+
+    expect(applyMetadataCandidateRequestSchema.safeParse({
+      itemId: "book-1",
+      candidate: { ...candidate, cover: candidateCover },
+      fields: [],
+      cover: true,
+      provenance: "desktop-candidate-review:embedded",
+    }).success).toBe(true);
+    expect(applyMetadataCandidateRequestSchema.safeParse({
+      itemId: "book-1",
+      candidate,
+      fields: [],
+      cover: true,
       provenance: "desktop-candidate-review:embedded",
     }).success).toBe(false);
   });
@@ -85,6 +129,7 @@ describe("metadata candidate contract", () => {
       source: "embedded",
       provenance: "desktop-candidate-review:embedded",
       fields: ["title"],
+      coverApplied: false,
     } as const;
     expect(metadataCandidateApplyValueSchema.safeParse({ item, applied }).success).toBe(true);
     expect(metadataCandidateApplyValueSchema.safeParse({
@@ -111,6 +156,20 @@ describe("metadata candidate contract", () => {
       item: nativeItem,
       applied,
     }).success).toBe(true);
+
+    expect(metadataCandidateApplyValueSchemaFor("book-1").safeParse({
+      item,
+      applied: {
+        ...applied,
+        fields: [],
+        coverApplied: true,
+        cover: (({ artifactId: _artifactId, ...summary }) => summary)(candidateCover),
+      },
+    }).success).toBe(true);
+    expect(metadataCandidateApplyValueSchemaFor("book-1").safeParse({
+      item,
+      applied: { ...applied, coverApplied: true },
+    }).success).toBe(false);
   });
 
   it("binds every listed candidate to the requested item", () => {
@@ -161,12 +220,14 @@ describe("metadata candidate contract", () => {
       itemId: "book-2",
       candidate,
       fields: ["title"],
+      cover: false,
       provenance: "desktop-candidate-review:embedded",
     }).success).toBe(false);
     expect(applyMetadataCandidateRequestSchema.safeParse({
       itemId: "book-1",
       candidate: { ...candidate, provenance: { generatedAt: candidate.provenance.generatedAt } },
       fields: ["title"],
+      cover: false,
       provenance: "desktop-candidate-review:embedded",
     }).success).toBe(false);
   });
@@ -258,7 +319,7 @@ describe("bulk metadata candidate contract", () => {
       ...request,
       itemIds: [`${boundary}x`],
     }).success).toBe(false);
-    for (const unicodeWhitespace of ["\u0085", "\ufeff"] as const) {
+    for (const unicodeWhitespace of ["\u000b", "\u0085", "\ufeff"] as const) {
       expect(bulkMetadataCandidateDiscoveryRequestSchema.safeParse({
         ...request,
         itemIds: [`${unicodeWhitespace}book-1${unicodeWhitespace}`],
@@ -323,7 +384,14 @@ describe("bulk metadata candidate contract", () => {
     const reviewResult = {
       schemaVersion: BULK_METADATA_CANDIDATE_SCHEMA_VERSION,
       outcomes: [
-        { status: "applied", itemId: "book-1", item, candidateId: candidate.id, fields: ["title"] },
+        {
+          status: "applied",
+          itemId: "book-1",
+          item,
+          candidateId: candidate.id,
+          fields: ["title"],
+          coverApplied: false,
+        },
         { status: "skipped", itemId: "book-2" },
         { status: "no-candidates", itemId: "book-3" },
         { status: "failed", itemId: "book-4", code: "write-failed" },
@@ -359,6 +427,7 @@ describe("bulk metadata candidate contract", () => {
         item: { ...item, id: "book-2" },
         candidateId: candidate.id,
         fields: Array.from({ length: 14 }, (_, index) => `field-${index}`),
+        coverApplied: false,
       }],
       counts: {
         total: 1,
