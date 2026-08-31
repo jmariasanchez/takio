@@ -2348,4 +2348,25 @@ fn malformed_candidate_apply_never_creates_a_library_as_a_side_effect() {
         !database.exists(),
         "no library may be created by rejected input"
     );
+
+    let mut invalid_value = candidate_for("book-1");
+    invalid_value["patch"]["publishedDate"] = serde_json::json!("yesterday");
+    let output = cargo_bin_cmd!("takio")
+        .args(["metadata", "candidates", "apply", "--db"])
+        .arg(&database)
+        .args([
+            "--id",
+            "book-1",
+            "--candidate-json",
+            &invalid_value.to_string(),
+            "--provenance",
+            "desktop-candidate-review:filename",
+        ])
+        .output()
+        .expect("reject invalid candidate value against a missing library");
+    assert_eq!(failure_code(&output.stdout), "invalid-arguments");
+    assert!(
+        !database.exists(),
+        "invalid candidate values must be rejected before library creation"
+    );
 }

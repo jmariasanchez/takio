@@ -29,6 +29,10 @@ pub struct LibraryStore {
     paths: LibraryPaths,
 }
 
+pub(crate) fn validate_candidate_patch(patch: &LibraryPatch) -> AppResult<()> {
+    validate_library_patch(patch, true)
+}
+
 pub struct ImportWatchObservation {
     pub canonical_source_path: PathBuf,
     pub content_bytes: u64,
@@ -1027,6 +1031,7 @@ impl LibraryStore {
         patch: LibraryPatch,
         allow_reserved_metadata: bool,
     ) -> AppResult<LibraryItem> {
+        validate_library_patch(&patch, allow_reserved_metadata)?;
         let mut item = self
             .read_item(id)?
             .ok_or_else(|| AppError::new("not-found"))?;
@@ -2629,6 +2634,63 @@ fn normalize_authors(values: Vec<BookAuthor>) -> AppResult<Vec<BookAuthor>> {
         });
     }
     Ok(output)
+}
+
+fn validate_library_patch(patch: &LibraryPatch, allow_reserved_metadata: bool) -> AppResult<()> {
+    if patch.is_empty() || matches!(patch.title, Patch::Null) || matches!(patch.tags, Patch::Null) {
+        return Err(AppError::new("invalid-arguments"));
+    }
+    for value in [
+        patch.title.set(),
+        patch.author.set(),
+        patch.series.set(),
+        patch.publisher.set(),
+        patch.description.set(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        required_text(value.clone())?;
+    }
+    if let Patch::Set(values) = &patch.authors {
+        if values.is_empty() {
+            return Err(AppError::new("invalid-arguments"));
+        }
+        normalize_authors(values.clone())?;
+    }
+    if patch
+        .series_index
+        .set()
+        .is_some_and(|value| !value.is_finite())
+        || patch
+            .rating
+            .set()
+            .is_some_and(|value| !value.is_finite() || !(0.0..=10.0).contains(value))
+    {
+        return Err(AppError::new("invalid-arguments"));
+    }
+    if let Patch::Set(values) = &patch.languages {
+        if values.is_empty() {
+            return Err(AppError::new("invalid-arguments"));
+        }
+        normalize_languages(values.clone())?;
+    }
+    if let Patch::Set(values) = &patch.identifiers {
+        normalize_identifiers(values.clone())?;
+    }
+    if let Patch::Set(values) = &patch.custom_metadata {
+        if !allow_reserved_metadata && values.contains_key(METADATA_AUDIT_KEY) {
+            return Err(AppError::new("invalid-arguments"));
+        }
+        normalize_custom_metadata(values.clone())?;
+    }
+    if let Some(value) = patch.published_date.set() {
+        normalize_published_date(value.clone())?;
+    }
+    if let Patch::Set(values) = &patch.tags {
+        normalize_texts(values.clone())?;
+    }
+    Ok(())
 }
 
 fn required_text(value: String) -> AppResult<String> {

@@ -24,6 +24,7 @@ use crate::portable_library;
 use crate::store::{
     DuplicatePairReviewRequest, LIBRARY_SCHEMA_VERSION, LibraryStore,
     ListDuplicateCandidatesRequest, METADATA_AUDIT_KEY, MergeDuplicatePairRequest, VerifyReport,
+    validate_candidate_patch,
 };
 
 #[derive(Parser)]
@@ -921,6 +922,7 @@ fn metadata_candidates(command: MetadataCandidatesCommand, library: Option<&str>
             let selected_fields = candidate.validated_fields(&id)?;
             let patch: LibraryPatch = serde_json::from_value(candidate.patch.clone())
                 .map_err(|_| AppError::new("invalid-arguments"))?;
+            validate_candidate_patch(&patch)?;
 
             let paths = LibraryPaths::resolve(library, db.as_deref())?;
             let mut store = LibraryStore::open(paths, true)?;
