@@ -29,6 +29,7 @@ import type {
   SavedLibraryView,
 } from "@takio/library-contract";
 import {
+  MAX_BULK_METADATA_CANDIDATE_ITEMS,
   MAX_LIBRARY_EXPORT_ITEMS,
   MAX_LIBRARY_IMPORT_ROOTS,
 } from "@takio/library-contract";
@@ -201,6 +202,7 @@ type LibraryModalState = {
   readonly duplicateReview: boolean;
   readonly bulkTags: boolean;
   readonly bulkMetadata: boolean;
+  readonly bulkMetadataCandidates: boolean;
   readonly bulkExport: boolean;
   readonly health: boolean;
 };
@@ -293,6 +295,8 @@ export default function App() {
   const [bulkTagsDialogError, setBulkTagsDialogError] = useState<string | null>(null);
   const [bulkMetadataDialogOpen, setBulkMetadataDialogOpen] = useState(false);
   const [bulkMetadataDialogError, setBulkMetadataDialogError] = useState<string | null>(null);
+  const [bulkMetadataCandidateDialogOpen, setBulkMetadataCandidateDialogOpen] = useState(false);
+  const [bulkMetadataCandidateItemIds, setBulkMetadataCandidateItemIds] = useState<readonly string[]>([]);
   const [bulkExportDialogOpen, setBulkExportDialogOpen] = useState(false);
   const [bulkExportItemIds, setBulkExportItemIds] = useState<readonly string[]>([]);
   const [healthDialogOpen, setHealthDialogOpen] = useState(false);
@@ -329,6 +333,7 @@ export default function App() {
     duplicateReview: duplicateDialogOpen,
     bulkTags: bulkTagsDialogOpen,
     bulkMetadata: bulkMetadataDialogOpen,
+    bulkMetadataCandidates: bulkMetadataCandidateDialogOpen,
     bulkExport: bulkExportDialogOpen,
     health: healthDialogOpen,
   });
@@ -406,6 +411,7 @@ export default function App() {
       bulkExportDialogOpen ||
       bulkTagsDialogOpen ||
       bulkMetadataDialogOpen ||
+      bulkMetadataCandidateDialogOpen ||
       librarySelection.selectedItemIds.length > 0
     ) {
       return;
@@ -419,6 +425,7 @@ export default function App() {
   }, [
     bulkExportDialogOpen,
     bulkMetadataDialogOpen,
+    bulkMetadataCandidateDialogOpen,
     bulkTagsDialogOpen,
     librarySelection.selectedItemIds.length,
     pendingAction,
@@ -2306,6 +2313,7 @@ export default function App() {
       bulkMutationPending.current ||
       bulkExportDialogOpen ||
       bulkMetadataDialogOpen ||
+      bulkMetadataCandidateDialogOpen ||
       librarySelection.selectedItemIds.length === 0
     ) {
       return;
@@ -2346,6 +2354,38 @@ export default function App() {
     }
   }
 
+  function openBulkMetadataCandidateDialog(): void {
+    const selectedIds = [...librarySelection.selectedItemIds];
+    if (
+      selectedIds.length === 0 ||
+      pendingAction !== null ||
+      bulkMutationPending.current ||
+      libraryModalOpen
+    ) {
+      return;
+    }
+    if (selectedIds.length > MAX_BULK_METADATA_CANDIDATE_ITEMS) {
+      setNotice({
+        kind: "error",
+        text: `Choose no more than ${MAX_BULK_METADATA_CANDIDATE_ITEMS} books to review metadata.`,
+      });
+      return;
+    }
+    setBulkMetadataCandidateItemIds(selectedIds);
+    setBulkMetadataCandidateDialogOpen(true);
+  }
+
+  function closeBulkMetadataCandidateDialog(): void {
+    setBulkMetadataCandidateDialogOpen(false);
+    setBulkMetadataCandidateItemIds([]);
+  }
+
+  function bulkMetadataCandidateApplied(item: LibraryItem): void {
+    replaceItem(item);
+    dispatchLibrarySelection({ type: "remove-items", ids: [item.id] });
+    void loadLibrary(false);
+  }
+
   function openBulkExportDialog(): void {
     const selectedIds = [...librarySelection.selectedItemIds];
     if (
@@ -2358,6 +2398,7 @@ export default function App() {
       duplicateDialogOpen ||
       bulkTagsDialogOpen ||
       bulkMetadataDialogOpen ||
+      bulkMetadataCandidateDialogOpen ||
       bulkExportDialogOpen
     ) {
       return;
@@ -3182,9 +3223,12 @@ export default function App() {
             tagsDialogError: bulkTagsDialogError,
             metadataDialogOpen: bulkMetadataDialogOpen,
             metadataDialogError: bulkMetadataDialogError,
+            metadataCandidateDialogOpen: bulkMetadataCandidateDialogOpen,
+            metadataCandidateItemIds: bulkMetadataCandidateItemIds,
             onExport: openBulkExportDialog,
             onEditTags: openBulkTagsDialog,
             onEditMetadata: openBulkMetadataDialog,
+            onReviewMetadata: openBulkMetadataCandidateDialog,
             onConvert: () => void convertBulkSelectionToPdf(),
             onSend: () => void sendBulkSelection(),
             onMoveToTrash: () => void moveBulkSelectionToTrash(),
@@ -3195,10 +3239,12 @@ export default function App() {
             },
             onCloseTagsDialog: closeBulkTagsDialog,
             onCloseMetadataDialog: closeBulkMetadataDialog,
+            onCloseMetadataCandidateDialog: closeBulkMetadataCandidateDialog,
             onCloseExportDialog: closeBulkExportDialog,
             onConfirmExport: (template) => void saveBulkSelectionToDisk(template),
             onApplyTags: (operation, tags) => void applyBulkTags(operation, tags),
             onApplyMetadata: (patch) => void applyBulkMetadata(patch),
+            onMetadataCandidateApplied: bulkMetadataCandidateApplied,
           }}
           conversionDraft={conversionDraft}
           currentSavedViewId={currentSavedViewId}

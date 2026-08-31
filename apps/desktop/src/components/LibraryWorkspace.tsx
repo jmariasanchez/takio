@@ -34,6 +34,7 @@ import {
   type LibraryExportFileNameTemplate,
 } from "./LibraryExportDialog";
 import { LibraryBulkMetadataDialog } from "./LibraryBulkMetadataDialog";
+import { LibraryBulkMetadataCandidateDialog } from "./LibraryBulkMetadataCandidateDialog";
 import {
   LibraryBulkTagsDialog,
   type LibraryBulkTagsOperation,
@@ -82,15 +83,19 @@ export type LibraryWorkspaceBulkActions = {
   readonly tagsDialogError: string | null;
   readonly metadataDialogOpen: boolean;
   readonly metadataDialogError: string | null;
+  readonly metadataCandidateDialogOpen: boolean;
+  readonly metadataCandidateItemIds: readonly string[];
   readonly onExport: () => void;
   readonly onEditTags: () => void;
   readonly onEditMetadata: () => void;
+  readonly onReviewMetadata: () => void;
   readonly onConvert: () => void;
   readonly onSend: () => void;
   readonly onMoveToTrash: () => void;
   readonly onClearSelection: () => void;
   readonly onCloseTagsDialog: () => void;
   readonly onCloseMetadataDialog: () => void;
+  readonly onCloseMetadataCandidateDialog: () => void;
   readonly onCloseExportDialog: () => void;
   readonly onConfirmExport: (template: LibraryExportFileNameTemplate) => void;
   readonly onApplyTags: (
@@ -98,6 +103,7 @@ export type LibraryWorkspaceBulkActions = {
     tags: readonly string[],
   ) => void;
   readonly onApplyMetadata: (patch: LibraryMetadataPatch) => void;
+  readonly onMetadataCandidateApplied: (item: LibraryItem) => void;
 };
 
 export type LibraryWorkspaceProps = {
@@ -785,6 +791,7 @@ export function LibraryWorkspace({
                   onExport={bulkActions.onExport}
                   onEditTags={bulkActions.onEditTags}
                   onEditMetadata={bulkActions.onEditMetadata}
+                  onReviewMetadata={bulkActions.onReviewMetadata}
                   onConvert={bulkActions.onConvert}
                   onSend={bulkActions.onSend}
                   onMoveToTrash={bulkActions.onMoveToTrash}
@@ -891,6 +898,12 @@ export function LibraryWorkspace({
             error={bulkActions.metadataDialogError}
             onClose={bulkActions.onCloseMetadataDialog}
             onApply={bulkActions.onApplyMetadata}
+          />
+          <LibraryBulkMetadataCandidateDialog
+            open={bulkActions.metadataCandidateDialogOpen}
+            itemIds={bulkActions.metadataCandidateItemIds}
+            onClose={bulkActions.onCloseMetadataCandidateDialog}
+            onApplied={bulkActions.onMetadataCandidateApplied}
           />
         </>
       ) : null}

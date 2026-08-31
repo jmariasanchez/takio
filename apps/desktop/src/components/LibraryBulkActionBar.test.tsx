@@ -35,6 +35,7 @@ function props(
     onExport: () => undefined,
     onEditTags: () => undefined,
     onEditMetadata: () => undefined,
+    onReviewMetadata: () => undefined,
     onConvert: () => undefined,
     onSend: () => undefined,
     onMoveToTrash: () => undefined,
@@ -72,6 +73,7 @@ test("offers only the requested bulk library actions without introducing a readi
     "Save to disk…",
     "Edit tags",
     "Edit metadata…",
+    "Review metadata…",
     "Convert",
     "Send",
     "Move to Trash",
@@ -81,7 +83,7 @@ test("offers only the requested bulk library actions without introducing a readi
   }
   expect(markup).toContain('title="Copy every attached format to a folder"');
   expect(markup).toContain('aria-haspopup="dialog" aria-expanded="false"');
-  expect(markup.match(/<button/g)).toHaveLength(7);
+  expect(markup.match(/<button/g)).toHaveLength(8);
   expect(markup).not.toMatch(/reader|viewer|open book/i);
 });
 
@@ -122,7 +124,7 @@ test("announces pending work and disables every control so the target cannot cha
 
   expect(markup).toContain('aria-busy="true"');
   expect(markup).toContain("Saving to disk…");
-  expect(buttons).toHaveLength(7);
+  expect(buttons).toHaveLength(8);
   expect(buttons.every(({ props }) => props.disabled)).toBe(true);
 });
 
@@ -133,7 +135,7 @@ test("globally disables every control while unrelated library work is pending", 
 
   expect(markup).toContain('aria-busy="false"');
   expect(markup).not.toContain("Updating tags…");
-  expect(buttons).toHaveLength(7);
+  expect(buttons).toHaveLength(8);
   expect(buttons.every(({ props }) => props.disabled)).toBe(true);
 });
 

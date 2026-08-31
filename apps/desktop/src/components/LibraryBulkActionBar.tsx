@@ -18,6 +18,7 @@ export type LibraryBulkActionBarProps = {
   readonly onExport: () => void;
   readonly onEditTags: () => void;
   readonly onEditMetadata: () => void;
+  readonly onReviewMetadata: () => void;
   readonly onConvert: () => void;
   readonly onSend: () => void;
   readonly onMoveToTrash: () => void;
@@ -43,6 +44,7 @@ export function LibraryBulkActionBar({
   onExport,
   onEditTags,
   onEditMetadata,
+  onReviewMetadata,
   onConvert,
   onSend,
   onMoveToTrash,
@@ -89,6 +91,9 @@ export function LibraryBulkActionBar({
         </button>
         <button type="button" disabled={controlsDisabled} onClick={onEditMetadata}>
           Edit metadata…
+        </button>
+        <button type="button" disabled={controlsDisabled} onClick={onReviewMetadata}>
+          Review metadata…
         </button>
         <button
           type="button"

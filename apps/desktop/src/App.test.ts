@@ -9,6 +9,7 @@ const closedDialogs = {
   duplicateReview: false,
   bulkTags: false,
   bulkMetadata: false,
+  bulkMetadataCandidates: false,
   bulkExport: false,
   health: false,
 };
