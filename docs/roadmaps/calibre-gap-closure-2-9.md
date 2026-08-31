@@ -243,9 +243,10 @@ Remaining acceptance work:
 
 #### B2. Virtual libraries and advanced organization
 
-Status: the virtual-library, native-query, bounded structured-query, and bounded
-save-to-disk organization vertical slices are delivered in `48caa27`, `ffaf197`,
-`d5aaeb5`, `428fdc4`, `cde5a4b`, and `f5aaf11`. Custom metadata columns,
+Status: the virtual-library, native-query, bounded structured-query, bounded
+custom text-field, and bounded save-to-disk organization vertical slices are
+delivered in `48caa27`, `ffaf197`, `d5aaeb5`, `428fdc4`, `edd69a6`, `0f3774d`,
+`3e892ec`, `cde5a4b`, and `f5aaf11`. Library-defined typed custom columns,
 reusable group rules, arbitrary user-authored save-to-disk grammar, and richer
 bulk organization remain open.
 
@@ -299,6 +300,27 @@ Delivered evidence:
 - The packaged 10,000-book, 15,000-format gate measured 55.44 ms maximum p95 for
   the standalone release and 57.83 ms for the desktop sidecar. Structured-only
   p95 was 49.93 ms and 50.68 ms respectively, below the 150 ms target.
+- Existing bounded `customMetadata` values are now user-visible as editable text
+  rows in the desktop metadata editor and sorted `#key` entries in the inspector.
+  Explicit keep, replace, and clear semantics preserve the internal candidate
+  audit field, while row-addressable validation enforces safe lowercase keys,
+  uniqueness, 64 user fields, and 16 KiB values.
+- Rust literal search now includes user custom keys and values, and
+  `structured-v1` accepts safe `#key:value` terms with quoting, conjunction,
+  negation, and virtual-library composition. Malformed and reserved audit keys
+  return `invalid-query`; queries are read-only and parameterized.
+- The checksummed standalone release and desktop sidecar passed an external
+  real-SQLite workflow covering edit, audit-preserving replacement, literal and
+  structured lookup, negation, virtual-library composition, invalid-key
+  rejection, JSON and CSV catalogues, all three authenticated HTTP catalog
+  routes, portable export/rebuild, and malicious reserved-key OPF rejection.
+  User fields remained visible while `takio_metadata_audit` and its source
+  details were absent from public catalogues and portable interchange. Every
+  machine command emitted one JSON envelope with empty stderr.
+- After the custom-field query expansion, the packaged 10,000-book,
+  15,000-format gate measured 75.57 ms p95 for the standalone release and
+  75.09 ms for the desktop sidecar. Structured-only p95 was 66.25 ms and
+  68.96 ms respectively, below the 150 ms target.
 - `export-many` now accounts for every attached format rather than exporting only
   the primary format. Each filename carries the full SHA-256 item identity, and
   the shared contract plus desktop dialog expose fixed `flat`, `author`, and
@@ -313,6 +335,10 @@ Delivered evidence:
   Calibre-style save-to-disk grammar remains blocked on a separately designed,
   bounded template language rather than exposing filesystem paths or shell-like
   interpolation.
+- Bounded per-book text fields are not full Calibre custom-column parity. A
+  future slice still needs library-level definitions and labels, typed or
+  multi-valued data, delta bulk updates, table columns, sorting, facets,
+  definition-aware Calibre import, and portable definition round-trip.
 
 ### Track C: Operational maturity foundation
 

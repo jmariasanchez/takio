@@ -189,11 +189,21 @@ accepted.
 
 Library queries default to literal substring search. Set `querySyntax` to
 `structured-v1` to use a bounded Calibre-style subset such as
-`author:"Ursula K. Le Guin" tag:Classic not publisher:Tor`. Structured search
-supports quoted values, implicit or explicit `and`, and field selectors for
-title, authors, tags, series, publisher, languages, formats, identifiers, and
-comments. It intentionally does not yet support `or`, parentheses, regular
-expressions, numeric/date comparisons, or custom columns.
+`author:"Ursula K. Le Guin" tag:Classic not publisher:Tor`, or
+`#shelf:"Favorites"` for a bounded user custom text field. Structured search
+supports quoted values, implicit or explicit `and`, fixed metadata selectors,
+and safe lowercase `#key` selectors. Literal search also includes user custom
+field keys and values. The reserved candidate-audit field is excluded from
+search, catalogues, portable interchange, and ordinary metadata updates.
+Structured search intentionally does not yet support `or`, parentheses,
+regular expressions, numeric/date comparisons, library-defined column labels,
+typed custom values, custom sorting, or custom facets.
+
+The desktop metadata editor can keep, replace, or clear up to 64 bounded custom
+text fields per book, and the inspector shows them as sorted `#key` entries.
+This is not yet Calibre's full custom-column system: Takio does not currently
+have library-level column definitions, types, table-column configuration,
+custom facets, or bulk delta editing.
 The Rust migration currently exposes the core daily-driver and automation surface:
 
 | Command family | Purpose |
@@ -234,9 +244,11 @@ The caller chooses and owns the output path. Takio refuses to overwrite an
 existing file. The Rust CLI currently advertises the five Calibre-backed
 pairs only: EPUB to PDF, EPUB to AZW3, and DOCX, HTML, or TXT to EPUB. Native
 EPUB-to-KEPUB remains unavailable. Metadata automation, polishing, attachment
-reconciliation, virtual libraries, backup restore, loopback content serving, and rooted
-Kindle SSH are implemented natively. Portable rebuild, Calibre-library import,
-watched import, and duplicate review remain explicit migration gaps.
+reconciliation, virtual libraries, backup restore, portable rebuild,
+Calibre-library import, watched import, duplicate review, loopback content
+serving, and rooted Kindle SSH are implemented natively. Full typed custom
+columns, arbitrary save-to-disk expressions, richer device transports, and
+built-in reading/editing remain product gaps.
 
 Mounted-volume delivery uses a private partial file, verifies bytes and SHA-256,
 then records the delivery in `.takio/deliveries.json`. Removal verifies the file
