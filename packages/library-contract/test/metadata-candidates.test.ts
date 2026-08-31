@@ -219,6 +219,12 @@ describe("bulk metadata candidate contract", () => {
       ...request,
       itemIds: ["😀"],
     }).success).toBe(false);
+    for (const itemId of [".", ".."] as const) {
+      expect(bulkMetadataCandidateDiscoveryRequestSchema.safeParse({
+        ...request,
+        itemIds: [itemId],
+      }).success).toBe(false);
+    }
   });
 
   it("keeps every schema-valid compact request within the structured transport cap", () => {

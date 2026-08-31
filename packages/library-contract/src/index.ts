@@ -1011,7 +1011,10 @@ const bulkMetadataCandidateItemIdSchema = z
   .trim()
   .min(1)
   .max(MAX_BULK_METADATA_CANDIDATE_ITEM_ID_LENGTH)
-  .regex(/^[A-Za-z0-9._-]+$/);
+  .regex(/^[A-Za-z0-9._-]+$/)
+  .refine((itemId) => itemId !== "." && itemId !== "..", {
+    message: "Bulk metadata candidate item ids must be safe stored item ids.",
+  });
 const bulkMetadataCandidateFailureCodeSchema = z.string().trim().min(1).max(120);
 
 export const bulkMetadataCandidateDiscoveryRequestSchema = z
