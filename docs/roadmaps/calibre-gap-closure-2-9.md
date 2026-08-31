@@ -258,6 +258,10 @@ Accept when:
 
 #### C1. Diagnostics and observability
 
+Status: first production vertical slice delivered in `70ea980`, `fb8d83c`,
+`def3c98`, and `028964e`. C1 remains open for durable operation audit records,
+queue/server/device summaries, and native Rust performance gates.
+
 Deliver:
 
 - Structured diagnostic bundle with redaction.
@@ -270,6 +274,26 @@ Accept when:
 - A support bundle contains enough evidence to diagnose a failed operation while
   excluding bearer tokens, private keys, and ebook contents.
 - Performance regressions fail reproducible gates.
+
+Delivered evidence:
+
+- `takio library diagnostics --dest <path>` atomically publishes a versioned,
+  bounded JSON support bundle without overwriting an existing destination.
+- The bundle reports application identity, platform and architecture, library
+  integrity or a stable verification failure, database presence and byte counts,
+  managed item and cover tree counts, and explicit capability flags.
+- Bundle contents omit library paths, filenames, titles, ebook bytes, content
+  hashes, raw operating-system errors, bearer tokens, private keys, and other
+  secrets. Public contract tests reject unknown or path-bearing fields.
+- Library verification failure still produces a useful bundle without creating or
+  mutating the missing or incompatible library.
+- Desktop Library Health exposes the same operation through a strict fixed Electron
+  argument mapping and response decoder, with explicit privacy copy and accessible
+  pending, success, and error states.
+- The checksummed macOS ARM64 release binary and packaged desktop sidecar both
+  passed public acceptance for exact byte/digest reporting, redaction, failed-store
+  capture, one-record JSON envelopes, and no-overwrite behavior. Release SHA-256:
+  `036fbf408c90ff8f9376644f54548bb359aa3ab1300b76f4eb76febe4839bd51`.
 
 #### C2. Recovery and contention
 
@@ -435,8 +459,10 @@ journeys.
 
 ## Current frontier
 
-1. Complete B1 with fetched cover candidates and review-surface selection.
-2. Establish C1 production diagnostics and native Rust scale benchmarks.
+1. Complete C1 durable operation audits, broader health summaries, and native Rust
+   scale benchmarks now that redacted support bundles are shipped.
+2. Extend B2 with virtual libraries, structured queries, and richer reusable bulk
+   organization workflows.
 3. Specify D1 device identity and simulator using real remount evidence.
 4. Prototype E1 secure EPUB reader resource isolation.
 5. Specify F1 recipe manifest and operation registry.
