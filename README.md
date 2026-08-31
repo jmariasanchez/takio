@@ -188,17 +188,14 @@ The Rust migration currently exposes the core daily-driver and automation surfac
 | `takio library format import`, `attach`, `remove`, `replace` | Manage owned copies and caller-owned format references, including guarded atomic replacement. |
 | `takio library cover set`, `remove` | Manage Takio-owned cover images. |
 | `takio library trash list`, `move`, `restore`, `purge` | Remove items recoverably or purge them permanently. |
-| `takio library import-calibre`, `import-watch`; `takio metadata extract`, `fetch`, `candidates`; `takio polish` | Import or watch libraries, use bounded Calibre metadata and polishing tools, and explicitly review local or online metadata candidates. |
+| `takio library import-calibre`, `import-watch`; `takio metadata extract`, `fetch`, `candidates`; `takio polish` | Import or watch libraries, use bounded Calibre metadata and polishing tools, and explicitly review local or online metadata candidates. `metadata candidates reconcile` performs ordered, cancellable, read-only discovery for up to 64 books with at most four workers. |
 | `takio jobs enqueue`, `list`, `get`, `cancel`, `retry`, `retry-attachment`, `run-next`, `drain` | Manage the schema-v4 durable foreground conversion queue and reconcile completed outputs with library items. |
 | `takio destination list`, `inventory`, `reconcile`, `remove`, `eject`, `rooted-kindle-send` | Discover mounted volumes, manage verified delivery records, or explicitly opt into hardened SSH/SCP delivery. |
 | `takio send` | Copy and SHA-256 verify an attached format on an authorized mounted destination. |
 | `takio serve` | Run an authenticated, loopback-only, read-only HTTP catalogue and format server. |
 
-The remaining reserved workflows are Calibre-library import, watched import,
-portable OPF export/rebuild, and duplicate review/merge. They return the stable
-`feature-unavailable` error and appear in `unsupportedCommands` from
-`takio capabilities`. The Rust binary does not launch Bun or JavaScript as a
-fallback.
+The Rust capabilities report currently advertises no reserved unsupported CLI
+commands. The standalone binary does not launch Bun or JavaScript as a fallback.
 
 Use `takio --library <name> ...` to keep independent named libraries under the
 Takio data directory. `--db <path>` remains available for an explicit physical

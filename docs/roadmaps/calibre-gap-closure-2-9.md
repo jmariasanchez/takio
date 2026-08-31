@@ -137,7 +137,9 @@ Windows rather than inferring it from cross-platform dependencies.
 Status: selected-book desktop slice delivered in `663541e` and hardened in
 `3db7264`, `e944aee`, `4a8e3ad`, `8582eee`, and `a99670a`. Equivalent
 selected-book TUI review delivered in `67d36f1` and hardened in `cbce02b` and
-`502b8c5`. Bounded bulk review remains open.
+`502b8c5`. Strict bounded bulk contracts and native discovery were delivered in
+`b69e6e0`, `4620d6b`, and `1b77e9a`; the accessible desktop review workflow was
+delivered in `0c4dd6b` and hardened in `4bd9019`.
 
 Deliver:
 
@@ -183,11 +185,25 @@ Delivered evidence:
   safety, stable item selection after title reordering, stale-result recovery,
   terminal control sanitization, compact confirmation affordances, Ctrl-C exit,
   terminal restoration, and command-palette access.
+- Bulk discovery accepts one strict schema-versioned request for at most 64 unique
+  books, preserves request order, uses no more than four Rust workers, produces
+  exactly one terminal outcome per book, and does not mutate the library. Signal
+  cancellation accounts for unfinished books explicitly.
+- The desktop bulk workflow uses fixed concurrency two, keeps online lookup behind
+  explicit opt-in, stops scheduling on cancellation, preserves bridge failure
+  codes, treats deletion during discovery as missing, and validates exact ordered
+  discovery and final-review counts against the shared contract.
+- Users review one book at a time with the same item-bound candidate and selective
+  field controls as the selected-book workflow. Approved mutations remain
+  sequential and transactional; skipped, missing, failed, and canceled books are
+  retained in the final report.
 
 Remaining acceptance work:
 
-- Add bounded, cancellable bulk reconciliation with per-book outcomes.
-- Integrate fetched cover choice into the candidate contract and review surface.
+- Integrate fetched cover choice into the candidate contract and review surfaces.
+- Consider a TUI multi-select queue for bulk review after the desktop workflow has
+  accumulated real usage evidence; the selected-book TUI and public CLI already
+  use the same validation and apply engine.
 
 #### B2. Virtual libraries and advanced organization
 
@@ -386,7 +402,7 @@ journeys.
 
 ## Current frontier
 
-1. Complete B1 with TUI review, bounded bulk reconciliation, and cover candidates.
+1. Complete B1 with fetched cover candidates and review-surface selection.
 2. Establish C1 production diagnostics and native Rust scale benchmarks.
 3. Specify D1 device identity and simulator using real remount evidence.
 4. Prototype E1 secure EPUB reader resource isolation.
