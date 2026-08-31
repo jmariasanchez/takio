@@ -261,7 +261,7 @@ describe("BunSqliteLibraryStore duplicate review", () => {
     });
   });
 
-  it("keeps canonically ordered non-BMP item IDs despite SQLite byte collation", async () => {
+  it("orders non-BMP item IDs by the canonical Rust and SQLite byte collation", async () => {
     const store = await openStore();
     const emojiId = "😀";
     const privateUseId = "\uE000";
@@ -279,7 +279,7 @@ describe("BunSqliteLibraryStore duplicate review", () => {
     const listed = await store.listDuplicateCandidates(firstPage);
     if (!listed.ok) throw new Error("Expected a non-BMP duplicate candidate");
     const candidate = listed.value.candidates[0]!;
-    expect([candidate.left.id, candidate.right.id]).toEqual([emojiId, privateUseId]);
+    expect([candidate.left.id, candidate.right.id]).toEqual([privateUseId, emojiId]);
     expect(
       await store.keepDuplicatePair({
         leftId: candidate.left.id,

@@ -682,6 +682,19 @@ describe("LibraryStore", () => {
         right: canonicalItem,
       }).success,
     ).toBe(false);
+    const privateUseCandidate = {
+      ...candidate,
+      left: { ...canonicalItem, id: "\uE000" },
+      right: { ...duplicateItem, id: "😀" },
+    };
+    expect(duplicateCandidateSchema.safeParse(privateUseCandidate).success).toBe(true);
+    expect(
+      duplicateCandidateSchema.safeParse({
+        ...privateUseCandidate,
+        left: privateUseCandidate.right,
+        right: privateUseCandidate.left,
+      }).success,
+    ).toBe(false);
     expect(
       listDuplicateCandidatesRequestSchema.safeParse({
         ...request,

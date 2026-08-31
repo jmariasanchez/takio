@@ -811,6 +811,8 @@ describe("BunSqliteLibraryStore", () => {
         `)
         .all(),
     ).toEqual([
+      { name: "import_watch_observations_by_accounted_at" },
+      { name: "import_watch_observations_by_fingerprint" },
       { name: "library_adoptions_by_state" },
       { name: "library_item_authors_by_name" },
       { name: "library_item_formats_by_fingerprint" },
@@ -2377,6 +2379,7 @@ describe("BunSqliteLibraryStore", () => {
         .all(),
     ).toEqual([
       { name: "duplicate_pair_reviews", type: "table" },
+      { name: "import_watch_observations", type: "table" },
       { name: "library_adoptions", type: "table" },
       { name: "library_custom_column_definitions", type: "table" },
       { name: "library_item_authors", type: "table" },

@@ -1494,6 +1494,24 @@ function verifyCanonicalDefinitionTable(database: Database): void {
   verifyDefinitionRows(database, "library_custom_column_definitions");
 }
 
+function verifyCanonicalTable(database: Database, table: string, expectedDdl: string): void {
+  const ddl = tableDdl(database, table);
+  if (!ddl || normalizeSql(ddl) !== normalizeSql(expectedDdl)) {
+    throw new Error("The migrated database could not be verified.");
+  }
+}
+
+function verifyCanonicalIndex(database: Database, index: string, expectedDdl: string): void {
+  const ddl = database
+    .query<{ sql: string }, [string]>(
+      "SELECT sql FROM sqlite_schema WHERE type = 'index' AND name = ?",
+    )
+    .get(index)?.sql;
+  if (!ddl || normalizeSql(ddl) !== normalizeSql(expectedDdl)) {
+    throw new Error("The migrated database could not be verified.");
+  }
+}
+
 function createLegacyLibraryTextColumnDefinitionsTable(database: Database): void {
   database.run(`
     CREATE TABLE IF NOT EXISTS library_text_column_definitions (
@@ -1620,17 +1638,80 @@ function createManagedFingerprintIndex(database: Database): void {
   `);
 }
 
+const DUPLICATE_PAIR_REVIEWS_DDL = `
+  CREATE TABLE duplicate_pair_reviews (
+    left_id TEXT NOT NULL REFERENCES library_items(id) ON DELETE CASCADE,
+    right_id TEXT NOT NULL REFERENCES library_items(id) ON DELETE CASCADE,
+    review_token TEXT NOT NULL CHECK (
+      length(review_token) = 64 AND review_token NOT GLOB '*[^0-9a-f]*'
+    ),
+    reviewed_at TEXT NOT NULL CHECK (length(reviewed_at) > 0),
+    PRIMARY KEY (left_id, right_id),
+    CHECK (left_id < right_id)
+  ) STRICT
+`;
+
+const LEGACY_DUPLICATE_PAIR_REVIEWS_DDL = `
+  CREATE TABLE duplicate_pair_reviews (
+    left_id TEXT NOT NULL REFERENCES library_items(id) ON DELETE CASCADE,
+    right_id TEXT NOT NULL REFERENCES library_items(id) ON DELETE CASCADE,
+    review_token TEXT NOT NULL CHECK (
+      length(review_token) = 64 AND review_token NOT GLOB '*[^0-9a-f]*'
+    ),
+    reviewed_at TEXT NOT NULL,
+    PRIMARY KEY (left_id, right_id)
+  ) STRICT
+`;
+
+const SOURCE_FILE_CLEANUP_DDL = `
+  CREATE TABLE source_file_cleanup (
+    source_path TEXT PRIMARY KEY CHECK (length(source_path) > 0),
+    content_bytes INTEGER NOT NULL CHECK (content_bytes >= 0),
+    content_sha256 TEXT NOT NULL CHECK (
+      length(content_sha256) = 64 AND content_sha256 NOT GLOB '*[^0-9a-f]*'
+    )
+  ) STRICT
+`;
+
+const LEGACY_SOURCE_FILE_CLEANUP_DDL = `
+  CREATE TABLE source_file_cleanup (
+    source_path TEXT PRIMARY KEY,
+    content_bytes INTEGER NOT NULL CHECK (content_bytes >= 0),
+    content_sha256 TEXT NOT NULL CHECK (
+      length(content_sha256) = 64 AND content_sha256 NOT GLOB '*[^0-9a-f]*'
+    )
+  ) STRICT
+`;
+
+const IMPORT_WATCH_OBSERVATIONS_DDL = `
+  CREATE TABLE import_watch_observations (
+    canonical_source_path TEXT PRIMARY KEY CHECK (length(canonical_source_path) > 0),
+    content_bytes INTEGER NOT NULL CHECK (content_bytes >= 0),
+    content_sha256 TEXT NOT NULL CHECK (
+      length(content_sha256) = 64 AND content_sha256 NOT GLOB '*[^0-9a-f]*'
+    ),
+    outcome TEXT NOT NULL CHECK (outcome IN ('imported', 'duplicate', 'unsupported', 'failed')),
+    accounted_at TEXT NOT NULL CHECK (length(accounted_at) > 0)
+  ) STRICT
+`;
+
 function createDuplicatePairReviewsTable(database: Database): void {
+  database.run(DUPLICATE_PAIR_REVIEWS_DDL);
+}
+
+function createSourceCleanupTable(database: Database): void {
+  database.run(SOURCE_FILE_CLEANUP_DDL);
+}
+
+function createImportWatchObservationsTable(database: Database): void {
+  database.run(IMPORT_WATCH_OBSERVATIONS_DDL);
   database.run(`
-    CREATE TABLE duplicate_pair_reviews (
-      left_id TEXT NOT NULL REFERENCES library_items(id) ON DELETE CASCADE,
-      right_id TEXT NOT NULL REFERENCES library_items(id) ON DELETE CASCADE,
-      review_token TEXT NOT NULL CHECK (
-        length(review_token) = 64 AND review_token NOT GLOB '*[^0-9a-f]*'
-      ),
-      reviewed_at TEXT NOT NULL,
-      PRIMARY KEY (left_id, right_id)
-    ) STRICT
+    CREATE INDEX import_watch_observations_by_accounted_at
+    ON import_watch_observations(accounted_at, canonical_source_path)
+  `);
+  database.run(`
+    CREATE INDEX import_watch_observations_by_fingerprint
+    ON import_watch_observations(content_bytes, content_sha256, canonical_source_path)
   `);
 }
 
@@ -1686,6 +1767,61 @@ function migrateV11ToV12(database: Database): void {
     `);
     database.run("DROP TABLE library_text_column_definitions");
   }
+
+  const duplicateReviewsDdl = tableDdl(database, "duplicate_pair_reviews");
+  if (duplicateReviewsDdl === null) {
+    createDuplicatePairReviewsTable(database);
+  } else if (normalizeSql(duplicateReviewsDdl) === normalizeSql(LEGACY_DUPLICATE_PAIR_REVIEWS_DDL)) {
+    database.run("ALTER TABLE duplicate_pair_reviews RENAME TO duplicate_pair_reviews_v11");
+    createDuplicatePairReviewsTable(database);
+    database.run(`
+      INSERT INTO duplicate_pair_reviews (left_id, right_id, review_token, reviewed_at)
+      SELECT left_id, right_id, review_token, reviewed_at FROM duplicate_pair_reviews_v11
+    `);
+    database.run("DROP TABLE duplicate_pair_reviews_v11");
+  } else if (normalizeSql(duplicateReviewsDdl) !== normalizeSql(DUPLICATE_PAIR_REVIEWS_DDL)) {
+    throw incompatibleSchema;
+  }
+
+  const sourceCleanupDdl = tableDdl(database, "source_file_cleanup");
+  if (sourceCleanupDdl === null) {
+    createSourceCleanupTable(database);
+  } else if (normalizeSql(sourceCleanupDdl) === normalizeSql(LEGACY_SOURCE_FILE_CLEANUP_DDL)) {
+    database.run("ALTER TABLE source_file_cleanup RENAME TO source_file_cleanup_v11");
+    createSourceCleanupTable(database);
+    database.run(`
+      INSERT INTO source_file_cleanup (source_path, content_bytes, content_sha256)
+      SELECT source_path, content_bytes, content_sha256 FROM source_file_cleanup_v11
+    `);
+    database.run("DROP TABLE source_file_cleanup_v11");
+  } else if (normalizeSql(sourceCleanupDdl) !== normalizeSql(SOURCE_FILE_CLEANUP_DDL)) {
+    throw incompatibleSchema;
+  }
+
+  const importWatchDdl = tableDdl(database, "import_watch_observations");
+  if (importWatchDdl === null) {
+    createImportWatchObservationsTable(database);
+  } else {
+    if (normalizeSql(importWatchDdl) !== normalizeSql(IMPORT_WATCH_OBSERVATIONS_DDL)) {
+      throw incompatibleSchema;
+    }
+    try {
+      verifyCanonicalIndex(
+        database,
+        "import_watch_observations_by_accounted_at",
+        `CREATE INDEX import_watch_observations_by_accounted_at
+          ON import_watch_observations(accounted_at, canonical_source_path)`,
+      );
+      verifyCanonicalIndex(
+        database,
+        "import_watch_observations_by_fingerprint",
+        `CREATE INDEX import_watch_observations_by_fingerprint
+          ON import_watch_observations(content_bytes, content_sha256, canonical_source_path)`,
+      );
+    } catch {
+      throw incompatibleSchema;
+    }
+  }
 }
 
 function ensureManagedCleanupTable(database: Database): void {
@@ -1705,15 +1841,7 @@ function ensureManagedCleanupTable(database: Database): void {
 }
 
 function ensureSourceCleanupTable(database: Database): void {
-  database.run(`
-    CREATE TABLE IF NOT EXISTS source_file_cleanup (
-      source_path TEXT PRIMARY KEY,
-      content_bytes INTEGER NOT NULL CHECK (content_bytes >= 0),
-      content_sha256 TEXT NOT NULL CHECK (
-        length(content_sha256) = 64 AND content_sha256 NOT GLOB '*[^0-9a-f]*'
-      )
-    ) STRICT
-  `);
+  if (tableDdl(database, "source_file_cleanup") === null) createSourceCleanupTable(database);
 }
 
 function sourceCleanupPending(
@@ -2381,7 +2509,7 @@ function verifyV8Database(
       ({ leftId, rightId, reviewToken, reviewedAt }) =>
         typeof leftId !== "string" ||
         typeof rightId !== "string" ||
-        leftId >= rightId ||
+        compareDuplicateStrings(leftId, rightId) >= 0 ||
         typeof reviewToken !== "string" ||
         !/^[0-9a-f]{64}$/.test(reviewToken) ||
         !isStoredTrashTimestamp(reviewedAt),
@@ -2561,6 +2689,21 @@ function verifyV12Database(
     throw new Error("The migrated database could not be verified.");
   }
   verifyCanonicalDefinitionTable(database);
+  verifyCanonicalTable(database, "duplicate_pair_reviews", DUPLICATE_PAIR_REVIEWS_DDL);
+  verifyCanonicalTable(database, "source_file_cleanup", SOURCE_FILE_CLEANUP_DDL);
+  verifyCanonicalTable(database, "import_watch_observations", IMPORT_WATCH_OBSERVATIONS_DDL);
+  verifyCanonicalIndex(
+    database,
+    "import_watch_observations_by_accounted_at",
+    `CREATE INDEX import_watch_observations_by_accounted_at
+      ON import_watch_observations(accounted_at, canonical_source_path)`,
+  );
+  verifyCanonicalIndex(
+    database,
+    "import_watch_observations_by_fingerprint",
+    `CREATE INDEX import_watch_observations_by_fingerprint
+      ON import_watch_observations(content_bytes, content_sha256, canonical_source_path)`,
+  );
 }
 
 function verifyV10Backup(
@@ -3690,8 +3833,18 @@ function normalizeDuplicateText(value: string): string {
   return value.normalize("NFKC").trim().replace(/\s+/g, " ").toLowerCase();
 }
 
+const duplicateIdEncoder = new TextEncoder();
+
 function compareDuplicateStrings(left: string, right: string): number {
-  return left < right ? -1 : left > right ? 1 : 0;
+  const leftBytes = duplicateIdEncoder.encode(left);
+  const rightBytes = duplicateIdEncoder.encode(right);
+  const sharedLength = Math.min(leftBytes.length, rightBytes.length);
+  for (let index = 0; index < sharedLength; index += 1) {
+    if (leftBytes[index] !== rightBytes[index]) {
+      return leftBytes[index]! < rightBytes[index]! ? -1 : 1;
+    }
+  }
+  return leftBytes.length < rightBytes.length ? -1 : leftBytes.length > rightBytes.length ? 1 : 0;
 }
 
 function duplicatePairKey(leftId: string, rightId: string): string {
@@ -4145,6 +4298,7 @@ export class BunSqliteLibraryStore
           createDuplicatePairReviewsTable(database!);
           createLibraryAdoptionsTable(database!);
           ensureSourceCleanupTable(database!);
+          createImportWatchObservationsTable(database!);
           verifyV12Database(database!, this.#coversDirectory, this.#itemsDirectory);
           database!.run(`PRAGMA user_version = ${SCHEMA_VERSION}`);
         } else if (version === 1) {
@@ -6274,7 +6428,7 @@ export class BunSqliteLibraryStore
           if (
             typeof row.leftId !== "string" ||
             typeof row.rightId !== "string" ||
-            row.leftId >= row.rightId ||
+            compareDuplicateStrings(row.leftId, row.rightId) >= 0 ||
             typeof row.reviewToken !== "string" ||
             !/^[0-9a-f]{64}$/.test(row.reviewToken) ||
             !isStoredTrashTimestamp(row.reviewedAt)

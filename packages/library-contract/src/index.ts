@@ -98,6 +98,20 @@ function uniqueTextValuesSchema(message: string) {
     .readonly();
 }
 
+const canonicalTextEncoder = new TextEncoder();
+
+function compareCanonicalText(left: string, right: string): number {
+  const leftBytes = canonicalTextEncoder.encode(left);
+  const rightBytes = canonicalTextEncoder.encode(right);
+  const sharedLength = Math.min(leftBytes.length, rightBytes.length);
+  for (let index = 0; index < sharedLength; index += 1) {
+    if (leftBytes[index] !== rightBytes[index]) {
+      return leftBytes[index]! < rightBytes[index]! ? -1 : 1;
+    }
+  }
+  return leftBytes.length < rightBytes.length ? -1 : leftBytes.length > rightBytes.length ? 1 : 0;
+}
+
 export const libraryQueryFiltersSchema = z
   .object({
     authors: uniqueTextValuesSchema("Authors must be unique ignoring case."),
@@ -304,7 +318,7 @@ export const duplicateCandidateSchema = z
   })
   .strict()
   .superRefine((candidate, context) => {
-    if (candidate.left.id >= candidate.right.id) {
+    if (compareCanonicalText(candidate.left.id, candidate.right.id) >= 0) {
       context.addIssue({
         code: z.ZodIssueCode.custom,
         path: ["right", "id"],
@@ -368,7 +382,7 @@ const duplicatePairReviewRequestSchema = z
   })
   .strict()
   .superRefine((request, context) => {
-    if (request.leftId >= request.rightId) {
+    if (compareCanonicalText(request.leftId, request.rightId) >= 0) {
       context.addIssue({
         code: z.ZodIssueCode.custom,
         path: ["rightId"],

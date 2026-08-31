@@ -52,6 +52,70 @@ describe("library integrity verification", () => {
     });
   });
 
+  it("creates Rust-canonical v12 cleanup, review, and import-watch DDL", async () => {
+    const store = new BunSqliteLibraryStore(databasePath);
+    expect(await store.open({ config: {} })).toEqual({ ok: true, value: null });
+    store.close();
+
+    using database = new Database(databasePath, { strict: true });
+    expect(
+      database
+        .query<{ name: string }, []>(`
+          SELECT name FROM sqlite_schema
+          WHERE name IN (
+            'duplicate_pair_reviews',
+            'source_file_cleanup',
+            'import_watch_observations',
+            'import_watch_observations_by_accounted_at',
+            'import_watch_observations_by_fingerprint'
+          )
+          ORDER BY name
+        `)
+        .all(),
+    ).toEqual([
+      { name: "duplicate_pair_reviews" },
+      { name: "import_watch_observations" },
+      { name: "import_watch_observations_by_accounted_at" },
+      { name: "import_watch_observations_by_fingerprint" },
+      { name: "source_file_cleanup" },
+    ]);
+    expect(() =>
+      database.run(
+        "INSERT INTO source_file_cleanup VALUES ('', 0, ?)",
+        ["a".repeat(64)],
+      ),
+    ).toThrow();
+    expect(() =>
+      database.run(
+        "INSERT INTO import_watch_observations VALUES ('', 0, ?, 'unknown', '')",
+        ["a".repeat(64)],
+      ),
+    ).toThrow();
+  });
+
+  it(
+    "passes the native Rust library verify command after Bun creates the database",
+    async () => {
+      const store = new BunSqliteLibraryStore(databasePath);
+      expect(await store.open({ config: {} })).toEqual({ ok: true, value: null });
+      store.close();
+
+      const result = Bun.spawnSync({
+        cmd: ["cargo", "run", "--quiet", "-p", "takio", "--", "library", "verify", "--db", databasePath],
+        cwd: join(import.meta.dir, "../../.."),
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      expect(new TextDecoder().decode(result.stderr)).toBe("");
+      expect(result.exitCode).toBe(0);
+      expect(JSON.parse(new TextDecoder().decode(result.stdout))).toMatchObject({
+        ok: true,
+        value: { report: { schemaVersion: 12 } },
+      });
+    },
+    120_000,
+  );
+
   it("detects a changed managed file from its stored SHA-256 fingerprint", async () => {
     const sourcePath = join(root, "book.epub");
     await Bun.write(sourcePath, "original ebook");
@@ -250,7 +314,7 @@ describe("library integrity verification", () => {
     restored.close();
   });
 
-  it("backs up a schema-v9 library created before source cleanup tracking", async () => {
+  it("rejects backup after a current-schema cleanup table is removed", async () => {
     const sourceRoot = join(root, "legacy-v9-library");
     await mkdir(sourceRoot);
     databasePath = join(sourceRoot, "library.sqlite");
@@ -260,8 +324,9 @@ describe("library integrity verification", () => {
     using database = new Database(databasePath, { strict: true });
     database.run("DROP TABLE source_file_cleanup");
 
-    expect(createLibraryBackup(databasePath, join(root, "legacy-v9-backup"))).toMatchObject({
-      ok: true,
+    expect(createLibraryBackup(databasePath, join(root, "damaged-backup"))).toEqual({
+      ok: false,
+      error: { code: "integrity-failed" },
     });
   });
 
