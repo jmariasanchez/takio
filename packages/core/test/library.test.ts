@@ -8,6 +8,8 @@ import {
   bookFormatSchema,
   bookFormatsSchema,
   bookIdentifiersSchema,
+  libraryTextColumnDefinitionSchema,
+  libraryTextColumnDefinitionsSchema,
   languageTagSchema,
   libraryItemSchema,
   normalizeTags,
@@ -17,6 +19,7 @@ import {
   type BookFormat,
   type BookIdentifiers,
   type LibraryItem,
+  type LibraryTextColumnDefinition,
 } from "../src/index.js";
 
 const v1Item = {
@@ -229,6 +232,33 @@ describe("libraryItemSchema", () => {
         takio_metadata_audit: "{}",
       }).success,
     ).toBe(true);
+  });
+
+  it("validates ordered library-defined text columns strictly", () => {
+    const shelf: LibraryTextColumnDefinition = {
+      key: "shelf",
+      label: "Shelf",
+      type: "text",
+      position: 0,
+    };
+
+    expect(libraryTextColumnDefinitionSchema.parse({ ...shelf, label: "  Shelf  " })).toEqual(shelf);
+    expect(libraryTextColumnDefinitionsSchema.parse([shelf])).toEqual([shelf]);
+    for (const invalid of [
+      { ...shelf, key: "Bad Key" },
+      { ...shelf, key: "takio_metadata_audit" },
+      { ...shelf, label: " " },
+      { ...shelf, label: "x".repeat(121) },
+      { ...shelf, type: "number" },
+      { ...shelf, extra: true },
+    ]) {
+      expect(libraryTextColumnDefinitionSchema.safeParse(invalid).success).toBe(false);
+    }
+    expect(
+      libraryTextColumnDefinitionsSchema.safeParse([shelf, { ...shelf, label: "Duplicate", position: 1 }])
+        .success,
+    ).toBe(false);
+    expect(libraryTextColumnDefinitionsSchema.safeParse([{ ...shelf, position: 1 }]).success).toBe(false);
   });
 
   it("preserves language order and publication-date precision", () => {

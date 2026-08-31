@@ -59,6 +59,55 @@ export const bookCustomMetadataSchema = z
 
 export type BookCustomMetadata = z.infer<typeof bookCustomMetadataSchema>;
 
+export const MAX_LIBRARY_TEXT_COLUMN_DEFINITIONS = 64;
+export const LIBRARY_TEXT_COLUMN_RESERVED_KEY = "takio_metadata_audit";
+
+export const libraryTextColumnKeySchema = z
+  .string()
+  .regex(/^[a-z][a-z0-9_]{0,63}$/)
+  .refine((key) => key !== LIBRARY_TEXT_COLUMN_RESERVED_KEY, {
+    message: "Reserved Takio metadata cannot be defined as a library column.",
+  });
+
+export const libraryTextColumnLabelSchema = z.string().trim().min(1).max(120);
+
+export const libraryTextColumnDefinitionSchema = z
+  .object({
+    key: libraryTextColumnKeySchema,
+    label: libraryTextColumnLabelSchema,
+    type: z.literal("text"),
+    position: z.number().int().min(0).max(MAX_LIBRARY_TEXT_COLUMN_DEFINITIONS - 1),
+  })
+  .strict()
+  .readonly();
+
+export type LibraryTextColumnDefinition = z.infer<typeof libraryTextColumnDefinitionSchema>;
+
+export const libraryTextColumnDefinitionsSchema = z
+  .array(libraryTextColumnDefinitionSchema)
+  .max(MAX_LIBRARY_TEXT_COLUMN_DEFINITIONS)
+  .superRefine((definitions, context) => {
+    const keys = new Set<string>();
+    for (const [index, definition] of definitions.entries()) {
+      if (keys.has(definition.key)) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [index, "key"],
+          message: "Library text column keys must be unique.",
+        });
+      }
+      keys.add(definition.key);
+      if (definition.position !== index) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [index, "position"],
+          message: "Library text column positions must be ordered and contiguous.",
+        });
+      }
+    }
+  })
+  .readonly();
+
 export const publishedDateSchema = z
   .string()
   .regex(/^\d{4}(?:-(?:0[1-9]|1[0-2])(?:-(?:0[1-9]|[12]\d|3[01]))?)?$/)

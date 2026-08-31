@@ -6,9 +6,13 @@ import {
   bookIdentifiersSchema,
   languageTagSchema,
   libraryItemSchema,
+  libraryTextColumnDefinitionSchema,
+  libraryTextColumnKeySchema,
+  libraryTextColumnLabelSchema,
   publishedDateSchema,
   type FormatId,
   type LibraryItem,
+  type LibraryTextColumnDefinition,
 } from "@takio/core";
 import { z } from "zod";
 
@@ -896,6 +900,7 @@ export type LibraryHealthDiagnosticsWireResult = LibraryHealthWireResult<z.infer
 
 export const LIBRARY_STORE_ERROR_CODES = [
   "duplicate-id",
+  "not-found",
   "invalid-stored-data",
   "storage-unavailable",
   "incompatible-schema",
@@ -922,6 +927,31 @@ export type LibraryStoreResult<T> =
 export type LibraryStoreConfig = Readonly<Record<string, never>>;
 export type OpenLibraryRequest = Readonly<{ config: LibraryStoreConfig }>;
 export type ListLibraryItemsRequest = Readonly<Record<string, never>>;
+export const listLibraryTextColumnDefinitionsRequestSchema = z.object({}).strict().readonly();
+export const createLibraryTextColumnDefinitionRequestSchema = z
+  .object({ key: libraryTextColumnKeySchema, label: libraryTextColumnLabelSchema })
+  .strict()
+  .readonly();
+export const renameLibraryTextColumnDefinitionRequestSchema = z
+  .object({ key: libraryTextColumnKeySchema, label: libraryTextColumnLabelSchema })
+  .strict()
+  .readonly();
+export const removeLibraryTextColumnDefinitionRequestSchema = z
+  .object({ key: libraryTextColumnKeySchema })
+  .strict()
+  .readonly();
+export type ListLibraryTextColumnDefinitionsRequest = z.infer<
+  typeof listLibraryTextColumnDefinitionsRequestSchema
+>;
+export type CreateLibraryTextColumnDefinitionRequest = z.infer<
+  typeof createLibraryTextColumnDefinitionRequestSchema
+>;
+export type RenameLibraryTextColumnDefinitionRequest = z.infer<
+  typeof renameLibraryTextColumnDefinitionRequestSchema
+>;
+export type RemoveLibraryTextColumnDefinitionRequest = z.infer<
+  typeof removeLibraryTextColumnDefinitionRequestSchema
+>;
 export type GetLibraryItemRequest = Readonly<{ id: string }>;
 export type AddLibraryItemRequest = Readonly<{ item: LibraryItem }>;
 export type LibraryImportMode = (typeof LIBRARY_IMPORT_MODES)[number];
@@ -1595,6 +1625,12 @@ export type RemoveLibraryCoverRequest = Readonly<{ id: string }>;
 export type SearchLibraryItemsRequest = Readonly<{ query: string }>;
 
 export type OpenLibraryResult = LibraryStoreResult<null>;
+export type ListLibraryTextColumnDefinitionsResult = LibraryStoreResult<
+  readonly LibraryTextColumnDefinition[]
+>;
+export type CreateLibraryTextColumnDefinitionResult = LibraryStoreResult<LibraryTextColumnDefinition>;
+export type RenameLibraryTextColumnDefinitionResult = LibraryStoreResult<LibraryTextColumnDefinition>;
+export type RemoveLibraryTextColumnDefinitionResult = LibraryStoreResult<LibraryTextColumnDefinition>;
 export type ListLibraryItemsResult = LibraryStoreResult<readonly LibraryItem[]>;
 export type GetLibraryItemResult = LibraryStoreResult<LibraryItem | null>;
 export type AddLibraryItemResult = LibraryStoreResult<LibraryItem>;
@@ -1691,6 +1727,21 @@ export type LibraryDuplicateMergeWireResult = MergeDuplicatePairResult;
 export interface LibraryQueryStore {
   /** Returns active items only; trashed items do not contribute to items, totals, or facets. */
   query(request: QueryLibraryItemsRequest): Promise<QueryLibraryItemsResult>;
+}
+
+export interface LibraryTextColumnDefinitionStore {
+  listTextColumnDefinitions(
+    request: ListLibraryTextColumnDefinitionsRequest,
+  ): Promise<ListLibraryTextColumnDefinitionsResult>;
+  createTextColumnDefinition(
+    request: CreateLibraryTextColumnDefinitionRequest,
+  ): Promise<CreateLibraryTextColumnDefinitionResult>;
+  renameTextColumnDefinition(
+    request: RenameLibraryTextColumnDefinitionRequest,
+  ): Promise<RenameLibraryTextColumnDefinitionResult>;
+  removeTextColumnDefinition(
+    request: RemoveLibraryTextColumnDefinitionRequest,
+  ): Promise<RemoveLibraryTextColumnDefinitionResult>;
 }
 
 export interface SavedLibraryViewStore {

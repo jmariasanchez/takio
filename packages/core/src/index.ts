@@ -20,6 +20,8 @@ export {
 } from "./conversion.js";
 export {
   BOOK_FORMAT_PROVENANCES,
+  LIBRARY_TEXT_COLUMN_RESERVED_KEY,
+  MAX_LIBRARY_TEXT_COLUMN_DEFINITIONS,
   InMemoryLibraryRepository,
   bookAuthorSchema,
   bookCustomMetadataSchema,
@@ -27,6 +29,10 @@ export {
   bookFormatsSchema,
   bookIdentifiersSchema,
   languageTagSchema,
+  libraryTextColumnDefinitionSchema,
+  libraryTextColumnDefinitionsSchema,
+  libraryTextColumnKeySchema,
+  libraryTextColumnLabelSchema,
   libraryItemSchema,
   normalizeTags,
   publishedDateSchema,
@@ -36,6 +42,7 @@ export {
   type BookFormatProvenance,
   type BookIdentifiers,
   type LibraryItem,
+  type LibraryTextColumnDefinition,
 } from "./library.js";
 export {
   PlanningError,

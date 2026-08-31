@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import { libraryTextColumnDefinitionSchema } from "@takio/core";
 
 import {
   LIBRARY_QUERY_SORT_DIRECTIONS,
@@ -51,6 +52,7 @@ import {
   type VirtualLibraryStore,
   type LibraryStore,
   type LibraryStoreResult,
+  type LibraryTextColumnDefinitionStore,
   type RemoveLibraryFormatRequest,
   type RemoveLibraryFormatResult,
   type RemoveLibraryItemResult,
@@ -61,6 +63,10 @@ import {
   type ReopenDuplicatePairResult,
   type TrashLibraryItemResult,
   libraryMetadataPatchSchema,
+  createLibraryTextColumnDefinitionRequestSchema,
+  listLibraryTextColumnDefinitionsRequestSchema,
+  removeLibraryTextColumnDefinitionRequestSchema,
+  renameLibraryTextColumnDefinitionRequestSchema,
   importLibraryItemsRequestSchema,
   exportLibraryItemsRequestSchema,
   libraryExportEntryOutcomeSchema,
@@ -127,6 +133,44 @@ const duplicateItem = {
 const duplicateReviewToken = "a".repeat(64);
 
 describe("LibraryStore", () => {
+  it("defines strict text-column definition requests and store operations", async () => {
+    expect(listLibraryTextColumnDefinitionsRequestSchema.parse({})).toEqual({});
+    expect(createLibraryTextColumnDefinitionRequestSchema.parse({ key: "shelf", label: " Shelf " })).toEqual({
+      key: "shelf",
+      label: "Shelf",
+    });
+    expect(renameLibraryTextColumnDefinitionRequestSchema.parse({ key: "shelf", label: "Favorites" })).toEqual({
+      key: "shelf",
+      label: "Favorites",
+    });
+    expect(removeLibraryTextColumnDefinitionRequestSchema.parse({ key: "shelf" })).toEqual({ key: "shelf" });
+    for (const invalid of [
+      { key: "takio_metadata_audit", label: "Audit" },
+      { key: "Bad Key", label: "Shelf" },
+      { key: "shelf", label: " " },
+      { key: "shelf", label: "x".repeat(121) },
+      { key: "shelf", label: "Shelf", type: "text" },
+    ]) {
+      expect(createLibraryTextColumnDefinitionRequestSchema.safeParse(invalid).success).toBe(false);
+    }
+
+    const store: LibraryTextColumnDefinitionStore = {
+      listTextColumnDefinitions: async () => ({ ok: true, value: [] }),
+      createTextColumnDefinition: async ({ key, label }) => ({
+        ok: true,
+        value: libraryTextColumnDefinitionSchema.parse({ key, label, type: "text", position: 0 }),
+      }),
+      renameTextColumnDefinition: async ({ key, label }) => ({
+        ok: true,
+        value: libraryTextColumnDefinitionSchema.parse({ key, label, type: "text", position: 0 }),
+      }),
+      removeTextColumnDefinition: async ({ key }) => ({
+        ok: true,
+        value: libraryTextColumnDefinitionSchema.parse({ key, label: "Shelf", type: "text", position: 0 }),
+      }),
+    };
+    await expect(store.listTextColumnDefinitions({})).resolves.toEqual({ ok: true, value: [] });
+  });
   it("defines an explicit organize import mode and cleanup status", () => {
     expect(LIBRARY_IMPORT_MODES).toEqual(["copy", "move"]);
     expect(
@@ -1031,6 +1075,7 @@ describe("LibraryStore", () => {
   it("publishes driver-independent error codes", () => {
     expect(LIBRARY_STORE_ERROR_CODES).toEqual([
       "duplicate-id",
+      "not-found",
       "invalid-stored-data",
       "storage-unavailable",
       "incompatible-schema",

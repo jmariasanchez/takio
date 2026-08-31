@@ -5,17 +5,23 @@ import {
   detectFormat,
   FORMAT_CATALOG,
   FORMAT_IDS,
+  MAX_LIBRARY_TEXT_COLUMN_DEFINITIONS,
   libraryItemSchema,
+  libraryTextColumnDefinitionSchema,
+  libraryTextColumnDefinitionsSchema,
   sanitizeDestinationFileName,
   type BookFormatProvenance,
   type FormatId,
   type LibraryItem,
+  type LibraryTextColumnDefinition,
 } from "@takio/core";
 import {
+  createLibraryTextColumnDefinitionRequestSchema,
   duplicateCandidatePageSchema,
   exportLibraryItemsRequestSchema,
   keepDuplicatePairRequestSchema,
   listDuplicateCandidatesRequestSchema,
+  listLibraryTextColumnDefinitionsRequestSchema,
   libraryMetadataPatchSchema,
   importLibraryItemsRequestSchema,
   libraryQueryPageSchema,
@@ -28,8 +34,10 @@ import {
   queryLibraryItemsRequestSchema,
   replaceLibraryFormatRequestSchema,
   removeSavedLibraryViewRequestSchema,
+  removeLibraryTextColumnDefinitionRequestSchema,
   reopenDuplicatePairRequestSchema,
   restoreLibraryItemRequestSchema,
+  renameLibraryTextColumnDefinitionRequestSchema,
   savedLibraryViewSchema,
   saveSavedLibraryViewRequestSchema,
   trashLibraryItemRequestSchema,
@@ -37,6 +45,8 @@ import {
 import type {
   AddLibraryItemRequest,
   AddLibraryItemResult,
+  CreateLibraryTextColumnDefinitionRequest,
+  CreateLibraryTextColumnDefinitionResult,
   AdoptLibraryItemRequest,
   AdoptLibraryItemResult,
   AttachLibraryFormatRequest,
@@ -62,6 +72,7 @@ import type {
   LibraryStore,
   LibraryStoreErrorCode,
   LibraryStoreResult,
+  LibraryTextColumnDefinitionStore,
   LibraryFormatReplacementStore,
   LibraryItemTrashStore,
   LibraryQueryStore,
@@ -71,6 +82,8 @@ import type {
   ListSavedLibraryViewsResult,
   ListLibraryItemsRequest,
   ListLibraryItemsResult,
+  ListLibraryTextColumnDefinitionsRequest,
+  ListLibraryTextColumnDefinitionsResult,
   ListDuplicateCandidatesRequest,
   ListDuplicateCandidatesResult,
   MergeDuplicatePairRequest,
@@ -85,12 +98,16 @@ import type {
   RemoveLibraryFormatResult,
   RemoveLibraryItemRequest,
   RemoveLibraryItemResult,
+  RemoveLibraryTextColumnDefinitionRequest,
+  RemoveLibraryTextColumnDefinitionResult,
   RemoveSavedLibraryViewRequest,
   RemoveSavedLibraryViewResult,
   ReopenDuplicatePairRequest,
   ReopenDuplicatePairResult,
   RestoreLibraryItemRequest,
   RestoreLibraryItemResult,
+  RenameLibraryTextColumnDefinitionRequest,
+  RenameLibraryTextColumnDefinitionResult,
   SearchLibraryItemsRequest,
   SearchLibraryItemsResult,
   QueryLibraryItemsRequest,
@@ -137,7 +154,7 @@ import { initializationTestSeam } from "./initialization-test-seam.js";
 import { lifecycleTestSeam } from "./lifecycle-test-seam.js";
 import { queryTestSeam } from "./query-test-seam.js";
 
-export const LIBRARY_SCHEMA_VERSION = 10;
+export const LIBRARY_SCHEMA_VERSION = 11;
 const SCHEMA_VERSION = LIBRARY_SCHEMA_VERSION;
 const SQLITE_BUSY_TIMEOUT_MS = 5000;
 const incompatibleSchema = Symbol("incompatible-schema");
@@ -1422,6 +1439,17 @@ function createCustomMetadataTable(database: Database): void {
   `);
 }
 
+function createLibraryTextColumnDefinitionsTable(database: Database): void {
+  database.run(`
+    CREATE TABLE IF NOT EXISTS library_text_column_definitions (
+      key TEXT PRIMARY KEY,
+      label TEXT NOT NULL,
+      type TEXT NOT NULL CHECK (type = 'text'),
+      position INTEGER NOT NULL UNIQUE
+    ) STRICT
+  `);
+}
+
 function createSavedLibraryViewsTable(database: Database): void {
   database.run(`
     CREATE TABLE saved_library_views (
@@ -1578,6 +1606,10 @@ function createLibraryAdoptionsTable(database: Database): void {
 
 function migrateV9ToV10(database: Database): void {
   createLibraryAdoptionsTable(database);
+}
+
+function migrateV10ToV11(database: Database): void {
+  createLibraryTextColumnDefinitionsTable(database);
 }
 
 function ensureManagedCleanupTable(database: Database): void {
@@ -2425,6 +2457,50 @@ function verifyV10Database(
   }
 }
 
+function verifyV11Database(
+  database: Database,
+  coversDirectory: string,
+  itemsDirectory: string,
+): void {
+  verifyV10Database(database, coversDirectory, itemsDirectory);
+  const definitions = database
+    .query<LibraryTextColumnDefinition, []>(`
+      SELECT key, label, type, position
+      FROM library_text_column_definitions
+      ORDER BY position
+    `)
+    .all();
+  if (!libraryTextColumnDefinitionsSchema.safeParse(definitions).success) {
+    throw new Error("The migrated database could not be verified.");
+  }
+}
+
+function verifyV10Backup(
+  path: string,
+  coversDirectory: string,
+  itemsDirectory: string,
+): void {
+  using backup = new Database(path, { strict: true });
+  backup.run("PRAGMA foreign_keys = ON");
+  const version = backup.query<{ user_version: number }, []>("PRAGMA user_version").get()
+    ?.user_version;
+  if (version !== 10) {
+    throw new Error("The pre-migration backup could not be verified.");
+  }
+  verifyV10Database(backup, coversDirectory, itemsDirectory);
+}
+
+function retainVerifiedV10Backup(
+  database: Database,
+  databasePath: string,
+  coversDirectory: string,
+  itemsDirectory: string,
+): void {
+  retainVerifiedBackup(database, `${databasePath}.v10.backup`, (path) =>
+    verifyV10Backup(path, coversDirectory, itemsDirectory),
+  );
+}
+
 export type LibraryIntegrityReport = {
   readonly schemaVersion: number;
   readonly items: {
@@ -2474,7 +2550,7 @@ export function verifyLibraryIntegrity(databasePath: string): LibraryIntegrityRe
       return { ok: false, error: { code: "incompatible-schema" } };
     }
 
-    verifyV10Database(database, join(libraryRoot, "covers"), join(libraryRoot, "items"));
+    verifyV11Database(database, join(libraryRoot, "covers"), join(libraryRoot, "items"));
     const itemCounts = database
       .query<{ total: number; active: number; trashed: number }, []>(`
         SELECT COUNT(*) AS total,
@@ -3880,6 +3956,7 @@ export class BunSqliteLibraryStore
     LibraryFormatReplacementStore,
     LibraryItemTrashStore,
     LibraryQueryStore,
+    LibraryTextColumnDefinitionStore,
     SavedLibraryViewStore
 {
   readonly #databasePath: string;
@@ -3946,6 +4023,7 @@ export class BunSqliteLibraryStore
           createFormatTable(database!);
           createRichMetadataTables(database!);
           createCustomMetadataTable(database!);
+          createLibraryTextColumnDefinitionsTable(database!);
           createSavedLibraryViewsTable(database!);
           createLibraryQueryIndexes(database!);
           createLibraryTrashIndex(database!);
@@ -3953,7 +4031,7 @@ export class BunSqliteLibraryStore
           createDuplicatePairReviewsTable(database!);
           createLibraryAdoptionsTable(database!);
           ensureSourceCleanupTable(database!);
-          verifyV10Database(database!, this.#coversDirectory, this.#itemsDirectory);
+          verifyV11Database(database!, this.#coversDirectory, this.#itemsDirectory);
           database!.run(`PRAGMA user_version = ${SCHEMA_VERSION}`);
         } else if (version === 1) {
           retainVerifiedV1Backup(database!, this.#databasePath);
@@ -3971,7 +4049,8 @@ export class BunSqliteLibraryStore
           migrateV7ToV8(database!);
           migrateV8ToV9(database!);
           migrateV9ToV10(database!);
-          verifyV10Database(database!, this.#coversDirectory, this.#itemsDirectory);
+          migrateV10ToV11(database!);
+          verifyV11Database(database!, this.#coversDirectory, this.#itemsDirectory);
           database!.run(`PRAGMA user_version = ${SCHEMA_VERSION}`);
         } else if (version === 2) {
           retainVerifiedV2Backup(database!, this.#databasePath, this.#coversDirectory);
@@ -3983,7 +4062,8 @@ export class BunSqliteLibraryStore
           migrateV7ToV8(database!);
           migrateV8ToV9(database!);
           migrateV9ToV10(database!);
-          verifyV10Database(database!, this.#coversDirectory, this.#itemsDirectory);
+          migrateV10ToV11(database!);
+          verifyV11Database(database!, this.#coversDirectory, this.#itemsDirectory);
           database!.run(`PRAGMA user_version = ${SCHEMA_VERSION}`);
         } else if (version === 3) {
           retainVerifiedV3Backup(database!, this.#databasePath, this.#coversDirectory);
@@ -3994,7 +4074,8 @@ export class BunSqliteLibraryStore
           migrateV7ToV8(database!);
           migrateV8ToV9(database!);
           migrateV9ToV10(database!);
-          verifyV10Database(database!, this.#coversDirectory, this.#itemsDirectory);
+          migrateV10ToV11(database!);
+          verifyV11Database(database!, this.#coversDirectory, this.#itemsDirectory);
           database!.run(`PRAGMA user_version = ${SCHEMA_VERSION}`);
         } else if (version === 4) {
           retainVerifiedV4Backup(
@@ -4009,7 +4090,8 @@ export class BunSqliteLibraryStore
           migrateV7ToV8(database!);
           migrateV8ToV9(database!);
           migrateV9ToV10(database!);
-          verifyV10Database(database!, this.#coversDirectory, this.#itemsDirectory);
+          migrateV10ToV11(database!);
+          verifyV11Database(database!, this.#coversDirectory, this.#itemsDirectory);
           database!.run(`PRAGMA user_version = ${SCHEMA_VERSION}`);
         } else if (version === 5) {
           retainVerifiedV5Backup(
@@ -4023,7 +4105,8 @@ export class BunSqliteLibraryStore
           migrateV7ToV8(database!);
           migrateV8ToV9(database!);
           migrateV9ToV10(database!);
-          verifyV10Database(database!, this.#coversDirectory, this.#itemsDirectory);
+          migrateV10ToV11(database!);
+          verifyV11Database(database!, this.#coversDirectory, this.#itemsDirectory);
           database!.run(`PRAGMA user_version = ${SCHEMA_VERSION}`);
         } else if (version === 6) {
           retainVerifiedV6Backup(
@@ -4036,7 +4119,8 @@ export class BunSqliteLibraryStore
           migrateV7ToV8(database!);
           migrateV8ToV9(database!);
           migrateV9ToV10(database!);
-          verifyV10Database(database!, this.#coversDirectory, this.#itemsDirectory);
+          migrateV10ToV11(database!);
+          verifyV11Database(database!, this.#coversDirectory, this.#itemsDirectory);
           database!.run(`PRAGMA user_version = ${SCHEMA_VERSION}`);
         } else if (version === 7) {
           retainVerifiedV7Backup(
@@ -4048,7 +4132,8 @@ export class BunSqliteLibraryStore
           migrateV7ToV8(database!);
           migrateV8ToV9(database!);
           migrateV9ToV10(database!);
-          verifyV10Database(database!, this.#coversDirectory, this.#itemsDirectory);
+          migrateV10ToV11(database!);
+          verifyV11Database(database!, this.#coversDirectory, this.#itemsDirectory);
           database!.run(`PRAGMA user_version = ${SCHEMA_VERSION}`);
         } else if (version === 8) {
           retainVerifiedV8Backup(
@@ -4059,7 +4144,8 @@ export class BunSqliteLibraryStore
           );
           migrateV8ToV9(database!);
           migrateV9ToV10(database!);
-          verifyV10Database(database!, this.#coversDirectory, this.#itemsDirectory);
+          migrateV10ToV11(database!);
+          verifyV11Database(database!, this.#coversDirectory, this.#itemsDirectory);
           database!.run(`PRAGMA user_version = ${SCHEMA_VERSION}`);
         } else if (version === 9) {
           retainVerifiedV9Backup(
@@ -4069,7 +4155,18 @@ export class BunSqliteLibraryStore
             this.#itemsDirectory,
           );
           migrateV9ToV10(database!);
-          verifyV10Database(database!, this.#coversDirectory, this.#itemsDirectory);
+          migrateV10ToV11(database!);
+          verifyV11Database(database!, this.#coversDirectory, this.#itemsDirectory);
+          database!.run(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+        } else if (version === 10) {
+          retainVerifiedV10Backup(
+            database!,
+            this.#databasePath,
+            this.#coversDirectory,
+            this.#itemsDirectory,
+          );
+          migrateV10ToV11(database!);
+          verifyV11Database(database!, this.#coversDirectory, this.#itemsDirectory);
           database!.run(`PRAGMA user_version = ${SCHEMA_VERSION}`);
         } else if (version !== SCHEMA_VERSION) {
           throw incompatibleSchema;
@@ -4115,6 +4212,161 @@ export class BunSqliteLibraryStore
         items.push(item.value);
       }
       return success(items);
+    } catch {
+      return failure("storage-unavailable");
+    }
+  }
+
+  async listTextColumnDefinitions(
+    request: ListLibraryTextColumnDefinitionsRequest,
+  ): Promise<ListLibraryTextColumnDefinitionsResult> {
+    if (!this.#database) {
+      return failure("storage-unavailable");
+    }
+    if (!listLibraryTextColumnDefinitionsRequestSchema.safeParse(request).success) {
+      return failure("invalid-arguments");
+    }
+
+    try {
+      const definitions = this.#database
+        .query<LibraryTextColumnDefinition, []>(`
+          SELECT key, label, type, position
+          FROM library_text_column_definitions
+          ORDER BY position
+        `)
+        .all();
+      const parsed = libraryTextColumnDefinitionsSchema.safeParse(definitions);
+      return parsed.success ? success(parsed.data) : failure("invalid-stored-data");
+    } catch {
+      return failure("storage-unavailable");
+    }
+  }
+
+  async createTextColumnDefinition(
+    request: CreateLibraryTextColumnDefinitionRequest,
+  ): Promise<CreateLibraryTextColumnDefinitionResult> {
+    if (!this.#database) {
+      return failure("storage-unavailable");
+    }
+    const parsedRequest = createLibraryTextColumnDefinitionRequestSchema.safeParse(request);
+    if (!parsedRequest.success) {
+      return failure("invalid-arguments");
+    }
+
+    try {
+      return this.#database.transaction((): CreateLibraryTextColumnDefinitionResult => {
+        const stored = this.#database!
+          .query<LibraryTextColumnDefinition, []>(`
+            SELECT key, label, type, position
+            FROM library_text_column_definitions
+            ORDER BY position
+          `)
+          .all();
+        const parsedStored = libraryTextColumnDefinitionsSchema.safeParse(stored);
+        if (!parsedStored.success) {
+          return failure("invalid-stored-data");
+        }
+        if (parsedStored.data.length >= MAX_LIBRARY_TEXT_COLUMN_DEFINITIONS) {
+          return failure("invalid-arguments");
+        }
+        const definition = libraryTextColumnDefinitionSchema.parse({
+          ...parsedRequest.data,
+          type: "text",
+          position: parsedStored.data.length,
+        });
+        this.#database!.run(
+          `INSERT INTO library_text_column_definitions (key, label, type, position)
+           VALUES (?, ?, ?, ?)`,
+          [definition.key, definition.label, definition.type, definition.position],
+        );
+        return success(definition);
+      }).immediate();
+    } catch (error) {
+      return failure(isSqliteConstraintError(error) ? "invalid-arguments" : "storage-unavailable");
+    }
+  }
+
+  async renameTextColumnDefinition(
+    request: RenameLibraryTextColumnDefinitionRequest,
+  ): Promise<RenameLibraryTextColumnDefinitionResult> {
+    if (!this.#database) {
+      return failure("storage-unavailable");
+    }
+    const parsedRequest = renameLibraryTextColumnDefinitionRequestSchema.safeParse(request);
+    if (!parsedRequest.success) {
+      return failure("invalid-arguments");
+    }
+
+    try {
+      return this.#database.transaction((): RenameLibraryTextColumnDefinitionResult => {
+        const stored = this.#database!
+          .query<LibraryTextColumnDefinition, []>(`
+            SELECT key, label, type, position
+            FROM library_text_column_definitions
+            ORDER BY position
+          `)
+          .all();
+        const parsedStored = libraryTextColumnDefinitionsSchema.safeParse(stored);
+        if (!parsedStored.success) {
+          return failure("invalid-stored-data");
+        }
+        const current = parsedStored.data.find(({ key }) => key === parsedRequest.data.key);
+        if (!current) {
+          return failure("not-found");
+        }
+        const renamed = libraryTextColumnDefinitionSchema.parse({
+          ...current,
+          label: parsedRequest.data.label,
+        });
+        this.#database!.run("UPDATE library_text_column_definitions SET label = ? WHERE key = ?", [
+          renamed.label,
+          renamed.key,
+        ]);
+        return success(renamed);
+      }).immediate();
+    } catch {
+      return failure("storage-unavailable");
+    }
+  }
+
+  async removeTextColumnDefinition(
+    request: RemoveLibraryTextColumnDefinitionRequest,
+  ): Promise<RemoveLibraryTextColumnDefinitionResult> {
+    if (!this.#database) {
+      return failure("storage-unavailable");
+    }
+    const parsedRequest = removeLibraryTextColumnDefinitionRequestSchema.safeParse(request);
+    if (!parsedRequest.success) {
+      return failure("invalid-arguments");
+    }
+
+    try {
+      return this.#database.transaction((): RemoveLibraryTextColumnDefinitionResult => {
+        const stored = this.#database!
+          .query<LibraryTextColumnDefinition, []>(`
+            SELECT key, label, type, position
+            FROM library_text_column_definitions
+            ORDER BY position
+          `)
+          .all();
+        const parsedStored = libraryTextColumnDefinitionsSchema.safeParse(stored);
+        if (!parsedStored.success) {
+          return failure("invalid-stored-data");
+        }
+        const current = parsedStored.data.find(({ key }) => key === parsedRequest.data.key);
+        if (!current) {
+          return failure("not-found");
+        }
+        this.#database!.run("DELETE FROM library_text_column_definitions WHERE key = ?", [current.key]);
+        this.#database!.run(
+          "UPDATE library_text_column_definitions SET position = -position - 1 WHERE position > ?",
+          [current.position],
+        );
+        this.#database!.run(
+          "UPDATE library_text_column_definitions SET position = -position - 2 WHERE position < 0",
+        );
+        return success(current);
+      }).immediate();
     } catch {
       return failure("storage-unavailable");
     }

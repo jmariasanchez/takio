@@ -329,7 +329,7 @@ describe("BunSqliteLibraryStore schema-v7 fingerprints", () => {
     expect(await readFile(`${databasePath}.v6.backup`)).toEqual(before);
     using migrated = new Database(databasePath, { strict: true });
     expect(migrated.query<{ user_version: number }, []>("PRAGMA user_version").get()).toEqual({
-      user_version: 10,
+      user_version: 11,
     });
     expect(
       migrated
