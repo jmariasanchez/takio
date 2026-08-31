@@ -146,7 +146,7 @@ was hardened in `61527de`, with the final cross-runtime item-id alignment in
 in `8786f15` and `0e9eff0`. Rust staging and apply were finalized in `d2495de`
 and `7f0d880`, TUI cleanup and compact review in `7b12949`, and desktop protocol,
 discard, and lifecycle handling in `4af244d`, `60e1930`, `867790f`, and
-`d0ff592`.
+`d0ff592`, with exact applied-field set correlation in `ff88956`.
 
 Deliver:
 
