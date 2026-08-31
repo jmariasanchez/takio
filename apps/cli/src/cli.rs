@@ -2281,7 +2281,7 @@ fn validate_import_sources(paths: &LibraryPaths, sources: &[PathBuf]) -> AppResu
         let source = path_for_overlap(source)?;
         if protected
             .iter()
-            .any(|path| source.starts_with(path) || path.starts_with(&source))
+            .any(|path| import_paths_overlap(&source, path))
         {
             return Err(AppError::new("invalid-arguments"));
         }
@@ -2328,6 +2328,18 @@ fn path_for_overlap(path: &Path) -> AppResult<PathBuf> {
         resolved.push(component);
     }
     Ok(resolved)
+}
+
+fn import_paths_overlap(source: &Path, protected: &Path) -> bool {
+    if source.starts_with(protected) || protected.starts_with(source) {
+        return true;
+    }
+    source
+        .ancestors()
+        .any(|ancestor| same_file::is_same_file(ancestor, protected).unwrap_or(false))
+        || protected
+            .ancestors()
+            .any(|ancestor| same_file::is_same_file(ancestor, source).unwrap_or(false))
 }
 
 fn export_many(store: &LibraryStore, request: &Value) -> AppResult<Value> {

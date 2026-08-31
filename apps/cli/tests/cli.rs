@@ -492,6 +492,32 @@ fn scanned_imports_reject_symlinked_library_source_aliases() {
 }
 
 #[test]
+fn scanned_imports_reject_case_aliases_on_case_insensitive_filesystems() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let library_root = temp.path().join("library");
+    let alias = library_root.join("ITEMS");
+    fs::create_dir_all(&alias).expect("case alias directory");
+    if !library_root.join("items").exists() {
+        return;
+    }
+    fs::write(alias.join("book.epub"), b"ebook").expect("case alias ebook");
+    let database = library_root.join("library.sqlite");
+    let output = cargo_bin_cmd!("takio")
+        .args(["library", "import-watch", "--db"])
+        .arg(&database)
+        .arg("--source-path")
+        .arg(&alias)
+        .args(["--max-cycles", "1"])
+        .output()
+        .expect("reject case alias");
+    assert!(!output.status.success());
+    assert!(output.stderr.is_empty());
+    assert_eq!(failure_code(&output.stdout), "invalid-arguments");
+    assert!(!database.exists());
+    assert!(!library_root.join("covers").exists());
+}
+
+#[test]
 fn import_watch_two_cycles_and_restart_do_not_recount_accounted_files() {
     let temp = tempfile::tempdir().expect("temporary directory");
     let database = temp.path().join("library.sqlite");
