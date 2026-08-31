@@ -517,6 +517,70 @@ fn scanned_imports_reject_case_aliases_on_case_insensitive_filesystems() {
     assert!(!library_root.join("covers").exists());
 }
 
+#[cfg(unix)]
+#[test]
+fn import_watch_revalidates_sources_between_cycles() {
+    use std::os::unix::fs::symlink;
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
+
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let library_root = temp.path().join("library");
+    let database = library_root.join("library.sqlite");
+    let source = temp.path().join("watch");
+    fs::create_dir(&source).expect("watch source");
+    fs::write(source.join("book.epub"), b"ebook").expect("watch ebook");
+    let binary = assert_cmd::cargo::cargo_bin!("takio");
+    let child = Command::new(binary)
+        .args(["library", "import-watch", "--db"])
+        .arg(&database)
+        .arg("--source-path")
+        .arg(&source)
+        .args(["--interval-seconds", "2", "--max-cycles", "3"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn import watch");
+
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        let observed = Connection::open(&database)
+            .ok()
+            .and_then(|connection| {
+                connection
+                    .query_row(
+                        "SELECT COUNT(*) FROM import_watch_observations",
+                        [],
+                        |row| row.get::<_, i64>(0),
+                    )
+                    .ok()
+            })
+            .unwrap_or(0);
+        if observed == 1 {
+            break;
+        }
+        assert!(Instant::now() < deadline, "first watch cycle should finish");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    fs::remove_dir_all(&source).expect("replace watch source");
+    symlink(library_root.join("items"), &source).expect("alias managed items");
+    let output = child
+        .wait_with_output()
+        .expect("wait for overlap rejection");
+    assert!(!output.status.success());
+    assert!(output.stderr.is_empty());
+    assert_eq!(String::from_utf8_lossy(&output.stdout).lines().count(), 1);
+    assert_eq!(failure_code(&output.stdout), "invalid-arguments");
+    let formats: i64 = Connection::open(&database)
+        .expect("open library")
+        .query_row("SELECT COUNT(*) FROM library_item_formats", [], |row| {
+            row.get(0)
+        })
+        .expect("count formats");
+    assert_eq!(formats, 1);
+}
+
 #[test]
 fn import_watch_two_cycles_and_restart_do_not_recount_accounted_files() {
     let temp = tempfile::tempdir().expect("temporary directory");

@@ -1377,7 +1377,8 @@ fn library(command: LibraryCommand, library: Option<&str>) -> AppResult<()> {
             };
             let paths = LibraryPaths::resolve(library, db.as_deref())?;
             validate_import_sources(&paths, &source_paths)?;
-            let mut store = LibraryStore::open(paths, true)?;
+            let mut store = LibraryStore::open(paths.clone(), true)?;
+            validate_import_sources(&paths, &source_paths)?;
             print_success(scan_imports(
                 &mut store,
                 &source_paths,
@@ -2230,7 +2231,7 @@ fn import_watch(
 
     let paths = LibraryPaths::resolve(library, db)?;
     validate_import_sources(&paths, source_paths)?;
-    let mut store = LibraryStore::open(paths, true)?;
+    let mut store = LibraryStore::open(paths.clone(), true)?;
     let mut signals = Signals::new([SIGINT, SIGTERM])?;
     let handle = signals.handle();
     let (sender, receiver) = mpsc::sync_channel(1);
@@ -2244,6 +2245,7 @@ fn import_watch(
     let mut counts = ImportCounts::default();
     let mut stopped = false;
     loop {
+        validate_import_sources(&paths, source_paths)?;
         let scan = scan_imports(&mut store, source_paths, false, true, || {
             receiver.try_recv().is_ok()
         })?;
