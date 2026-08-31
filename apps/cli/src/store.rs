@@ -3,6 +3,9 @@ use std::fs::{self, File, OpenOptions};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
+#[cfg(test)]
+use std::cell::Cell;
+
 use chrono::{NaiveDate, Utc};
 use rusqlite::{
     Connection, OpenFlags, OptionalExtension, Transaction, TransactionBehavior, params,
@@ -26,6 +29,12 @@ pub const METADATA_AUDIT_KEY: &str = "takio_metadata_audit";
 const MAX_CUSTOM_METADATA_USER_ENTRIES: usize = 64;
 const MAX_CUSTOM_METADATA_TOTAL_ENTRIES: usize = 65;
 const MAX_CUSTOM_METADATA_VALUE_CHARS: usize = 16 * 1024;
+
+#[cfg(test)]
+thread_local! {
+    static ARM_POST_COMMIT_READ_FAULT: Cell<bool> = const { Cell::new(false) };
+    static POST_COMMIT_READ_FAULT: Cell<bool> = const { Cell::new(false) };
+}
 
 pub struct LibraryStore {
     connection: Connection,
@@ -1045,9 +1054,9 @@ impl LibraryStore {
         source: &str,
         provenance: &str,
     ) -> AppResult<LibraryItem> {
-        let validated = cover
+        let claimed = cover
             .map(|descriptor| {
-                candidate_cover::validate(
+                candidate_cover::claim(
                     &self.paths.root,
                     id,
                     candidate_id,
@@ -1061,27 +1070,32 @@ impl LibraryStore {
             .read_item(id)?
             .ok_or_else(|| AppError::new("item-not-found"))?
             .cover_path;
-        let published = if let Some(validated) = &validated {
+        let published = if let Some(claimed) = &claimed {
             let target = self.paths.covers.join(format!(
                 "{id}-{}.{}",
                 Uuid::new_v4(),
-                validated.descriptor.extension.trim_start_matches('.')
+                claimed.descriptor.extension.trim_start_matches('.')
             ));
-            let fingerprint = hash_file(&validated.source)?;
-            publish_copy(&validated.source, &target, &fingerprint)?;
+            let fingerprint = hash_file(&claimed.source)?;
+            publish_copy(&claimed.source, &target, &fingerprint)?;
             Some(target)
         } else {
             None
         };
-        let result = self.update_inner(id, patch, true, published.as_deref());
-        if result.is_err() {
-            if let Some(path) = &published {
-                let _ = fs::remove_file(path);
+        let applied = match self.update_inner(id, patch, true, published.as_deref()) {
+            Ok(item) => item,
+            Err(error) => {
+                if let Some(path) = &published {
+                    let _ = fs::remove_file(path);
+                }
+                if let Some(claimed) = claimed {
+                    let _ = claimed.restore();
+                }
+                return Err(error);
             }
-            return result;
-        }
-        if let Some(validated) = validated {
-            candidate_cover::consume(&self.paths.root, &validated.descriptor.artifact_id);
+        };
+        if let Some(claimed) = claimed {
+            claimed.consume();
             if let Some(old) = old_cover
                 && published.as_ref().is_none_or(|target| target != &old)
                 && old.starts_with(&self.paths.covers)
@@ -1092,8 +1106,7 @@ impl LibraryStore {
                 let _ = fs::remove_file(old);
             }
         }
-        self.read_item(id)?
-            .ok_or_else(|| AppError::new("storage-unavailable"))
+        Ok(applied)
     }
 
     fn update_inner(
@@ -1243,8 +1256,16 @@ impl LibraryStore {
         }
         replace_metadata(&transaction, &item)?;
         transaction.commit()?;
-        self.read_item(id)?
-            .ok_or_else(|| AppError::new("storage-unavailable"))
+        #[cfg(test)]
+        ARM_POST_COMMIT_READ_FAULT.with(|armed| {
+            if armed.replace(false) {
+                POST_COMMIT_READ_FAULT.with(|fault| fault.set(true));
+            }
+        });
+        if let Some(cover_path) = cover_path {
+            item.cover_path = Some(cover_path.to_path_buf());
+        }
+        Ok(item)
     }
 
     pub fn set_cover(&mut self, id: &str, source: &Path) -> AppResult<LibraryItem> {
@@ -1663,6 +1684,10 @@ impl LibraryStore {
     }
 
     fn read_item(&self, id: &str) -> AppResult<Option<LibraryItem>> {
+        #[cfg(test)]
+        if POST_COMMIT_READ_FAULT.with(|fault| fault.replace(false)) {
+            return Err(AppError::new("storage-unavailable"));
+        }
         read_item_from(&self.connection, id)
     }
 }
@@ -3062,6 +3087,74 @@ mod tests {
             )
             .is_ok(),
             "failed application must retain the staged artifact for a retry"
+        );
+    }
+
+    #[test]
+    fn candidate_cover_apply_returns_committed_item_without_post_commit_hydration() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = LibraryPaths::resolve(None, Some(&temp.path().join("library.sqlite"))).unwrap();
+        let source = temp.path().join("source.epub");
+        fs::write(&source, b"epub source").unwrap();
+        let mut store = LibraryStore::open(paths, true).unwrap();
+        let item = store
+            .import(&source, Some("Original title"), false)
+            .unwrap();
+        let descriptor = crate::candidate_cover::stage(
+            &store.paths.root,
+            &item.id,
+            "embedded:cover",
+            "embedded",
+            "proof",
+            &crate::candidate_cover::CapturedCover {
+                bytes: vec![0xff, 0xd8, 0xff, 1, 2, 3],
+                media_type: "image/jpeg".to_owned(),
+                extension: ".jpg".to_owned(),
+            },
+        )
+        .unwrap();
+        ARM_POST_COMMIT_READ_FAULT.with(|armed| armed.set(true));
+
+        let applied = store
+            .apply_metadata_candidate(
+                &item.id,
+                LibraryPatch {
+                    title: Patch::Set("Changed title".to_owned()),
+                    ..LibraryPatch::default()
+                },
+                Some(&descriptor),
+                "embedded:cover",
+                "embedded",
+                "proof",
+            )
+            .unwrap();
+
+        assert_eq!(applied.title, "Changed title");
+        assert!(
+            applied
+                .cover_path
+                .as_ref()
+                .is_some_and(|path| path.exists())
+        );
+        assert_eq!(
+            store.get(&item.id).unwrap_err().code(),
+            "storage-unavailable"
+        );
+        let committed = store.get(&item.id).unwrap().unwrap();
+        assert_eq!(committed.title, "Changed title");
+        assert!(committed.cover_path.unwrap().exists());
+        assert_eq!(
+            crate::candidate_cover::validate(
+                &store.paths.root,
+                &item.id,
+                "embedded:cover",
+                "embedded",
+                "proof",
+                &descriptor,
+            )
+            .unwrap_err()
+            .code(),
+            "candidate-cover-unavailable"
         );
     }
 

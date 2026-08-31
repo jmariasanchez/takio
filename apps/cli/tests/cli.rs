@@ -309,6 +309,8 @@ fn metadata_candidates_reconcile_reports_attempted_backend_failures_without_muta
     assert_eq!(
         fs::read_dir(temp.path().join("candidate-covers"))
             .expect("candidate stage directory")
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name() != ".stage.lock")
             .count(),
         0,
         "failed reconciliation must not retain inaccessible staged covers"
@@ -2334,7 +2336,14 @@ fn embedded_candidate_cover_is_path_free_and_applies_with_bounded_audit() {
     assert!(audit.get("artifactId").is_none());
     assert!(audit.to_string().find("candidate-covers").is_none());
     let staged = database.parent().unwrap().join("candidate-covers");
-    assert_eq!(fs::read_dir(staged).unwrap().count(), 0);
+    assert_eq!(
+        fs::read_dir(staged)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name() != ".stage.lock")
+            .count(),
+        0
+    );
 }
 
 #[test]

@@ -2,9 +2,11 @@ use std::collections::{HashMap, HashSet};
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::thread;
+use std::time::{Duration as StdDuration, Instant};
 
 use chrono::{DateTime, Duration, Utc};
+use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
@@ -15,7 +17,9 @@ pub const MAX_COVER_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_ARTIFACTS: usize = 128;
 const MAX_TOTAL_BYTES: u64 = 256 * 1024 * 1024;
 const TTL_HOURS: i64 = 24;
-static STAGE_LOCK: Mutex<()> = Mutex::new(());
+const LOCK_TIMEOUT: StdDuration = StdDuration::from_secs(2);
+const LOCK_RETRY: StdDuration = StdDuration::from_millis(10);
+const LOCK_FILE: &str = ".stage.lock";
 
 #[derive(Clone, Debug)]
 pub struct CapturedCover {
@@ -57,6 +61,14 @@ pub struct ValidatedCover {
     pub source: PathBuf,
 }
 
+#[derive(Debug)]
+pub struct ClaimedCover {
+    pub descriptor: CandidateCoverDescriptor,
+    pub source: PathBuf,
+    library_root: PathBuf,
+    finished: bool,
+}
+
 pub fn root(library_root: &Path) -> PathBuf {
     library_root.join("candidate-covers")
 }
@@ -73,12 +85,10 @@ pub fn stage(
         return Err(AppError::new("candidate-cover-invalid"));
     }
     validate_cover_type(&cover.media_type, &cover.extension)?;
-    let _guard = STAGE_LOCK
-        .lock()
-        .map_err(|_| AppError::new("storage-unavailable"))?;
     let root = root(library_root);
     fs::create_dir_all(&root).map_err(|_| AppError::new("storage-unavailable"))?;
     reject_symlink(&root)?;
+    let _guard = StageGuard::acquire(&root)?;
     gc(&root)?;
     let (count, total) = usage(&root)?;
     if count >= MAX_ARTIFACTS || total.saturating_add(cover.bytes.len() as u64) > MAX_TOTAL_BYTES {
@@ -165,6 +175,73 @@ pub fn validate(
     })
 }
 
+pub fn claim(
+    library_root: &Path,
+    item_id: &str,
+    candidate_id: &str,
+    source: &str,
+    provenance: &str,
+    descriptor: &CandidateCoverDescriptor,
+) -> AppResult<ClaimedCover> {
+    let root = root(library_root);
+    let _guard = StageGuard::acquire(&root)?;
+    let validated = validate(
+        library_root,
+        item_id,
+        candidate_id,
+        source,
+        provenance,
+        descriptor,
+    )?;
+    fs::rename(
+        manifest_path(&root, &descriptor.artifact_id),
+        claimed_manifest_path(&root, &descriptor.artifact_id),
+    )
+    .map_err(|_| AppError::new("candidate-cover-unavailable"))?;
+    Ok(ClaimedCover {
+        descriptor: validated.descriptor,
+        source: validated.source,
+        library_root: library_root.to_path_buf(),
+        finished: false,
+    })
+}
+
+impl ClaimedCover {
+    pub fn restore(mut self) -> AppResult<()> {
+        let root = root(&self.library_root);
+        let _guard = StageGuard::acquire(&root)?;
+        fs::rename(
+            claimed_manifest_path(&root, &self.descriptor.artifact_id),
+            manifest_path(&root, &self.descriptor.artifact_id),
+        )
+        .map_err(|_| AppError::new("candidate-cover-unavailable"))?;
+        self.finished = true;
+        Ok(())
+    }
+
+    pub fn consume(mut self) {
+        let root = root(&self.library_root);
+        if let Ok(_guard) = StageGuard::acquire(&root) {
+            remove_artifact(&root, &self.descriptor.artifact_id);
+        }
+        self.finished = true;
+    }
+}
+
+impl Drop for ClaimedCover {
+    fn drop(&mut self) {
+        if !self.finished {
+            let root = root(&self.library_root);
+            if let Ok(_guard) = StageGuard::acquire(&root) {
+                let _ = fs::rename(
+                    claimed_manifest_path(&root, &self.descriptor.artifact_id),
+                    manifest_path(&root, &self.descriptor.artifact_id),
+                );
+            }
+        }
+    }
+}
+
 pub fn validate_descriptor(descriptor: &CandidateCoverDescriptor) -> AppResult<()> {
     validate_artifact_id(&descriptor.artifact_id)?;
     validate_cover_type(&descriptor.media_type, &descriptor.extension)?;
@@ -182,9 +259,19 @@ pub fn validate_descriptor(descriptor: &CandidateCoverDescriptor) -> AppResult<(
 }
 
 pub fn consume(library_root: &Path, artifact_id: &str) {
+    if validate_artifact_id(artifact_id).is_err() {
+        return;
+    }
     let root = root(library_root);
-    let _ = fs::remove_file(data_path(&root, artifact_id));
-    let _ = fs::remove_file(manifest_path(&root, artifact_id));
+    if let Ok(_guard) = StageGuard::acquire(&root) {
+        remove_artifact(&root, artifact_id);
+    }
+}
+
+fn remove_artifact(root: &Path, artifact_id: &str) {
+    let _ = fs::remove_file(data_path(root, artifact_id));
+    let _ = fs::remove_file(manifest_path(root, artifact_id));
+    let _ = fs::remove_file(claimed_manifest_path(root, artifact_id));
 }
 
 fn gc(root: &Path) -> AppResult<()> {
@@ -204,6 +291,9 @@ fn gc(root: &Path) -> AppResult<()> {
             let _ = fs::remove_file(path);
             continue;
         }
+        if path.file_name().and_then(|value| value.to_str()) == Some(LOCK_FILE) {
+            continue;
+        }
         let Some(id) = path.file_stem().and_then(|value| value.to_str()) else {
             let _ = fs::remove_file(path);
             continue;
@@ -220,7 +310,7 @@ fn gc(root: &Path) -> AppResult<()> {
                     .len();
                 data_files.insert(id.to_owned(), bytes);
             }
-            Some("json") => manifests.push((id.to_owned(), path)),
+            Some("json") | Some("claimed") => manifests.push((id.to_owned(), path)),
             _ => {
                 let _ = fs::remove_file(path);
             }
@@ -250,7 +340,7 @@ fn gc(root: &Path) -> AppResult<()> {
         if valid {
             valid_ids.insert(id);
         } else {
-            consume(root.parent().unwrap_or(root), &id);
+            remove_artifact(root, &id);
         }
     }
     for id in data_files.keys().filter(|id| !valid_ids.contains(*id)) {
@@ -353,10 +443,53 @@ fn data_path(root: &Path, id: &str) -> PathBuf {
 fn manifest_path(root: &Path, id: &str) -> PathBuf {
     root.join(format!("{id}.json"))
 }
+fn claimed_manifest_path(root: &Path, id: &str) -> PathBuf {
+    root.join(format!("{id}.claimed"))
+}
+
+struct StageGuard {
+    file: fs::File,
+}
+
+impl StageGuard {
+    fn acquire(root: &Path) -> AppResult<Self> {
+        fs::create_dir_all(root).map_err(|_| AppError::new("storage-unavailable"))?;
+        reject_symlink(root)?;
+        let lock_path = root.join(LOCK_FILE);
+        reject_symlink(&lock_path)?;
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(lock_path)
+            .map_err(|_| AppError::new("storage-unavailable"))?;
+        let deadline = Instant::now() + LOCK_TIMEOUT;
+        loop {
+            match file.try_lock_exclusive() {
+                Ok(()) => return Ok(Self { file }),
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    if Instant::now() >= deadline {
+                        return Err(AppError::new("candidate-cover-unavailable"));
+                    }
+                    thread::sleep(LOCK_RETRY);
+                }
+                Err(_) => return Err(AppError::new("storage-unavailable")),
+            }
+        }
+    }
+}
+
+impl Drop for StageGuard {
+    fn drop(&mut self) {
+        let _ = FileExt::unlock(&self.file);
+    }
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Arc, Barrier};
 
     fn jpeg() -> CapturedCover {
         CapturedCover {
@@ -414,6 +547,109 @@ mod tests {
             )
             .unwrap_err()
             .code(),
+            "candidate-cover-unavailable"
+        );
+    }
+
+    #[test]
+    fn claimed_cover_cannot_be_replayed_and_can_be_restored_or_consumed() {
+        let temp = tempfile::tempdir().unwrap();
+        let descriptor =
+            stage(temp.path(), "item", "candidate", "source", "proof", &jpeg()).unwrap();
+        let claimed = claim(
+            temp.path(),
+            "item",
+            "candidate",
+            "source",
+            "proof",
+            &descriptor,
+        )
+        .unwrap();
+        assert_eq!(
+            validate(
+                temp.path(),
+                "item",
+                "candidate",
+                "source",
+                "proof",
+                &descriptor,
+            )
+            .unwrap_err()
+            .code(),
+            "candidate-cover-unavailable"
+        );
+        claimed.restore().unwrap();
+        assert!(
+            validate(
+                temp.path(),
+                "item",
+                "candidate",
+                "source",
+                "proof",
+                &descriptor,
+            )
+            .is_ok()
+        );
+
+        claim(
+            temp.path(),
+            "item",
+            "candidate",
+            "source",
+            "proof",
+            &descriptor,
+        )
+        .unwrap()
+        .consume();
+        assert!(!data_path(&root(temp.path()), &descriptor.artifact_id).exists());
+        assert!(!claimed_manifest_path(&root(temp.path()), &descriptor.artifact_id).exists());
+    }
+
+    #[test]
+    fn concurrent_staging_never_exceeds_count_quota() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = Arc::new(temp.path().to_path_buf());
+        let barrier = Arc::new(Barrier::new(MAX_ARTIFACTS + 1));
+        let threads = (0..MAX_ARTIFACTS)
+            .map(|index| {
+                let root = Arc::clone(&root);
+                let barrier = Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    stage(
+                        &root,
+                        "item",
+                        &format!("candidate-{index}"),
+                        "source",
+                        "proof",
+                        &jpeg(),
+                    )
+                })
+            })
+            .collect::<Vec<_>>();
+        barrier.wait();
+        let successes = threads
+            .into_iter()
+            .map(|thread| thread.join().unwrap())
+            .filter(Result::is_ok)
+            .count();
+        assert!(successes <= MAX_ARTIFACTS);
+        for index in successes..MAX_ARTIFACTS {
+            stage(
+                &root,
+                "item",
+                &format!("fill-{index}"),
+                "source",
+                "proof",
+                &jpeg(),
+            )
+            .unwrap();
+        }
+        assert_eq!(usage(&super::root(&root)).unwrap().0, MAX_ARTIFACTS);
+        assert_eq!(
+            stage(&root, "item", "overflow", "source", "proof", &jpeg())
+                .unwrap_err()
+                .code(),
             "candidate-cover-unavailable"
         );
     }
