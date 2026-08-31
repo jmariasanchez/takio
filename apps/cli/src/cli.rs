@@ -1033,8 +1033,37 @@ pub(crate) fn metadata_candidates_for_item_at(
         timeout_seconds,
         &canceled,
         false,
+        false,
         Some(library_root),
     )
+}
+
+pub(crate) fn metadata_candidates_for_item_at_cancellable(
+    item: &crate::model::LibraryItem,
+    include_online: bool,
+    timeout_seconds: u64,
+    library_root: &Path,
+    canceled: &AtomicBool,
+) -> AppResult<Vec<Value>> {
+    metadata_candidates_for_item_with_policy(
+        item,
+        include_online,
+        timeout_seconds,
+        canceled,
+        false,
+        true,
+        Some(library_root),
+    )
+}
+
+pub(crate) fn release_metadata_candidate_covers(library_root: &Path, candidates: &[Value]) {
+    for artifact_id in candidates.iter().filter_map(|candidate| {
+        candidate
+            .pointer("/cover/artifactId")
+            .and_then(Value::as_str)
+    }) {
+        crate::candidate_cover::consume(library_root, artifact_id);
+    }
 }
 
 fn metadata_candidates_for_reconcile(
@@ -1050,6 +1079,7 @@ fn metadata_candidates_for_reconcile(
         timeout_seconds,
         canceled,
         true,
+        true,
         Some(library_root),
     )
 }
@@ -1060,6 +1090,7 @@ fn metadata_candidates_for_item_with_policy(
     timeout_seconds: u64,
     canceled: &AtomicBool,
     require_requested_sources: bool,
+    cooperative_cancellation: bool,
     library_root: Option<&Path>,
 ) -> AppResult<Vec<Value>> {
     if timeout_seconds == 0 {
@@ -1072,7 +1103,7 @@ fn metadata_candidates_for_item_with_policy(
         return Err(AppError::new("operation-canceled"));
     }
     if discover_ebook_meta().is_some() {
-        let extracted = if require_requested_sources {
+        let extracted = if cooperative_cancellation {
             metadata::extract_cancellable(
                 &item.source_path,
                 Duration::from_secs(timeout_seconds),
@@ -1172,6 +1203,9 @@ fn metadata_candidates_for_item_with_policy(
         return Err(AppError::new("operation-canceled"));
     }
     candidates.truncate(8);
+    if canceled.load(Ordering::Acquire) {
+        return Err(AppError::new("operation-canceled"));
+    }
     cover_stages.retain();
     Ok(candidates)
 }

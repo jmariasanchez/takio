@@ -1,6 +1,8 @@
 use std::collections::BTreeSet;
 use std::io::{self, Stdout};
 use std::path::Path;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::thread;
 use std::time::Duration;
@@ -19,8 +21,9 @@ use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragra
 use serde_json::Value;
 
 use crate::cli::{
-    apply_prepared_metadata_candidate, metadata_candidates_for_item_at, prepare_metadata_candidate,
-    prepare_metadata_candidate_with_cover,
+    apply_prepared_metadata_candidate, metadata_candidates_for_item_at_cancellable,
+    prepare_metadata_candidate, prepare_metadata_candidate_with_cover,
+    release_metadata_candidate_covers,
 };
 use crate::destinations;
 use crate::jobs::JobStore;
@@ -98,7 +101,7 @@ struct CandidateReview {
     loading: bool,
 }
 
-type CandidateLoadResult = (String, Result<Vec<Value>, String>);
+type CandidateLoadResult = (u64, String, Result<Vec<Value>, String>);
 
 struct App {
     paths: LibraryPaths,
@@ -113,6 +116,8 @@ struct App {
     should_quit: bool,
     candidate_review: Option<CandidateReview>,
     candidate_rx: Option<Receiver<CandidateLoadResult>>,
+    candidate_cancel: Option<Arc<AtomicBool>>,
+    candidate_generation: u64,
 }
 
 impl App {
@@ -132,6 +137,8 @@ impl App {
             should_quit: false,
             candidate_review: None,
             candidate_rx: None,
+            candidate_cancel: None,
+            candidate_generation: 0,
         })
     }
 
@@ -296,6 +303,30 @@ impl App {
     }
 
     fn load_candidate_review(&mut self, item: LibraryItem, include_online: bool) {
+        let library_root = self.paths.root.clone();
+        self.load_candidate_review_with(
+            item,
+            include_online,
+            move |item, include_online, canceled| {
+                metadata_candidates_for_item_at_cancellable(
+                    item,
+                    include_online,
+                    15,
+                    &library_root,
+                    canceled,
+                )
+            },
+        );
+    }
+
+    fn load_candidate_review_with<F>(&mut self, item: LibraryItem, include_online: bool, load: F)
+    where
+        F: FnOnce(&LibraryItem, bool, &AtomicBool) -> AppResult<Vec<Value>> + Send + 'static,
+    {
+        self.cancel_candidate_loader();
+        self.release_review_covers();
+        self.candidate_generation = self.candidate_generation.wrapping_add(1);
+        let generation = self.candidate_generation;
         self.mode = Mode::CandidateReview;
         self.candidate_review = Some(CandidateReview {
             item_id: item.id.clone(),
@@ -317,12 +348,25 @@ impl App {
         };
         let (tx, rx) = mpsc::channel();
         let library_root = self.paths.root.clone();
+        let canceled = Arc::new(AtomicBool::new(false));
+        let worker_canceled = Arc::clone(&canceled);
         thread::spawn(move || {
-            let result = metadata_candidates_for_item_at(&item, include_online, 15, &library_root)
+            let result = load(&item, include_online, &worker_canceled)
                 .map_err(|error| error.code().to_owned());
-            let _ = tx.send((item.id, result));
+            if worker_canceled.load(Ordering::Acquire) {
+                if let Ok(candidates) = &result {
+                    release_metadata_candidate_covers(&library_root, candidates);
+                }
+                return;
+            }
+            if let Err(error) = tx.send((generation, item.id, result))
+                && let Ok(candidates) = error.0.2
+            {
+                release_metadata_candidate_covers(&library_root, &candidates);
+            }
         });
         self.candidate_rx = Some(rx);
+        self.candidate_cancel = Some(canceled);
     }
 
     fn refresh_candidate_review_online(&mut self) {
@@ -347,18 +391,33 @@ impl App {
         let result = match receiver.try_recv() {
             Ok(result) => Some(result),
             Err(TryRecvError::Empty) => None,
-            Err(TryRecvError::Disconnected) => {
-                Some((String::new(), Err("metadata-unavailable".to_owned())))
-            }
+            Err(TryRecvError::Disconnected) => Some((
+                self.candidate_generation,
+                String::new(),
+                Err("metadata-unavailable".to_owned()),
+            )),
         };
-        let Some((item_id, result)) = result else {
+        let Some((generation, item_id, result)) = result else {
             return;
         };
         self.candidate_rx = None;
+        self.candidate_cancel = None;
+        if generation != self.candidate_generation {
+            if let Ok(candidates) = result {
+                release_metadata_candidate_covers(&self.paths.root, &candidates);
+            }
+            return;
+        }
         let Some(review) = self.candidate_review.as_ref() else {
+            if let Ok(candidates) = result {
+                release_metadata_candidate_covers(&self.paths.root, &candidates);
+            }
             return;
         };
         if !item_id.is_empty() && review.item_id != item_id {
+            if let Ok(candidates) = result {
+                release_metadata_candidate_covers(&self.paths.root, &candidates);
+            }
             if let Some(review) = self.candidate_review.as_mut() {
                 review.loading = false;
             }
@@ -457,10 +516,30 @@ impl App {
     }
 
     fn cancel_candidate_review(&mut self) {
+        self.cancel_candidate_loader();
+        self.release_review_covers();
         self.mode = Mode::Normal;
         self.candidate_review = None;
-        self.candidate_rx = None;
         self.status = "Metadata review canceled".to_owned();
+    }
+
+    fn cancel_candidate_loader(&mut self) {
+        if let Some(canceled) = self.candidate_cancel.take() {
+            canceled.store(true, Ordering::Release);
+        }
+        if let Some(receiver) = self.candidate_rx.take() {
+            while let Ok((_, _, result)) = receiver.try_recv() {
+                if let Ok(candidates) = result {
+                    release_metadata_candidate_covers(&self.paths.root, &candidates);
+                }
+            }
+        }
+    }
+
+    fn release_review_covers(&self) {
+        if let Some(review) = &self.candidate_review {
+            release_metadata_candidate_covers(&self.paths.root, &review.candidates);
+        }
     }
 
     fn confirm_candidate(&mut self) {
@@ -514,9 +593,10 @@ impl App {
         match result {
             Ok((item, fields)) => {
                 let updated_item_id = item.id.clone();
+                self.release_review_covers();
                 self.mode = Mode::Normal;
                 self.candidate_review = None;
-                self.candidate_rx = None;
+                self.cancel_candidate_loader();
                 self.refresh();
                 if let Some(index) = self
                     .items
@@ -670,24 +750,74 @@ impl App {
     }
 }
 
+impl Drop for App {
+    fn drop(&mut self) {
+        self.cancel_candidate_loader();
+        self.release_review_covers();
+    }
+}
+
+struct TerminalCleanup {
+    raw_mode: bool,
+    alternate_screen: bool,
+}
+
+impl TerminalCleanup {
+    fn new() -> Self {
+        Self {
+            raw_mode: false,
+            alternate_screen: false,
+        }
+    }
+}
+
+impl Drop for TerminalCleanup {
+    fn drop(&mut self) {
+        if self.raw_mode {
+            let _ = disable_raw_mode();
+        }
+        let mut stdout = io::stdout();
+        if self.alternate_screen {
+            let _ = execute!(stdout, LeaveAlternateScreen);
+        }
+        let _ = execute!(stdout, crossterm::cursor::Show);
+    }
+}
+
 struct TerminalGuard {
     terminal: Terminal<CrosstermBackend<Stdout>>,
+    raw_mode: bool,
+    alternate_screen: bool,
 }
 impl TerminalGuard {
     fn enter() -> AppResult<Self> {
+        let mut cleanup = TerminalCleanup::new();
         enable_raw_mode().map_err(|_| AppError::new("terminal-unavailable"))?;
+        cleanup.raw_mode = true;
         let mut stdout = io::stdout();
         execute!(stdout, EnterAlternateScreen)
             .map_err(|_| AppError::new("terminal-unavailable"))?;
+        cleanup.alternate_screen = true;
         let terminal = Terminal::new(CrosstermBackend::new(stdout))
             .map_err(|_| AppError::new("terminal-unavailable"))?;
-        Ok(Self { terminal })
+        let guard = Self {
+            terminal,
+            raw_mode: cleanup.raw_mode,
+            alternate_screen: cleanup.alternate_screen,
+        };
+        cleanup.raw_mode = false;
+        cleanup.alternate_screen = false;
+        Ok(guard)
     }
 }
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
-        let _ = disable_raw_mode();
-        let _ = execute!(self.terminal.backend_mut(), LeaveAlternateScreen);
+        if self.raw_mode {
+            let _ = disable_raw_mode();
+        }
+        if self.alternate_screen {
+            let _ = execute!(self.terminal.backend_mut(), LeaveAlternateScreen);
+        }
         let _ = self.terminal.show_cursor();
     }
 }
@@ -1218,6 +1348,7 @@ fn draw_candidate_review(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) 
         horizontal: 1,
         vertical: 1,
     });
+    let compact = inner.width < 78 && inner.height <= 10;
     let panes = if inner.width >= 78 {
         Layout::default()
             .direction(Direction::Horizontal)
@@ -1226,7 +1357,11 @@ fn draw_candidate_review(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) 
     } else {
         Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Percentage(42), Constraint::Percentage(58)])
+            .constraints(if compact {
+                [Constraint::Length(3), Constraint::Min(3)]
+            } else {
+                [Constraint::Percentage(42), Constraint::Percentage(58)]
+            })
             .split(inner)
     };
 
@@ -1259,13 +1394,23 @@ fn draw_candidate_review(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) 
                             .and_then(Value::as_str)
                     })
                     .unwrap_or("Takio");
-                ListItem::new(vec![
-                    Line::styled(source, Style::default().add_modifier(Modifier::BOLD)),
-                    Line::styled(
-                        format!("{confidence} confidence  {backend}"),
-                        Style::default().fg(MUTED),
-                    ),
-                ])
+                if compact {
+                    ListItem::new(Line::from(vec![
+                        Span::styled(source, Style::default().add_modifier(Modifier::BOLD)),
+                        Span::styled(
+                            format!("  {confidence}  {backend}"),
+                            Style::default().fg(MUTED),
+                        ),
+                    ]))
+                } else {
+                    ListItem::new(vec![
+                        Line::styled(source, Style::default().add_modifier(Modifier::BOLD)),
+                        Line::styled(
+                            format!("{confidence} confidence  {backend}"),
+                            Style::default().fg(MUTED),
+                        ),
+                    ])
+                }
             })
             .collect()
     };
@@ -1353,7 +1498,7 @@ fn draw_candidate_review(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) 
             .collect()
     };
     if let Some(cover) = cover {
-        field_items.push(ListItem::new(vec![
+        let cover_item = ListItem::new(vec![
             Line::from(vec![
                 Span::styled(
                     if review.selected_cover {
@@ -1370,15 +1515,24 @@ fn draw_candidate_review(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) 
                 format!("    {}", cover_summary(cover)),
                 Style::default().fg(MUTED),
             ),
-        ]));
+        ]);
+        if compact {
+            field_items.insert(0, cover_item);
+        } else {
+            field_items.push(cover_item);
+        }
     }
     let mut field_state = ListState::default()
-        .with_selected((!review.fields.is_empty()).then_some(review.selected_field));
+        .with_selected((!compact && !review.fields.is_empty()).then_some(review.selected_field));
     frame.render_stateful_widget(
         List::new(field_items)
             .block(
                 Block::default()
-                    .title(" Fields to apply ")
+                    .title(if compact {
+                        " Selection "
+                    } else {
+                        " Fields to apply "
+                    })
                     .borders(Borders::ALL)
                     .border_style(
                         Style::default().fg(if review.focus == CandidateFocus::Fields {
@@ -1842,8 +1996,9 @@ mod tests {
         app.candidate_review.as_mut().expect("review").loading = true;
         let (sender, receiver) = mpsc::channel();
         sender
-            .send(("another-item".to_owned(), Ok(Vec::new())))
+            .send((0, "another-item".to_owned(), Ok(Vec::new())))
             .expect("send stale result");
+        app.candidate_generation = 0;
         app.candidate_rx = Some(receiver);
         app.poll_candidate_loader();
         assert!(!app.candidate_review.as_ref().expect("review").loading);
@@ -1902,10 +2057,71 @@ mod tests {
         assert!(wide.contains("Fields to apply"));
         assert!(wide.contains("Better Title"));
 
-        let compact = rendered_text(&app, 60, 16);
+        let compact = rendered_text(&app, 44, 14);
         assert!(compact.contains("Metadata review"));
         assert!(compact.contains("Suggestions"));
-        assert!(compact.contains("Fields to apply"));
+        assert!(compact.contains("Selection"));
+        assert!(compact.contains("filename"));
+    }
+
+    #[test]
+    fn minimum_size_keeps_cover_selection_and_feedback_visible() {
+        let (_temp, mut app, item) = app_with_book();
+        install_candidate_review(&mut app, &item);
+        let candidate = candidate_with_cover(&app, &item, json!({"title": "Better Title"}));
+        app.accept_candidate_results(vec![candidate]);
+        app.handle_key(KeyCode::Char('c'), KeyModifiers::NONE);
+
+        let compact = rendered_text(&app, 44, 14);
+        assert!(compact.contains("Suggestions"));
+        assert!(compact.contains("embedded"));
+        assert!(compact.contains("[x] Cover"));
+        assert!(compact.contains("c toggles"));
+    }
+
+    #[test]
+    fn repeated_refresh_releases_superseded_and_replaced_cover_stages() {
+        let (_temp, mut app, item) = app_with_book();
+        let first = candidate_with_cover(&app, &item, json!({"title": "First"}));
+        let second = candidate_with_cover(&app, &item, json!({"title": "Second"}));
+        let third = candidate_with_cover(&app, &item, json!({"title": "Third"}));
+        let (ready_tx, ready_rx) = mpsc::channel();
+
+        app.load_candidate_review_with(item.clone(), true, move |_, _, _| {
+            ready_tx.send(()).expect("signal first result");
+            Ok(vec![first])
+        });
+        ready_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("first loader finished");
+        app.load_candidate_review_with(item.clone(), true, move |_, _, _| Ok(vec![second]));
+        for _ in 0..100 {
+            app.poll_candidate_loader();
+            if !app.candidate_review.as_ref().expect("review").loading {
+                break;
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+        app.load_candidate_review_with(item, true, move |_, _, _| Ok(vec![third]));
+        for _ in 0..100 {
+            app.poll_candidate_loader();
+            if !app.candidate_review.as_ref().expect("review").loading {
+                break;
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+
+        let staged = std::fs::read_dir(crate::candidate_cover::root(&app.paths.root))
+            .expect("candidate cover stages")
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry.path().extension().and_then(|value| value.to_str()) == Some("bin")
+            })
+            .count();
+        assert_eq!(
+            staged, 1,
+            "only the currently reachable cover remains staged"
+        );
     }
 
     #[test]
