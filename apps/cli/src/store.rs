@@ -1985,16 +1985,21 @@ fn parse_structured_query(query: &str) -> AppResult<Vec<StructuredQueryTerm>> {
             continue;
         }
         let (field, value) = field_separator.map_or((None, token.as_str()), |separator| {
+            let field = &token[..separator];
             (
-                Some(token[..separator].to_ascii_lowercase()),
+                Some(if field.starts_with('#') {
+                    field.to_owned()
+                } else {
+                    field.to_ascii_lowercase()
+                }),
                 &token[separator + 1..],
             )
         });
         if value.is_empty() || value.encode_utf16().count() > 256 {
             return Err(AppError::new("invalid-query"));
         }
-        if let Some(field) = field.as_deref()
-            && !matches!(
+        if let Some(field) = field.as_deref() {
+            let valid = matches!(
                 field,
                 "title"
                     | "author"
@@ -2011,9 +2016,12 @@ fn parse_structured_query(query: &str) -> AppResult<Vec<StructuredQueryTerm>> {
                     | "identifiers"
                     | "comments"
                     | "description"
-            )
-        {
-            return Err(AppError::new("invalid-query"));
+            ) || field
+                .strip_prefix('#')
+                .is_some_and(|key| valid_custom_metadata_key(key) && key != METADATA_AUDIT_KEY);
+            if !valid {
+                return Err(AppError::new("invalid-query"));
+            }
         }
         terms.push(StructuredQueryTerm {
             field,
@@ -2059,9 +2067,16 @@ fn append_structured_term(
                  OR EXISTS(SELECT 1 FROM library_item_tags qit
                            JOIN tags qt ON qt.normalized_name=qit.tag_normalized_name
                            WHERE qit.library_item_id=li.id
-                             AND qt.name LIKE ? ESCAPE '\\' COLLATE NOCASE)",
+                             AND qt.name LIKE ? ESCAPE '\\' COLLATE NOCASE)
+                 OR EXISTS(SELECT 1 FROM library_item_custom_metadata qm
+                           WHERE qm.library_item_id=li.id
+                             AND qm.name<>?
+                             AND (qm.name LIKE ? ESCAPE '\\' COLLATE NOCASE
+                                  OR qm.value LIKE ? ESCAPE '\\' COLLATE NOCASE))",
             );
-            values.extend(std::iter::repeat_n(SqlValue::Text(needle), 5));
+            values.extend(std::iter::repeat_n(SqlValue::Text(needle.clone()), 5));
+            values.push(SqlValue::Text(METADATA_AUDIT_KEY.to_owned()));
+            values.extend(std::iter::repeat_n(SqlValue::Text(needle), 2));
         }
         Some("title") => append_like(sql, values, "li.title", needle),
         Some("author" | "authors") => {
@@ -2110,6 +2125,16 @@ fn append_structured_term(
             values.extend(std::iter::repeat_n(SqlValue::Text(needle), 2));
         }
         Some("comments" | "description") => append_like(sql, values, "li.description", needle),
+        Some(field) if field.starts_with('#') => {
+            sql.push_str(
+                "EXISTS(SELECT 1 FROM library_item_custom_metadata qm
+                        WHERE qm.library_item_id=li.id
+                          AND qm.name=?
+                          AND qm.value LIKE ? ESCAPE '\\' COLLATE NOCASE)",
+            );
+            values.push(SqlValue::Text(field[1..].to_owned()));
+            values.push(SqlValue::Text(needle));
+        }
         Some(_) => unreachable!("structured query fields are validated"),
     }
     sql.push(')');
@@ -3407,17 +3432,18 @@ mod tests {
     #[test]
     fn structured_queries_parse_fields_quotes_negation_and_literal_colons() {
         let terms = parse_structured_query(
-            r#"author:"Ursula K. Le Guin" and tag:Classic not publisher:Tor "https://example.test" "or""#,
+            r#"author:"Ursula K. Le Guin" and tag:Classic not publisher:Tor #shelf:favorites "https://example.test" "or""#,
         )
         .unwrap();
-        assert_eq!(terms.len(), 5);
+        assert_eq!(terms.len(), 6);
         assert_eq!(terms[0].field.as_deref(), Some("author"));
         assert_eq!(terms[0].value, "Ursula K. Le Guin");
         assert_eq!(terms[1].field.as_deref(), Some("tag"));
         assert!(terms[2].negated);
-        assert_eq!(terms[3].field, None);
-        assert_eq!(terms[3].value, "https://example.test");
-        assert_eq!(terms[4].value, "or");
+        assert_eq!(terms[3].field.as_deref(), Some("#shelf"));
+        assert_eq!(terms[4].field, None);
+        assert_eq!(terms[4].value, "https://example.test");
+        assert_eq!(terms[5].value, "or");
 
         for invalid in [
             "author:\"unfinished",
@@ -3427,12 +3453,80 @@ mod tests {
             "author:Asimov and",
             "not",
             "(author:Asimov)",
+            "#Bad:value",
+            "#bad-key:value",
+            "#takio_metadata_audit:value",
         ] {
             assert_eq!(
                 parse_structured_query(invalid).unwrap_err().code(),
                 "invalid-query"
             );
         }
+    }
+
+    #[test]
+    fn custom_metadata_queries_match_safe_fields_and_literals_without_exposing_audit() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = LibraryPaths::resolve(None, Some(&temp.path().join("library.sqlite"))).unwrap();
+        let mut store = LibraryStore::open(paths, true).unwrap();
+        let source = temp.path().join("earthsea.txt");
+        fs::write(&source, "earthsea").unwrap();
+        let item = store.import(&source, Some("Earthsea"), false).unwrap();
+        store
+            .update(
+                &item.id,
+                LibraryPatch {
+                    custom_metadata: Patch::Set(BTreeMap::from([(
+                        "shelf".to_owned(),
+                        "Favorite Classics".to_owned(),
+                    )])),
+                    ..LibraryPatch::default()
+                },
+            )
+            .unwrap();
+        store
+            .connection
+            .execute(
+                "INSERT INTO library_item_custom_metadata(library_item_id,name,value) VALUES(?1,?2,?3)",
+                params![item.id, METADATA_AUDIT_KEY, "hidden provenance"],
+            )
+            .unwrap();
+        let empty = Vec::<String>::new();
+        let filters = LibraryQueryFilters {
+            authors: &empty,
+            tags: &empty,
+            series: &empty,
+            languages: &empty,
+            formats: &empty,
+        };
+
+        for (query, syntax) in [
+            ("#shelf:favorite", LibraryQuerySyntax::StructuredV1),
+            ("shelf", LibraryQuerySyntax::Literal),
+            ("classics", LibraryQuerySyntax::Literal),
+        ] {
+            assert_eq!(
+                store
+                    .query_items_scoped(&[LibraryQueryScope {
+                        query,
+                        syntax,
+                        filters
+                    }])
+                    .unwrap()
+                    .len(),
+                1
+            );
+        }
+        assert!(
+            store
+                .query_items_scoped(&[LibraryQueryScope {
+                    query: "provenance",
+                    syntax: LibraryQuerySyntax::Literal,
+                    filters,
+                }])
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]
