@@ -67,6 +67,74 @@ fn capabilities_identify_the_native_tui() {
 }
 
 #[test]
+fn metadata_candidates_reconcile_returns_one_ordered_envelope_without_mutation() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let database = temp.path().join("library.sqlite");
+    let epub = temp.path().join("The Author - The Title.epub");
+    fs::write(&epub, b"not a real epub").expect("epub fixture");
+
+    let added = cargo_bin_cmd!("takio")
+        .args(["library", "add", "--db"])
+        .arg(&database)
+        .args(["--source-path"])
+        .arg(&epub)
+        .output()
+        .expect("add item");
+    assert!(added.status.success());
+    let item_id = success_value(&added.stdout)["item"]["id"]
+        .as_str()
+        .expect("item id")
+        .to_owned();
+    let before = fs::read(&database).expect("database before reconcile");
+    let request = serde_json::json!({
+        "schemaVersion": 1,
+        "itemIds": [item_id, "missing-item"],
+        "includeOnline": false,
+        "concurrency": 2
+    });
+
+    let output = cargo_bin_cmd!("takio")
+        .args(["metadata", "candidates", "reconcile", "--db"])
+        .arg(&database)
+        .args(["--request-json", &request.to_string()])
+        .output()
+        .expect("reconcile candidates");
+
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+    assert_eq!(
+        output.stdout.iter().filter(|byte| **byte == b'\n').count(),
+        1
+    );
+    let value = success_value(&output.stdout);
+    assert_eq!(value["outcomes"][0]["status"], "ready");
+    assert_eq!(value["outcomes"][0]["itemId"], request["itemIds"][0]);
+    assert!(
+        value["outcomes"][0]["candidates"]
+            .as_array()
+            .is_some_and(|candidates| !candidates.is_empty())
+    );
+    assert_eq!(
+        value["outcomes"][0]["candidates"][0]["provenance"]["itemId"],
+        request["itemIds"][0]
+    );
+    assert_eq!(
+        value["outcomes"][1],
+        serde_json::json!({"status":"missing","itemId":"missing-item"})
+    );
+    assert_eq!(
+        value["counts"],
+        serde_json::json!({
+            "total":2,"ready":1,"noCandidates":0,"missing":1,"failed":0,"canceled":0
+        })
+    );
+    assert_eq!(
+        fs::read(&database).expect("database after reconcile"),
+        before
+    );
+}
+
+#[test]
 fn portable_export_and_rebuild_preserve_rich_metadata_order_and_bytes() {
     let temp = tempfile::tempdir().expect("temporary directory");
     let database = temp.path().join("source/library.sqlite");

@@ -4,7 +4,9 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use chrono::{NaiveDate, Utc};
-use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
+use rusqlite::{
+    Connection, OpenFlags, OptionalExtension, Transaction, TransactionBehavior, params,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
@@ -169,6 +171,22 @@ pub struct MergeDuplicatePairResult {
 const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 
 impl LibraryStore {
+    pub fn open_read_only(paths: LibraryPaths) -> AppResult<Self> {
+        if !paths.database.is_file() {
+            return Err(AppError::new("storage-unavailable"));
+        }
+        let connection =
+            Connection::open_with_flags(&paths.database, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        connection.busy_timeout(std::time::Duration::from_secs(5))?;
+        connection.pragma_update(None, "foreign_keys", "ON")?;
+        let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
+        if version != LIBRARY_SCHEMA_VERSION {
+            return Err(AppError::new("incompatible-schema"));
+        }
+        migration::verify_schema_version(&connection, version)?;
+        Ok(Self { connection, paths })
+    }
+
     pub fn open(paths: LibraryPaths, create: bool) -> AppResult<Self> {
         if !create && !paths.database.is_file() {
             return Err(AppError::new("storage-unavailable"));

@@ -17,6 +17,7 @@ use crate::jobs::{JobStatus, JobStore};
 use crate::kindle_ssh::{self, KindleSshDestination};
 use crate::maintenance::{self, discover_ebook_polish};
 use crate::metadata::{self, discover_ebook_meta, discover_fetch_ebook_metadata};
+use crate::metadata_reconcile::{CancellationSignals, ReconcileRequest, reconcile};
 use crate::model::{LibraryPatch, Patch};
 use crate::output::{AppError, AppResult, print_success};
 use crate::paths::LibraryPaths;
@@ -500,6 +501,14 @@ enum MetadataCandidatesCommand {
         #[arg(long, default_value_t = 30)]
         timeout_seconds: u64,
     },
+    Reconcile {
+        #[arg(long)]
+        db: PathBuf,
+        #[arg(long = "request-json")]
+        request_json: String,
+        #[arg(long, default_value_t = 30)]
+        timeout_seconds: u64,
+    },
     Apply {
         #[arg(long)]
         db: Option<PathBuf>,
@@ -843,6 +852,36 @@ fn metadata_candidates(command: MetadataCandidatesCommand, library: Option<&str>
                 .ok_or_else(|| AppError::new("item-not-found"))?;
             let candidates = metadata_candidates_for_item(&item, include_online, timeout_seconds)?;
             print_success(json!({"itemId":item.id,"candidates":candidates}))
+        }
+        MetadataCandidatesCommand::Reconcile {
+            db,
+            request_json,
+            timeout_seconds,
+        } => {
+            if timeout_seconds == 0 {
+                return Err(AppError::new("invalid-arguments"));
+            }
+            let request = ReconcileRequest::parse(read_json(&request_json)?)?;
+            let paths = LibraryPaths::resolve(library, Some(&db))?;
+            let store = LibraryStore::open_read_only(paths)?;
+            let snapshots = request
+                .item_ids()
+                .iter()
+                .map(|id| store.get(id))
+                .collect::<AppResult<Vec<_>>>()?;
+            drop(store);
+
+            let signals = CancellationSignals::install()?;
+            let response = reconcile(
+                request.item_ids(),
+                snapshots,
+                request.include_online(),
+                timeout_seconds,
+                request.concurrency(),
+                signals.flag(),
+                metadata_candidates_for_item,
+            );
+            print_success(response)
         }
         MetadataCandidatesCommand::Apply {
             db,

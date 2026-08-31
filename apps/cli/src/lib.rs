@@ -7,6 +7,7 @@ pub mod jobs;
 pub mod kindle_ssh;
 pub mod maintenance;
 pub mod metadata;
+mod metadata_reconcile;
 pub mod model;
 pub mod output;
 pub mod paths;
