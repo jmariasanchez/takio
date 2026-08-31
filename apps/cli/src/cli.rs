@@ -149,6 +149,10 @@ enum Command {
 
 #[derive(Subcommand)]
 enum LibraryCommand {
+    CustomColumns {
+        #[command(subcommand)]
+        command: CustomColumnsCommand,
+    },
     Service {
         #[arg(long)]
         db: Option<PathBuf>,
@@ -337,6 +341,36 @@ enum LibraryCommand {
     SavedViews(SavedViewsCommand),
     #[command(subcommand)]
     VirtualLibraries(SavedViewsCommand),
+}
+
+#[derive(Subcommand)]
+enum CustomColumnsCommand {
+    List {
+        #[arg(long)]
+        db: Option<PathBuf>,
+    },
+    Create {
+        #[arg(long)]
+        db: Option<PathBuf>,
+        #[arg(long)]
+        key: String,
+        #[arg(long)]
+        label: String,
+    },
+    Rename {
+        #[arg(long)]
+        db: Option<PathBuf>,
+        #[arg(long)]
+        key: String,
+        #[arg(long)]
+        label: String,
+    },
+    Remove {
+        #[arg(long)]
+        db: Option<PathBuf>,
+        #[arg(long)]
+        key: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1609,6 +1643,7 @@ fn plan(input: &Path, to: FormatId, profile: &str, as_json: bool) -> AppResult<(
 
 fn library(command: LibraryCommand, library: Option<&str>) -> AppResult<()> {
     match command {
+        LibraryCommand::CustomColumns { command } => custom_columns(command, library),
         LibraryCommand::Service { db } => library_service(library, db.as_deref()),
         LibraryCommand::Path { db } => {
             let paths = LibraryPaths::resolve(library, db.as_deref())?;
@@ -1889,6 +1924,31 @@ fn library(command: LibraryCommand, library: Option<&str>) -> AppResult<()> {
                 interval_seconds,
                 max_cycles,
             )
+        }
+    }
+}
+
+fn custom_columns(command: CustomColumnsCommand, library: Option<&str>) -> AppResult<()> {
+    let database = match &command {
+        CustomColumnsCommand::List { db }
+        | CustomColumnsCommand::Create { db, .. }
+        | CustomColumnsCommand::Rename { db, .. }
+        | CustomColumnsCommand::Remove { db, .. } => db.as_deref(),
+    };
+    let paths = LibraryPaths::resolve(library, database)?;
+    let mut store = LibraryStore::open(paths, true)?;
+    match command {
+        CustomColumnsCommand::List { .. } => {
+            print_success(json!({"definitions":store.list_custom_column_definitions()?}))
+        }
+        CustomColumnsCommand::Create { key, label, .. } => print_success(
+            json!({"definition":store.create_custom_column_definition(&key, &label)?}),
+        ),
+        CustomColumnsCommand::Rename { key, label, .. } => print_success(
+            json!({"definition":store.rename_custom_column_definition(&key, &label)?}),
+        ),
+        CustomColumnsCommand::Remove { key, .. } => {
+            print_success(json!({"definition":store.remove_custom_column_definition(&key)?}))
         }
     }
 }
@@ -2502,6 +2562,54 @@ fn service_request(store: &mut LibraryStore, request: &Value) -> AppResult<Value
         .get("args")
         .ok_or_else(|| AppError::new("invalid-arguments"))?;
     match command {
+        "library_custom_columns_list" => {
+            if args.as_object().is_none_or(|args| !args.is_empty()) {
+                return Err(AppError::new("invalid-arguments"));
+            }
+            serde_json::to_value(store.list_custom_column_definitions()?)
+                .map_err(|_| AppError::new("storage-unavailable"))
+        }
+        "library_custom_columns_create" => {
+            if args.as_object().is_none_or(|args| args.len() != 2) {
+                return Err(AppError::new("invalid-arguments"));
+            }
+            let key = args
+                .get("key")
+                .and_then(Value::as_str)
+                .ok_or_else(|| AppError::new("invalid-arguments"))?;
+            let label = args
+                .get("label")
+                .and_then(Value::as_str)
+                .ok_or_else(|| AppError::new("invalid-arguments"))?;
+            serde_json::to_value(store.create_custom_column_definition(key, label)?)
+                .map_err(|_| AppError::new("storage-unavailable"))
+        }
+        "library_custom_columns_rename" => {
+            if args.as_object().is_none_or(|args| args.len() != 2) {
+                return Err(AppError::new("invalid-arguments"));
+            }
+            let key = args
+                .get("key")
+                .and_then(Value::as_str)
+                .ok_or_else(|| AppError::new("invalid-arguments"))?;
+            let label = args
+                .get("label")
+                .and_then(Value::as_str)
+                .ok_or_else(|| AppError::new("invalid-arguments"))?;
+            serde_json::to_value(store.rename_custom_column_definition(key, label)?)
+                .map_err(|_| AppError::new("storage-unavailable"))
+        }
+        "library_custom_columns_remove" => {
+            if args.as_object().is_none_or(|args| args.len() != 1) {
+                return Err(AppError::new("invalid-arguments"));
+            }
+            let key = args
+                .get("key")
+                .and_then(Value::as_str)
+                .ok_or_else(|| AppError::new("invalid-arguments"))?;
+            serde_json::to_value(store.remove_custom_column_definition(key)?)
+                .map_err(|_| AppError::new("storage-unavailable"))
+        }
         "library_duplicates_list" => {
             let request = serde_json::from_value::<ListDuplicateCandidatesRequest>(args.clone())
                 .map_err(|_| AppError::new("invalid-arguments"))?;

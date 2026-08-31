@@ -11,13 +11,13 @@ use unicode_normalization::UnicodeNormalization;
 use uuid::Uuid;
 
 use crate::conversion::FormatId;
-use crate::model::{BookAuthor, LibraryItem, Provenance};
+use crate::model::{BookAuthor, CustomColumnDefinition, LibraryItem, Provenance};
 use crate::output::{AppError, AppResult};
 use crate::paths::LibraryPaths;
 use crate::store::{LibraryStore, METADATA_AUDIT_KEY, VerifyReport, normalize_custom_metadata};
 
 const PORTABLE_FORMAT: &str = "takio-portable-library";
-const PORTABLE_VERSION: u64 = 1;
+const PORTABLE_VERSION: u64 = 2;
 const MAX_DOCUMENT_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 
@@ -26,6 +26,8 @@ const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 struct PortableManifest {
     format: String,
     version: u64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    definitions: Vec<CustomColumnDefinition>,
     books: Vec<PortableBook>,
 }
 
@@ -49,6 +51,20 @@ struct ParsedBook {
     item: LibraryItem,
     formats: Vec<(FormatId, PathBuf)>,
     cover: Option<PathBuf>,
+}
+
+#[derive(Debug)]
+struct ParsedSource {
+    definitions: Vec<CustomColumnDefinition>,
+    books: Vec<ParsedBook>,
+}
+
+impl std::ops::Deref for ParsedSource {
+    type Target = [ParsedBook];
+
+    fn deref(&self) -> &Self::Target {
+        &self.books
+    }
 }
 
 pub fn export(store: &LibraryStore, destination: &Path) -> AppResult<serde_json::Value> {
@@ -136,6 +152,7 @@ fn export_into(
     let manifest = PortableManifest {
         format: PORTABLE_FORMAT.to_owned(),
         version: PORTABLE_VERSION,
+        definitions: store.list_custom_column_definitions()?,
         books,
     };
     let mut bytes =
@@ -170,7 +187,7 @@ pub fn rebuild(source: &Path, paths: LibraryPaths) -> AppResult<serde_json::Valu
     if destination.exists() {
         return Err(AppError::new("destination-exists"));
     }
-    let books = validate_source(&source)?;
+    let parsed = validate_source(&source)?;
     let temporary = owned_staging_path(&destination)?;
     let temporary_database = temporary.join(
         paths
@@ -179,7 +196,7 @@ pub fn rebuild(source: &Path, paths: LibraryPaths) -> AppResult<serde_json::Valu
             .ok_or_else(|| AppError::new("invalid-arguments"))?,
     );
     let temporary_paths = LibraryPaths::resolve(None, Some(&temporary_database))?;
-    let result = rebuild_into(&books, &destination, &temporary, temporary_paths);
+    let result = rebuild_into(&parsed, &destination, &temporary, temporary_paths);
     if temporary.exists() {
         let _ = fs::remove_dir_all(&temporary);
     }
@@ -187,7 +204,7 @@ pub fn rebuild(source: &Path, paths: LibraryPaths) -> AppResult<serde_json::Valu
 }
 
 fn rebuild_into(
-    books: &[ParsedBook],
+    source: &ParsedSource,
     destination: &Path,
     temporary: &Path,
     temporary_paths: LibraryPaths,
@@ -195,7 +212,10 @@ fn rebuild_into(
     create_private_dir(temporary)?;
     let mut store = LibraryStore::open(temporary_paths.clone(), true)
         .map_err(|_| AppError::new("storage-unavailable"))?;
-    for book in books {
+    store
+        .replace_custom_column_definitions(&source.definitions)
+        .map_err(|_| AppError::new("source-invalid"))?;
+    for book in &source.books {
         store
             .restore_portable_item(&book.item, &book.formats, book.cover.as_deref())
             .map_err(|_| AppError::new("storage-unavailable"))?;
@@ -227,7 +247,7 @@ fn rebuild_into(
     Ok(json!({"rebuild":{"path":final_database,"report":integrity_value(&report)}}))
 }
 
-fn validate_source(root: &Path) -> AppResult<Vec<ParsedBook>> {
+fn validate_source(root: &Path) -> AppResult<ParsedSource> {
     let root_metadata = fs::symlink_metadata(root).map_err(|_| AppError::new("source-invalid"))?;
     if !root_metadata.is_dir() || root_metadata.file_type().is_symlink() {
         return Err(AppError::new("source-invalid"));
@@ -237,9 +257,14 @@ fn validate_source(root: &Path) -> AppResult<Vec<ParsedBook>> {
         MAX_DOCUMENT_BYTES,
     )?)
     .map_err(|_| AppError::new("source-invalid"))?;
-    if manifest.format != PORTABLE_FORMAT || manifest.version != PORTABLE_VERSION {
+    if manifest.format != PORTABLE_FORMAT || !matches!(manifest.version, 1 | PORTABLE_VERSION) {
         return Err(AppError::new("source-invalid"));
     }
+    if manifest.version == 1 && !manifest.definitions.is_empty() {
+        return Err(AppError::new("source-invalid"));
+    }
+    crate::store::validate_custom_column_definitions(&manifest.definitions)
+        .map_err(|_| AppError::new("source-invalid"))?;
     require_exact_entries(root, &["books", "manifest.json"])?;
     let books_root = root.join("books");
     let books_metadata =
@@ -302,7 +327,10 @@ fn validate_source(root: &Path) -> AppResult<Vec<ParsedBook>> {
         }
         parsed.push(parsed_book);
     }
-    Ok(parsed)
+    Ok(ParsedSource {
+        definitions: manifest.definitions,
+        books: parsed,
+    })
 }
 
 fn parse_book(book_root: &Path, artifacts: &HashSet<String>) -> AppResult<ParsedBook> {
@@ -1056,6 +1084,7 @@ mod tests {
         let manifest = PortableManifest {
             format: PORTABLE_FORMAT.to_owned(),
             version: PORTABLE_VERSION,
+            definitions: Vec::new(),
             books: vec![PortableBook {
                 directory: "Book [abc]".to_owned(),
                 artifacts,

@@ -20,17 +20,20 @@ use uuid::Uuid;
 
 use crate::candidate_cover::{self, CandidateCoverDescriptor};
 use crate::conversion::{FormatId, detect_format};
-use crate::model::{BookAuthor, BookFormat, LibraryItem, LibraryPatch, Patch, Provenance};
+use crate::model::{
+    BookAuthor, BookFormat, CustomColumnDefinition, LibraryItem, LibraryPatch, Patch, Provenance,
+};
 use crate::output::{AppError, AppResult};
 use crate::paths::LibraryPaths;
 
 mod migration;
 
-pub const LIBRARY_SCHEMA_VERSION: i64 = 11;
+pub const LIBRARY_SCHEMA_VERSION: i64 = 12;
 pub const METADATA_AUDIT_KEY: &str = "takio_metadata_audit";
 const MAX_CUSTOM_METADATA_USER_ENTRIES: usize = 64;
 const MAX_CUSTOM_METADATA_TOTAL_ENTRIES: usize = 65;
 const MAX_CUSTOM_METADATA_VALUE_CHARS: usize = 16 * 1024;
+const MAX_CUSTOM_COLUMN_DEFINITIONS: usize = 64;
 
 #[cfg(test)]
 thread_local! {
@@ -205,6 +208,116 @@ pub struct MergeDuplicatePairResult {
 const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 
 impl LibraryStore {
+    pub fn list_custom_column_definitions(&self) -> AppResult<Vec<CustomColumnDefinition>> {
+        let mut statement = self.connection.prepare(
+            "SELECT key,label,type,position FROM library_custom_column_definitions ORDER BY position",
+        )?;
+        statement
+            .query_map([], |row| {
+                Ok(CustomColumnDefinition {
+                    key: row.get(0)?,
+                    label: row.get(1)?,
+                    column_type: row.get(2)?,
+                    position: row.get(3)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
+
+    pub fn create_custom_column_definition(
+        &mut self,
+        key: &str,
+        label: &str,
+    ) -> AppResult<CustomColumnDefinition> {
+        let label = validate_custom_column_definition(key, label)?;
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let count: usize = transaction.query_row(
+            "SELECT COUNT(*) FROM library_custom_column_definitions",
+            [],
+            |row| row.get(0),
+        )?;
+        if count >= MAX_CUSTOM_COLUMN_DEFINITIONS {
+            return Err(AppError::new("invalid-arguments"));
+        }
+        transaction.execute(
+            "INSERT INTO library_custom_column_definitions(key,label,type,position) VALUES(?1,?2,'text',?3)",
+            params![key, label, count],
+        ).map_err(|error| if matches!(error, rusqlite::Error::SqliteFailure(_, _)) {
+            AppError::new("invalid-arguments")
+        } else { error.into() })?;
+        transaction.commit()?;
+        Ok(CustomColumnDefinition {
+            key: key.to_owned(),
+            label,
+            column_type: "text".to_owned(),
+            position: count as u32,
+        })
+    }
+
+    pub fn rename_custom_column_definition(
+        &mut self,
+        key: &str,
+        label: &str,
+    ) -> AppResult<CustomColumnDefinition> {
+        let label = validate_custom_column_definition(key, label)?;
+        let changed = self.connection.execute(
+            "UPDATE library_custom_column_definitions SET label=?2 WHERE key=?1",
+            params![key, label],
+        )?;
+        if changed == 0 {
+            return Err(AppError::new("not-found"));
+        }
+        self.connection.query_row(
+            "SELECT key,label,type,position FROM library_custom_column_definitions WHERE key=?1",
+            [key],
+            |row| Ok(CustomColumnDefinition { key: row.get(0)?, label: row.get(1)?, column_type: row.get(2)?, position: row.get(3)? }),
+        ).map_err(Into::into)
+    }
+
+    pub fn remove_custom_column_definition(
+        &mut self,
+        key: &str,
+    ) -> AppResult<CustomColumnDefinition> {
+        if !valid_custom_column_key(key) {
+            return Err(AppError::new("invalid-arguments"));
+        }
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let definition = transaction.query_row(
+            "SELECT key,label,type,position FROM library_custom_column_definitions WHERE key=?1",
+            [key],
+            |row| Ok(CustomColumnDefinition { key: row.get(0)?, label: row.get(1)?, column_type: row.get(2)?, position: row.get(3)? }),
+        ).optional()?.ok_or_else(|| AppError::new("not-found"))?;
+        transaction.execute(
+            "DELETE FROM library_custom_column_definitions WHERE key=?1",
+            [key],
+        )?;
+        transaction.execute(
+            "UPDATE library_custom_column_definitions SET position=position-1 WHERE position>?1",
+            [definition.position],
+        )?;
+        transaction.commit()?;
+        Ok(definition)
+    }
+
+    pub(crate) fn replace_custom_column_definitions(
+        &mut self,
+        definitions: &[CustomColumnDefinition],
+    ) -> AppResult<()> {
+        validate_custom_column_definitions(definitions)?;
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        transaction.execute("DELETE FROM library_custom_column_definitions", [])?;
+        for definition in definitions {
+            transaction.execute("INSERT INTO library_custom_column_definitions(key,label,type,position) VALUES(?1,?2,'text',?3)", params![definition.key, definition.label, definition.position])?;
+        }
+        transaction.commit().map_err(Into::into)
+    }
     pub fn open_read_only(paths: LibraryPaths) -> AppResult<Self> {
         if !paths.database.is_file() {
             return Err(AppError::new("storage-unavailable"));
@@ -2732,6 +2845,11 @@ fn create_schema(connection: &Connection) -> AppResult<()> {
            scheme TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY(library_item_id,scheme)) STRICT;
          CREATE TABLE library_item_custom_metadata (library_item_id TEXT NOT NULL REFERENCES library_items(id) ON DELETE CASCADE,
            name TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY(library_item_id,name)) STRICT;
+         CREATE TABLE library_custom_column_definitions (
+           key TEXT PRIMARY KEY CHECK(length(key) BETWEEN 1 AND 64),
+           label TEXT NOT NULL CHECK(length(label)>0),
+           type TEXT NOT NULL CHECK(type='text'),
+           position INTEGER NOT NULL UNIQUE CHECK(position>=0)) STRICT;
          CREATE TABLE saved_library_views (id TEXT PRIMARY KEY, name TEXT NOT NULL, definition_json TEXT NOT NULL CHECK(json_valid(definition_json)),
            created_at TEXT NOT NULL, updated_at TEXT NOT NULL) STRICT;
          CREATE TABLE duplicate_pair_reviews (left_id TEXT NOT NULL REFERENCES library_items(id) ON DELETE CASCADE,
@@ -2779,10 +2897,49 @@ fn create_schema(connection: &Connection) -> AppResult<()> {
            ON import_watch_observations(accounted_at,canonical_source_path);
          CREATE INDEX import_watch_observations_by_fingerprint
            ON import_watch_observations(content_bytes,content_sha256,canonical_source_path);
-         PRAGMA user_version=11;
+         PRAGMA user_version=12;
          COMMIT;"
     )?;
     Ok(())
+}
+
+pub(crate) fn validate_custom_column_definitions(
+    definitions: &[CustomColumnDefinition],
+) -> AppResult<()> {
+    if definitions.len() > MAX_CUSTOM_COLUMN_DEFINITIONS {
+        return Err(AppError::new("invalid-arguments"));
+    }
+    let mut keys = std::collections::HashSet::new();
+    for (position, definition) in definitions.iter().enumerate() {
+        if definition.column_type != "text"
+            || definition.position as usize != position
+            || !keys.insert(&definition.key)
+        {
+            return Err(AppError::new("invalid-arguments"));
+        }
+        validate_custom_column_definition(&definition.key, &definition.label)?;
+    }
+    Ok(())
+}
+
+fn validate_custom_column_definition(key: &str, label: &str) -> AppResult<String> {
+    if !valid_custom_column_key(key) {
+        return Err(AppError::new("invalid-arguments"));
+    }
+    let label = label.trim();
+    if label.is_empty() || label.encode_utf16().count() > 120 {
+        return Err(AppError::new("invalid-arguments"));
+    }
+    Ok(label.to_owned())
+}
+
+fn valid_custom_column_key(key: &str) -> bool {
+    key != METADATA_AUDIT_KEY
+        && key.len() <= 64
+        && key.as_bytes().first().is_some_and(u8::is_ascii_lowercase)
+        && key
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
 }
 
 fn has_schema(connection: &Connection) -> AppResult<bool> {

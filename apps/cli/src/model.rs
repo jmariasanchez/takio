@@ -93,6 +93,16 @@ pub struct BookFormat {
     pub provenance: Provenance,
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CustomColumnDefinition {
+    pub key: String,
+    pub label: String,
+    #[serde(rename = "type")]
+    pub column_type: String,
+    pub position: u32,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LibraryItem {

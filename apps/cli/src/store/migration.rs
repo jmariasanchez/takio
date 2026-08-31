@@ -506,7 +506,8 @@ fn reference_schema(version: i64) -> Result<SchemaSignature, rusqlite::Error> {
         8 => reference.execute_batch(V8_SCHEMA)?,
         9 => reference.execute_batch(V9_SCHEMA)?,
         10 => install_v10_reference_schema(&reference)?,
-        11 => super::create_schema(&reference).map_err(|_| rusqlite::Error::InvalidQuery)?,
+        11 => install_v11_reference_schema(&reference)?,
+        12 => super::create_schema(&reference).map_err(|_| rusqlite::Error::InvalidQuery)?,
         _ => return Err(rusqlite::Error::InvalidQuery),
     }
     schema_signature(&reference)
@@ -536,7 +537,8 @@ fn normalize_sql(sql: &str) -> String {
 fn install_v10_reference_schema(connection: &Connection) -> Result<(), rusqlite::Error> {
     super::create_schema(connection).map_err(|_| rusqlite::Error::InvalidQuery)?;
     connection.execute_batch(
-        "DROP TABLE import_watch_observations;
+        "DROP TABLE library_custom_column_definitions;
+         DROP TABLE import_watch_observations;
          DROP INDEX library_adoptions_by_state;
          DROP INDEX library_items_by_published_date;
          DROP INDEX library_items_by_rating;
@@ -563,6 +565,14 @@ fn install_v10_reference_schema(connection: &Connection) -> Result<(), rusqlite:
            content_sha256 TEXT NOT NULL
          ) STRICT;
          PRAGMA user_version=10;",
+    )
+}
+
+fn install_v11_reference_schema(connection: &Connection) -> Result<(), rusqlite::Error> {
+    super::create_schema(connection).map_err(|_| rusqlite::Error::InvalidQuery)?;
+    connection.execute_batch(
+        "DROP TABLE library_custom_column_definitions;
+         PRAGMA user_version=11;",
     )
 }
 
@@ -597,6 +607,7 @@ fn migrate_adjacent(
         8 => transaction.execute_batch(CUSTOM_METADATA_DDL),
         9 => transaction.execute_batch(LIBRARY_ADOPTIONS_DDL),
         10 => migrate_v10_to_v11(transaction),
+        11 => transaction.execute_batch("CREATE TABLE library_custom_column_definitions (key TEXT PRIMARY KEY CHECK(length(key) BETWEEN 1 AND 64), label TEXT NOT NULL CHECK(length(label)>0), type TEXT NOT NULL CHECK(type='text'), position INTEGER NOT NULL UNIQUE CHECK(position>=0)) STRICT;"),
         _ => Err(rusqlite::Error::InvalidQuery),
     }
 }
@@ -1146,6 +1157,22 @@ mod tests {
                     .unwrap();
                 return;
             }
+            11 => {
+                let connection = Connection::open(&paths.database).unwrap();
+                install_v11_reference_schema(&connection).unwrap();
+                connection
+                    .execute_batch(
+                        "INSERT INTO library_items (id,title,added_at,updated_at)
+                           VALUES ('fixture-v11','Current v11 fixture','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');
+                         INSERT INTO library_item_formats
+                           (library_item_id,format,source_path,added_at,provenance,position,content_bytes,content_sha256)
+                           VALUES ('fixture-v11','epub','/fixtures/current-v11.epub','2026-01-01T00:00:00Z','referenced',0,NULL,NULL);
+                         INSERT INTO library_item_custom_metadata(library_item_id,name,value)
+                           VALUES ('fixture-v11','shelf','north'),('fixture-v11','takio_metadata_audit','audit bytes');",
+                    )
+                    .unwrap();
+                return;
+            }
             _ => unreachable!(),
         };
         Connection::open(&paths.database)
@@ -1166,7 +1193,7 @@ mod tests {
 
     #[test]
     fn migrates_every_supported_source_version_and_retains_verified_backup() {
-        for version in 1..=10 {
+        for version in 1..=11 {
             let temp = tempfile::tempdir().unwrap();
             let paths = paths(&temp);
             install_fixture(&paths, version);

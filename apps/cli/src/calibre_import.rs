@@ -47,8 +47,20 @@ pub fn import_calibre_library(paths: LibraryPaths, library_root: &Path) -> AppRe
     validate_destination(&paths, &root, &database_path)?;
     let (_snapshot, database) = open_database(&database_path)?;
     let books = read_books(&database, &root).map_err(|_| AppError::new("storage-unavailable"))?;
+    let definitions =
+        custom_definitions(&database).map_err(|_| AppError::new("storage-unavailable"))?;
     drop(database);
     let mut store = LibraryStore::open(paths, true)?;
+    let existing = store
+        .list_custom_column_definitions()?
+        .into_iter()
+        .map(|definition| definition.key)
+        .collect::<std::collections::HashSet<_>>();
+    for (key, label) in definitions {
+        if !existing.contains(&key) {
+            let _ = store.create_custom_column_definition(&key, &label);
+        }
+    }
     let original_ids = store
         .list(true)?
         .into_iter()
@@ -595,6 +607,40 @@ fn custom_rows(database: &Connection) -> rusqlite::Result<HashMap<i64, BTreeMap<
         }
     }
     Ok(result)
+}
+
+fn custom_definitions(database: &Connection) -> rusqlite::Result<Vec<(String, String)>> {
+    let mut statement =
+        database.prepare("SELECT name,label FROM custom_columns ORDER BY label,name")?;
+    let rows = statement.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
+    let safe_table = Regex::new(r"^custom_column_\d+$").expect("valid regex");
+    let safe_key = Regex::new(r"^[a-z][a-z0-9_]{0,63}$").expect("valid regex");
+    let mut seen = std::collections::HashSet::new();
+    let mut definitions = Vec::new();
+    for row in rows {
+        let (table, label) = row?;
+        if !safe_table.is_match(&table) {
+            continue;
+        }
+        let display = label.trim().trim_start_matches('#').trim();
+        let key: String = display
+            .chars()
+            .map(|character| {
+                if character.is_ascii_alphanumeric() || character == '_' {
+                    character.to_ascii_lowercase()
+                } else {
+                    '_'
+                }
+            })
+            .take(64)
+            .collect();
+        if safe_key.is_match(&key) && !display.is_empty() && seen.insert(key.clone()) {
+            definitions.push((key, display.to_owned()));
+        }
+    }
+    Ok(definitions)
 }
 
 fn patch_for(book: &CalibreBook) -> LibraryPatch {

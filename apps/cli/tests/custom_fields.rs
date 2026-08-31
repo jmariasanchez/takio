@@ -35,6 +35,78 @@ fn failure_code(output: &[u8]) -> String {
 }
 
 #[test]
+fn library_defined_text_columns_crud_preserves_values() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let database = temp.path().join("library.sqlite");
+    let source = temp.path().join("book.txt");
+    fs::write(&source, "book").expect("write source");
+    let id = add_book(&database, &source);
+    let patch = serde_json::json!({"customMetadata":{"shelf":"north"}});
+    let updated = cargo_bin_cmd!("takio")
+        .args(["library", "update", "--db"])
+        .arg(&database)
+        .args(["--id", &id, "--patch-json", &patch.to_string()])
+        .output()
+        .expect("set value");
+    assert!(
+        updated.status.success(),
+        "{}",
+        String::from_utf8_lossy(&updated.stdout)
+    );
+
+    let created = cargo_bin_cmd!("takio")
+        .args(["library", "custom-columns", "create", "--db"])
+        .arg(&database)
+        .args(["--key", "shelf", "--label", " Shelf "])
+        .output()
+        .expect("create definition");
+    assert!(created.status.success());
+    assert!(created.stderr.is_empty());
+    assert_eq!(
+        success_value(&created.stdout)["definition"],
+        serde_json::json!({"key":"shelf","label":"Shelf","type":"text","position":0})
+    );
+
+    let renamed = cargo_bin_cmd!("takio")
+        .args(["library", "custom-columns", "rename", "--db"])
+        .arg(&database)
+        .args(["--key", "shelf", "--label", "Book Shelf"])
+        .output()
+        .expect("rename definition");
+    assert!(renamed.status.success());
+
+    let removed = cargo_bin_cmd!("takio")
+        .args(["library", "custom-columns", "remove", "--db"])
+        .arg(&database)
+        .args(["--key", "shelf"])
+        .output()
+        .expect("remove definition");
+    assert!(removed.status.success());
+
+    let item = cargo_bin_cmd!("takio")
+        .args(["library", "get", "--db"])
+        .arg(&database)
+        .args(["--id", &id])
+        .output()
+        .expect("get item");
+    assert_eq!(
+        success_value(&item.stdout)["item"]["customMetadata"]["shelf"],
+        "north"
+    );
+
+    for key in ["Shelf", "takio_metadata_audit", "1shelf"] {
+        let invalid = cargo_bin_cmd!("takio")
+            .args(["library", "custom-columns", "create", "--db"])
+            .arg(&database)
+            .args(["--key", key, "--label", "Invalid"])
+            .output()
+            .expect("reject invalid definition");
+        assert!(!invalid.status.success());
+        assert_eq!(failure_code(&invalid.stdout), "invalid-arguments");
+    }
+}
+
+#[test]
 fn custom_lookup_fields_and_literals_are_safe_composable_and_read_only() {
     let temp = tempfile::tempdir().expect("temporary directory");
     let database = temp.path().join("library.sqlite");
