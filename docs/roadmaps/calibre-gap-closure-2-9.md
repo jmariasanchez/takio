@@ -139,7 +139,9 @@ Status: selected-book desktop slice delivered in `663541e` and hardened in
 selected-book TUI review delivered in `67d36f1` and hardened in `cbce02b` and
 `502b8c5`. Strict bounded bulk contracts and native discovery were delivered in
 `b69e6e0`, `4620d6b`, and `1b77e9a`; the accessible desktop review workflow was
-delivered in `0c4dd6b` and hardened in `4bd9019`.
+delivered in `0c4dd6b` and hardened in `4bd9019` and `a171891`. Native discovery
+was hardened in `61527de`, with the final cross-runtime item-id alignment in
+`c1a955e`.
 
 Deliver:
 
