@@ -297,7 +297,7 @@ impl App {
         self.mode = Mode::CandidateReview;
         self.candidate_review = Some(CandidateReview {
             item_id: item.id.clone(),
-            item_title: item.title.clone(),
+            item_title: terminal_text(&item.title, 80),
             candidates: Vec::new(),
             selected_candidate: 0,
             fields: Vec::new(),
@@ -355,6 +355,10 @@ impl App {
             return;
         };
         if !item_id.is_empty() && review.item_id != item_id {
+            if let Some(review) = self.candidate_review.as_mut() {
+                review.loading = false;
+            }
+            self.status = "Ignored a stale metadata lookup result".to_owned();
             return;
         }
         match result {
@@ -477,10 +481,18 @@ impl App {
         });
         match result {
             Ok((item, fields)) => {
+                let updated_item_id = item.id.clone();
                 self.mode = Mode::Normal;
                 self.candidate_review = None;
                 self.candidate_rx = None;
                 self.refresh();
+                if let Some(index) = self
+                    .items
+                    .iter()
+                    .position(|candidate| candidate.id == updated_item_id)
+                {
+                    self.selected = index;
+                }
                 self.status = format!("Updated {}: {}", item.title, fields.join(", "));
             }
             Err(error) => {
@@ -491,6 +503,10 @@ impl App {
     }
 
     fn handle_key(&mut self, code: KeyCode, modifiers: KeyModifiers) {
+        if code == KeyCode::Char('c') && modifiers.contains(KeyModifiers::CONTROL) {
+            self.should_quit = true;
+            return;
+        }
         match self.mode {
             Mode::Search | Mode::Import | Mode::Palette => match code {
                 KeyCode::Esc => {
@@ -563,9 +579,6 @@ impl App {
             },
             Mode::Normal => match code {
                 KeyCode::Char('q') => self.should_quit = true,
-                KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => {
-                    self.should_quit = true
-                }
                 KeyCode::Down | KeyCode::Char('j') => self.next(),
                 KeyCode::Up | KeyCode::Char('k') => self.previous(),
                 KeyCode::PageDown => self.next_page(),
@@ -1322,17 +1335,12 @@ fn draw_candidate_confirm(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App)
     let Some(review) = app.candidate_review.as_ref() else {
         return;
     };
-    let popup = centered(area, 70, 10);
+    let popup = centered(area, 70, 12);
     frame.render_widget(Clear, popup);
-    let fields = review
-        .selected_fields
-        .iter()
-        .cloned()
-        .collect::<Vec<_>>()
-        .join(", ");
+    let fields = field_selection_summary(&review.selected_fields);
     frame.render_widget(
         Paragraph::new(format!(
-            "Apply these fields to '{}'?\n\n{}\n\nThe full suggestion provenance will be recorded.\n\n  Enter / y  Apply     n / Esc  Back",
+            "Apply selected metadata to '{}'?\n\nFields: {}\nProvenance will be recorded.\n\nEnter / y  Apply    n / Esc  Back",
             review.item_title, fields
         ))
         .alignment(Alignment::Center)
@@ -1351,7 +1359,7 @@ fn draw_candidate_confirm(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App)
 fn value_summary(value: &Value) -> String {
     let raw = match value {
         Value::Null => "(empty)".to_owned(),
-        Value::String(value) => value.clone(),
+        Value::String(value) => terminal_text(value, 70),
         Value::Array(values) => values
             .iter()
             .map(|value| {
@@ -1364,13 +1372,41 @@ fn value_summary(value: &Value) -> String {
             .join(", "),
         Value::Object(values) => values
             .iter()
-            .map(|(key, value)| format!("{key}:{}", value_summary(value)))
+            .map(|(key, value)| format!("{}:{}", terminal_text(key, 40), value_summary(value)))
             .collect::<Vec<_>>()
             .join(", "),
         other => other.to_string(),
     };
     let mut characters = raw.chars();
     let shortened = characters.by_ref().take(70).collect::<String>();
+    if characters.next().is_some() {
+        format!("{shortened}...")
+    } else {
+        shortened
+    }
+}
+
+fn field_selection_summary(fields: &BTreeSet<String>) -> String {
+    const SHOWN: usize = 3;
+    let mut values = fields.iter().map(|field| field_label(field));
+    let shown = values.by_ref().take(SHOWN).collect::<Vec<_>>();
+    let remaining = fields.len().saturating_sub(shown.len());
+    if remaining == 0 {
+        shown.join(", ")
+    } else {
+        format!("{} +{remaining} more", shown.join(", "))
+    }
+}
+
+fn terminal_text(value: &str, limit: usize) -> String {
+    let mut characters = value.chars().map(|character| {
+        if character.is_control() {
+            ' '
+        } else {
+            character
+        }
+    });
+    let shortened = characters.by_ref().take(limit).collect::<String>();
     if characters.next().is_some() {
         format!("{shortened}...")
     } else {
@@ -1634,6 +1670,87 @@ mod tests {
         assert_eq!(review.item_id, reviewed.id);
         assert!(review.include_online);
         app.cancel_candidate_review();
+    }
+
+    #[test]
+    fn metadata_apply_restores_selection_by_item_id_after_title_reorder() {
+        let (temp, mut app, reviewed) = app_with_book();
+        for title in ["Alpha", "Mango"] {
+            let source = temp.path().join(format!("{title}.epub"));
+            std::fs::write(&source, title.as_bytes()).expect("write source");
+            app.store
+                .import(&source, Some(title), false)
+                .expect("import book");
+        }
+        app.refresh();
+        app.selected = app
+            .items
+            .iter()
+            .position(|item| item.id == reviewed.id)
+            .expect("reviewed selection");
+        install_candidate_review(&mut app, &reviewed);
+        let review = app.candidate_review.as_mut().expect("review");
+        review.selected_fields.clear();
+        review.selected_fields.insert("title".to_owned());
+        app.apply_candidate();
+
+        assert_eq!(app.selected_item().map(|item| &item.id), Some(&reviewed.id));
+    }
+
+    #[test]
+    fn stale_lookup_resolves_loading_and_control_c_quits_modals() {
+        let (_temp, mut app, item) = app_with_book();
+        install_candidate_review(&mut app, &item);
+        app.candidate_review.as_mut().expect("review").loading = true;
+        let (sender, receiver) = mpsc::channel();
+        sender
+            .send(("another-item".to_owned(), Ok(Vec::new())))
+            .expect("send stale result");
+        app.candidate_rx = Some(receiver);
+        app.poll_candidate_loader();
+        assert!(!app.candidate_review.as_ref().expect("review").loading);
+        assert!(app.status.contains("stale"));
+
+        app.handle_key(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn compact_confirmation_keeps_cancel_hint_and_sanitizes_controls() {
+        let (_temp, mut app, item) = app_with_book();
+        install_candidate_review(&mut app, &item);
+        let summary = {
+            let review = app.candidate_review.as_mut().expect("review");
+            review.selected_fields = [
+                "title",
+                "author",
+                "authors",
+                "series",
+                "seriesIndex",
+                "publisher",
+                "languages",
+                "identifiers",
+                "publishedDate",
+                "description",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+            field_selection_summary(&review.selected_fields)
+        };
+        app.mode = Mode::ConfirmCandidate;
+        let compact = rendered_text(&app, 44, 14);
+        assert!(compact.contains("Back"));
+        assert!(summary.contains("+7 more"));
+
+        let unsafe_value = Value::String("safe\u{1b}]0;unsafe\u{7}end".to_owned());
+        let summary = value_summary(&unsafe_value);
+        assert!(!summary.chars().any(char::is_control));
+        assert!(
+            !terminal_text("title\nnext", 80)
+                .chars()
+                .any(char::is_control)
+        );
     }
 
     #[test]
