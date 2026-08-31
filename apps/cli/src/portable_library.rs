@@ -1121,6 +1121,35 @@ mod tests {
     }
 
     #[test]
+    fn rebuild_rejects_padded_v2_definition_labels_without_destination_side_effects() {
+        let portable = fixture();
+        let manifest_path = portable.path().join("manifest.json");
+        let mut manifest: PortableManifest =
+            serde_json::from_slice(&fs::read(&manifest_path).expect("manifest")).expect("json");
+        manifest.definitions = vec![CustomColumnDefinition {
+            key: "shelf".to_owned(),
+            label: " Shelf ".to_owned(),
+            column_type: "text".to_owned(),
+            position: 0,
+        }];
+        fs::write(
+            &manifest_path,
+            serde_json::to_vec(&manifest).expect("manifest json"),
+        )
+        .expect("write manifest");
+
+        let destination_parent = tempfile::tempdir().expect("destination parent");
+        let destination = destination_parent.path().join("rebuilt");
+        let database = destination.join("library.sqlite");
+        let paths = LibraryPaths::resolve(None, Some(&database)).expect("paths");
+        assert_eq!(
+            rebuild(portable.path(), paths).unwrap_err().code(),
+            "source-invalid"
+        );
+        assert!(!destination.exists());
+    }
+
+    #[test]
     fn rejects_changed_traversal_duplicate_and_oversized_sources() {
         let changed = fixture();
         fs::write(

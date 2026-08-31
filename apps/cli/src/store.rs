@@ -212,7 +212,7 @@ impl LibraryStore {
         let mut statement = self.connection.prepare(
             "SELECT key,label,type,position FROM library_custom_column_definitions ORDER BY position",
         )?;
-        statement
+        let definitions = statement
             .query_map([], |row| {
                 Ok(CustomColumnDefinition {
                     key: row.get(0)?,
@@ -221,8 +221,10 @@ impl LibraryStore {
                     position: row.get(3)?,
                 })
             })?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(Into::into)
+            .collect::<Result<Vec<_>, _>>()?;
+        validate_custom_column_definitions(&definitions)
+            .map_err(|_| AppError::new("incompatible-schema"))?;
+        Ok(definitions)
     }
 
     pub fn create_custom_column_definition(
@@ -2917,7 +2919,10 @@ pub(crate) fn validate_custom_column_definitions(
         {
             return Err(AppError::new("invalid-arguments"));
         }
-        validate_custom_column_definition(&definition.key, &definition.label)?;
+        let label = validate_custom_column_definition(&definition.key, &definition.label)?;
+        if label != definition.label {
+            return Err(AppError::new("invalid-arguments"));
+        }
     }
     Ok(())
 }
@@ -3593,6 +3598,26 @@ fn rebase_owned_paths(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn custom_column_lists_reject_invalid_untrimmed_reserved_and_noncontiguous_rows() {
+        let cases = [
+            "INSERT INTO library_custom_column_definitions VALUES ('valid',' padded ','text',0)",
+            "INSERT INTO library_custom_column_definitions VALUES ('takio_metadata_audit','Audit','text',0)",
+            "INSERT INTO library_custom_column_definitions VALUES ('valid','Valid','text',1)",
+        ];
+        for sql in cases {
+            let temp = tempfile::tempdir().unwrap();
+            let database = temp.path().join("library.sqlite");
+            let paths = LibraryPaths::resolve(None, Some(&database)).unwrap();
+            let store = LibraryStore::open(paths, true).unwrap();
+            store.connection.execute(sql, []).unwrap();
+            assert_eq!(
+                store.list_custom_column_definitions().unwrap_err().code(),
+                "incompatible-schema"
+            );
+        }
+    }
 
     #[test]
     fn structured_queries_parse_fields_quotes_negation_and_literal_colons() {

@@ -541,20 +541,31 @@ fn format_rows(database: &Connection) -> rusqlite::Result<HashMap<i64, Vec<(Stri
     Ok(result)
 }
 
-fn custom_rows(database: &Connection) -> rusqlite::Result<HashMap<i64, BTreeMap<String, String>>> {
-    let mut result = HashMap::new();
-    let mut statement = database.prepare("SELECT name,label FROM custom_columns ORDER BY label")?;
-    let columns = statement.query_map([], |row| {
-        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+struct CustomColumn {
+    id: i64,
+    key: String,
+    display: String,
+}
+
+fn custom_columns(database: &Connection) -> rusqlite::Result<Vec<CustomColumn>> {
+    let mut statement = database.prepare("SELECT id,label,name FROM custom_columns ORDER BY id")?;
+    let rows = statement.query_map([], |row| {
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+        ))
     })?;
-    let safe_table = Regex::new(r"^custom_column_\d+$").expect("valid regex");
     let safe_key = Regex::new(r"^[a-z][a-z0-9_]{0,63}$").expect("valid regex");
-    for column in columns {
-        let (table, label) = column?;
-        if !safe_table.is_match(&table) {
+    let mut seen = std::collections::HashSet::new();
+    let mut columns = Vec::new();
+    for row in rows {
+        let (id, label, name) = row?;
+        if id < 0 || columns.len() >= MAX_CUSTOM_FIELDS_PER_BOOK {
             continue;
         }
-        let key: String = label
+        let base: String = label
+            .trim()
             .trim_start_matches('#')
             .chars()
             .map(|character| {
@@ -566,14 +577,46 @@ fn custom_rows(database: &Connection) -> rusqlite::Result<HashMap<i64, BTreeMap<
             })
             .take(64)
             .collect();
-        if !safe_key.is_match(&key) {
+        let display = name.trim();
+        if !safe_key.is_match(&base) || display.is_empty() {
             continue;
         }
-        let mut values =
-            match database.prepare(&format!("SELECT book,value FROM {table} ORDER BY book,id")) {
-                Ok(values) => values,
-                Err(_) => continue,
+        let key = (1..=MAX_CUSTOM_FIELDS_PER_BOOK + 1).find_map(|attempt| {
+            let candidate = if attempt == 1 {
+                base.clone()
+            } else {
+                let suffix = format!("_{attempt}");
+                format!("{}{}", &base[..base.len().min(64 - suffix.len())], suffix)
             };
+            seen.insert(candidate.clone()).then_some(candidate)
+        });
+        if let Some(key) = key {
+            columns.push(CustomColumn {
+                id,
+                key,
+                display: display.to_owned(),
+            });
+        }
+    }
+    Ok(columns)
+}
+
+fn custom_rows(database: &Connection) -> rusqlite::Result<HashMap<i64, BTreeMap<String, String>>> {
+    let mut result = HashMap::new();
+    for column in custom_columns(database)? {
+        let table = format!("custom_column_{}", column.id);
+        let link = format!("books_custom_column_{}_link", column.id);
+        let normalized = format!(
+            "SELECT l.book,c.value FROM {link} l JOIN {table} c ON c.id=l.value ORDER BY l.book,l.id"
+        );
+        let direct = format!("SELECT book,value FROM {table} ORDER BY book,id");
+        let mut values = match database
+            .prepare(&normalized)
+            .or_else(|_| database.prepare(&direct))
+        {
+            Ok(values) => values,
+            Err(_) => continue,
+        };
         let rows = values.query_map([], |row| {
             let book = row.get::<_, i64>(0)?;
             let value = row.get_ref(1)?;
@@ -600,8 +643,8 @@ fn custom_rows(database: &Connection) -> rusqlite::Result<HashMap<i64, BTreeMap<
             let (book, value) = row?;
             if let Some(value) = value {
                 let fields = result.entry(book).or_insert_with(BTreeMap::new);
-                if fields.len() < MAX_CUSTOM_FIELDS_PER_BOOK || fields.contains_key(&key) {
-                    fields.insert(key.clone(), value);
+                if fields.len() < MAX_CUSTOM_FIELDS_PER_BOOK || fields.contains_key(&column.key) {
+                    fields.insert(column.key.clone(), value);
                 }
             }
         }
@@ -610,37 +653,10 @@ fn custom_rows(database: &Connection) -> rusqlite::Result<HashMap<i64, BTreeMap<
 }
 
 fn custom_definitions(database: &Connection) -> rusqlite::Result<Vec<(String, String)>> {
-    let mut statement =
-        database.prepare("SELECT name,label FROM custom_columns ORDER BY label,name")?;
-    let rows = statement.query_map([], |row| {
-        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-    })?;
-    let safe_table = Regex::new(r"^custom_column_\d+$").expect("valid regex");
-    let safe_key = Regex::new(r"^[a-z][a-z0-9_]{0,63}$").expect("valid regex");
-    let mut seen = std::collections::HashSet::new();
-    let mut definitions = Vec::new();
-    for row in rows {
-        let (table, label) = row?;
-        if !safe_table.is_match(&table) {
-            continue;
-        }
-        let display = label.trim().trim_start_matches('#').trim();
-        let key: String = display
-            .chars()
-            .map(|character| {
-                if character.is_ascii_alphanumeric() || character == '_' {
-                    character.to_ascii_lowercase()
-                } else {
-                    '_'
-                }
-            })
-            .take(64)
-            .collect();
-        if safe_key.is_match(&key) && !display.is_empty() && seen.insert(key.clone()) {
-            definitions.push((key, display.to_owned()));
-        }
-    }
-    Ok(definitions)
+    Ok(custom_columns(database)?
+        .into_iter()
+        .map(|column| (column.key, column.display))
+        .collect())
 }
 
 fn patch_for(book: &CalibreBook) -> LibraryPatch {

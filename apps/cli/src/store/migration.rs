@@ -292,7 +292,7 @@ pub(super) fn verify_schema_version(connection: &Connection, version: i64) -> Ap
 
 fn schema_matches_version(connection: &Connection, version: i64) -> bool {
     if version == LIBRARY_SCHEMA_VERSION {
-        return v11_schema_contract(connection).unwrap_or(false);
+        return current_schema_contract(connection).unwrap_or(false);
     }
     let reference = match reference_schema(version) {
         Ok(reference) => reference,
@@ -301,10 +301,12 @@ fn schema_matches_version(connection: &Connection, version: i64) -> bool {
     schema_signature(connection).is_ok_and(|actual| actual == reference)
 }
 
-fn v11_schema_contract(connection: &Connection) -> Result<bool, rusqlite::Error> {
+fn current_schema_contract(connection: &Connection) -> Result<bool, rusqlite::Error> {
     let reference = Connection::open_in_memory()?;
     super::create_schema(&reference).map_err(|_| rusqlite::Error::InvalidQuery)?;
-    if object_names(connection)? != object_names(&reference)?
+    if table_sql(connection, "library_custom_column_definitions")?
+        != table_sql(&reference, "library_custom_column_definitions")?
+        || object_names(connection)? != object_names(&reference)?
         || table_info_signature(connection)? != table_info_signature(&reference)?
         || foreign_key_signature(connection)? != foreign_key_signature(&reference)?
         || index_signature(connection)? != index_signature(&reference)?
@@ -328,6 +330,14 @@ fn v11_schema_contract(connection: &Connection) -> Result<bool, rusqlite::Error>
         return Ok(false);
     }
     Ok(true)
+}
+
+fn table_sql(connection: &Connection, table: &str) -> Result<String, rusqlite::Error> {
+    connection.query_row(
+        "SELECT sql FROM sqlite_schema WHERE type='table' AND name=?1",
+        [table],
+        |row| row.get::<_, String>(0).map(|sql| normalize_sql(&sql)),
+    )
 }
 
 fn check_signature(connection: &Connection) -> Result<Vec<(String, Vec<String>)>, rusqlite::Error> {
@@ -1475,7 +1485,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_weakened_v11_ddl() {
+    fn rejects_weakened_v12_ddl() {
         let temp = tempfile::tempdir().unwrap();
         let paths = paths(&temp);
         drop(LibraryStore::open(paths.clone(), true).unwrap());

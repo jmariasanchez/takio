@@ -1857,6 +1857,56 @@ fn calibre_import_snapshots_live_wal_metadata_without_writing_the_source() {
 }
 
 #[test]
+fn calibre_import_uses_physical_ids_machine_labels_display_names_and_normalized_links() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let calibre_root = temp.path().join("calibre");
+    fs::create_dir(&calibre_root).expect("create Calibre root");
+    let metadata_db = calibre_root.join("metadata.db");
+    create_calibre_fixture(&metadata_db);
+    let book_dir = calibre_root.join("Author/Calibre Title (1)");
+    fs::create_dir_all(&book_dir).expect("create book directory");
+    fs::write(book_dir.join("Calibre Title - Ada.epub"), b"epub").expect("write ebook");
+    fs::write(book_dir.join("Calibre Title - Ada.pdf"), b"pdf").expect("write pdf");
+
+    let database = Connection::open(&metadata_db).expect("open fixture");
+    database
+        .execute_batch(
+            "INSERT INTO custom_columns VALUES (7,'Second Reading State','reading_state');
+             CREATE TABLE custom_column_7 (id INTEGER PRIMARY KEY,value TEXT);
+             CREATE TABLE books_custom_column_7_link (id INTEGER PRIMARY KEY,book INTEGER,value INTEGER);
+             INSERT INTO custom_column_7 VALUES (11,'finished');
+             INSERT INTO books_custom_column_7_link VALUES (1,1,11);",
+        )
+        .expect("add normalized custom column");
+    drop(database);
+
+    let output = run_calibre_import(temp.path().join("takio/library.sqlite"), calibre_root);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let value = success_value(&output.stdout);
+    assert_eq!(
+        value["outcomes"][0]["item"]["customMetadata"],
+        serde_json::json!({"reading_state":"planned","reading_state_2":"finished"})
+    );
+
+    let listed = cargo_bin_cmd!("takio")
+        .args(["library", "custom-columns", "list", "--db"])
+        .arg(temp.path().join("takio/library.sqlite"))
+        .output()
+        .expect("list definitions");
+    assert_eq!(
+        success_value(&listed.stdout)["definitions"],
+        serde_json::json!([
+            {"key":"reading_state","label":"Reading State","type":"text","position":0},
+            {"key":"reading_state_2","label":"Second Reading State","type":"text","position":1}
+        ])
+    );
+}
+
+#[test]
 fn calibre_import_sanitizes_invalid_fields_and_processes_all_bounded_custom_rows() {
     let temp = tempfile::tempdir().expect("temporary directory");
     let calibre_root = temp.path().join("calibre");
@@ -1967,7 +2017,7 @@ fn create_calibre_fixture(path: &std::path::Path) {
              INSERT INTO data VALUES (1, 1, 'EPUB', 'Calibre Title - Ada'), (2, 1, 'PDF', 'Calibre Title - Ada');
              INSERT INTO ratings VALUES (1, 4);
              INSERT INTO books_ratings_link VALUES (1, 1, 1);
-             INSERT INTO custom_columns VALUES (1, 'custom_column_1', 'reading_state');
+             INSERT INTO custom_columns VALUES (1, 'Reading State', 'reading_state');
              INSERT INTO custom_column_1 VALUES (1, 1, 'planned');",
         )
         .expect("populate Calibre metadata database");
