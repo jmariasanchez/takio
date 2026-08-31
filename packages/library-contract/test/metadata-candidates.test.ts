@@ -223,6 +223,7 @@ describe("metadata candidate contract", () => {
       { ...applied, source: "online" },
       { ...applied, provenance: "other" },
       { ...applied, fields: ["publisher"] },
+      { ...applied, fields: ["title", "title"] },
       { ...applied, coverApplied: false, cover: undefined },
       { ...applied, cover: { ...cover, sha256: "b".repeat(64) } },
     ]) {

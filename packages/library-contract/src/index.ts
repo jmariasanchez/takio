@@ -1057,6 +1057,7 @@ export const metadataCandidateApplyValueSchema = z
         fields: z
           .array(z.string().min(1))
           .max(MAX_METADATA_CANDIDATE_FIELDS)
+          .refine((fields) => new Set(fields).size === fields.length, "Applied fields must be unique.")
           .readonly(),
         coverApplied: z.boolean(),
         cover: metadataCandidateCoverSummarySchema.optional(),
