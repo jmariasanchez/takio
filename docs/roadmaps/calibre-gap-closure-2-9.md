@@ -28,9 +28,8 @@ use public Calibre executables where they remain the strongest bounded backend.
 
 ## Decisions so far
 
-- The first slice is duplicate review and merge parity in Rust. The desktop and
-  TypeScript contract already expose the workflow, but the Rust sidecar currently
-  reports it as unavailable.
+- The first slice, duplicate review and merge parity in Rust, is delivered across
+  the sidecar, direct CLI, service protocol, and desktop contract.
 - Metadata enrichment remains review-first. Extracted, filename-derived, and
   online candidates never overwrite user metadata without an explicit apply.
 - Device support gains a transport-neutral identity and capability model before
@@ -83,6 +82,10 @@ Evidence:
 
 #### A2. Complete existing migration and recovery commands
 
+Status: delivered across `3157ba3`, `704aa37`, `31dce69`, `83cfd4e`,
+`b00fefed`, `3763ce8`, `6a0d489`, `ed1c845`, `234722b`, `b613f32`,
+`58f31f0`, and `4228bb0`.
+
 Deliver:
 
 - Read-only Calibre library import with explicit conflict accounting.
@@ -98,9 +101,42 @@ Accept when:
 - Portable export reconstructs a byte-equivalent managed library.
 - Migration failure leaves the original library readable.
 
+Evidence:
+
+- The native Calibre importer preserves rich metadata, multiple formats, covers,
+  bounded custom columns, live-WAL visibility, and source ownership. Focused
+  malicious-path, symlink, hard-link, malformed-schema, and contract-boundary
+  regressions pass.
+- Import watching records durable source fingerprints, suppresses unchanged files
+  across cycles and restarts, retries failures, reprocesses changes, rejects
+  overlap with Takio-owned paths before side effects, and exits an active scan on
+  `SIGINT` or `SIGTERM` with one bounded response.
+- Portable export and rebuild preserve item IDs, metadata, format order, exact
+  bytes, covers, and per-format timestamps. Source manifests, OPF references,
+  media types, digests, symlinks, paths, and destination publication are verified
+  before commit.
+- Schema v11 migrates every canonical v1-v10 fixture under one writer lock. It
+  retains a verified no-overwrite backup, supports safe retry after a rolled-back
+  transient failure, rejects stale backups and spoofed schemas, proves WAL-safe
+  rollback, preserves owned relative paths, and enforces the canonical domain
+  schema and indexes.
+- The checksummed macOS ARM64 release binary completed Calibre import, watch and
+  restart, active-scan signal cancellation, overlap rejection, portable rebuild,
+  candidate apply, and public v1-to-v11 migration workflows. The packaged desktop
+  bundle embeds the same Rust schema-11 sidecar.
+
+Operational follow-ups move to Track C: freeze an independently recovered v10
+fixture, bound migration retry verification memory for very large databases, run
+native Rust scale and soak gates, and execute migration and path acceptance on
+Windows rather than inferring it from cross-platform dependencies.
+
 ### Track B: Metadata and power-library workflows
 
 #### B1. Candidate review in desktop and TUI
+
+Status: selected-book desktop slice delivered in `663541e` and hardened in
+`3db7264`, `e944aee`, `4a8e3ad`, and `8582eee`. TUI and bounded bulk review
+remain open.
 
 Deliver:
 
@@ -114,6 +150,36 @@ Accept when:
 - Applying a candidate updates only selected fields.
 - User-authored values survive refresh and failed lookups.
 - Desktop, TUI, and CLI observe identical resulting metadata.
+
+Delivered evidence:
+
+- Strict shared schemas, fixed Electron argument mappings, request-correlated
+  renderer decoding, and an accessible field-by-field desktop review surface are
+  integrated for one selected book.
+- Candidate provenance is bound to the requested item in the contract, renderer,
+  UI, and Rust engine. Cross-item and stale list/apply responses are rejected
+  before mutation.
+- Explicit nulls use clear semantics, omitted fields remain unchanged, selected
+  fields alone are applied, and a bounded full provenance audit is stored in
+  `takio_metadata_audit`.
+- The Rust store validates candidate, ordinary-update, and duplicate-merge values
+  against the shared metadata domain before commit. Invalid dates, languages,
+  authors, identifiers, and custom metadata cannot poison later desktop reads.
+- The audit field is system-owned: ordinary updates and duplicate merges preserve
+  it and reject forgery, while trusted candidate application can replace it with a
+  newly validated record.
+- Item-scoped filename discovery uses the preserved import title after managed
+  publication, while provenance still identifies the actual managed source path.
+- Real DOM interaction tests cover stale-response races, keyboard focus, and live
+  status. The final checksummed package covers managed filename discovery, item
+  identity, invalid-value rejection without mutation, null clearing, audit
+  persistence and ownership, and stable one-line machine envelopes.
+
+Remaining acceptance work:
+
+- Add equivalent candidate review to the TUI.
+- Add bounded, cancellable bulk reconciliation with per-book outcomes.
+- Integrate fetched cover choice into the candidate contract and review surface.
 
 #### B2. Virtual libraries and advanced organization
 
@@ -312,17 +378,16 @@ journeys.
 
 ## Current frontier
 
-1. Complete A1 duplicate review and merge parity in Rust.
-2. Implement B1 desktop metadata candidate review.
-3. Establish C1 production diagnostics and benchmarks.
-4. Specify D1 device identity and simulator using real remount evidence.
-5. Prototype E1 secure EPUB reader resource isolation.
-6. Specify F1 recipe manifest and operation registry.
-7. Harden G1 with socket-level tests and lifecycle controls.
-8. Inventory H1 accessibility and preferences gaps per workflow.
+1. Complete B1 with TUI review, bounded bulk reconciliation, and cover candidates.
+2. Establish C1 production diagnostics and native Rust scale benchmarks.
+3. Specify D1 device identity and simulator using real remount evidence.
+4. Prototype E1 secure EPUB reader resource isolation.
+5. Specify F1 recipe manifest and operation registry.
+6. Harden G1 with socket-level tests and lifecycle controls.
+7. Inventory H1 accessibility and durable-preferences gaps per workflow.
 
-These frontier items can proceed in parallel after A1 confirms the restored Rust
-service contract pattern.
+These frontier items can proceed in parallel now that A1 and A2 have established
+the restored Rust service, recovery, and interoperability patterns.
 
 ## Not yet specified
 
