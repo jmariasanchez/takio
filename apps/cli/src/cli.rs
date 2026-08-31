@@ -166,6 +166,12 @@ enum LibraryCommand {
         #[arg(long)]
         dest: PathBuf,
     },
+    Diagnostics {
+        #[arg(long)]
+        db: Option<PathBuf>,
+        #[arg(long)]
+        dest: PathBuf,
+    },
     Add {
         #[arg(long)]
         db: Option<PathBuf>,
@@ -1618,6 +1624,11 @@ fn library(command: LibraryCommand, library: Option<&str>) -> AppResult<()> {
             print_success(
                 json!({"backup":{"path":backup.destination_path,"report":integrity_value(&report)}}),
             )
+        }
+        LibraryCommand::Diagnostics { db, dest } => {
+            let paths = LibraryPaths::resolve(library, db.as_deref())?;
+            let report = crate::diagnostics::write_library_diagnostics(&paths, &dest)?;
+            print_success(json!({"diagnostics":report}))
         }
         LibraryCommand::Add {
             db,

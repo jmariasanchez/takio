@@ -3,6 +3,7 @@ use std::fs;
 use assert_cmd::cargo::cargo_bin_cmd;
 use rusqlite::Connection;
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 
 fn add_book(database: &std::path::Path, source: &std::path::Path) -> String {
     let added = cargo_bin_cmd!("takio")
@@ -87,6 +88,100 @@ fn capabilities_identify_the_native_tui() {
             .expect("unsupported commands")
             .contains(&serde_json::json!("library import-watch"))
     );
+}
+
+#[test]
+fn library_diagnostics_writes_one_redacted_bounded_bundle_without_overwrite() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let library_root = temp.path().join("private-library");
+    fs::create_dir_all(&library_root).expect("library root");
+    let database = library_root.join("library.sqlite");
+    let source = temp.path().join("Secret Author - Secret Title.epub");
+    fs::write(&source, b"private ebook content bearer-secret").expect("ebook fixture");
+    add_book(&database, &source);
+
+    let destination = temp.path().join("takio-diagnostics.json");
+    let output = cargo_bin_cmd!("takio")
+        .args(["library", "diagnostics", "--db"])
+        .arg(&database)
+        .arg("--dest")
+        .arg(&destination)
+        .output()
+        .expect("export diagnostics");
+
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+    assert_eq!(
+        output.stdout.iter().filter(|byte| **byte == b'\n').count(),
+        1
+    );
+    let result = success_value(&output.stdout);
+    let bytes = fs::read(&destination).expect("diagnostic bundle");
+    let bundle: Value = serde_json::from_slice(&bytes).expect("diagnostic JSON");
+    assert_eq!(
+        result["diagnostics"]["path"],
+        destination.to_string_lossy().as_ref()
+    );
+    assert_eq!(result["diagnostics"]["bytes"], bytes.len() as u64);
+    assert_eq!(
+        result["diagnostics"]["sha256"],
+        hex::encode(Sha256::digest(&bytes))
+    );
+    assert_eq!(result["diagnostics"]["verificationStatus"], "ok");
+    assert_eq!(bundle["schemaVersion"], 1);
+    assert_eq!(bundle["application"]["implementation"], "rust");
+    assert_eq!(bundle["library"]["verification"]["status"], "ok");
+    assert_eq!(bundle["redaction"]["paths"], "omitted");
+    assert!(bytes.len() <= 1024 * 1024);
+    let text = String::from_utf8(bytes).expect("UTF-8 bundle");
+    for secret in [
+        library_root.to_string_lossy().as_ref(),
+        source.to_string_lossy().as_ref(),
+        "private-library",
+        "Secret Author",
+        "Secret Title",
+        "private ebook content",
+        "bearer-secret",
+    ] {
+        assert!(!text.contains(secret));
+    }
+
+    let repeated = cargo_bin_cmd!("takio")
+        .args(["library", "diagnostics", "--db"])
+        .arg(&database)
+        .arg("--dest")
+        .arg(&destination)
+        .output()
+        .expect("repeat diagnostics");
+    assert!(!repeated.status.success());
+    assert!(repeated.stderr.is_empty());
+    assert_eq!(failure_code(&repeated.stdout), "destination-exists");
+}
+
+#[test]
+fn library_diagnostics_records_missing_library_without_creating_it() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let database = temp.path().join("missing-library").join("library.sqlite");
+    let destination = temp.path().join("takio-diagnostics.json");
+
+    let output = cargo_bin_cmd!("takio")
+        .args(["library", "diagnostics", "--db"])
+        .arg(&database)
+        .arg("--dest")
+        .arg(&destination)
+        .output()
+        .expect("export failed-library diagnostics");
+
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+    assert_eq!(
+        success_value(&output.stdout)["diagnostics"]["verificationStatus"],
+        "failed"
+    );
+    let bundle: Value = serde_json::from_slice(&fs::read(&destination).expect("diagnostic bundle"))
+        .expect("diagnostic JSON");
+    assert_eq!(bundle["library"]["verification"]["status"], "failed");
+    assert!(!database.parent().expect("database parent").exists());
 }
 
 #[test]

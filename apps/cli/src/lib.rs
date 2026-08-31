@@ -3,6 +3,7 @@ pub(crate) mod candidate_cover;
 pub mod cli;
 pub mod conversion;
 pub mod destinations;
+pub mod diagnostics;
 pub mod import_scan;
 pub mod jobs;
 pub mod kindle_ssh;
