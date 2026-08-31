@@ -873,6 +873,9 @@ export const METADATA_CANDIDATE_CONFIDENCES = ["low", "medium", "high"] as const
 export const MAX_METADATA_CANDIDATES = 8;
 export const MAX_METADATA_CANDIDATE_FIELDS = 13;
 export const METADATA_CANDIDATE_AUDIT_KEY = "takio_metadata_audit";
+export const BULK_METADATA_CANDIDATE_SCHEMA_VERSION = 1;
+export const MAX_BULK_METADATA_CANDIDATE_ITEMS = 64;
+export const MAX_BULK_METADATA_CANDIDATE_CONCURRENCY = 4;
 
 export const metadataCandidateProvenanceSchema = z
   .object({
@@ -1002,9 +1005,246 @@ export function metadataCandidateApplyValueSchemaFor(itemId: string) {
   });
 }
 
+const bulkMetadataCandidateItemIdSchema = z.string().trim().min(1).max(256);
+const bulkMetadataCandidateFailureCodeSchema = z.string().trim().min(1).max(120);
+
+export const bulkMetadataCandidateDiscoveryRequestSchema = z
+  .object({
+    schemaVersion: z.literal(BULK_METADATA_CANDIDATE_SCHEMA_VERSION),
+    itemIds: z
+      .array(bulkMetadataCandidateItemIdSchema)
+      .min(1)
+      .max(MAX_BULK_METADATA_CANDIDATE_ITEMS)
+      .refine((itemIds) => new Set(itemIds).size === itemIds.length, {
+        message: "Bulk metadata candidate item ids must be unique.",
+      })
+      .readonly(),
+    includeOnline: z.boolean(),
+    concurrency: z.number().int().min(1).max(MAX_BULK_METADATA_CANDIDATE_CONCURRENCY),
+  })
+  .strict()
+  .readonly();
+
+const readyBulkMetadataCandidateDiscoveryOutcomeSchema = z
+  .object({
+    status: z.literal("ready"),
+    itemId: bulkMetadataCandidateItemIdSchema,
+    candidates: z.array(metadataCandidateSchema).min(1).max(MAX_METADATA_CANDIDATES).readonly(),
+  })
+  .strict();
+
+const bulkMetadataCandidateDiscoveryItemOutcomeSchemas = [
+  z.object({ status: z.literal("no-candidates"), itemId: bulkMetadataCandidateItemIdSchema }).strict(),
+  z.object({ status: z.literal("missing"), itemId: bulkMetadataCandidateItemIdSchema }).strict(),
+  z
+    .object({
+      status: z.literal("failed"),
+      itemId: bulkMetadataCandidateItemIdSchema,
+      code: bulkMetadataCandidateFailureCodeSchema,
+    })
+    .strict(),
+  z.object({ status: z.literal("canceled"), itemId: bulkMetadataCandidateItemIdSchema }).strict(),
+] as const;
+
+export const bulkMetadataCandidateDiscoveryOutcomeSchema = z
+  .discriminatedUnion("status", [
+    readyBulkMetadataCandidateDiscoveryOutcomeSchema,
+    ...bulkMetadataCandidateDiscoveryItemOutcomeSchemas,
+  ])
+  .superRefine((outcome, context) => {
+    if (outcome.status !== "ready") return;
+    for (const [index, candidate] of outcome.candidates.entries()) {
+      if (candidate.provenance.itemId !== outcome.itemId) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["candidates", index, "provenance", "itemId"],
+          message: "Every candidate must be provenance-bound to the discovery item.",
+        });
+      }
+    }
+  })
+  .readonly();
+
+const bulkMetadataCandidateDiscoveryCountsSchema = z
+  .object({
+    total: z.number().int().min(0).max(MAX_BULK_METADATA_CANDIDATE_ITEMS),
+    ready: z.number().int().min(0).max(MAX_BULK_METADATA_CANDIDATE_ITEMS),
+    noCandidates: z.number().int().min(0).max(MAX_BULK_METADATA_CANDIDATE_ITEMS),
+    missing: z.number().int().min(0).max(MAX_BULK_METADATA_CANDIDATE_ITEMS),
+    failed: z.number().int().min(0).max(MAX_BULK_METADATA_CANDIDATE_ITEMS),
+    canceled: z.number().int().min(0).max(MAX_BULK_METADATA_CANDIDATE_ITEMS),
+  })
+  .strict()
+  .readonly();
+
+function addExactOutcomeCountIssues(
+  outcomes: readonly Readonly<{ status: string }>[],
+  counts: Readonly<Record<string, number>>,
+  context: z.RefinementCtx,
+): void {
+  const expected = {
+    total: outcomes.length,
+    ready: outcomes.filter(({ status }) => status === "ready").length,
+    noCandidates: outcomes.filter(({ status }) => status === "no-candidates").length,
+    missing: outcomes.filter(({ status }) => status === "missing").length,
+    failed: outcomes.filter(({ status }) => status === "failed").length,
+    canceled: outcomes.filter(({ status }) => status === "canceled").length,
+  } as const;
+
+  for (const count of Object.keys(expected) as (keyof typeof expected)[]) {
+    if (counts[count] !== expected[count]) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["counts", count],
+        message: `Bulk metadata candidate ${count} must match the reported outcomes.`,
+      });
+    }
+  }
+}
+
+export const bulkMetadataCandidateDiscoveryResultSchema = z
+  .object({
+    schemaVersion: z.literal(BULK_METADATA_CANDIDATE_SCHEMA_VERSION),
+    outcomes: z
+      .array(bulkMetadataCandidateDiscoveryOutcomeSchema)
+      .min(1)
+      .max(MAX_BULK_METADATA_CANDIDATE_ITEMS)
+      .readonly(),
+    counts: bulkMetadataCandidateDiscoveryCountsSchema,
+  })
+  .strict()
+  .superRefine((result, context) => {
+    addExactOutcomeCountIssues(result.outcomes, result.counts, context);
+  })
+  .readonly();
+
+export function bulkMetadataCandidateDiscoveryResultSchemaFor(
+  request: BulkMetadataCandidateDiscoveryRequest,
+) {
+  return bulkMetadataCandidateDiscoveryResultSchema.superRefine((result, context) => {
+    for (let index = 0; index < Math.max(request.itemIds.length, result.outcomes.length); index += 1) {
+      if (result.outcomes[index]?.itemId !== request.itemIds[index]) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["outcomes", index, "itemId"],
+          message: "Discovery outcomes must exactly preserve requested item order and identity.",
+        });
+      }
+    }
+  });
+}
+
+const appliedBulkMetadataCandidateReviewOutcomeSchema = z
+  .object({
+    status: z.literal("applied"),
+    itemId: bulkMetadataCandidateItemIdSchema,
+    item: libraryItemSchema,
+    candidateId: z.string().trim().min(1).max(120),
+    fields: z
+      .array(z.string().trim().min(1))
+      .min(1)
+      .max(MAX_METADATA_CANDIDATE_FIELDS)
+      .refine((fields) => new Set(fields).size === fields.length, "Fields must be unique.")
+      .readonly(),
+  })
+  .strict();
+
+export const bulkMetadataCandidateReviewOutcomeSchema = z
+  .discriminatedUnion("status", [
+    appliedBulkMetadataCandidateReviewOutcomeSchema,
+    z.object({ status: z.literal("skipped"), itemId: bulkMetadataCandidateItemIdSchema }).strict(),
+    ...bulkMetadataCandidateDiscoveryItemOutcomeSchemas,
+  ])
+  .superRefine((outcome, context) => {
+    if (outcome.status === "applied" && outcome.item.id !== outcome.itemId) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["item", "id"],
+        message: "The applied review item must match the outcome item id.",
+      });
+    }
+  })
+  .readonly();
+
+const bulkMetadataCandidateReviewCountsSchema = z
+  .object({
+    total: z.number().int().min(0).max(MAX_BULK_METADATA_CANDIDATE_ITEMS),
+    applied: z.number().int().min(0).max(MAX_BULK_METADATA_CANDIDATE_ITEMS),
+    skipped: z.number().int().min(0).max(MAX_BULK_METADATA_CANDIDATE_ITEMS),
+    noCandidates: z.number().int().min(0).max(MAX_BULK_METADATA_CANDIDATE_ITEMS),
+    missing: z.number().int().min(0).max(MAX_BULK_METADATA_CANDIDATE_ITEMS),
+    failed: z.number().int().min(0).max(MAX_BULK_METADATA_CANDIDATE_ITEMS),
+    canceled: z.number().int().min(0).max(MAX_BULK_METADATA_CANDIDATE_ITEMS),
+  })
+  .strict()
+  .readonly();
+
+export const bulkMetadataCandidateReviewResultSchema = z
+  .object({
+    schemaVersion: z.literal(BULK_METADATA_CANDIDATE_SCHEMA_VERSION),
+    outcomes: z
+      .array(bulkMetadataCandidateReviewOutcomeSchema)
+      .min(1)
+      .max(MAX_BULK_METADATA_CANDIDATE_ITEMS)
+      .readonly(),
+    counts: bulkMetadataCandidateReviewCountsSchema,
+  })
+  .strict()
+  .superRefine((result, context) => {
+    const expected = {
+      total: result.outcomes.length,
+      applied: result.outcomes.filter(({ status }) => status === "applied").length,
+      skipped: result.outcomes.filter(({ status }) => status === "skipped").length,
+      noCandidates: result.outcomes.filter(({ status }) => status === "no-candidates").length,
+      missing: result.outcomes.filter(({ status }) => status === "missing").length,
+      failed: result.outcomes.filter(({ status }) => status === "failed").length,
+      canceled: result.outcomes.filter(({ status }) => status === "canceled").length,
+    } as const;
+
+    for (const count of Object.keys(expected) as (keyof typeof expected)[]) {
+      if (result.counts[count] !== expected[count]) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["counts", count],
+          message: `Bulk metadata candidate review ${count} must match the reported outcomes.`,
+        });
+      }
+    }
+  })
+  .readonly();
+
+export function bulkMetadataCandidateReviewResultSchemaFor(itemIds: readonly string[]) {
+  return bulkMetadataCandidateReviewResultSchema.superRefine((result, context) => {
+    for (let index = 0; index < Math.max(itemIds.length, result.outcomes.length); index += 1) {
+      if (result.outcomes[index]?.itemId !== itemIds[index]) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["outcomes", index, "itemId"],
+          message: "Review outcomes must exactly preserve requested item order and identity.",
+        });
+      }
+    }
+  });
+}
+
 export type MetadataCandidate = z.infer<typeof metadataCandidateSchema>;
 export type ListMetadataCandidatesRequest = z.infer<typeof listMetadataCandidatesRequestSchema>;
 export type ApplyMetadataCandidateRequest = z.infer<typeof applyMetadataCandidateRequestSchema>;
+export type BulkMetadataCandidateDiscoveryRequest = z.infer<
+  typeof bulkMetadataCandidateDiscoveryRequestSchema
+>;
+export type BulkMetadataCandidateDiscoveryOutcome = z.infer<
+  typeof bulkMetadataCandidateDiscoveryOutcomeSchema
+>;
+export type BulkMetadataCandidateDiscoveryResult = z.infer<
+  typeof bulkMetadataCandidateDiscoveryResultSchema
+>;
+export type BulkMetadataCandidateReviewOutcome = z.infer<
+  typeof bulkMetadataCandidateReviewOutcomeSchema
+>;
+export type BulkMetadataCandidateReviewResult = z.infer<
+  typeof bulkMetadataCandidateReviewResultSchema
+>;
 export type MetadataCandidateListWireResult = LibraryStoreResult<
   z.infer<typeof metadataCandidateListValueSchema>
 >;

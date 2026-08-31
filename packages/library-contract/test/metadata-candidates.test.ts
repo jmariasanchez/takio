@@ -1,7 +1,13 @@
 import { describe, expect, it } from "bun:test";
 
 import {
+  BULK_METADATA_CANDIDATE_SCHEMA_VERSION,
+  MAX_BULK_METADATA_CANDIDATE_CONCURRENCY,
+  MAX_BULK_METADATA_CANDIDATE_ITEMS,
   applyMetadataCandidateRequestSchema,
+  bulkMetadataCandidateDiscoveryRequestSchema,
+  bulkMetadataCandidateDiscoveryResultSchemaFor,
+  bulkMetadataCandidateReviewResultSchemaFor,
   metadataCandidateApplyValueSchema,
   metadataCandidateApplyValueSchemaFor,
   metadataCandidateListValueSchema,
@@ -161,6 +167,158 @@ describe("metadata candidate contract", () => {
       candidate: { ...candidate, provenance: { generatedAt: candidate.provenance.generatedAt } },
       fields: ["title"],
       provenance: "desktop-candidate-review:embedded",
+    }).success).toBe(false);
+  });
+});
+
+describe("bulk metadata candidate contract", () => {
+  const request = {
+    schemaVersion: BULK_METADATA_CANDIDATE_SCHEMA_VERSION,
+    itemIds: ["book-1", "book-2", "book-3", "book-4", "book-5"],
+    includeOnline: true,
+    concurrency: MAX_BULK_METADATA_CANDIDATE_CONCURRENCY,
+  } as const;
+
+  const discoveryResult = {
+    schemaVersion: BULK_METADATA_CANDIDATE_SCHEMA_VERSION,
+    outcomes: [
+      { status: "ready", itemId: "book-1", candidates: [candidate] },
+      { status: "no-candidates", itemId: "book-2" },
+      { status: "missing", itemId: "book-3" },
+      { status: "failed", itemId: "book-4", code: "online-unavailable" },
+      { status: "canceled", itemId: "book-5" },
+    ],
+    counts: { total: 5, ready: 1, noCandidates: 1, missing: 1, failed: 1, canceled: 1 },
+  } as const;
+
+  it("accepts bounded requests and rejects duplicates and bounds violations", () => {
+    expect(bulkMetadataCandidateDiscoveryRequestSchema.parse(request)).toEqual(request);
+    expect(bulkMetadataCandidateDiscoveryRequestSchema.safeParse({
+      ...request,
+      itemIds: ["book-1", "book-1"],
+    }).success).toBe(false);
+    expect(bulkMetadataCandidateDiscoveryRequestSchema.safeParse({
+      ...request,
+      itemIds: [],
+    }).success).toBe(false);
+    expect(bulkMetadataCandidateDiscoveryRequestSchema.safeParse({
+      ...request,
+      itemIds: Array.from({ length: MAX_BULK_METADATA_CANDIDATE_ITEMS + 1 }, (_, index) =>
+        `book-${index}`),
+    }).success).toBe(false);
+    expect(bulkMetadataCandidateDiscoveryRequestSchema.safeParse({
+      ...request,
+      concurrency: MAX_BULK_METADATA_CANDIDATE_CONCURRENCY + 1,
+    }).success).toBe(false);
+    expect(bulkMetadataCandidateDiscoveryRequestSchema.safeParse({
+      ...request,
+      itemIds: [" ".repeat(257)],
+    }).success).toBe(false);
+  });
+
+  it("accepts all discovery outcomes with exact ordered identity and counts", () => {
+    expect(bulkMetadataCandidateDiscoveryResultSchemaFor(request).safeParse(discoveryResult).success)
+      .toBe(true);
+  });
+
+  it("rejects cross-item candidates, omissions, reordering, and count mismatches", () => {
+    expect(bulkMetadataCandidateDiscoveryResultSchemaFor(request).safeParse({
+      ...discoveryResult,
+      outcomes: [{
+        status: "ready",
+        itemId: "book-1",
+        candidates: [{
+          ...candidate,
+          provenance: { ...candidate.provenance, itemId: "book-2" },
+        }],
+      }, ...discoveryResult.outcomes.slice(1)],
+    }).success).toBe(false);
+    expect(bulkMetadataCandidateDiscoveryResultSchemaFor(request).safeParse({
+      ...discoveryResult,
+      outcomes: discoveryResult.outcomes.slice(0, -1),
+      counts: { ...discoveryResult.counts, total: 4, canceled: 0 },
+    }).success).toBe(false);
+    expect(bulkMetadataCandidateDiscoveryResultSchemaFor(request).safeParse({
+      ...discoveryResult,
+      outcomes: [discoveryResult.outcomes[1], discoveryResult.outcomes[0],
+        ...discoveryResult.outcomes.slice(2)],
+    }).success).toBe(false);
+    expect(bulkMetadataCandidateDiscoveryResultSchemaFor(request).safeParse({
+      ...discoveryResult,
+      counts: { ...discoveryResult.counts, ready: 2 },
+    }).success).toBe(false);
+  });
+
+  it("enforces candidate, failure-code, and applied-field bounds", () => {
+    expect(bulkMetadataCandidateDiscoveryResultSchemaFor({
+      ...request,
+      itemIds: ["book-1"],
+    }).safeParse({
+      schemaVersion: BULK_METADATA_CANDIDATE_SCHEMA_VERSION,
+      outcomes: [{ status: "ready", itemId: "book-1", candidates: [] }],
+      counts: { total: 1, ready: 1, noCandidates: 0, missing: 0, failed: 0, canceled: 0 },
+    }).success).toBe(false);
+    expect(bulkMetadataCandidateDiscoveryResultSchemaFor({
+      ...request,
+      itemIds: ["book-1"],
+    }).safeParse({
+      schemaVersion: BULK_METADATA_CANDIDATE_SCHEMA_VERSION,
+      outcomes: [{ status: "failed", itemId: "book-1", code: "x".repeat(121) }],
+      counts: { total: 1, ready: 0, noCandidates: 0, missing: 0, failed: 1, canceled: 0 },
+    }).success).toBe(false);
+  });
+
+  it("accepts exact ordered final review outcomes and rejects invalid reconciliation", () => {
+    const itemIds = request.itemIds;
+    const reviewResult = {
+      schemaVersion: BULK_METADATA_CANDIDATE_SCHEMA_VERSION,
+      outcomes: [
+        { status: "applied", itemId: "book-1", item, candidateId: candidate.id, fields: ["title"] },
+        { status: "skipped", itemId: "book-2" },
+        { status: "no-candidates", itemId: "book-3" },
+        { status: "failed", itemId: "book-4", code: "write-failed" },
+        { status: "canceled", itemId: "book-5" },
+      ],
+      counts: {
+        total: 5,
+        applied: 1,
+        skipped: 1,
+        noCandidates: 1,
+        missing: 0,
+        failed: 1,
+        canceled: 1,
+      },
+    } as const;
+
+    expect(bulkMetadataCandidateReviewResultSchemaFor(itemIds).safeParse(reviewResult).success)
+      .toBe(true);
+    expect(bulkMetadataCandidateReviewResultSchemaFor(itemIds).safeParse({
+      ...reviewResult,
+      outcomes: reviewResult.outcomes.slice(1),
+      counts: { ...reviewResult.counts, total: 4, applied: 0 },
+    }).success).toBe(false);
+    expect(bulkMetadataCandidateReviewResultSchemaFor(itemIds).safeParse({
+      ...reviewResult,
+      counts: { ...reviewResult.counts, skipped: 2 },
+    }).success).toBe(false);
+    expect(bulkMetadataCandidateReviewResultSchemaFor(["book-1"]).safeParse({
+      schemaVersion: BULK_METADATA_CANDIDATE_SCHEMA_VERSION,
+      outcomes: [{
+        status: "applied",
+        itemId: "book-1",
+        item: { ...item, id: "book-2" },
+        candidateId: candidate.id,
+        fields: Array.from({ length: 14 }, (_, index) => `field-${index}`),
+      }],
+      counts: {
+        total: 1,
+        applied: 1,
+        skipped: 0,
+        noCandidates: 0,
+        missing: 0,
+        failed: 0,
+        canceled: 0,
+      },
     }).success).toBe(false);
   });
 });
