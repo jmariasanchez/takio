@@ -1,0 +1,25 @@
+[package]
+name = "takio-desktop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Native GPUI desktop for the Takio ebook library"
+publish = false
+
+[[bin]]
+name = "takio-desktop"
+path = "src/main.rs"
+
+[dependencies]
+takio = { path = "../cli" }
+gpui = { package = "gpui-pre", version = "=0.3.9", default-features = false, features = ["font-kit"] }
+gpui_platform = { package = "gpui-pre-platform", version = "=0.3.9", features = ["font-kit"] }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
+serde = { version = "1.0", features = ["derive"] }
+
+[dev-dependencies]
+tempfile = "3.20"
+
+[lints]
+workspace = true
