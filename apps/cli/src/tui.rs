@@ -638,7 +638,7 @@ impl App {
                     self.input.pop();
                 }
                 KeyCode::Char(character) if !modifiers.contains(KeyModifiers::CONTROL) => {
-                    self.input.push(character)
+                    self.input.push(character);
                 }
                 _ => {}
             },
@@ -724,16 +724,16 @@ impl App {
                     self.input.clear();
                 }
                 KeyCode::Char('d') if self.tab == Tab::Library && !self.items.is_empty() => {
-                    self.mode = Mode::ConfirmTrash
+                    self.mode = Mode::ConfirmTrash;
                 }
                 KeyCode::Char('d') if self.tab == Tab::Library => {
-                    self.status = "Nothing selected to move to Trash".to_owned()
+                    self.status = "Nothing selected to move to Trash".to_owned();
                 }
                 KeyCode::Char('m') if self.tab == Tab::Library && !self.items.is_empty() => {
-                    self.begin_candidate_review(false)
+                    self.begin_candidate_review(false);
                 }
                 KeyCode::Char('m') if self.tab == Tab::Library => {
-                    self.status = "Select a book to review metadata".to_owned()
+                    self.status = "Select a book to review metadata".to_owned();
                 }
                 KeyCode::Char('r') => {
                     self.refresh();
@@ -1306,12 +1306,10 @@ fn draw_confirm(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
     frame.render_widget(Clear, popup);
     let title = app
         .selected_item()
-        .map(|item| item.title.as_str())
-        .unwrap_or("this book");
+        .map_or("this book", |item| item.title.as_str());
     frame.render_widget(
         Paragraph::new(format!(
-            "Move '{}' to Trash?\n\nThe book leaves your library, but remains recoverable from Trash.\n\n  Enter / y  Move to Trash     n / Esc  Keep book",
-            title
+            "Move '{title}' to Trash?\n\nThe book leaves your library, but remains recoverable from Trash.\n\n  Enter / y  Move to Trash     n / Esc  Keep book"
         ))
         .alignment(Alignment::Center)
         .block(
@@ -1472,12 +1470,10 @@ fn draw_candidate_review(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) 
                 let old = current
                     .as_ref()
                     .and_then(|value| value.get(field))
-                    .map(value_summary)
-                    .unwrap_or_else(|| "(empty)".to_owned());
+                    .map_or_else(|| "(empty)".to_owned(), value_summary);
                 let proposed = patch
                     .and_then(|value| value.get(field))
-                    .map(value_summary)
-                    .unwrap_or_else(|| "(clear)".to_owned());
+                    .map_or_else(|| "(clear)".to_owned(), value_summary);
                 ListItem::new(vec![
                     Line::from(vec![
                         Span::styled(
@@ -1610,21 +1606,18 @@ fn value_summary(value: &Value) -> String {
 }
 
 fn cover_summary(cover: &Value) -> String {
-    let media_type = cover
-        .get("mediaType")
-        .and_then(Value::as_str)
-        .map(|value| terminal_text(value, 24))
-        .unwrap_or_else(|| "unknown type".to_owned());
+    let media_type = cover.get("mediaType").and_then(Value::as_str).map_or_else(
+        || "unknown type".to_owned(),
+        |value| terminal_text(value, 24),
+    );
     let bytes = cover
         .get("bytes")
         .and_then(Value::as_u64)
-        .map(format_byte_size)
-        .unwrap_or_else(|| "size unavailable".to_owned());
-    let sha = cover
-        .get("sha256")
-        .and_then(Value::as_str)
-        .map(|value| terminal_text(value, 12))
-        .unwrap_or_else(|| "unavailable".to_owned());
+        .map_or_else(|| "size unavailable".to_owned(), format_byte_size);
+    let sha = cover.get("sha256").and_then(Value::as_str).map_or_else(
+        || "unavailable".to_owned(),
+        |value| terminal_text(value, 12),
+    );
     format!("{media_type}, dimensions unavailable, {bytes}, SHA {sha}")
 }
 
@@ -1813,7 +1806,7 @@ mod tests {
             .buffer()
             .content()
             .iter()
-            .map(|cell| cell.symbol())
+            .map(ratatui::buffer::Cell::symbol)
             .collect()
     }
 

@@ -310,7 +310,7 @@ fn gc(root: &Path) -> AppResult<()> {
                     .len();
                 data_files.insert(id.to_owned(), bytes);
             }
-            Some("json") | Some("claimed") => manifests.push((id.to_owned(), path)),
+            Some("json" | "claimed") => manifests.push((id.to_owned(), path)),
             _ => {
                 let _ = fs::remove_file(path);
             }

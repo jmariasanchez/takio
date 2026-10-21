@@ -286,7 +286,7 @@ pub fn parse_opf(bytes: &[u8]) -> AppResult<Value> {
         .find(|node| node.is_element() && node.tag_name().name() == "metadata")
         .ok_or_else(|| AppError::new("metadata-invalid"))?;
     let mut patch = Map::new();
-    let children = metadata.children().filter(|node| node.is_element());
+    let children = metadata.children().filter(roxmltree::Node::is_element);
     let nodes = children.collect::<Vec<_>>();
     if let Some(value) = first_text(&nodes, "title") {
         patch.insert("title".to_owned(), json!(value));

@@ -523,8 +523,7 @@ impl LibraryStore {
         let title = title
             .map(str::trim)
             .filter(|value| !value.is_empty())
-            .map(str::to_owned)
-            .unwrap_or_else(|| title_from_path(&source));
+            .map_or_else(|| title_from_path(&source), str::to_owned);
         if title.is_empty() {
             return Err(AppError::new("invalid-title"));
         }
@@ -2457,18 +2456,15 @@ fn scan_duplicate_candidates_in(
             fingerprints_reused += 1;
             Some((bytes, sha))
         } else if provenance == "referenced" {
-            match hash_file(Path::new(&path)) {
-                Ok(value) => {
-                    files_hashed += 1;
-                    if value.0 > MAX_SAFE_INTEGER {
-                        return Err(AppError::new("invalid-stored-data"));
-                    }
-                    Some(value)
+            if let Ok(value) = hash_file(Path::new(&path)) {
+                files_hashed += 1;
+                if value.0 > MAX_SAFE_INTEGER {
+                    return Err(AppError::new("invalid-stored-data"));
                 }
-                Err(_) => {
-                    unreadable_formats += 1;
-                    None
-                }
+                Some(value)
+            } else {
+                unreadable_formats += 1;
+                None
             }
         } else {
             return Err(AppError::new("invalid-stored-data"));

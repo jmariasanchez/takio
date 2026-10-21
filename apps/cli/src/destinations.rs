@@ -133,9 +133,7 @@ pub fn send(
     if !source.is_file() || item_id.trim().is_empty() {
         return Err(AppError::new("invalid-arguments"));
     }
-    let relative_dir = subdir
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| default_subdir(destination.kind));
+    let relative_dir = subdir.map_or_else(|| default_subdir(destination.kind), Path::to_path_buf);
     validate_relative(&relative_dir)?;
     let directory = destination.path.join(relative_dir);
     fs::create_dir_all(&directory).map_err(|_| AppError::new("copy-failed"))?;

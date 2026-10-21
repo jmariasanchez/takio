@@ -1724,7 +1724,7 @@ fn plan(input: &Path, to: FormatId, profile: &str, as_json: bool) -> AppResult<(
     if as_json {
         print_success(value)
     } else {
-        println!("Plan: {} -> {} on this computer", from, to);
+        println!("Plan: {from} -> {to} on this computer");
         Ok(())
     }
 }
@@ -1849,7 +1849,7 @@ fn library(command: LibraryCommand, library: Option<&str>) -> AppResult<()> {
                         outcomes.push(json!({"status":"missing","itemId":id}));
                     }
                     Err(error) => {
-                        outcomes.push(json!({"status":"failed","itemId":id,"code":error.code()}))
+                        outcomes.push(json!({"status":"failed","itemId":id,"code":error.code()}));
                     }
                 }
             }
@@ -3042,17 +3042,17 @@ fn export_many(store: &LibraryStore, request: &Value) -> AppResult<Value> {
                 "provenance":format.provenance,
                 "destinationPath":target
             });
-            let directory =
-                match prepare_export_directory(&destination, relative_directory.as_deref()) {
-                    Ok(directory) => directory,
-                    Err(_) => {
-                        outcomes.push(merge_json(
-                            target_shape,
-                            json!({"status":"failed","code":"destination-unavailable"}),
-                        ));
-                        continue;
-                    }
-                };
+            let directory = if let Ok(directory) =
+                prepare_export_directory(&destination, relative_directory.as_deref())
+            {
+                directory
+            } else {
+                outcomes.push(merge_json(
+                    target_shape,
+                    json!({"status":"failed","code":"destination-unavailable"}),
+                ));
+                continue;
+            };
             let target = directory.join(file_name);
             match copy_export_file(&format.source_path, &target) {
                 ExportCopy::Exported { bytes, sha256 } => outcomes.push(merge_json(
@@ -3464,7 +3464,7 @@ fn string_filter(filters: &Value, name: &str) -> AppResult<Vec<String>> {
             value
                 .as_str()
                 .filter(|value| !value.trim().is_empty())
-                .map(|value| value.to_lowercase())
+                .map(str::to_lowercase)
                 .ok_or_else(|| AppError::new("invalid-arguments"))
         })
         .collect()

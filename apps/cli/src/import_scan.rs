@@ -251,7 +251,7 @@ where
                             entries.push(ScanEntry::Outcome(Box::new(ImportOutcome::Skipped {
                                 source_path: entry.into_path(),
                                 reason: "unsupported-file-type",
-                            })))
+                            })));
                         }
                         Err(error) => {
                             entries.push(ScanEntry::Outcome(Box::new(ImportOutcome::Failed {
@@ -259,7 +259,7 @@ where
                                     .path()
                                     .map_or_else(|| root.clone(), Path::to_path_buf),
                                 code: "unreadable",
-                            })))
+                            })));
                         }
                     }
                 }
