@@ -38,7 +38,12 @@ use crate::store::{
     disable_help_subcommand = true
 )]
 struct Cli {
-    #[arg(long, global = true)]
+    #[arg(
+        long,
+        global = true,
+        value_name = "NAME",
+        help = "Use an independent named library under the Takio data directory"
+    )]
     library: Option<String>,
     #[command(subcommand)]
     command: Option<Command>,
@@ -89,11 +94,17 @@ enum Command {
         #[arg(long, default_value_t = 300)]
         timeout_seconds: u64,
     },
-    #[command(subcommand)]
+    #[command(
+        subcommand,
+        about = "Import, browse, edit, verify, back up, and export the local library"
+    )]
     Library(LibraryCommand),
-    #[command(subcommand)]
+    #[command(subcommand, about = "Manage the durable foreground conversion queue")]
     Jobs(JobsCommand),
-    #[command(subcommand)]
+    #[command(
+        subcommand,
+        about = "Discover mounted volumes and manage verified deliveries"
+    )]
     Destination(DestinationCommand),
     #[command(about = "Send a library format to a mounted destination")]
     Send {
@@ -149,34 +160,45 @@ enum Command {
 
 #[derive(Subcommand)]
 enum LibraryCommand {
+    #[command(about = "Manage bounded library-defined text column labels")]
     CustomColumns {
         #[command(subcommand)]
         command: CustomColumnsCommand,
     },
+    #[command(about = "Run the newline-delimited request loop used by the desktop sidecar")]
     Service {
         #[arg(long)]
         db: Option<PathBuf>,
     },
+    #[command(about = "Print the resolved library database path")]
     Path {
         #[arg(long)]
         db: Option<PathBuf>,
     },
+    #[command(
+        about = "Audit schema, integrity, and managed-file fingerprints without modifying anything"
+    )]
     Verify {
         #[arg(long)]
         db: Option<PathBuf>,
     },
+    #[command(about = "Create a verified snapshot of the database and every managed file")]
     Backup {
         #[arg(long)]
         db: Option<PathBuf>,
         #[arg(long)]
         dest: PathBuf,
     },
+    #[command(about = "Write a redacted diagnostics bundle for support")]
     Diagnostics {
         #[arg(long)]
         db: Option<PathBuf>,
         #[arg(long)]
         dest: PathBuf,
     },
+    #[command(
+        about = "Add a book by copying the source into the library (alias of import --mode copy)"
+    )]
     Add {
         #[arg(long)]
         db: Option<PathBuf>,
@@ -185,6 +207,7 @@ enum LibraryCommand {
         #[arg(long)]
         title: Option<String>,
     },
+    #[command(about = "Import one book as a managed copy or move it into the library")]
     Import {
         #[arg(long)]
         db: Option<PathBuf>,
@@ -192,33 +215,38 @@ enum LibraryCommand {
         source_path: PathBuf,
         #[arg(long)]
         title: Option<String>,
-        #[arg(long, default_value = "copy")]
+        #[arg(long, default_value = "copy", value_parser = ["copy", "move"])]
         mode: String,
     },
+    #[command(about = "List every active book")]
     List {
         #[arg(long)]
         db: Option<PathBuf>,
-        #[arg(long)]
+        #[arg(long, help = "Print a readable table instead of the JSON envelope")]
         human: bool,
     },
+    #[command(about = "Get one book by ID")]
     Get {
         #[arg(long)]
         db: Option<PathBuf>,
         #[arg(long)]
         id: String,
     },
+    #[command(about = "Literal substring search across titles, authors, tags, and custom fields")]
     Search {
         #[arg(long)]
         db: Option<PathBuf>,
         #[arg(long)]
         query: String,
     },
+    #[command(about = "Run a filtered, sorted, paged query with facets")]
     Query {
         #[arg(long)]
         db: Option<PathBuf>,
         #[arg(long = "request-json")]
         request_json: String,
     },
+    #[command(about = "Apply a metadata patch to one book")]
     Update {
         #[arg(long)]
         db: Option<PathBuf>,
@@ -227,6 +255,7 @@ enum LibraryCommand {
         #[arg(long = "patch-json")]
         patch_json: String,
     },
+    #[command(about = "Apply the same metadata patch to several books")]
     UpdateMany {
         #[arg(long)]
         db: Option<PathBuf>,
@@ -235,10 +264,14 @@ enum LibraryCommand {
         #[arg(long = "patch-json")]
         patch_json: String,
     },
-    #[command(subcommand)]
+    #[command(
+        subcommand,
+        about = "Manage owned copies and caller-owned format references"
+    )]
     Format(FormatCommand),
-    #[command(subcommand)]
+    #[command(subcommand, about = "Manage Takio-owned cover images")]
     Cover(CoverCommand),
+    #[command(about = "Open a stored format with the operating system's default application")]
     Open {
         #[arg(long)]
         db: Option<PathBuf>,
@@ -249,34 +282,42 @@ enum LibraryCommand {
         #[arg(long)]
         json: bool,
     },
-    #[command(subcommand)]
+    #[command(
+        subcommand,
+        about = "Recoverably remove, restore, or permanently purge books"
+    )]
     Trash(TrashCommand),
+    #[command(about = "Recursively import up to 256 files or directories")]
     ImportMany {
         #[arg(long)]
         db: Option<PathBuf>,
         #[arg(long = "source-path", required = true, num_args = 1..=256)]
         source_paths: Vec<PathBuf>,
-        #[arg(long, default_value = "copy")]
+        #[arg(long, default_value = "copy", value_parser = ["copy", "move"])]
         mode: String,
     },
+    #[command(about = "Copy and verify selected formats into a destination directory")]
     ExportMany {
         #[arg(long)]
         db: Option<PathBuf>,
         #[arg(long = "request-json")]
         request_json: String,
     },
+    #[command(about = "Remove a book and delete only its Takio-managed files")]
     Remove {
         #[arg(long)]
         db: Option<PathBuf>,
         #[arg(long)]
         id: String,
     },
+    #[command(about = "Import metadata and formats from a Calibre library read-only")]
     ImportCalibre {
         #[arg(long)]
         db: Option<PathBuf>,
         #[arg(long = "library-root")]
         library_root: PathBuf,
     },
+    #[command(about = "Watch directories and import new books on a bounded interval")]
     ImportWatch {
         #[arg(long)]
         db: Option<PathBuf>,
@@ -287,14 +328,16 @@ enum LibraryCommand {
         #[arg(long, value_parser = clap::value_parser!(u64).range(1..=10_000))]
         max_cycles: Option<u64>,
     },
+    #[command(about = "Publish a JSON, CSV, or HTML catalogue of the library")]
     Catalog {
         #[arg(long)]
         db: Option<PathBuf>,
-        #[arg(long)]
+        #[arg(long, value_parser = ["json", "csv", "html"])]
         format: String,
         #[arg(long)]
         output: PathBuf,
     },
+    #[command(about = "Search inside book contents using bounded text extraction")]
     ContentSearch {
         #[arg(long)]
         db: Option<PathBuf>,
@@ -307,6 +350,7 @@ enum LibraryCommand {
         #[arg(long, default_value_t = 60)]
         timeout_seconds: u64,
     },
+    #[command(about = "Validate attached formats with Calibre")]
     Validate {
         #[arg(long)]
         db: Option<PathBuf>,
@@ -317,38 +361,43 @@ enum LibraryCommand {
         #[arg(long, default_value_t = 60)]
         timeout_seconds: u64,
     },
+    #[command(about = "Export the library as portable OPF plus exact managed bytes")]
     PortableExport {
         #[arg(long)]
         db: Option<PathBuf>,
         #[arg(long)]
         dest: PathBuf,
     },
+    #[command(about = "Rebuild a new library from a verified portable export")]
     Rebuild {
         #[arg(long)]
         db: PathBuf,
         #[arg(long)]
         source: PathBuf,
     },
+    #[command(about = "Restore a verified backup snapshot into a new library path")]
     RestoreBackup {
         #[arg(long)]
         db: Option<PathBuf>,
         #[arg(long)]
         source: PathBuf,
     },
-    #[command(subcommand)]
+    #[command(subcommand, about = "Review conservative duplicate candidates")]
     Duplicates(DuplicateCommand),
-    #[command(subcommand)]
+    #[command(subcommand, about = "Alias of virtual-libraries", hide = true)]
     SavedViews(SavedViewsCommand),
-    #[command(subcommand)]
+    #[command(subcommand, about = "Persist named query scopes over one library")]
     VirtualLibraries(SavedViewsCommand),
 }
 
 #[derive(Subcommand)]
 enum CustomColumnsCommand {
+    #[command(about = "List defined text columns")]
     List {
         #[arg(long)]
         db: Option<PathBuf>,
     },
+    #[command(about = "Define a new labeled text column")]
     Create {
         #[arg(long)]
         db: Option<PathBuf>,
@@ -357,6 +406,7 @@ enum CustomColumnsCommand {
         #[arg(long)]
         label: String,
     },
+    #[command(about = "Change the label of an existing column")]
     Rename {
         #[arg(long)]
         db: Option<PathBuf>,
@@ -365,6 +415,7 @@ enum CustomColumnsCommand {
         #[arg(long)]
         label: String,
     },
+    #[command(about = "Remove a column definition while keeping per-book values")]
     Remove {
         #[arg(long)]
         db: Option<PathBuf>,
@@ -375,16 +426,19 @@ enum CustomColumnsCommand {
 
 #[derive(Subcommand)]
 enum SavedViewsCommand {
+    #[command(about = "List persisted virtual libraries")]
     List {
         #[arg(long)]
         db: Option<PathBuf>,
     },
+    #[command(about = "Create or update a virtual library")]
     Save {
         #[arg(long)]
         db: Option<PathBuf>,
         #[arg(long = "request-json")]
         request_json: String,
     },
+    #[command(about = "Remove a virtual library")]
     Remove {
         #[arg(long)]
         db: Option<PathBuf>,
@@ -395,24 +449,28 @@ enum SavedViewsCommand {
 
 #[derive(Subcommand)]
 enum DuplicateCommand {
+    #[command(about = "List duplicate candidate pairs")]
     List {
         #[arg(long)]
         db: Option<PathBuf>,
         #[arg(long = "request-json")]
         request_json: String,
     },
+    #[command(about = "Record that both books should be kept separate")]
     Keep {
         #[arg(long)]
         db: Option<PathBuf>,
         #[arg(long = "request-json")]
         request_json: String,
     },
+    #[command(about = "Reopen a previously reviewed pair")]
     Reopen {
         #[arg(long)]
         db: Option<PathBuf>,
         #[arg(long = "request-json")]
         request_json: String,
     },
+    #[command(about = "Merge one book into another atomically")]
     Merge {
         #[arg(long)]
         db: Option<PathBuf>,
@@ -423,6 +481,7 @@ enum DuplicateCommand {
 
 #[derive(Subcommand)]
 enum FormatCommand {
+    #[command(about = "Attach a managed copy of a file to a book")]
     Import {
         #[arg(long)]
         db: Option<PathBuf>,
@@ -431,6 +490,7 @@ enum FormatCommand {
         #[arg(long = "source-path")]
         source_path: PathBuf,
     },
+    #[command(about = "Attach a caller-owned file by reference without copying")]
     Attach {
         #[arg(long)]
         db: Option<PathBuf>,
@@ -439,6 +499,7 @@ enum FormatCommand {
         #[arg(long = "source-path")]
         source_path: PathBuf,
     },
+    #[command(about = "Detach a format and delete it only if Takio owns it")]
     Remove {
         #[arg(long)]
         db: Option<PathBuf>,
@@ -447,6 +508,7 @@ enum FormatCommand {
         #[arg(long)]
         format: FormatId,
     },
+    #[command(about = "Atomically replace a stored format with a verified new file")]
     Replace {
         #[arg(long)]
         db: Option<PathBuf>,
@@ -457,6 +519,7 @@ enum FormatCommand {
 
 #[derive(Subcommand)]
 enum CoverCommand {
+    #[command(about = "Set a Takio-owned cover image from a file")]
     Set {
         #[arg(long)]
         db: Option<PathBuf>,
@@ -465,6 +528,7 @@ enum CoverCommand {
         #[arg(long = "source-path")]
         source_path: PathBuf,
     },
+    #[command(about = "Remove the Takio-owned cover")]
     Remove {
         #[arg(long)]
         db: Option<PathBuf>,
@@ -475,24 +539,28 @@ enum CoverCommand {
 
 #[derive(Subcommand)]
 enum TrashCommand {
+    #[command(about = "List trashed books")]
     List {
         #[arg(long)]
         db: Option<PathBuf>,
         #[arg(long = "request-json")]
         request_json: Option<String>,
     },
+    #[command(about = "Move books to the trash")]
     Move {
         #[arg(long)]
         db: Option<PathBuf>,
         #[arg(long = "request-json")]
         request_json: String,
     },
+    #[command(about = "Restore trashed books")]
     Restore {
         #[arg(long)]
         db: Option<PathBuf>,
         #[arg(long = "request-json")]
         request_json: String,
     },
+    #[command(about = "Permanently purge trashed books and their managed files")]
     Purge {
         #[arg(long)]
         db: Option<PathBuf>,
@@ -503,12 +571,14 @@ enum TrashCommand {
 
 #[derive(Subcommand)]
 enum MetadataCommand {
+    #[command(about = "Extract embedded metadata from a file with ebook-meta")]
     Extract {
         #[arg(long = "source-path")]
         source_path: PathBuf,
         #[arg(long, default_value_t = 15)]
         timeout_seconds: u64,
     },
+    #[command(about = "Fetch online metadata with fetch-ebook-metadata")]
     Fetch {
         #[arg(long)]
         title: Option<String>,
@@ -521,12 +591,13 @@ enum MetadataCommand {
         #[arg(long, default_value_t = 30)]
         timeout_seconds: u64,
     },
-    #[command(subcommand)]
+    #[command(subcommand, about = "Discover, review, and apply metadata candidates")]
     Candidates(MetadataCandidatesCommand),
 }
 
 #[derive(Subcommand)]
 enum MetadataCandidatesCommand {
+    #[command(about = "Derive candidates from a filename pattern")]
     Filename {
         #[arg(long = "source-path")]
         source_path: PathBuf,
@@ -535,6 +606,7 @@ enum MetadataCandidatesCommand {
         #[arg(long = "pattern")]
         patterns: Vec<String>,
     },
+    #[command(about = "List local and optionally online candidates for one book")]
     Item {
         #[arg(long)]
         db: Option<PathBuf>,
@@ -545,6 +617,7 @@ enum MetadataCandidatesCommand {
         #[arg(long, default_value_t = 30)]
         timeout_seconds: u64,
     },
+    #[command(about = "Discover candidates for up to 64 books with bounded workers")]
     Reconcile {
         #[arg(long)]
         db: PathBuf,
@@ -553,6 +626,7 @@ enum MetadataCandidatesCommand {
         #[arg(long, default_value_t = 30)]
         timeout_seconds: u64,
     },
+    #[command(about = "Apply selected candidate fields and optionally its cover")]
     Apply {
         #[arg(long)]
         db: Option<PathBuf>,
@@ -571,6 +645,7 @@ enum MetadataCandidatesCommand {
 
 #[derive(Subcommand)]
 enum JobsCommand {
+    #[command(about = "Queue a conversion job")]
     Enqueue {
         #[arg(long)]
         db: Option<PathBuf>,
@@ -585,30 +660,35 @@ enum JobsCommand {
         #[arg(long)]
         library_item_id: Option<String>,
     },
+    #[command(about = "List jobs, optionally filtered by status")]
     List {
         #[arg(long)]
         db: Option<PathBuf>,
         #[arg(long)]
         status: Option<JobStatus>,
     },
+    #[command(about = "Get one job")]
     Get {
         #[arg(long)]
         db: Option<PathBuf>,
         #[arg(long)]
         id: String,
     },
+    #[command(about = "Cancel a queued job")]
     Cancel {
         #[arg(long)]
         db: Option<PathBuf>,
         #[arg(long)]
         id: String,
     },
+    #[command(about = "Requeue a failed or canceled job")]
     Retry {
         #[arg(long)]
         db: Option<PathBuf>,
         #[arg(long)]
         id: String,
     },
+    #[command(about = "Claim and run the oldest queued job in the foreground")]
     RunNext {
         #[arg(long)]
         db: Option<PathBuf>,
@@ -617,6 +697,7 @@ enum JobsCommand {
         #[arg(long, default_value_t = 300)]
         timeout_seconds: u64,
     },
+    #[command(about = "Run queued jobs in the foreground up to a bounded count")]
     Drain {
         #[arg(long)]
         db: Option<PathBuf>,
@@ -627,6 +708,7 @@ enum JobsCommand {
         #[arg(long, default_value_t = 300)]
         timeout_seconds: u64,
     },
+    #[command(about = "Retry attaching a completed job's output to its library item")]
     RetryAttachment {
         #[arg(long)]
         db: Option<PathBuf>,
@@ -637,28 +719,33 @@ enum JobsCommand {
 
 #[derive(Subcommand)]
 enum DestinationCommand {
+    #[command(about = "List mounted volumes that can receive books")]
     List {
         #[arg(long, default_value = "/Volumes")]
         volumes_root: PathBuf,
     },
+    #[command(about = "Eject a mounted destination after verifying it is idle")]
     Eject {
         #[arg(long)]
         dest: PathBuf,
         #[arg(long, default_value = "/Volumes")]
         volumes_root: PathBuf,
     },
+    #[command(about = "List verified deliveries recorded on a destination")]
     Inventory {
         #[arg(long)]
         dest: PathBuf,
         #[arg(long, default_value = "/Volumes")]
         volumes_root: PathBuf,
     },
+    #[command(about = "Re-verify recorded deliveries against the files on the destination")]
     Reconcile {
         #[arg(long)]
         dest: PathBuf,
         #[arg(long, default_value = "/Volumes")]
         volumes_root: PathBuf,
     },
+    #[command(about = "Remove a delivered file after verifying it is unchanged")]
     Remove {
         #[arg(long)]
         dest: PathBuf,
@@ -667,6 +754,7 @@ enum DestinationCommand {
         #[arg(long, default_value = "/Volumes")]
         volumes_root: PathBuf,
     },
+    #[command(about = "Explicitly opt into hardened SSH/SCP delivery to a rooted Kindle")]
     RootedKindleSend {
         #[arg(long)]
         id: String,
@@ -3765,5 +3853,36 @@ fn open_path(path: &Path) -> AppResult<()> {
         Ok(())
     } else {
         Err(AppError::new("open-failed"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn walk(command: &clap::Command, path: &str, missing: &mut Vec<String>) {
+        for subcommand in command.get_subcommands() {
+            let name = format!("{path} {}", subcommand.get_name());
+            if subcommand.get_about().is_none() {
+                missing.push(name.clone());
+            }
+            walk(subcommand, &name, missing);
+        }
+    }
+
+    #[test]
+    fn every_command_has_help_text() {
+        let root = Cli::command();
+        let mut missing = Vec::new();
+        walk(&root, "takio", &mut missing);
+        assert!(
+            missing.is_empty(),
+            "commands without `about` text: {missing:?}"
+        );
+    }
+
+    #[test]
+    fn command_tree_is_internally_consistent() {
+        Cli::command().debug_assert();
     }
 }
