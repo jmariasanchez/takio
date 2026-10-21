@@ -13,3 +13,11 @@ unsafe_code = "forbid"
 
 [workspace.lints.clippy]
 all = "warn"
+
+# Release builds favour a small, fast standalone binary. Unwinding is kept so
+# Drop guards (terminal restoration, partial-file cleanup) still run on panic.
+[profile.release]
+codegen-units = 1
+lto = "fat"
+opt-level = 3
+strip = "symbols"
