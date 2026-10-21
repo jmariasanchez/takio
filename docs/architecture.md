@@ -22,6 +22,8 @@ binary never launches Bun as a fallback.
 | `packages/core` | Renderer-side ebook domain schemas and format vocabulary |
 | `packages/library-contract` | Runtime-neutral desktop wire schemas |
 | `packages/library-store-bun` | TypeScript reference and contract implementation retained for renderer tests and future migration work |
+| `packages/epub-transform` | Independent TypeScript EPUB transformation library, not a Rust CLI conversion backend |
+| `scripts/` | Release packaging, bundle verification, and performance gates |
 
 ## Rust executable
 
@@ -30,7 +32,8 @@ The `takio` crate is split by responsibility:
 | Module | Responsibility |
 | --- | --- |
 | `cli` | Clap command tree, stable envelopes, desktop-compatible request mapping, and persistent service mode |
-| `store` | Schema-v10 SQLite catalogue and owned-file transactions |
+| `store` | Schema-v12 SQLite catalogue and owned-file transactions |
+| `fingerprint` | Shared streaming SHA-256 byte-count and digest helpers used by every owned-file operation |
 | `jobs` | Independent schema-v4 foreground conversion ledger |
 | `conversion` | Format detection, Calibre discovery, planning, execution, and artifact verification |
 | `destinations` | Mounted-volume authorization, verified copy, inventory, removal, and eject |
@@ -79,9 +82,10 @@ global `--library <name>` selector creates an isolated named library. An explici
 `--db <path>` selects a physical database for diagnostics and automation. Named
 and explicit selectors are mutually exclusive.
 
-`library.sqlite` uses schema version 10. The Rust store creates a new v10 library
-or opens an existing v10 library. It rejects every other nonzero schema instead
-of attempting an implicit migration.
+`library.sqlite` uses schema version 12. The Rust store creates new v12 libraries,
+opens existing v12 libraries, and migrates v1 through v11 with a verified,
+no-overwrite backup under one locked transaction. It proves rollback before
+reporting a failed migration and rejects foreign schemas and future versions.
 
 Managed formats live below the sibling `items` directory and managed covers
 below `covers`. Referenced formats remain caller-owned. Imports publish managed
@@ -93,6 +97,10 @@ ownership, references, list/get/search, filtered and paged queries with facets,
 metadata updates, cover lifecycle, format lifecycle, trash/restore/purge, bulk
 export, catalogue publication, content search, format validation, saved views,
 integrity verification, complete snapshot backup, and path-rebased restore.
+Native workflows also include Calibre-library import, watched import, duplicate
+review and merge, portable OPF export/rebuild, bounded structured queries, and
+library-defined custom text columns. Portable v2 preserves column definitions;
+rebuild also accepts v1 sources.
 
 ## Terminal UI
 
@@ -101,8 +109,10 @@ it without a TTY prints CLI help instead, preserving predictable script behavior
 
 The TUI has Library, Jobs, Devices, and Help sections. It supports Vim and arrow
 navigation, search, path import, refresh, safe trash confirmation, a command
-palette, small-terminal guidance, and status feedback. A guard owns raw mode and
-the alternate screen so normal terminal state is restored on every exit path.
+palette, small-terminal guidance, status feedback, and selected-book metadata
+candidate review with explicit online opt-in and separate cover selection.
+A guard owns raw mode and the alternate screen so normal terminal state is
+restored on every exit path.
 
 ## Conversion and jobs
 
@@ -137,12 +147,13 @@ strict host-key checking, key-file authentication, validated remote paths,
 bounded execution, partial upload, remote size/hash verification, and atomic
 publication. MTP and Amazon Send-to-Kindle remain unavailable.
 
-## Explicit migration gaps
+## Explicit product gaps
 
-The command names for unported workflows remain reserved, but return
-`feature-unavailable`. Current gaps are Calibre-library import, watched import,
-portable OPF export/rebuild, duplicate review/merge, and native EPUB-to-KEPUB
-conversion. Capability output includes the exact unsupported command families.
+Capability output advertises no reserved unsupported CLI commands. Native
+EPUB-to-KEPUB conversion remains unavailable in the Rust executable. Other
+product gaps include typed or multi-valued custom columns, custom sorting and
+facets, arbitrary save-to-disk expressions, richer device transports, and
+built-in reading/editing.
 
 Metadata extraction/fetching, polishing, filename candidates, saved views,
 attachment reconciliation, backup restore, the loopback content server, and

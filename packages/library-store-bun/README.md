@@ -10,7 +10,7 @@ store.close();
 ```
 
 The caller must supply the database path. `open` initializes an empty database
-at schema v9, reopens v9 databases, and atomically migrates v1 through v8 after
+at schema v12, reopens v12 databases, and atomically migrates v1 through v11 after
 retaining a verified `<database>.vN.backup`. Other schema versions return
 `incompatible-schema`; no production database location is selected here.
 
@@ -31,6 +31,14 @@ so v1 through v4 records retain their exact public shape.
 Schema v6 adds recoverable trash, schema v7 fingerprints every managed format
 with its byte count and SHA-256 digest, schema v8 records explicit duplicate
 review decisions, and schema v9 adds bounded text custom metadata fields.
+
+Schema v10 adds the durable `library_adoptions` journal with source and target
+paths, fingerprints, and pending-rename, renamed, and finalizing states.
+Schema v11 adds ordered library-defined text column definitions in the legacy
+`library_text_column_definitions` table.
+Schema v12 moves those definitions into the canonical
+`library_custom_column_definitions` table and aligns duplicate-review,
+source-cleanup, and import-watch tables and indexes with the Rust store.
 
 ## Managed format lifecycle
 
@@ -85,17 +93,17 @@ the file.
 
 A migration backup contains database metadata, not referenced files or
 Takio-owned book and cover files. The database and its sibling `items` and
-`covers` directories must therefore be preserved together to recover a v8
+`covers` directories must therefore be preserved together to recover a v12
 library's owned files. To recover a migration backup, close every process using
 the library, preserve the current database and both owned-file roots, copy the
 matching versioned backup to a separate recovery path, and open that copy with
 the current application so it can migrate again. Restoring a backup discards
 database changes made after it was created and can leave newer owned files
-orphaned. Legacy migration backups do not contain cleanup tombstones, while
-opening a v8 database retries the format and cover tombstones that database
-already records.
+orphaned. Migration backups retain the source database's existing cleanup
+tombstones, if any; schemas predating the cleanup tables have none. Opening a
+supported existing database retries its retained format and cover tombstones.
 
-There is no in-place downgrade from v8. Older binaries reject a v8 database
+There is no in-place downgrade from v12. Older binaries reject a v12 database
 rather than dropping rich metadata or changing ownership semantics. Downgrading
 requires explicitly restoring a compatible versioned backup, with the loss of
 database changes made since that backup.

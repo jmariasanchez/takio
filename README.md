@@ -263,10 +263,14 @@ operating system's installed applications.
 ## Workspace
 
 ```text
-apps/desktop       Electron + React local-first desktop UI
-apps/cli           Rust CLI, Ratatui interface, SQLite store, jobs, and delivery
-packages/core      Shared TypeScript domain used by the desktop renderer
-docs/              Architecture and implementation records
+apps/desktop                Electron + React local-first desktop UI
+apps/cli                    Rust CLI, Ratatui interface, SQLite store, jobs, and delivery
+packages/core               Shared TypeScript domain used by the desktop renderer
+packages/library-contract   Runtime-neutral desktop wire schemas
+packages/library-store-bun  TypeScript reference and contract implementation for tests and migration work
+packages/epub-transform     Independent TypeScript EPUB transformation library, not a Rust CLI backend
+scripts/                    Release packaging, bundle verification, and performance gates
+docs/                       Architecture and implementation records
 ```
 
 ## Quality commands
@@ -283,3 +287,8 @@ bun run build
 Read [the architecture](docs/architecture.md) for the system design and the
 [Calibre-competitive roadmap](docs/roadmaps/calibre-competitive-product-roadmap.md)
 for the deliberately scoped path ahead.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, quality gates, and contribution
+policies. Report vulnerabilities privately using [SECURITY.md](SECURITY.md).
