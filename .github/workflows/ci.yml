@@ -7,10 +7,15 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   bun:
     name: Bun workspace
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - name: Check out repository
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -22,6 +27,15 @@ jobs:
 
       - name: Set up Rust
         run: rustup toolchain install 1.97.1 --profile minimal --component rustfmt,clippy
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+
+      - name: Cache Bun dependencies
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-${{ runner.arch }}-bun-1.3.13-${{ hashFiles('bun.lock') }}
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
@@ -67,6 +81,7 @@ jobs:
   native-macos:
     name: macOS native
     runs-on: macos-latest
+    timeout-minutes: 60
     steps:
       - name: Check out repository
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -78,6 +93,15 @@ jobs:
 
       - name: Set up Rust
         run: rustup toolchain install 1.97.1 --profile minimal --component rustfmt,clippy
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+
+      - name: Cache Bun dependencies
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-${{ runner.arch }}-bun-1.3.13-${{ hashFiles('bun.lock') }}
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
@@ -108,3 +132,45 @@ jobs:
           TAKIO_NATIVE_STARTUP_EXECUTABLE="$app/Contents/MacOS/$executable_name" \
             TAKIO_DATA_DIR="$data_directory" \
             bun run test:performance:native:macos
+
+  security:
+    name: Dependency security
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    continue-on-error: false
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Rust
+        run: rustup toolchain install 1.97.1 --profile minimal
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: 1.3.13
+
+      - name: Cache Bun dependencies
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-${{ runner.arch }}-bun-1.3.13-${{ hashFiles('bun.lock') }}
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      - name: Audit Rust dependencies
+        run: cargo audit
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Audit Bun dependencies
+        # GHSA-hp3w-g68c-fv3c: sprintf-js DoS via unbounded precision specifiers.
+        # Reached only through electron > @electron/get > global-agent > roarr,
+        # a download-time dev path with no fix available upstream yet. Remove
+        # the ignore once @electron/get or roarr publishes a patched release.
+        run: bun audit --ignore GHSA-hp3w-g68c-fv3c
