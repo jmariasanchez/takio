@@ -30,7 +30,7 @@
     "@types/react": "^19.0.10",
     "@types/react-dom": "^19.0.4",
     "@vitejs/plugin-react": "^4.4.1",
-    "electron": "^37.0.0",
+    "electron": "^42.11.18",
     "electron-builder": "^26.0.0",
     "typescript": "^5.8.2",
     "vite": "^6.2.2"
@@ -40,15 +40,27 @@
     "productName": "Takio",
     "asar": true,
     "files": ["dist/**", "dist-electron/**", "package.json"],
-    "extraResources": [{ "from": "resources/bin", "to": "bin" }],
-    "directories": { "output": "release", "buildResources": "build" },
+    "extraResources": [{
+      "from": "resources/bin",
+      "to": "bin"
+    }],
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
     "mac": {
       "category": "public.app-category.productivity",
       "minimumSystemVersion": "13.0",
       "target": ["dmg", "zip"],
       "icon": "build/icon.icns"
     },
-    "win": { "target": "nsis", "icon": "build/icon.ico" },
-    "linux": { "target": ["AppImage", "deb"], "category": "Office" }
+    "win": {
+      "target": "nsis",
+      "icon": "build/icon.ico"
+    },
+    "linux": {
+      "target": ["AppImage", "deb"],
+      "category": "Office"
+    }
   }
 }
