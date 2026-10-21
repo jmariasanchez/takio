@@ -55,6 +55,10 @@ and are not a claim that a published release contains every entry below.
 
 ### Fixed
 
+- Closed a race in the terminal metadata-review loader where a cancelled
+  lookup could publish its result after the receiver was dropped, leaking a
+  staged candidate cover. The cancel handshake is now mutually exclusive with
+  the final send. The previously flaky TUI test passes 40 of 40 runs.
 - Hardened initialization, migration rollback, cross-runtime schema validation,
   deferred cleanup, and backup recovery without treating legacy paths as ownership.
 - Prevented destination overwrite races, preserved source artifacts during

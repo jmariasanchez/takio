@@ -1,9 +1,9 @@
 use std::collections::BTreeSet;
 use std::io::{self, Stdout};
 use std::path::Path;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
@@ -116,8 +116,44 @@ struct App {
     should_quit: bool,
     candidate_review: Option<CandidateReview>,
     candidate_rx: Option<Receiver<CandidateLoadResult>>,
-    candidate_cancel: Option<Arc<AtomicBool>>,
+    candidate_cancel: Option<Arc<CandidateLoaderCancel>>,
     candidate_generation: u64,
+}
+
+/// Cancellation handshake between the TUI thread and a candidate loader.
+///
+/// `requested` lets the loader bail out early. `handoff` serializes the
+/// loader's final "check then send" against the TUI's "cancel then drop
+/// receiver" so a result can never be published into a receiver that nobody
+/// will drain, which would leak its staged candidate cover.
+struct CandidateLoaderCancel {
+    requested: AtomicBool,
+    handoff: Mutex<bool>,
+}
+
+impl CandidateLoaderCancel {
+    fn new() -> Self {
+        Self {
+            requested: AtomicBool::new(false),
+            handoff: Mutex::new(false),
+        }
+    }
+
+    /// Mark the loader cancelled. Returns once no further result can be sent.
+    fn cancel(&self) {
+        self.requested.store(true, Ordering::Release);
+        let mut canceled = self.handoff.lock().unwrap_or_else(|e| e.into_inner());
+        *canceled = true;
+    }
+
+    /// Run `send` unless cancellation already happened. The lock is held
+    /// across the send so `cancel` cannot interleave.
+    fn send_unless_canceled(&self, send: impl FnOnce()) {
+        let canceled = self.handoff.lock().unwrap_or_else(|e| e.into_inner());
+        if !*canceled {
+            send();
+        }
+    }
 }
 
 impl App {
@@ -348,20 +384,22 @@ impl App {
         };
         let (tx, rx) = mpsc::channel();
         let library_root = self.paths.root.clone();
-        let canceled = Arc::new(AtomicBool::new(false));
+        let canceled = Arc::new(CandidateLoaderCancel::new());
         let worker_canceled = Arc::clone(&canceled);
         thread::spawn(move || {
-            let result = load(&item, include_online, &worker_canceled)
+            let result = load(&item, include_online, &worker_canceled.requested)
                 .map_err(|error| error.code().to_owned());
-            if worker_canceled.load(Ordering::Acquire) {
-                if let Ok(candidates) = &result {
-                    release_metadata_candidate_covers(&library_root, candidates);
+            let mut pending = Some((generation, item.id, result));
+            worker_canceled.send_unless_canceled(|| {
+                if let Some(message) = pending.take()
+                    && let Err(error) = tx.send(message)
+                {
+                    pending = Some(error.0);
                 }
-                return;
-            }
-            if let Err(error) = tx.send((generation, item.id, result))
-                && let Ok(candidates) = error.0.2
-            {
+            });
+            // Anything still pending was never delivered: either cancellation
+            // won the handoff or the receiver is gone. Release its covers.
+            if let Some((_, _, Ok(candidates))) = pending {
                 release_metadata_candidate_covers(&library_root, &candidates);
             }
         });
@@ -525,9 +563,11 @@ impl App {
 
     fn cancel_candidate_loader(&mut self) {
         if let Some(canceled) = self.candidate_cancel.take() {
-            canceled.store(true, Ordering::Release);
+            canceled.cancel();
         }
         if let Some(receiver) = self.candidate_rx.take() {
+            // After `cancel` returns, the worker can no longer send, so a
+            // non-blocking drain observes every result it managed to publish.
             while let Ok((_, _, result)) = receiver.try_recv() {
                 if let Ok(candidates) = result {
                     release_metadata_candidate_covers(&self.paths.root, &candidates);
