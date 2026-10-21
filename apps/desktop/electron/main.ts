@@ -8,6 +8,7 @@ import {
   ipcMain,
   Menu,
   protocol,
+  session,
   shell,
   type MenuItemConstructorOptions,
   type MessageBoxOptions,
@@ -16,6 +17,7 @@ import {
 
 import { invokeEngine, libraryServiceClient } from "./engine";
 import { candidateCoverResponse, discardCandidateCovers, localCoverResponse } from "./candidate-cover-protocol";
+import { permissionAllowed, securityHeaders } from "./security";
 
 protocol.registerSchemesAsPrivileged([
   { scheme: "takio-cover", privileges: { standard: true, secure: true, supportFetchAPI: true } },
@@ -128,6 +130,7 @@ function registerIpc() {
 }
 
 async function createWindow() {
+  const devUrl = process.env.VITE_DEV_SERVER_URL;
   mainWindow = new BrowserWindow({
     title: "Takio",
     width: 1440,
@@ -154,7 +157,7 @@ async function createWindow() {
     const allowed = process.env.VITE_DEV_SERVER_URL ?? pathToFileURL(join(app.getAppPath(), "dist", "index.html")).href;
     if (!url.startsWith(allowed)) event.preventDefault();
   });
-  const devUrl = process.env.VITE_DEV_SERVER_URL;
+  mainWindow.webContents.on("will-attach-webview", (event) => event.preventDefault());
   if (devUrl) {
     await mainWindow.loadURL(devUrl);
   } else {
@@ -163,6 +166,18 @@ async function createWindow() {
 }
 
 app.whenReady().then(async () => {
+  const devUrl = process.env.VITE_DEV_SERVER_URL;
+  session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback) => {
+    callback(permissionAllowed(permission));
+  });
+  session.defaultSession.setPermissionCheckHandler((_webContents, permission) => permissionAllowed(permission));
+  session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
+    if (details.resourceType !== "mainFrame") {
+      callback({ responseHeaders: details.responseHeaders });
+      return;
+    }
+    callback({ responseHeaders: { ...details.responseHeaders, ...securityHeaders({ devServerUrl: devUrl }) } });
+  });
   protocol.handle("takio-cover", (request) => {
     const url = new URL(request.url);
     if (url.hostname === "candidate") {
