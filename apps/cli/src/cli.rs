@@ -3140,20 +3140,12 @@ fn copy_export_file(source: &Path, target: &Path) -> ExportCopy {
         Err(_) => return ExportCopy::Failed("destination-unavailable"),
     };
     let result = (|| -> Result<(u64, String), &'static str> {
-        let mut hash = Sha256::new();
-        let mut bytes = 0u64;
-        let mut buffer = vec![0u8; 64 * 1024];
-        loop {
-            let read = input.read(&mut buffer).map_err(|_| "source-unavailable")?;
-            if read == 0 {
-                break;
-            }
-            output
-                .write_all(&buffer[..read])
-                .map_err(|_| "destination-unavailable")?;
-            hash.update(&buffer[..read]);
-            bytes += u64::try_from(read).map_err(|_| "source-unavailable")?;
-        }
+        let (bytes, sha256) = crate::fingerprint::copy_and_hash(&mut input, &mut output).map_err(
+            |error| match error {
+                crate::fingerprint::CopyError::Read(_) => "source-unavailable",
+                crate::fingerprint::CopyError::Write(_) => "destination-unavailable",
+            },
+        )?;
         let after = input.metadata().map_err(|_| "source-changed")?;
         if bytes != before.len()
             || after.len() != before.len()
@@ -3163,7 +3155,6 @@ fn copy_export_file(source: &Path, target: &Path) -> ExportCopy {
         }
         output.sync_all().map_err(|_| "destination-unavailable")?;
         drop(output);
-        let sha256 = format!("{:x}", hash.finalize());
         if sha256_file(&partial).map_err(|_| "destination-unavailable")? != sha256 {
             return Err("destination-unavailable");
         }
@@ -3196,17 +3187,7 @@ fn merge_json(mut base: Value, extra: Value) -> Value {
 }
 
 fn sha256_file(path: &Path) -> std::io::Result<String> {
-    let mut file = std::fs::File::open(path)?;
-    let mut hash = Sha256::new();
-    let mut buffer = vec![0u8; 64 * 1024];
-    loop {
-        let read = file.read(&mut buffer)?;
-        if read == 0 {
-            break;
-        }
-        hash.update(&buffer[..read]);
-    }
-    Ok(hex::encode(hash.finalize()))
+    crate::fingerprint::hash_file(path).map(|(_, digest)| digest)
 }
 
 fn library_query_value(store: &LibraryStore, request: &Value) -> AppResult<Value> {

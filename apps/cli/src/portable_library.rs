@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, HashSet};
 use std::fs::{self, File, OpenOptions};
-use std::io::{Read, Write};
+use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 
 use roxmltree::{Document, Node};
@@ -715,35 +715,18 @@ fn copy_artifact(source: &Path, destination: &Path, relative: &str) -> AppResult
         .create_new(true)
         .open(destination)
         .map_err(|_| AppError::new("storage-unavailable"))?;
-    let mut hash = Sha256::new();
-    let mut buffer = [0u8; 64 * 1024];
-    let mut bytes = 0u64;
-    loop {
-        let read = input
-            .read(&mut buffer)
-            .map_err(|_| AppError::new("storage-unavailable"))?;
-        if read == 0 {
-            break;
-        }
-        output
-            .write_all(&buffer[..read])
-            .map_err(|_| AppError::new("storage-unavailable"))?;
-        hash.update(&buffer[..read]);
-        bytes = bytes
-            .checked_add(read as u64)
-            .filter(|value| *value <= MAX_SAFE_INTEGER)
-            .ok_or_else(|| AppError::new("storage-unavailable"))?;
-    }
+    let (bytes, sha256) = crate::fingerprint::copy_and_hash(&mut input, &mut output)
+        .map_err(|_| AppError::new("storage-unavailable"))?;
     output
         .sync_all()
         .map_err(|_| AppError::new("storage-unavailable"))?;
-    if bytes == 0 {
+    if bytes == 0 || bytes > MAX_SAFE_INTEGER {
         return Err(AppError::new("storage-unavailable"));
     }
     Ok(PortableArtifact {
         path: relative.to_owned(),
         bytes,
-        sha256: hex::encode(hash.finalize()),
+        sha256,
     })
 }
 
@@ -756,22 +739,10 @@ fn fingerprint(path: &Path, relative: &str) -> AppResult<PortableArtifact> {
     {
         return Err(AppError::new("source-invalid"));
     }
-    let mut file = File::open(path).map_err(|_| AppError::new("source-invalid"))?;
-    let mut hash = Sha256::new();
-    let mut buffer = [0u8; 64 * 1024];
-    let mut bytes = 0u64;
-    loop {
-        let read = file
-            .read(&mut buffer)
-            .map_err(|_| AppError::new("source-invalid"))?;
-        if read == 0 {
-            break;
-        }
-        hash.update(&buffer[..read]);
-        bytes = bytes
-            .checked_add(read as u64)
-            .filter(|value| *value <= MAX_SAFE_INTEGER)
-            .ok_or_else(|| AppError::new("source-invalid"))?;
+    let (bytes, sha256) =
+        crate::fingerprint::hash_file(path).map_err(|_| AppError::new("source-invalid"))?;
+    if bytes > MAX_SAFE_INTEGER {
+        return Err(AppError::new("source-invalid"));
     }
     let after = fs::symlink_metadata(path).map_err(|_| AppError::new("source-invalid"))?;
     if !after.is_file() || after.file_type().is_symlink() || after.len() != bytes {
@@ -780,7 +751,7 @@ fn fingerprint(path: &Path, relative: &str) -> AppResult<PortableArtifact> {
     Ok(PortableArtifact {
         path: relative.to_owned(),
         bytes,
-        sha256: hex::encode(hash.finalize()),
+        sha256,
     })
 }
 

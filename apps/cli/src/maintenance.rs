@@ -1,13 +1,12 @@
 use std::collections::BTreeSet;
 use std::fs::{self, OpenOptions};
-use std::io::{Read, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
-use sha2::{Digest, Sha256};
 use tempfile::Builder;
 use uuid::Uuid;
 
@@ -301,21 +300,7 @@ fn run_bounded(command: &mut Command, timeout: Duration, failure: &'static str) 
 }
 
 fn fingerprint(path: &Path) -> AppResult<(u64, String)> {
-    let mut file = fs::File::open(path).map_err(|_| AppError::new("artifact-invalid"))?;
-    let mut buffer = [0u8; 64 * 1024];
-    let mut bytes = 0u64;
-    let mut hash = Sha256::new();
-    loop {
-        let read = file
-            .read(&mut buffer)
-            .map_err(|_| AppError::new("artifact-invalid"))?;
-        if read == 0 {
-            break;
-        }
-        bytes += u64::try_from(read).map_err(|_| AppError::new("artifact-invalid"))?;
-        hash.update(&buffer[..read]);
-    }
-    Ok((bytes, hex::encode(hash.finalize())))
+    crate::fingerprint::hash_file(path).map_err(|_| AppError::new("artifact-invalid"))
 }
 
 fn discover_executable(env_name: &str, name: &str, macos_path: &str) -> Option<PathBuf> {

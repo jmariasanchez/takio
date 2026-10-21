@@ -1,6 +1,5 @@
 use std::collections::{BTreeMap, HashMap};
 use std::fs::{self, File, OpenOptions};
-use std::io::Read;
 use std::path::{Path, PathBuf};
 
 #[cfg(test)]
@@ -3147,21 +3146,7 @@ fn title_from_path(path: &Path) -> String {
 }
 
 fn hash_file(path: &Path) -> AppResult<(u64, String)> {
-    let mut file = File::open(path).map_err(|_| AppError::new("source-unavailable"))?;
-    let mut hash = Sha256::new();
-    let mut bytes = 0u64;
-    let mut buffer = [0u8; 64 * 1024];
-    loop {
-        let read = file
-            .read(&mut buffer)
-            .map_err(|_| AppError::new("source-unavailable"))?;
-        if read == 0 {
-            break;
-        }
-        hash.update(&buffer[..read]);
-        bytes += u64::try_from(read).map_err(|_| AppError::new("source-unavailable"))?;
-    }
-    Ok((bytes, hex::encode(hash.finalize())))
+    crate::fingerprint::hash_file(path).map_err(|_| AppError::new("source-unavailable"))
 }
 
 fn publish_copy(source: &Path, target: &Path, expected: &(u64, String)) -> AppResult<()> {

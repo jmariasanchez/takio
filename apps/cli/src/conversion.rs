@@ -6,7 +6,6 @@ use std::time::{Duration, Instant};
 
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::output::{AppError, AppResult};
@@ -295,22 +294,7 @@ pub fn convert(
 }
 
 pub fn fingerprint(path: &Path) -> AppResult<(u64, String)> {
-    use std::io::Read;
-    let mut file = fs::File::open(path).map_err(|_| AppError::new("artifact-invalid"))?;
-    let mut hash = Sha256::new();
-    let mut bytes = 0u64;
-    let mut buffer = [0u8; 64 * 1024];
-    loop {
-        let read = file
-            .read(&mut buffer)
-            .map_err(|_| AppError::new("artifact-invalid"))?;
-        if read == 0 {
-            break;
-        }
-        hash.update(&buffer[..read]);
-        bytes += u64::try_from(read).map_err(|_| AppError::new("artifact-invalid"))?;
-    }
-    Ok((bytes, hex::encode(hash.finalize())))
+    crate::fingerprint::hash_file(path).map_err(|_| AppError::new("artifact-invalid"))
 }
 
 fn executable(path: &Path) -> bool {

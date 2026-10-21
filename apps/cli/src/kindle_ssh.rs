@@ -1,4 +1,3 @@
-use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -7,7 +6,6 @@ use std::time::{Duration, Instant};
 
 use regex::Regex;
 use serde::Serialize;
-use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::output::{AppError, AppResult};
@@ -241,21 +239,7 @@ fn run(command: &mut Command, timeout: Duration) -> AppResult<CommandOutput> {
 }
 
 fn fingerprint(path: &Path) -> AppResult<(u64, String)> {
-    let mut file = fs::File::open(path).map_err(|_| AppError::new("source-unavailable"))?;
-    let mut buffer = [0u8; 64 * 1024];
-    let mut bytes = 0u64;
-    let mut hash = Sha256::new();
-    loop {
-        let read = file
-            .read(&mut buffer)
-            .map_err(|_| AppError::new("source-unavailable"))?;
-        if read == 0 {
-            break;
-        }
-        bytes += u64::try_from(read).map_err(|_| AppError::new("source-unavailable"))?;
-        hash.update(&buffer[..read]);
-    }
-    Ok((bytes, hex::encode(hash.finalize())))
+    crate::fingerprint::hash_file(path).map_err(|_| AppError::new("source-unavailable"))
 }
 
 fn sanitize_file_name(value: &str) -> Option<String> {

@@ -1,10 +1,8 @@
 use std::collections::HashSet;
 use std::fs;
-use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
-use sha2::{Digest, Sha256};
 
 use crate::conversion::{FormatId, detect_format};
 use crate::model::LibraryItem;
@@ -288,23 +286,12 @@ where
 
 fn fingerprint(path: &Path) -> Result<(u64, String), &'static str> {
     let before = fs::metadata(path).map_err(|error| io_code(&error))?;
-    let mut file = fs::File::open(path).map_err(|error| io_code(&error))?;
-    let mut bytes = 0_u64;
-    let mut digest = Sha256::new();
-    let mut buffer = [0_u8; 64 * 1024];
-    loop {
-        let read = file.read(&mut buffer).map_err(|error| io_code(&error))?;
-        if read == 0 {
-            break;
-        }
-        bytes += read as u64;
-        digest.update(&buffer[..read]);
-    }
+    let (bytes, digest) = crate::fingerprint::hash_file(path).map_err(|error| io_code(&error))?;
     let after = fs::metadata(path).map_err(|error| io_code(&error))?;
     if before.len() != after.len() || before.modified().ok() != after.modified().ok() {
         return Err("source-changed");
     }
-    Ok((bytes, hex::encode(digest.finalize())))
+    Ok((bytes, digest))
 }
 
 fn io_code(error: &std::io::Error) -> &'static str {

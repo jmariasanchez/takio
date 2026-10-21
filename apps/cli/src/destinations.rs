@@ -1,13 +1,13 @@
 use std::fs::{self, File, OpenOptions};
-use std::io::{Read, Write};
+use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
+use crate::fingerprint::CopyError;
 use crate::output::{AppError, AppResult};
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
@@ -324,44 +324,20 @@ fn copy_and_hash(source: &Path, target: &Path) -> AppResult<(u64, String)> {
         .write(true)
         .open(target)
         .map_err(|_| AppError::new("copy-failed"))?;
-    let mut hash = Sha256::new();
-    let mut bytes = 0u64;
-    let mut buffer = [0u8; 64 * 1024];
-    loop {
-        let read = input
-            .read(&mut buffer)
-            .map_err(|_| AppError::new("source-unavailable"))?;
-        if read == 0 {
-            break;
-        }
-        output
-            .write_all(&buffer[..read])
-            .map_err(|_| AppError::new("copy-failed"))?;
-        hash.update(&buffer[..read]);
-        bytes += u64::try_from(read).map_err(|_| AppError::new("copy-failed"))?;
-    }
+    let fingerprint = crate::fingerprint::copy_and_hash(&mut input, &mut output).map_err(
+        |error| match error {
+            CopyError::Read(_) => AppError::new("source-unavailable"),
+            CopyError::Write(_) => AppError::new("copy-failed"),
+        },
+    )?;
     output
         .sync_all()
         .map_err(|_| AppError::new("copy-failed"))?;
-    Ok((bytes, hex::encode(hash.finalize())))
+    Ok(fingerprint)
 }
 
 fn hash_file(path: &Path) -> AppResult<(u64, String)> {
-    let mut input = File::open(path).map_err(|_| AppError::new("source-unavailable"))?;
-    let mut hash = Sha256::new();
-    let mut bytes = 0u64;
-    let mut buffer = [0u8; 64 * 1024];
-    loop {
-        let read = input
-            .read(&mut buffer)
-            .map_err(|_| AppError::new("source-unavailable"))?;
-        if read == 0 {
-            break;
-        }
-        hash.update(&buffer[..read]);
-        bytes += u64::try_from(read).map_err(|_| AppError::new("verification-failed"))?;
-    }
-    Ok((bytes, hex::encode(hash.finalize())))
+    crate::fingerprint::hash_file(path).map_err(|_| AppError::new("source-unavailable"))
 }
 
 fn manifest_path(destination: &Destination) -> PathBuf {
