@@ -655,6 +655,97 @@ benchmark results still cannot certify keyboard-to-paint or scrolling. The
 remaining performance work is profiling and an independently validated fix, not
 another declaration that existing passing tests imply a speed improvement.
 
+### Cold-query CPU and activity comparison: October 22, 13:40-13:58 UTC
+
+The next bounded investigation separated elapsed time from engine-thread CPU
+time, then tested a temporary OS activity guard. All workloads used disposable
+10,000-book catalogues. No real library, original EPUB or reader was modified.
+"Cold" here means the first matching query in a fresh app process, not a flushed
+filesystem cache. No competing benchmark was launched by this investigation.
+
+Temporary safe `rustix` thread-clock calls bracketed `store.query_items` on the
+same dedicated engine thread. In the initial unprofiled five-process run, cold
+matching calls included **292.368 ms wall / 49.528 ms CPU**, **218.646 / 50.010**,
+and **292.870 / 39.587**. One first clear took **221.880 / 65.118**. Warm matching
+calls were about 27-29 ms with wall and CPU times close together. Most excess
+elapsed time in those slow calls was therefore not CPU execution by that worker.
+This does not identify scheduling, I/O, page faults or contention as the cause.
+
+A native-only unstripped release build allowed `sample` to resolve engine stacks.
+Of 834 engine samples, 467 were in the channel receive/idle branch, 333 in bulk
+hydration and about 32 in ID selection. About 34 included `pread`. The channel
+wait was not nested inside the query path. Neither sample counts nor aggregate
+idle waits measure the duration of a slow query's I/O or lock waits. Sampling
+perturbs execution, so these runs are not the unprofiled performance baseline.
+
+The controlled follow-up used the existing safe GPUI `prevent_app_nap` RAII guard,
+enabled only by `TAKIO_QUERY_ACTIVITY=1`. It began before query enqueue and ended
+after receipt, facets and background sorting, including error returns. It did not
+extend through foreground result application. Initial reload and every later
+reload were covered, so the intervention also changed startup history. Its
+platform activity affects multiple resource policies, not only App Nap.
+
+Four sequential blocks ran **off, on, on, off**, each with five GUI processes and
+five interaction cycles per process. Both arms used the same instrumented binary,
+unchanged SQL and 60 ms debounce. All **400** count, matching, ordering and retained
+selection checks passed, as did the existing startup and interaction budgets.
+
+| Block | First-match store wall median (5 processes) | First-match store CPU median | Matching settlement p95 (25 cycles) | Clear settlement p95 |
+| --- | ---: | ---: | ---: | ---: |
+| Off A | 230.494 ms | 43.108 ms | 338.611 ms | 182.349 ms |
+| On A | 76.023 ms | 40.921 ms | 322.290 ms | 113.631 ms |
+| On B | 185.299 ms | 46.160 ms | 293.481 ms | 115.814 ms |
+| Off B | 166.487 ms | 41.785 ms | 297.936 ms | 114.111 ms |
+
+The guard did **not eliminate cold tails**: enabled calls still took
+266.473 / 45.069 and 283.449 / 47.227 ms wall/CPU. The apparently better On A
+median did not repeat in On B, and the final control also improved. This small,
+ordered comparison does not establish a reliable benefit, statistical equivalence
+or a specific OS cause. No activity/priority policy change is justified by it.
+The two fast first matches in On A followed initial full-list queries taking
+449.321 / 79.522 and 466.820 / 71.159 ms wall/CPU. Cold delay had moved into
+startup in those processes, rather than disappeared. Across all four blocks,
+later matching queries took 26.427-29.523 ms with wall-minus-CPU at most 0.502 ms.
+Settlement includes trace output before reply delivery, while the paired query
+clocks exclude that output. Neither metric is keyboard-to-paint latency.
+
+Local reproduction artifacts are under
+`$JCODE_SCRATCH_DIR/takio-cold-profile-20261022`: `diagnostic.patch`,
+`cold-native.sample.txt`, `cold-symbols.sample.txt`, and `activity-{off-a,on-a,on-b,off-b}.log`.
+The patch is relative to `3cb0d66`; each block used
+`TAKIO_QUERY_ACTIVITY=0` (or `1`) `TAKIO_TRACE_CPU=1 bash scripts/bench-desktop-native.sh --interactions`.
+These are private diagnostic artifacts, not new shipped dependencies or controls.
+All source, manifest, lockfile and benchmark-script probes were removed afterwards.
+
+The next useful attribution requires a time-correlated scheduler/filesystem trace
+of the slow query, rather than another aggregate sample or speculative SQL rewrite.
+No privileged filesystem tracing, `taskpolicy` intervention, permanent sleep
+inhibition or background service was installed. Search-tail optimization remains
+open, and physical reading acceptance is still unobserved.
+
+Final clean validation completed at 14:00 UTC:
+
+- `git diff --exit-code -- Cargo.lock apps scripts` passed. Only this evidence
+  document changed. No temporary dependency, logging, symbol-build switch or
+  activity guard remains in the product.
+- `cargo fmt --all --check`, `cargo test --offline --workspace`, and
+  `cargo clippy --offline --workspace --all-targets -- -D warnings` passed:
+  **286 tests** (118 engine, 57 CLI, 2 custom-field, 109 native), with the two
+  existing benchmark tests intentionally ignored.
+- `bash scripts/package-desktop-native.sh` rebuilt the 11,117,873-byte app,
+  verified its strict ad-hoc signature and launched the actual bundle against an
+  empty temporary profile. Startup reported zero books and exited successfully.
+- The clean `bash scripts/bench-desktop-native.sh --interactions` passed all
+  **100** correctness checks and existing budgets. Startup medians were
+  130.268 ms paint, 211.925 ms query and 125,232 KiB RSS. Matching settlement
+  median/p95 was **92.309 / 303.769 ms**, clear 109.111 / 114.045 ms, reload
+  44.019 / 44.803 ms, and sort dispatch 0.023 / 0.033 ms. These confirm the
+  remaining search tail, not an improvement or the below-80-ms design goal.
+- `git diff --check` passed. The exact test/build/benchmark output is archived
+  beside the diagnostic artifacts as `clean-validation.log`; the initial
+  unprofiled CPU experiment is `initial-cpu.log`. Independent read-only review
+  checked the guard lifetime, all four result sets and the startup-delay caveat.
+
 ## Performance iteration: 2026-10-22
 
 The requested speed and simplicity work targets the existing Rust/GPUI desktop,
