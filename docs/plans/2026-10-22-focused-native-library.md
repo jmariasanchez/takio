@@ -28,8 +28,8 @@ features remain supported, not removed to make the desktop simpler.
 ## Delivery boundary
 
 The native first version targets mounted USB mass-storage readers using the
-existing Rust destination implementation. Stock Kindle and KOReader format
-preferences come from the shared engine, not UI guesses. Unsupported books fail
+existing Rust destination implementation. The native engine applies conservative,
+tested format preferences to freshly detected reader capabilities. Unsupported books fail
 with a next step rather than silently sending unreadable bytes. Conversion is
 available in the CLI but is not automatically run by this desktop flow.
 
@@ -52,7 +52,8 @@ hardware, record this gate as blocked, not complete.
 
 ## Next iterations, in order
 
-- Finish and validate the native first usable loop above.
+- Complete physical-reader acceptance and the remaining platform-picker check
+  documented below. The implemented native loop already has automated coverage.
 - Make format preparation explicit: preview missing formats and offer optional
   conversion only when a compatible backend is present and the user agrees.
 - Add reference-in-place import and missing-file recovery if real library use
@@ -62,3 +63,60 @@ hardware, record this gate as blocked, not complete.
 Only expand this list when an observed core-workflow problem justifies it.
 Acceptance evidence for each implemented slice belongs below, with commands and
 limitations rather than speculative completion claims.
+
+## Implemented and verified on 2026-10-22
+
+- Native details editor with explicit Save/Cancel, title validation, semicolon
+  author/tag lists, Tab traversal, UTF-16 input, retryable failures, and preservation
+  of unrelated metadata. Normal close/quit and destructive actions are guarded
+  while a draft or operation is active.
+- Visible Add books, drag/drop copy import, recoverable Trash, Restore, and native
+  permanent-delete/move confirmations. Confirmations retain the original book IDs
+  even if selection changes. Search invalidates stale results immediately.
+- Explicit Reader menu, sidebar Send/Eject controls, up to 256 selected books per
+  send, fresh destination authorization, attached-format preference, per-book
+  results, and actionable missing-reader/incompatible-format messages. Stock
+  Kindle EPUB-only sends fail rather than claim success. An external Amazon web
+  handoff never uploads files or claims delivery on the user's behalf.
+- No-overwrite device publication uses atomic hard links where available and an
+  exclusive verified copy on filesystems without them. Existing files and dangling
+  symlinks are preserved. A crash during fallback copying can leave an untracked
+  partial target; retries do not overwrite it automatically.
+- Narrow windows show fitted Title/Author/Formats columns. Wider windows also
+  show Series/Added. The virtualized list and inspector remain in place.
+
+### Reproducible gates
+
+| Check | Observed result |
+| --- | --- |
+| `cargo fmt --all --check` | Passed |
+| `cargo clippy --workspace --all-targets -- -D warnings` | Passed |
+| `cargo test --workspace` | 220 tests passed: 103 engine unit, 57 CLI integration, 2 custom-field, 58 native |
+| `bash scripts/package-desktop-native.sh` | Signed `dist/Takio.app`, strict signature verification and launch passed; 10,952,625 bytes |
+| `bash scripts/bench-desktop-native.sh` | Five real 10,000-book starts passed budgets; median paint 90.21 ms, loaded query 149.97 ms, RSS 118,960 KiB |
+
+`views/workspace_tests.rs` exercises rendered native actions through a GPUI test
+window against the actual engine and temporary files: picker import success and
+cancel, search/edit/save, deletion cancel/approval, exact confirmed IDs, and reader
+selection/cancel. State tests cover asynchronous completion while browsing,
+multi-book partial failure, metadata persistence, busy guards, and stale selection.
+Engine/device tests cover compatible-format preference, missing/disconnected and
+trashed books, byte verification, bounded batches, collisions, and exclusive-copy
+fallbacks. These are not physical-device tests.
+
+### Live macOS acceptance
+
+The packaged release was launched with an isolated `TAKIO_DATA_DIR` and a synthetic
+EPUB imported via the public CLI. At 900-point window width, the book list and
+inspector rendered correctly. Native menus opened Edit details; text entry, Tab
+navigation through all four fields, and Cmd-S saved title, author, series, and tags.
+A separate CLI process read the saved values and passed `library verify`. Both
+original and managed EPUB SHA-256 fingerprints remained identical. The app quit
+cleanly through its native menu. No personal library or physical reader was changed.
+
+The earlier unbundled debug app opened macOS's file picker, but automation could
+not confirm its Go-to-path sheet reliably. The attempt was canceled without writes.
+Picker callbacks and successful import are covered by the rendered-window test,
+but an end-to-end platform-picker selection remains a manual acceptance check.
+Physical Kindle send/eject/read acceptance remains blocked by unavailable hardware.
+MTP and automatic conversion remain deliberately unimplemented in the native UI.
