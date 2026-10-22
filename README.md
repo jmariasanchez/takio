@@ -1,21 +1,19 @@
 # Takio
 
-**Takio** is a local-first ebook library and agent-native control plane. It
-provides a predictable interface for managing, converting, and sending books
-while using Calibre's proven command-line tools for conversion.
+**Takio** is a simple, local-first native ebook library manager: add the books
+you already have, organize and find them, then send a compatible copy to your
+Kindle. It is not a project to recreate all of Calibre.
 
-Takio is intended to replace operating Calibre directly for focused library
-workflows. The current release does not yet reimplement Calibre's reader,
-editor, or plugin ecosystem, but those product areas are now part of the
-acceptance-gated roadmap in
-`docs/roadmaps/calibre-gap-closure-2-9.md`. Takio does not plan to build a
-general-purpose conversion engine. USB mass-storage delivery remains the
-default hardware path. Rooted Kindle SSH/SCP delivery is available only through
-an explicit per-command opt-in with host/user/key/path validation and no
-password handling. MTP and Amazon Send-to-Kindle are reported as unavailable
-gated transports rather than claimed as supported. The current optional content
-server is a narrow read-only delivery surface; remote multi-user service and
-browser reading are planned as later gated milestones.
+The current product direction is
+`docs/plans/2026-10-22-focused-native-library.md`. It supersedes the older
+Calibre-parity expansion roadmaps. The native desktop is the primary experience;
+the CLI and TUI retain advanced workflows and automation. Calibre is an optional
+external conversion backend, not required for ordinary library management.
+
+USB mass-storage delivery is the native hardware path. MTP and integrated Amazon
+Send to Kindle are not supported. Rooted Kindle SSH/SCP remains an explicitly
+opted-in CLI feature. Reader/editor, plugin, news, and remote-server expansion
+are outside the focused first-version scope.
 
 Takio is MIT licensed. Native transformation code is implemented independently
 from public format specifications, interoperability tests, and observed file
