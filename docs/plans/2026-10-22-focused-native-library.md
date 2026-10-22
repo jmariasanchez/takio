@@ -52,8 +52,9 @@ hardware, record this gate as blocked, not complete.
 
 ## Next iterations, in order
 
-- Complete physical-reader acceptance when hardware is available. The native
-  platform-picker check now passes in the packaged app, as documented below.
+- Finish the on-device reading check for the physical-reader acceptance run below.
+  Native import, review/cancel, verified USB transfer, duplicate refusal, and safe
+  eject now pass on the connected Kindle. Its screen remains unobserved.
 - Improve measured search-tail latency without changing literal search semantics.
   The performance iteration below establishes a reproducible baseline. Measure
   actual input-to-display and scrolling separately before claiming those goals.
@@ -62,11 +63,101 @@ hardware, record this gate as blocked, not complete.
   the user agrees. Backend discovery and conversion controls remain incomplete.
 - Add reference-in-place import and missing-file recovery if real library use
   shows these are needed. Preserve caller ownership.
-- Test a physical Kindle and decide whether MTP is the next needed transport.
+- Decide whether MTP is needed from actual reader demand, not from simulated
+  mounted-volume tests or this one USB mass-storage Kindle.
 
 Only expand this list when an observed core-workflow problem justifies it.
 Acceptance evidence for each implemented slice belongs below, with commands and
 limitations rather than speculative completion claims.
+
+## Physical Kindle acceptance: October 22, 2026
+
+The user connected a Kindle and authorized completing the product workflow.
+Interpretation: this permits adding one uniquely named disposable test document
+and its delivery record through the app, not changing existing personal books,
+reader settings, or accounts. Opening the resulting book on the Kindle screen
+still requires a user observation, which cannot be inferred from Mac-side hashes.
+
+Read-only discovery found a physical USB FAT32 volume at `/Volumes/Kindle`, with
+KOReader detected, 204 existing document files, and 146 existing delivery records.
+The isolated test library and TXT source are under a session scratch directory.
+A private local baseline records existing document sizes/mtimes and the full
+manifest. Personal filenames and records are not copied into this repository.
+
+Acceptance sequence recorded before any device write:
+
+1. Import the unique test source through the packaged app's native picker.
+2. Review TXT readiness, cancel, and independently confirm no new document or
+   changed manifest bytes. Repeat review and explicitly send only this test book.
+3. Independently compare the copied bytes/hash, preserve the 146 prior records,
+   and verify all 204 prior document sizes/mtimes are unchanged. This metadata
+   check is not a full content-hash audit of the user's existing books.
+4. Repeat the send and observe a no-overwrite failure, with the successful copy
+   and manifest unchanged. Eject through the app and verify the mount disappears.
+5. Ask the user to open the test book and report its visible reading checkpoint.
+   Leave this gate incomplete until that observation arrives.
+
+Pre-transfer safety review found that manifest replacement explicitly removed
+its predecessor before publishing the staged replacement. The shared engine now
+stages and syncs, then renames over the predecessor without pre-deletion. Failed
+staging/publication attempts clean the stage on a best-effort basis, and a failed
+publication leaves the predecessor in place. Regression checks cover 146 retained
+records, injected publication failure preserving exact prior bytes, and a
+malformed prior manifest remaining untouched. This does not certify crash or
+power-loss durability on every filesystem.
+
+### Observed physical results
+
+The rebuilt, signed `dist/Takio.app` completed this run between 11:43 and 11:47 UTC:
+
+- Native File > Import > Add books imported the single disposable TXT into an
+  isolated managed library. Independent CLI `library list` and `library verify`
+  confirmed one active managed item, schema 12, with the original source retained.
+- Reader menu > Send Selected Books > Kindle displayed `1 ready, 0 need attention`
+  and `Ready as TXT`. Preview and Cancel left the exact manifest bytes and all
+  prior document metadata unchanged. The actual sidebar button opened the same
+  review, also without writing. Explicit native confirmation performed the send.
+- The app displayed `Sent 1 to Kindle, 0 failed, 0 not sent` and `Sent and verified`.
+  Independent comparison found the 617-byte destination identical to the original,
+  SHA-256 `6e83be157f6da7da6056e757a96c794185e6ce8b4e7aa28e20fe14c520e9ee1a`.
+  All 146 original delivery records remained semantically identical, with exactly
+  one new record, and all 204 existing document sizes/mtimes remained unchanged.
+  No transfer stages or manifest temporary files remained.
+- The initial audit expected exactly one added directory entry and correctly
+  stopped when it found two. Investigation identified the exact test filename
+  plus its 4096-byte `._` AppleDouble companion (header `0005160700020000`).
+  The check was refined to permit only this explicitly verified companion, not
+  arbitrary additional files. Neither it nor any existing reader file was deleted.
+- Repeating the real send produced `A file with that name already exists on the
+  device` and `Sent 0 to Kindle, 1 failed, 0 not sent`. Independent before/after
+  checks proved exact manifest bytes, test-file hashes and metadata were unchanged.
+  Readiness describes compatible format/source, not a promise of collision-free
+  delivery. The review explicitly says existing reader files are never overwritten.
+- Reader > Eject Reader > Kindle displayed `Ejected Kindle`. The app's process
+  logged successful disk ejection, `/Volumes/Kindle` disappeared, and an independent
+  CLI `destination list` returned an empty list. Normal app Quit returned exit 0.
+
+The test book `Takio Reader Check 2026-10-22 aiKwWS` remains on the Kindle for the
+user to open. The requested visible checkpoint is `TAKIO-READS-20261022-AIKWWS`.
+**On-device readability is still pending user observation.** This run validates
+one physical KOReader-equipped, USB mass-storage Kindle and TXT delivery. It does
+not certify stock-reader EPUB support, other transports, conversion, or rendering
+of other ebook formats. These current results supersede earlier hardware-absent
+notes below, without rewriting their historical observations.
+
+Validation of the shared-engine change: `cargo fmt --all --check`,
+`cargo test --offline --workspace` (258 passed, two intentionally ignored
+performance reports), `cargo clippy --offline --workspace --all-targets -- -D warnings`,
+and `git diff --check` passed. The counts are 114 library, 57 CLI integration,
+two custom-field integration, and 85 native tests. The three added manifest
+regressions are included. The release bundle passed strict code-signature
+verification and a real startup smoke test, at 11,034,961 bytes. Cargo still
+reports the pre-existing future-Rust compatibility notice for `block 0.1.6`.
+The separate five-run, 10,000-item `bash scripts/bench-desktop-native.sh` gate
+passed: median first paint 93.131 ms, first query 146.889 ms, and RSS 124,256 KiB.
+The single empty-library packaging smoke run had first paint 316.657 ms and
+query 410.866 ms. That cold smoke run is not the defined five-run median gate,
+and neither measurement certifies scroll frame times or search input-to-paint.
 
 ## Product iteration: review before sending
 
