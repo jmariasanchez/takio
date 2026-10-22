@@ -407,3 +407,110 @@ fn send_action_while_metadata_editing_never_prompts(cx: &mut TestAppContext) {
         0
     );
 }
+
+#[gpui::test]
+fn copy_picker_import_preserves_original_and_supports_search_edit(cx: &mut TestAppContext) {
+    let f = fixture(false, cx);
+    let original = f._temp.path().join("PickerImported.epub");
+    std::fs::write(
+        &original,
+        b"unique bytes selected through the native import picker",
+    )
+    .unwrap();
+    let fingerprint = takio::fingerprint::hash_file(&original).unwrap();
+    f.window
+        .update(cx, |_, window, cx| {
+            window.dispatch_action(Box::new(Import), cx);
+        })
+        .unwrap();
+    cx.run_until_parked();
+    assert!(cx.did_prompt_for_paths());
+    cx.simulate_path_prompt_response(|options| {
+        assert!(options.files && options.multiple);
+        Some(vec![original.clone()])
+    });
+    settle(&f.state, cx);
+    assert!(!cx.did_prompt_for_paths());
+    let imported = f.state.read_with(cx, |state, _| {
+        assert_eq!(state.items.len(), 3);
+        state
+            .items
+            .iter()
+            .find(|item| item.title == "PickerImported")
+            .unwrap()
+            .clone()
+    });
+    let managed = &imported.formats[0];
+    assert_eq!(managed.provenance, takio::model::Provenance::Managed);
+    assert_ne!(managed.source_path, original);
+    assert!(
+        managed
+            .source_path
+            .canonicalize()
+            .unwrap()
+            .starts_with(f._temp.path().join("library/items").canonicalize().unwrap())
+    );
+    assert_eq!(
+        takio::fingerprint::hash_file(&managed.source_path).unwrap(),
+        fingerprint
+    );
+    assert_eq!(
+        takio::fingerprint::hash_file(&original).unwrap(),
+        fingerprint
+    );
+
+    f.window
+        .update(cx, |_, window, cx| {
+            window.dispatch_action(Box::new(crate::FocusSearch), cx);
+        })
+        .unwrap();
+    cx.run_until_parked();
+    cx.update_window(f.window.into(), |_, window, cx| window.draw(cx).clear(cx))
+        .unwrap();
+    cx.simulate_input(f.window.into(), "PickerImported");
+    cx.executor().advance_clock(Duration::from_millis(100));
+    settle(&f.state, cx);
+    f.state.read_with(cx, |state, _| {
+        assert_eq!(state.query, "PickerImported");
+        assert_eq!(state.items.len(), 1);
+        assert_eq!(state.items[0].id, imported.id);
+    });
+    f.window
+        .update(cx, |workspace, window, cx| {
+            window.focus(&workspace.focus, cx);
+            window.dispatch_action(Box::new(crate::SelectNext), cx);
+        })
+        .unwrap();
+    cx.run_until_parked();
+    assert_eq!(
+        f.state.read_with(cx, |state, _| state.selected_ids()),
+        vec![imported.id.clone()]
+    );
+    f.window
+        .update(cx, |_, window, cx| {
+            window.dispatch_action(Box::new(crate::EditSelected), cx);
+        })
+        .unwrap();
+    cx.run_until_parked();
+    cx.update_window(f.window.into(), |_, window, cx| window.draw(cx).clear(cx))
+        .unwrap();
+    cx.simulate_keystrokes(f.window.into(), "cmd-a");
+    cx.simulate_input(f.window.into(), "PickerImported edited");
+    cx.simulate_keystrokes(f.window.into(), "cmd-s");
+    settle(&f.state, cx);
+    f.state.read_with(cx, |state, _| {
+        assert!(!state.metadata_editing);
+        assert_eq!(state.items.len(), 1);
+        assert_eq!(state.items[0].id, imported.id);
+        assert_eq!(state.items[0].title, "PickerImported edited");
+    });
+    assert_eq!(
+        takio::fingerprint::hash_file(&original).unwrap(),
+        fingerprint
+    );
+    assert_eq!(
+        takio::fingerprint::hash_file(&managed.source_path).unwrap(),
+        fingerprint
+    );
+    assert_files_unchanged(&f);
+}
