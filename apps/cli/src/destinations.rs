@@ -422,6 +422,16 @@ fn record_delivery(destination: &Destination, record: DeliveryRecord) -> AppResu
 }
 
 fn write_manifest(destination: &Destination, manifest: &Manifest) -> AppResult<()> {
+    write_manifest_with_publisher(destination, manifest, |temporary, path| {
+        fs::rename(temporary, path)
+    })
+}
+
+fn write_manifest_with_publisher(
+    destination: &Destination,
+    manifest: &Manifest,
+    publish: impl FnOnce(&Path, &Path) -> std::io::Result<()>,
+) -> AppResult<()> {
     let path = manifest_path(destination);
     let directory = path.parent().ok_or_else(|| AppError::new("copy-failed"))?;
     fs::create_dir_all(directory).map_err(|_| AppError::new("copy-failed"))?;
@@ -432,19 +442,127 @@ fn write_manifest(destination: &Destination, manifest: &Manifest) -> AppResult<(
         .write(true)
         .open(&temporary)
         .map_err(|_| AppError::new("copy-failed"))?;
-    file.write_all(&body)
-        .map_err(|_| AppError::new("copy-failed"))?;
-    file.sync_all().map_err(|_| AppError::new("copy-failed"))?;
-    if path.exists() {
-        fs::remove_file(&path).map_err(|_| AppError::new("copy-failed"))?;
+    let staged = file.write_all(&body).and_then(|()| file.sync_all());
+    drop(file);
+    // Replace without unlinking the prior manifest. Rename guarantees depend on the filesystem.
+    let result = staged.and_then(|()| publish(&temporary, &path));
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
     }
-    fs::rename(&temporary, path).map_err(|_| AppError::new("copy-failed"))?;
-    Ok(())
+    result.map_err(|_| AppError::new("copy-failed"))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn manifest_destination(path: &Path) -> Destination {
+        Destination {
+            id: "temporary-reader".to_owned(),
+            name: "Temporary reader".to_owned(),
+            path: path.to_path_buf(),
+            kind: DestinationKind::Kindle,
+            features: Vec::new(),
+        }
+    }
+
+    fn manifest_record(index: usize) -> DeliveryRecord {
+        DeliveryRecord {
+            item_id: format!("book-{index:03}"),
+            relative_path: format!("documents/book-{index:03}.txt"),
+            bytes: index as u64,
+            sha256: format!("hash-{index}"),
+            format: "txt".to_owned(),
+            timestamp: "2026-10-22T11:00:00Z".to_owned(),
+        }
+    }
+
+    fn assert_only_manifest(destination: &Destination) {
+        let paths = fs::read_dir(destination.path.join(".takio"))
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect::<Vec<_>>();
+        assert_eq!(paths, vec![manifest_path(destination)]);
+    }
+
+    #[test]
+    fn manifest_replacement_preserves_existing_records() {
+        let temporary = tempfile::tempdir().unwrap();
+        let destination = manifest_destination(temporary.path());
+        let prior = Manifest {
+            version: 1,
+            deliveries: (0..146).map(manifest_record).collect(),
+        };
+        write_manifest(&destination, &prior).unwrap();
+
+        record_delivery(&destination, manifest_record(146)).unwrap();
+
+        let updated = read_manifest(&destination).unwrap();
+        assert_eq!(updated.version, 1);
+        assert_eq!(updated.deliveries.len(), 147);
+        assert_eq!(
+            serde_json::to_value(&updated.deliveries[..146]).unwrap(),
+            serde_json::to_value(&prior.deliveries).unwrap()
+        );
+        assert_eq!(
+            serde_json::to_value(&updated.deliveries[146]).unwrap(),
+            serde_json::to_value(manifest_record(146)).unwrap()
+        );
+        assert_only_manifest(&destination);
+    }
+
+    #[test]
+    fn failed_manifest_publication_preserves_prior_bytes_and_cleans_staging() {
+        let temporary = tempfile::tempdir().unwrap();
+        let destination = manifest_destination(temporary.path());
+        let mut manifest = Manifest {
+            version: 1,
+            deliveries: (0..146).map(manifest_record).collect(),
+        };
+        write_manifest(&destination, &manifest).unwrap();
+        let path = manifest_path(&destination);
+        let prior_bytes = fs::read(&path).unwrap();
+        let prior_records = serde_json::to_value(&manifest.deliveries).unwrap();
+        manifest.deliveries.push(manifest_record(146));
+
+        let error = write_manifest_with_publisher(&destination, &manifest, |staged, target| {
+            assert_eq!(target, path);
+            assert_eq!(fs::read(target).unwrap(), prior_bytes);
+            assert_eq!(
+                fs::read(staged).unwrap(),
+                serde_json::to_vec_pretty(&manifest).unwrap()
+            );
+            Err(std::io::Error::other("injected publication failure"))
+        })
+        .unwrap_err();
+
+        assert_eq!(error.code(), "copy-failed");
+        assert_eq!(fs::read(&path).unwrap(), prior_bytes);
+        assert_eq!(
+            serde_json::to_value(read_manifest(&destination).unwrap().deliveries).unwrap(),
+            prior_records
+        );
+        assert_only_manifest(&destination);
+    }
+
+    #[test]
+    fn malformed_manifest_remains_intact_after_failed_record_update() {
+        let temporary = tempfile::tempdir().unwrap();
+        let destination = manifest_destination(temporary.path());
+        let path = manifest_path(&destination);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let prior_bytes = b"{\"version\":1,\"deliveries\":[ malformed prior records\n";
+        fs::write(&path, prior_bytes).unwrap();
+
+        assert_eq!(
+            record_delivery(&destination, manifest_record(146))
+                .unwrap_err()
+                .code(),
+            "copy-failed"
+        );
+        assert_eq!(fs::read(&path).unwrap(), prior_bytes);
+        assert_only_manifest(&destination);
+    }
 
     #[test]
     fn publication_preserves_a_target_created_after_preflight() {
