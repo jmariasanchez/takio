@@ -52,8 +52,8 @@ hardware, record this gate as blocked, not complete.
 
 ## Next iterations, in order
 
-- Complete physical-reader acceptance and the remaining platform-picker check
-  documented below. The implemented native loop already has automated coverage.
+- Complete physical-reader acceptance when hardware is available. The native
+  platform-picker check now passes in the packaged app, as documented below.
 - Make format preparation explicit: preview missing formats and offer optional
   conversion only when a compatible backend is present and the user agrees.
 - Add reference-in-place import and missing-file recovery if real library use
@@ -114,9 +114,22 @@ A separate CLI process read the saved values and passed `library verify`. Both
 original and managed EPUB SHA-256 fingerprints remained identical. The app quit
 cleanly through its native menu. No personal library or physical reader was changed.
 
-The earlier unbundled debug app opened macOS's file picker, but automation could
-not confirm its Go-to-path sheet reliably. The attempt was canceled without writes.
-Picker callbacks and successful import are covered by the rendered-window test,
-but an end-to-end platform-picker selection remains a manual acceptance check.
-Physical Kindle send/eject/read acceptance remains blocked by unavailable hardware.
-MTP and automatic conversion remain deliberately unimplemented in the native UI.
+The earlier unbundled debug app's Go-to-path automation failure was resolved by
+retesting the packaged app with a fresh isolated library. At 08:05 UTC, the real
+File > Import action opened macOS's native panel. Cmd-Shift-G, ordinary keyboard
+path entry, and Return selected only the synthetic EPUB. Accessibility activation
+of Add books dismissed the panel and imported one managed book. No simulated
+picker response or CLI import was used for this run.
+
+A separate public CLI process found one active managed EPUB and passed
+`library verify`. `cmp` confirmed that the original and managed copy were
+byte-identical, and both SHA-256 fingerprints were
+`8296492833153f8a44c4dc84c919cfc83945b6de27d811c7c89863bfa4b15294`.
+The app exited with code 0 through Takio > Quit Takio. The fixture and disposable
+library are under `$JCODE_SCRATCH_DIR/takio-native-acceptance-20261022`, with this
+run's database in `picker-library/library.sqlite`. The original remained intact.
+
+Physical Kindle send/eject/read acceptance is the remaining external gate. A
+read-only check of `/Volumes` found only Macintosh HD, so no hardware transfer was
+attempted or claimed. MTP and automatic conversion remain deliberately
+unimplemented in the native UI.
