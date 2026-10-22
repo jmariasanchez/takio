@@ -70,6 +70,17 @@ limitations rather than speculative completion claims.
 
 ## Product iteration: review before sending
 
+Interpretation audit: the explicit request was to focus on the product. Choosing
+an implementation task rather than a product-strategy discussion, and prioritizing
+pre-send review over the remaining search-tail work, were agent interpretations,
+not user-confirmed priorities. The existing roadmap and blocked physical-reader
+gate support this bounded choice, but do not establish that it is the user's
+preferred next feature. Before selecting it, work consisted only of repository,
+plan, and acceptance-evidence inspection. No earlier product changes needed to be
+reconciled or reverted. This slice stays inside the documented add/find/organize/
+send journey, adds no new transport or automatic conversion, and does not claim
+to resolve broader product strategy or demonstrate user satisfaction.
+
 The next product slice addresses a visible gap in the existing send flow:
 incompatible formats are explained only after a send attempt. Before any reader
 write, show a read-only review of the captured selection and chosen reader, with
@@ -152,6 +163,61 @@ directories for normal production reader detection. This was not real hardware.
    exited with code 0. A separate CLI process verified two active managed books,
    no Trash, and intact fingerprints. Original bytes also matched the exact
    fixtures after app exit. No personal books or physical reader were modified.
+
+### Feedback-loop recheck: observed improvement, not just passing tests
+
+At 11:13 UTC, one identical observer drove the production `LibraryState` send
+entry point against two archived revisions: `19999ca` (before) and `3369d11`
+(after). Each run created a fresh library containing the same TXT and EPUB bytes,
+selected both books, and invoked the same initial send action against an isolated
+stock-Kindle-shaped directory. The observer adds no replacement engine logic.
+Source-byte comparisons against Git confirmed both engine/state implementations
+were their respective committed versions.
+
+| Observation after the same initial action | Before | After |
+| --- | --- | --- |
+| New reader documents | 1 | 0 |
+| Delivery manifest created | Yes | No |
+| Completed send results | 1 sent, 1 failed | No transfer attempted |
+| Feedback available to the user | Failure after the compatible book was already copied | 1 ready, 1 needs attention, nothing sent yet |
+| Original bytes and independent library verification | Intact; 2 active books | Intact; 2 active books |
+
+The observed improvement is an opportunity to review compatibility and cancel
+before any copy, rather than learning about the blocked book only after the mixed
+send. It intentionally adds a confirmation step. The old direct Send action was
+authorized behavior, not an unauthorized write. This comparison does not claim
+that the added step is faster or preferred by users.
+
+The comparison probe runs real production state/engine code inside the native
+test harness, not physical mouse input. The signed-app run above separately
+observed the actual sidebar/menu/keyboard workflow: Cancel wrote nothing, explicit
+confirmation copied the originally reviewed TXT despite changed selection, and
+the blocked EPUB stayed out of the reader. At 11:14 UTC, a fresh read-only remount
+of that live run's ejected disk image still contained exactly one 46-byte TXT,
+matching the expected original bytes and original manifest hash/timestamp. No EPUB
+or extra manifest record appeared. Both original files and the independently
+reopened library remained intact. The read-only image was detached afterwards.
+
+Reproduction artifacts are in
+`$JCODE_SCRATCH_DIR/takio-product-comparison.SrthGt`: `feedback_probe.rs`, archived
+`before`/`after` source trees, fresh `before-library-verified` and
+`after-library-verified` fixtures, and `before-verified.log`/`after-verified.log`.
+Each probe invocation uses `TAKIO_FEEDBACK_LIBRARY=<new fixture path>`,
+`TAKIO_EXPECT_REVIEW=0` or `1`, and
+`cargo test --offline --manifest-path <snapshot>/Cargo.toml --target-dir <repo>/target -p takio-desktop-feedback-before`
+(or `takio-desktop-feedback-after`)
+`feedback_probe::product_send_feedback -- --exact --nocapture`.
+
+The first comparison attempt was discarded: a shared Cargo artifact identity
+reused the baseline executable for the after snapshot. Distinct snapshot package
+names forced independently compiled executables, whose paths and 67/85 other
+test counts were checked. Both fresh reruns passed, followed by independent
+filesystem, manifest, and CLI assertions of the table above. The normal workspace
+test target was then rebuilt: all 85 native tests, strict native Clippy, formatting,
+and diff checks passed again. Production source bytes are unchanged by this
+recheck. The feedback loop is closed for the bounded review-before-send behavior,
+not for the unconfirmed feature priority, physical Kindle readability, conversion,
+or broader user satisfaction.
 
 ## Performance iteration: 2026-10-22
 
