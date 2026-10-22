@@ -3,27 +3,37 @@
   "version": "0.1.0",
   "private": true,
   "license": "MIT",
-  "description": "A lightweight, modern desktop, TUI, and CLI alternative to Calibre",
+  "description": "A lightweight native desktop, TUI, and CLI alternative to Calibre",
   "engines": {
     "bun": ">=1.3.13"
   },
-  "workspaces": ["apps/*", "packages/*"],
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
   "scripts": {
-    "build": "cargo build --release -p takio && bun run --filter '@takio/core' build && bun run --filter '@takio/epub-transform' build && bun run --filter '@takio/library-contract' build && bun run --filter '@takio/library-store-bun' build && bun run --filter '@takio/desktop' build",
+    "build": "cargo build --release -p takio && bun run --filter '@takio/core' build && bun run --filter '@takio/epub-transform' build && bun run --filter '@takio/library-contract' build && bun run --filter '@takio/library-store-bun' build",
     "build:cli:binary": "cargo build --release -p takio",
     "release:cli": "cargo build --release -p takio && bash scripts/package-cli-release.sh",
-    "check": "cargo fmt --all --check && cargo clippy -p takio --all-targets -- -D warnings && bun run --filter '@takio/core' check && bun run --filter '@takio/epub-transform' check && bun run --filter '@takio/library-contract' check && bun run --filter '@takio/library-store-bun' check && bun run --filter '@takio/desktop' check",
+    "check": "cargo fmt --all --check && cargo clippy -p takio --all-targets -- -D warnings && bun run --filter '@takio/core' check && bun run --filter '@takio/epub-transform' check && bun run --filter '@takio/library-contract' check && bun run --filter '@takio/library-store-bun' check",
     "check:native:macos": "bash scripts/check-native-macos.sh",
     "verify:bundle:macos": "bash scripts/verify-macos-bundle.sh",
     "verify:dmg:macos": "bash scripts/verify-macos-dmg.sh",
     "package:macos": "bash scripts/package-macos-release.sh",
     "verify:bundle:macos:self-test": "bash scripts/test-verify-macos-bundle.sh",
-    "test": "cargo test -p takio && bun run --filter '@takio/core' test && bun run --filter '@takio/epub-transform' test && bun run --filter '@takio/library-contract' test && bun run --filter '@takio/library-store-bun' test && bun run --filter '@takio/desktop' test",
+    "test": "cargo test -p takio && bun run --filter '@takio/core' test && bun run --filter '@takio/epub-transform' test && bun run --filter '@takio/library-contract' test && bun run --filter '@takio/library-store-bun' test",
     "test:performance:library": "TAKIO_LIBRARY_QUERY_BENCHMARK=enforce bun test packages/library-store-bun/test/library-query-performance.test.ts",
     "test:performance:native:library": "TAKIO_NATIVE_LIBRARY_QUERY_BENCHMARK=enforce bun scripts/benchmark-native-library-query.ts",
     "test:performance:native:macos": "bun scripts/benchmark-native-startup-macos.ts",
     "takio": "cargo run -p takio --",
-    "desktop": "bun run --filter '@takio/desktop' dev"
+    "desktop": "cargo run --release -p takio-desktop",
+    "desktop:bench": "bash scripts/bench-desktop-native.sh",
+    "desktop:package": "bash scripts/package-desktop-native.sh",
+    "electron:build": "bun run --filter '@takio/desktop' build",
+    "electron:check": "bun run --filter '@takio/desktop' check",
+    "electron:test": "bun run --filter '@takio/desktop' test",
+    "electron:dev": "bun run --filter '@takio/desktop' dev",
+    "desktop:check": "cargo clippy -p takio-desktop --all-targets -- -D warnings && cargo test -p takio-desktop"
   },
   "overrides": {
     "postcss": "8.5.26"

@@ -24,11 +24,11 @@ source code is not copied, translated, or incorporated into Takio.
 
 It is a hybrid Rust and Bun workspace with three deliberate product surfaces:
 
-- **Desktop (`@takio/desktop`)**: a secure Electron application for people who want a calm, local-first library and conversion workspace.
+- **Desktop (`takio-desktop`)**: a native GPUI application, one 11 MB binary that links the library engine directly. On a 10,000-book library it paints in about 85 ms and loads the full list in about 135 ms using roughly 120 MB of memory. The earlier Electron app remains in `apps/desktop` behind `bun run electron:*` scripts while the native app reaches parity.
 - **Terminal UI (`takio`)**: a keyboard-first Ratatui application for people who prefer to work without a desktop app.
 - **CLI (`takio`)**: the same Rust binary, with deterministic JSON commands for AI agents, skills, automations, and power users.
 
-The Rust CLI and TUI share one library store, conversion runner, job queue, and destination implementation. The Electron desktop packages that Rust binary as its library sidecar.
+The Rust CLI, TUI, and native desktop share one library store, conversion runner, job queue, and destination implementation. The desktop links the engine in-process; there is no sidecar, IPC, or JSON on the hot path. See `docs/specs/gpui-desktop.md`.
 
 ## Current milestone
 
@@ -112,11 +112,15 @@ cargo run -p takio -- plan --input ~/Books/example.epub --to pdf --json
 cargo run -p takio -- jobs enqueue --input ~/Books/example.epub --to pdf --output ~/Books/example.pdf
 cargo run -p takio -- destination list
 
-# Native desktop app
+# Native desktop app (macOS; needs the Xcode Metal toolchain:
+# xcodebuild -downloadComponent MetalToolchain)
 bun run desktop
 
-# Package an unpacked desktop app for smoke testing
-bun run --filter '@takio/desktop' package:dir
+# Enforce the desktop startup budgets on a generated 10k library
+bun run desktop:bench
+
+# Produce a signed dist/Takio.app
+bun run desktop:package
 ```
 
 To produce a checksummed standalone executable for the current macOS or Linux
