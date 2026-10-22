@@ -18,7 +18,9 @@ actions!(
 );
 
 pub struct Search {
-    state: LibraryEntity,
+    state: Option<LibraryEntity>,
+    placeholder: &'static str,
+    read_only: bool,
     focus: FocusHandle,
     text: String,
     selection: Range<usize>,
@@ -30,20 +32,37 @@ pub struct Search {
 
 impl Search {
     pub fn new(state: LibraryEntity, cx: &mut Context<Self>) -> Self {
-        cx.bind_keys([
-            KeyBinding::new("backspace", Backspace, Some("Search")),
-            KeyBinding::new("delete", Delete, Some("Search")),
-            KeyBinding::new("left", Left, Some("Search")),
-            KeyBinding::new("right", Right, Some("Search")),
-            KeyBinding::new("cmd-left", Home, Some("Search")),
-            KeyBinding::new("cmd-right", End, Some("Search")),
-            KeyBinding::new("cmd-a", SelectAll, Some("Search")),
-            KeyBinding::new("cmd-v", Paste, Some("Search")),
-        ]);
         let text = state.read(cx).query.clone();
+        Self::input(Some(state), text, "Search", cx)
+    }
+
+    pub fn text_input(text: String, cx: &mut Context<Self>) -> Self {
+        Self::input(None, text, "", cx)
+    }
+
+    fn input(
+        state: Option<LibraryEntity>,
+        text: String,
+        placeholder: &'static str,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        for context in ["Search", "MetadataInput"] {
+            cx.bind_keys([
+                KeyBinding::new("backspace", Backspace, Some(context)),
+                KeyBinding::new("delete", Delete, Some(context)),
+                KeyBinding::new("left", Left, Some(context)),
+                KeyBinding::new("right", Right, Some(context)),
+                KeyBinding::new("cmd-left", Home, Some(context)),
+                KeyBinding::new("cmd-right", End, Some(context)),
+                KeyBinding::new("cmd-a", SelectAll, Some(context)),
+                KeyBinding::new("cmd-v", Paste, Some(context)),
+            ]);
+        }
         let end = text.len();
         Self {
             state,
+            placeholder,
+            read_only: false,
             focus: cx.focus_handle(),
             text,
             selection: end..end,
@@ -52,6 +71,19 @@ impl Search {
             line: None,
             scroll: px(0.),
         }
+    }
+
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+
+    pub fn set_read_only(&mut self, read_only: bool, cx: &mut Context<Self>) {
+        self.read_only = read_only;
+        cx.notify();
+    }
+
+    pub fn focus_handle(&self) -> FocusHandle {
+        self.focus.clone()
     }
 
     pub fn focus(&self, window: &mut Window, cx: &mut App) {
@@ -105,6 +137,9 @@ impl Search {
         text: &str,
         cx: &mut Context<Self>,
     ) -> Range<usize> {
+        if self.read_only {
+            return self.selection.end..self.selection.end;
+        }
         let range = range
             .map(|r| self.range_from_utf16(r))
             .or(self.marked.clone())
@@ -114,8 +149,9 @@ impl Search {
         let inserted = range.start..range.start + text.len();
         self.selection = inserted.end..inserted.end;
         self.marked = None;
-        self.state
-            .update(cx, |state, cx| state.set_query(self.text.clone(), cx));
+        if let Some(state) = &self.state {
+            state.update(cx, |state, cx| state.set_query(self.text.clone(), cx));
+        }
         cx.notify();
         inserted
     }
@@ -238,7 +274,11 @@ impl Render for Search {
         self.line = Some(line);
         let entity = cx.entity();
         div()
-            .key_context("Search")
+            .key_context(if self.state.is_some() {
+                "Search"
+            } else {
+                "MetadataInput"
+            })
             .track_focus(&self.focus)
             .w(px(260.))
             .h(px(28.))
@@ -249,7 +289,7 @@ impl Render for Search {
             .rounded(px(metrics::RADIUS))
             .bg(theme.panel_bg)
             .border_1()
-            .border_color(theme.border)
+            .border_color(if focused { theme.accent } else { theme.border })
             .text_sm()
             .text_color(theme.text)
             .cursor_text()
@@ -357,7 +397,7 @@ impl Render for Search {
                                 theme.text
                             })
                             .child(if self.text.is_empty() {
-                                "Search".to_owned()
+                                self.placeholder.to_owned()
                             } else {
                                 self.text.clone()
                             }),
@@ -374,5 +414,37 @@ impl Render for Search {
                         )
                     }),
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::TestAppContext;
+
+    #[gpui::test]
+    fn standalone_input_supports_utf16_composition_and_read_only(cx: &mut TestAppContext) {
+        cx.update(|cx| cx.set_global(Theme::LIGHT));
+        let window = cx.add_window(|_, cx| Search::text_input("a\u{1f642}b".into(), cx));
+        window
+            .update(cx, |input, window, cx| {
+                input.replace_text_in_range(Some(1..3), "\u{00e9}", window, cx);
+                assert_eq!(input.text(), "a\u{00e9}b");
+                input.replace_and_mark_text_in_range(
+                    Some(1..2),
+                    "\u{65e5}",
+                    Some(0..1),
+                    window,
+                    cx,
+                );
+                assert_eq!(input.marked_text_range(window, cx), Some(1..2));
+                input.replace_text_in_range(None, "\u{65e5}\u{672c}", window, cx);
+                assert_eq!(input.text(), "a\u{65e5}\u{672c}b");
+                assert!(input.marked_text_range(window, cx).is_none());
+                input.set_read_only(true, cx);
+                input.replace_text_in_range(Some(0..4), "discarded", window, cx);
+                assert_eq!(input.text(), "a\u{65e5}\u{672c}b");
+            })
+            .unwrap();
     }
 }

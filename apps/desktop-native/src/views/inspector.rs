@@ -1,9 +1,10 @@
 //! Selection details and file actions, backed by lazy background thumbnails.
 use std::sync::{Arc, Mutex};
 
-use gpui::{Context, IntoElement, ObjectFit, Render, Window, div, img, prelude::*, px};
+use gpui::{Context, Entity, IntoElement, ObjectFit, Render, Window, div, img, prelude::*, px};
 use takio::model::{LibraryItem, Provenance};
 
+use super::metadata_editor::{Closed, MetadataEditor};
 use crate::covers::CoverCache;
 use crate::state::{LibraryEntity, author_label};
 use crate::theme::{Theme, metrics};
@@ -11,6 +12,8 @@ use crate::theme::{Theme, metrics};
 pub struct Inspector {
     state: LibraryEntity,
     covers: Arc<Mutex<CoverCache>>,
+    editor: Option<Entity<MetadataEditor>>,
+    closed_editor: Option<Entity<MetadataEditor>>,
 }
 
 impl Inspector {
@@ -19,7 +22,37 @@ impl Inspector {
         Self {
             state,
             covers: Arc::new(Mutex::new(CoverCache::default())),
+            editor: None,
+            closed_editor: None,
         }
+    }
+
+    pub fn edit_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let state = self.state.read(cx);
+        if self.editor.is_some()
+            || state.busy
+            || state.selected.len() != 1
+            || state.section != crate::state::Section::Library
+        {
+            return;
+        }
+        let Some(item) = state.primary_selected().cloned() else {
+            return;
+        };
+        self.state.update(cx, |state, cx| {
+            state.metadata_save_result = None;
+            state.metadata_editing = true;
+            cx.notify();
+        });
+        let editor = cx.new(|cx| MetadataEditor::new(self.state.clone(), item, window, cx));
+        cx.subscribe(&editor, |this, editor, _: &Closed, cx| {
+            this.editor = None;
+            this.closed_editor = Some(editor);
+            cx.notify();
+        })
+        .detach();
+        self.editor = Some(editor);
+        cx.notify();
     }
 
     fn book(
@@ -60,7 +93,27 @@ impl Inspector {
                     .text_sm()
                     .text_color(theme.text_secondary)
                     .child(authors)
-            }));
+            }))
+            .when(
+                self.state.read(cx).section == crate::state::Section::Library,
+                |details| {
+                    details.child(
+                        div()
+                            .id("edit-details")
+                            .px_3()
+                            .py_2()
+                            .rounded(px(metrics::RADIUS))
+                            .bg(theme.row_selected_inactive)
+                            .opacity(if self.state.read(cx).busy { 0.5 } else { 1.0 })
+                            .cursor_pointer()
+                            .hover(|style| style.bg(theme.row_hover))
+                            .child("Edit details")
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.edit_selected(window, cx)),
+                            ),
+                    )
+                },
+            );
         let series = item
             .series
             .as_ref()
@@ -216,12 +269,17 @@ impl Inspector {
 }
 
 impl Render for Inspector {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if let Some(editor) = self.closed_editor.take() {
+            editor.update(cx, |editor, cx| editor.restore_focus(window, cx));
+        }
         let theme = *cx.global::<Theme>();
         let state = self.state.read(cx);
         let selected = state.selected.len();
         let item = state.primary_selected().cloned();
-        let content = if selected > 1 {
+        let content = if let Some(editor) = &self.editor {
+            editor.clone().into_any_element()
+        } else if selected > 1 {
             div()
                 .text_lg()
                 .font_weight(gpui::FontWeight::SEMIBOLD)
