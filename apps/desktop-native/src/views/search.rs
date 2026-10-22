@@ -327,6 +327,11 @@ impl Render for Search {
                 this.selection = 0..this.text.len();
                 cx.notify();
             }))
+            .on_action(cx.listener(|this, _: &crate::SelectAll, _, cx| {
+                this.selection = 0..this.text.len();
+                cx.stop_propagation();
+                cx.notify();
+            }))
             .on_action(cx.listener(|this, _: &Paste, _, cx| {
                 if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
                     this.replace(None, &text, cx);
@@ -446,5 +451,21 @@ mod tests {
                 assert_eq!(input.text(), "a\u{65e5}\u{672c}b");
             })
             .unwrap();
+    }
+
+    #[gpui::test]
+    fn edit_menu_select_all_targets_the_focused_text(cx: &mut TestAppContext) {
+        cx.update(|cx| cx.set_global(Theme::LIGHT));
+        let (input, cx) = cx.add_window_view(|window, cx| {
+            let input = Search::text_input("Book details".into(), cx);
+            input.focus(window, cx);
+            input
+        });
+        cx.run_until_parked();
+        cx.dispatch_action(crate::SelectAll);
+        cx.run_until_parked();
+        input.read_with(cx, |input, _| assert_eq!(input.selection, 0..12));
+        cx.simulate_input("Replacement");
+        input.read_with(cx, |input, _| assert_eq!(input.text(), "Replacement"));
     }
 }

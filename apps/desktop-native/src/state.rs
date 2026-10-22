@@ -175,6 +175,8 @@ impl LibraryState {
             return;
         }
         self.query = query;
+        self.generation = self.generation.wrapping_add(1);
+        self.loading = true;
         self.debounce = Some(cx.spawn(async move |this, cx| {
             cx.background_executor()
                 .timer(Duration::from_millis(60))
@@ -842,6 +844,28 @@ mod tests {
         cx.executor().advance_clock(Duration::from_millis(100));
         settle(&f.state, cx);
         assert_eq!(titles(&f.state, cx).len(), 3);
+    }
+
+    #[gpui::test]
+    fn debounce_immediately_blocks_actions_on_stale_results(cx: &mut TestAppContext) {
+        let f = fixture(cx);
+        f.state.update(cx, |s, cx| {
+            s.select_all(cx);
+            let generation = s.generation;
+            s.set_query("Alpha".into(), cx);
+            assert_ne!(s.generation, generation);
+            assert!(s.loading);
+            assert!(!s.can_mutate());
+            s.trash_selected(cx);
+            assert!(!s.busy);
+        });
+        cx.executor().advance_clock(Duration::from_millis(100));
+        settle(&f.state, cx);
+        assert_eq!(titles(&f.state, cx), ["Alpha"]);
+        f.state.update(cx, |s, cx| s.set_query(String::new(), cx));
+        cx.executor().advance_clock(Duration::from_millis(100));
+        settle(&f.state, cx);
+        assert_eq!(titles(&f.state, cx), ["Alpha", "Beta", "Gamma"]);
     }
 
     #[gpui::test]

@@ -30,7 +30,7 @@ impl Inspector {
     pub fn edit_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let state = self.state.read(cx);
         if self.editor.is_some()
-            || state.busy
+            || !state.can_mutate()
             || state.selected.len() != 1
             || state.section != crate::state::Section::Library
         {
