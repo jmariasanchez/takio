@@ -5605,7 +5605,7 @@ dependencies = [
  "predicates",
  "ratatui",
  "regex",
- "roxmltree 0.20.0",
+ "roxmltree 0.21.1",
  "rusqlite",
  "same-file",
  "serde",
