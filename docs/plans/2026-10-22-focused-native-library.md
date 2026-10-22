@@ -229,6 +229,35 @@ store microbenchmarks, not this three-book live smoke test. This run checks the
 user-visible import/search/sort/Trash/restore flow and file safety, not 120 Hz
 scrolling, steady-state memory, or Kindle readability.
 
+### Independent acceptance-loop recheck
+
+At 10:39 UTC on October 22, 2026, a fresh five-process real-GUI run repeated all
+100 interaction correctness checks. A separate comparison asserted improvement
+against the captured pre-change baseline, rather than inferring improvement from
+the code. Both ignored release benchmarks were also rerun on fresh temporary
+fixtures. Observations were:
+
+| Requirement | Fresh observed result | Acceptance outcome |
+| --- | --- | --- |
+| Faster sorting without blocking the initiating UI action | Settled median 66.790 to 0.570 ms, 117.18x faster. Existing 8 ms dispatch-p95 gate also passed. | Passed asserted minimum 10x settled speedup and correctness checks. |
+| Faster refresh with all books selected | 134.786 to 40.863 ms, 3.30x faster, all 10,000 IDs retained. | Passed asserted minimum 2x speedup and 200 ms p95 gate. |
+| Improve typical search without shortening debounce or changing matches | Matching median 159.838 to 93.154 ms, clearing median 177.279 to 110.556 ms. | Both passed asserted minimum 1.1x improvement and exact result counts. |
+| Faster shared search and Trash reads with equivalent records | Search 237.142 to 42.418 ms, Trash 230.440 to 35.026 ms. Fresh release workloads returned 10,000 correctly ordered books. | Passed asserted minimum 2x improvement, observed 5.59x and 6.58x. |
+| Avoid reading unsupported import contents | Fresh 64 MiB skip median 6 microseconds versus 117,896 before. | Passed asserted minimum 100x improvement. Permission-denial and watch-accounting regressions remain covered by unit tests. |
+| Preserve the completed user workflow and original bytes after app exit | A new independent CLI process found Alpha/Beta/Gamma active, no Trash, and passed `library verify`. Original and managed bytes matched the exact fixture contents, not merely each other. Unsupported contents also matched the original fixture. | Passed all assertions after normal app shutdown. |
+
+This closes the feedback loop for the implemented performance slice: actual
+production execution is faster and the tested user journey remains correct and
+durable. It does not close every long-term performance goal. Matching-search p95
+in this repeat was 110.904 ms, still above 80 ms. Earlier runs showed larger tails,
+so that goal remains open. Physical Kindle acceptance is still blocked, and no
+keyboard-to-display, scrolling, or steady-state-memory claim is made.
+
+Repeat logs are `$JCODE_SCRATCH_DIR/takio-feedback-repeat-gui.log` and
+`$JCODE_SCRATCH_DIR/takio-feedback-repeat-store.log`. The comparison checked
+thresholds programmatically and exited with code 0. No production code changed
+during this recheck.
+
 ## Implemented and verified on 2026-10-22
 
 - Native details editor with explicit Save/Cancel, title validation, semicolon
