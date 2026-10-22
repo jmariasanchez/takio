@@ -207,6 +207,128 @@ power-loss durability guarantee is claimed. Automatic backups/retention and
 opening/recovering libraries through the native UI are next recovery work, not
 completed here. Physical reading and the separate search-tail goal remain open.
 
+### Next slice: native existing-library switching (October 22, 15:35 UTC)
+
+The user explicitly requested native library switching. Acceptance before code:
+
+- File > Open Library and the command palette select an existing library folder.
+  Show the active folder persistently and offer Reveal Current Library. Opening
+  does not create, merge, rebase, migrate or overwrite either library. A backup
+  snapshot must first be restored to a separate copy, not opened for editing.
+- Validate the selected existing database and load its catalogue on the engine
+  worker before replacing the active store. Missing/invalid/incompatible folders
+  leave the old library, query and selection usable, with an actionable error.
+  Successful switching resets library-specific search/filter/selection/review
+  state and local view state, including when both libraries share book IDs.
+- Block switching while edits, operations or reviews are unfinished. Canceling
+  the chooser does nothing. Duplicate and stale picker/confirmation callbacks
+  cannot import, move, delete or send against a different library. Obsolete query
+  results cannot replace the newly selected catalogue.
+- Remember a successful selection atomically at a stable application-profile
+  location independent of the selected library.
+  A preference write failure is reported as a session-only switch. An unavailable
+  remembered library is never recreated: startup falls back to the default with
+  an explicit warning. Explicit `TAKIO_DATA_DIR` runs remain pinned/session-only
+  unless an isolated `TAKIO_DESKTOP_PROFILE_DIR` is also supplied for testing.
+- Native state/window and engine tests cover A-to-B-to-A, edits routed only to B,
+  restored-copy activation, missing/invalid/legacy/backup selection, cancellation,
+  busy/edit/review guards, stale callbacks, preference failure/restart and source
+  preservation. Exercise native pickers, active-path display and restart against
+  disposable fixtures, then run formatting, workspace tests, strict Clippy,
+  packaging and existing 10k regression gates before committing.
+
+No multi-window library ownership, recent-library manager, automatic backup or
+repair of a corrupt default database is implied by this switching slice.
+
+#### Observed switching acceptance: October 22, 16:12 UTC
+
+Implemented File > Open Library, Cmd-Shift-O, command-palette actions and a
+visible Open library button. The header shows the library basename and a
+horizontally scrollable full path. Reveal Current Library uses the active root.
+The serial worker validates a candidate before replacing its store, and the UI
+keeps its old view until the typed catalogue snapshot arrives. Successful switches
+advance library identity and recreate library-specific child views, including
+search, inspector/cover cache and palette focus. Dialogs and obsolete replies
+cannot carry IDs or paths into another library, even when a restored copy has
+the same book IDs. Busy operations, metadata drafts and reviews block switching.
+
+Strict existing-open uses a read-only schema/domain/hydration preflight followed
+by a writable SQLite handle without CREATE and with NOFOLLOW, revalidated before
+activation. It rejects missing/legacy/future/malformed catalogues and pristine
+backup folders without migrating or recreating them. Missing attachments remain
+manageable. A single recorded managed-root spelling is retained when it resolves
+to the selected canonical root, preserving existing backup/purge ownership rules
+without rebasing stored paths. Mixed recorded roots and unrelated copied roots
+are rejected. Directory aliases work, database symlinks do not.
+
+The last successful root is atomically replaced in the stable desktop preference
+file. Failed saves are explicitly session-only. An unavailable saved library
+falls back only to a distinct default, with a visible warning and the original
+preference retained. Review found that falling back to the same default could
+otherwise recreate a missing selected database or migrate a legacy one. The
+same-location guard now fails safely, including missing roots under aliased
+parents; regression tests assert unchanged bytes and no recreated database.
+
+Final gates after the header refinement and pointer regression:
+
+```text
+cargo fmt --all
+cargo test --offline --workspace
+cargo clippy --offline --workspace --all-targets -- -D warnings
+git diff --check
+bash scripts/package-desktop-native.sh
+bash scripts/bench-desktop-native.sh --interactions
+```
+
+All 368 tests passed: 138 engine, 57 CLI integration, 2 custom-field integration
+and 171 native. Two existing engine benchmark tests remain ignored. Coverage
+includes five shared strict-open tests, ten native activation tests, six native
+state switching tests and twelve native window switching tests. The visible
+button's pointer/cancel test passed. Stale import/move/purge/send/eject/recovery
+and library pickers, restored same-ID view reset, late edits, invalid selection,
+preference failure and startup fallback are exercised against real worker stores.
+The existing `block 0.1.6` future-compatibility warning remains dependency debt,
+not a strict-Clippy failure. Ad-hoc signing and strict bundle verification passed;
+the bundle is 11,381,233 bytes. This is local packaging, not notarized publication.
+
+The actual signed app was exercised with isolated A and restored B libraries,
+an immutable backup, an empty invalid folder and a separate desktop profile:
+
+- Native picker Cancel left both libraries unchanged. Selecting the empty folder
+  produced an actionable error without creating a database or changing A's view.
+- Opening B displayed its distinct title and remembered its canonical location.
+  Moving its selected book to Trash changed only B despite shared IDs. Independent
+  CLI reads and SHA-256 comparisons verified A's database/catalogue, the backup,
+  all managed files and all originals were unchanged.
+- Switching back to A preserved its original contents. Reveal Current Library
+  selected exactly A in Finder. Cmd-Shift-O opened the native chooser and switched
+  to B again. Normal quit/relaunch reopened B, with its two Trash records intact.
+- With the app closed, temporarily renaming only disposable B simulated an offline
+  library. Restart showed A plus an explicit missing-B fallback warning and did
+  not recreate B. B was restored to its original scratch path afterward.
+- The final package reopened B and visibly showed `Library: B`, its full path
+  and the two B-only Trash rows in the 942-point test window. The basename avoids
+  relying on the far end of a clipped path for active-library identity. All test
+  app instances were quit normally; no personal library or preferences were used.
+
+Local logs, independent audit and screenshots are under
+`~/.jcode/scratch/takio-native-switching.DnM1N2/`. The final bounded 10k run passed
+all existing gates with 100/100 correct interaction results. Median startup was
+91.270 ms first paint, 140.464 ms initial query and 125,824 KiB RSS. Title-sort
+dispatch p95 was 0.038 ms and select-all/reload settlement p95 was 46.218 ms.
+Matching/clear search settlement p95 was 107.725/112.588 ms including debounce.
+These are state-to-notification measurements, not input-to-paint or scrolling.
+The benchmark bypasses remembered-library startup, so it does not measure the
+cost of strict opening a remembered 10k library. No search-tail fix is claimed.
+
+Remaining limits: selected folders must contain a compatible `library.sqlite`;
+opening is not migration, attachment fingerprint verification, arbitrary library
+relocation or hostile concurrent path-swap protection. Preference paths must be
+UTF-8 without line breaks; an unpersistable selection remains session-only. If
+the failed saved library is also the default, startup fails safely rather than
+offering a recovery screen. Automatic backups, recent-library management,
+multi-window sessions and corrupt-default recovery remain future slices.
+
 ## Native EPUB preparation: October 22, 2026
 
 The user approved continuing the missing product work and explicitly offered

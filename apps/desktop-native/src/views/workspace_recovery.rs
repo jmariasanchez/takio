@@ -9,10 +9,14 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.recovery_prompt_open || !self.state.read(cx).can_mutate() {
+        if self.recovery_prompt_open
+            || self.library_picker_open
+            || !self.state.read(cx).can_mutate()
+        {
             return;
         }
         self.recovery_prompt_open = true;
+        let epoch = self.state.read(cx).library_epoch;
         let (title, detail, proceed) = if restore {
             (
                 "Restore a backup to a new folder?",
@@ -36,7 +40,10 @@ impl Workspace {
         cx.spawn(async move |this, cx| {
             let accepted = answer.await == Ok(1);
             let _ = this.update(cx, |this, cx| {
-                if !accepted || !this.state.read(cx).can_mutate() {
+                if !accepted
+                    || this.state.read(cx).library_epoch != epoch
+                    || !this.state.read(cx).can_mutate()
+                {
                     this.recovery_prompt_open = false;
                 } else if restore {
                     this.choose_backup_source(cx);
@@ -49,6 +56,7 @@ impl Workspace {
     }
 
     fn choose_backup_source(&mut self, cx: &mut Context<Self>) {
+        let epoch = self.state.read(cx).library_epoch;
         let receiver = cx.prompt_for_paths(PathPromptOptions {
             files: false,
             directories: true,
@@ -58,7 +66,11 @@ impl Workspace {
         cx.spawn(async move |this, cx| {
             let response = receiver.await;
             let _ = this.update(cx, |this, cx| match response {
-                Ok(Ok(Some(paths))) if paths.len() == 1 && this.state.read(cx).can_mutate() => {
+                Ok(Ok(Some(paths)))
+                    if paths.len() == 1
+                        && this.state.read(cx).library_epoch == epoch
+                        && this.state.read(cx).can_mutate() =>
+                {
                     this.choose_recovery_destination(paths.into_iter().next(), cx);
                 }
                 Ok(Ok(_)) => this.recovery_prompt_open = false,
@@ -69,6 +81,7 @@ impl Workspace {
     }
 
     fn choose_recovery_destination(&mut self, source: Option<PathBuf>, cx: &mut Context<Self>) {
+        let epoch = self.state.read(cx).library_epoch;
         let home = std::env::var_os("HOME")
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("."));
@@ -84,6 +97,9 @@ impl Workspace {
             let response = receiver.await;
             let _ = this.update(cx, |this, cx| {
                 this.recovery_prompt_open = false;
+                if this.state.read(cx).library_epoch != epoch {
+                    return;
+                }
                 match response {
                     Ok(Ok(Some(destination))) => this.state.update(cx, |state, cx| {
                         if let Some(source) = source {

@@ -8,6 +8,7 @@ use std::{path::PathBuf, time::Duration};
 use takio::{model::LibraryItem, paths::LibraryPaths};
 
 include!("workspace_recovery_tests.rs");
+include!("workspace_library_tests.rs");
 
 struct Fixture {
     _temp: tempfile::TempDir,

@@ -7,6 +7,9 @@ mod tests;
 #[path = "workspace_recovery.rs"]
 mod recovery;
 
+#[path = "workspace_library.rs"]
+mod library;
+
 use gpui::{
     App, Context, Entity, ExternalPaths, FocusHandle, Focusable, IntoElement, ParentElement,
     PathPromptOptions, PromptButton, PromptLevel, Render, Styled, Window, div, prelude::*, px,
@@ -31,6 +34,8 @@ pub struct Workspace {
     palette: Entity<crate::views::palette::Palette>,
     focus: FocusHandle,
     recovery_prompt_open: bool,
+    library_picker_open: bool,
+    library_epoch: u64,
 }
 
 impl Workspace {
@@ -48,6 +53,7 @@ impl Workspace {
         let focus = list.read(cx).focus_handle(cx);
         window.focus(&focus, cx);
         let palette = cx.new(|cx| crate::views::palette::Palette::new(focus.clone(), cx));
+        let library_epoch = state.read(cx).library_epoch;
         Self {
             state,
             list,
@@ -57,6 +63,8 @@ impl Workspace {
             search,
             sidebar,
             recovery_prompt_open: false,
+            library_picker_open: false,
+            library_epoch,
         }
     }
 
@@ -68,6 +76,7 @@ impl Workspace {
             self.choose_import_paths(mode, cx);
             return;
         }
+        let epoch = self.state.read(cx).library_epoch;
         let answer = window.prompt(
             PromptLevel::Warning,
             "Move originals into Takio?",
@@ -77,13 +86,20 @@ impl Workspace {
         );
         cx.spawn(async move |this, cx| {
             if answer.await == Ok(1) {
-                let _ = this.update(cx, |this, cx| this.choose_import_paths(mode, cx));
+                let _ = this.update(cx, |this, cx| {
+                    if this.state.read(cx).library_epoch == epoch
+                        && this.state.read(cx).can_mutate()
+                    {
+                        this.choose_import_paths(mode, cx);
+                    }
+                });
             }
         })
         .detach();
     }
 
     fn choose_import_paths(&mut self, mode: ImportMode, cx: &mut Context<Self>) {
+        let epoch = self.state.read(cx).library_epoch;
         let receiver = cx.prompt_for_paths(PathPromptOptions {
             files: true,
             directories: true,
@@ -100,7 +116,11 @@ impl Workspace {
         let state = self.state.clone();
         cx.spawn(async move |_, cx| {
             if let Ok(Ok(Some(paths))) = receiver.await {
-                state.update(cx, |state, cx| state.import(paths, mode, cx));
+                state.update(cx, |state, cx| {
+                    if state.library_epoch == epoch {
+                        state.import(paths, mode, cx);
+                    }
+                });
             }
         })
         .detach();
@@ -115,6 +135,7 @@ impl Workspace {
         if ids.is_empty() {
             return;
         }
+        let epoch = state.library_epoch;
         let answer = window.prompt(
             PromptLevel::Warning,
             &format!("Permanently delete {} book(s)?", ids.len()),
@@ -125,7 +146,11 @@ impl Workspace {
         let state = self.state.clone();
         cx.spawn(async move |_, cx| {
             if answer.await == Ok(1) {
-                state.update(cx, |state, cx| state.purge_confirmed(ids, cx));
+                state.update(cx, |state, cx| {
+                    if state.library_epoch == epoch {
+                        state.purge_confirmed(ids, cx);
+                    }
+                });
             }
         })
         .detach();
@@ -136,6 +161,7 @@ impl Workspace {
         if !state.can_mutate() {
             return;
         }
+        let epoch = state.library_epoch;
         let ids = state.selected_ids();
         if send && (state.section != Section::Library || ids.is_empty()) {
             self.state.update(cx, |state, cx| {
@@ -185,6 +211,9 @@ impl Workspace {
                     .cloned()
             {
                 state.update(cx, |state, cx| {
+                    if state.library_epoch != epoch || state.switching_library {
+                        return;
+                    }
                     if send {
                         state.send_ids_to(destination, ids, cx);
                     } else {
@@ -282,7 +311,8 @@ impl Focusable for Workspace {
 }
 
 impl Render for Workspace {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.reset_library_views(window, cx);
         let theme = *cx.global::<Theme>();
         let read = self.state.read(cx);
         let count = read.items.len();
@@ -296,6 +326,15 @@ impl Render for Workspace {
         let preparation = read.preparation_preview.clone();
         let recovery = read.recovery_outcome.clone();
         let exclusions = read.delivery_exclusions.clone();
+        let library_root = read.library_root.display().to_string();
+        let library_name = read
+            .library_root
+            .file_name()
+            .unwrap_or(read.library_root.as_os_str())
+            .to_string_lossy();
+        let library_label = format!("Library: {library_name}");
+        let can_switch =
+            read.can_switch_library() && !self.library_picker_open && !self.recovery_prompt_open;
 
         let summary = if selected > 0 {
             format!("{selected} of {count} selected")
@@ -333,6 +372,12 @@ impl Render for Workspace {
 
         div()
             .key_context("Workspace")
+            .on_action(cx.listener(|this, _: &crate::OpenLibrary, _, cx| {
+                this.prompt_open_library(cx);
+            }))
+            .on_action(cx.listener(|this, _: &crate::RevealLibrary, _, cx| {
+                cx.reveal_path(&this.state.read(cx).library_root);
+            }))
             .on_action(cx.listener(|this, _: &crate::FocusSearch, window, cx| {
                 this.search
                     .update(cx, |search, cx| search.focus(window, cx));
@@ -451,6 +496,53 @@ impl Render for Workspace {
                             .flex_1()
                             .min_w_0()
                             .h_full()
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .flex_shrink_0()
+                                    .gap_1()
+                                    .px_3()
+                                    .py_2()
+                                    .border_b_1()
+                                    .border_color(theme.border)
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .items_center()
+                                            .gap_2()
+                                            .child(
+                                                div()
+                                                    .flex_1()
+                                                    .min_w_0()
+                                                    .overflow_hidden()
+                                                    .text_ellipsis()
+                                                    .whitespace_nowrap()
+                                                    .text_xs()
+                                                    .child(library_label),
+                                            )
+                                            .child(
+                                                toolbar_button(
+                                                    "open-library",
+                                                    "Open library...",
+                                                    can_switch,
+                                                    theme,
+                                                )
+                                                .on_click(cx.listener(|this, _, _, cx| {
+                                                    this.prompt_open_library(cx)
+                                                })),
+                                            ),
+                                    )
+                                    .child(
+                                        div()
+                                            .id("current-library-path")
+                                            .overflow_x_scroll()
+                                            .whitespace_nowrap()
+                                            .text_xs()
+                                            .text_color(theme.text_secondary)
+                                            .child(library_root),
+                                    ),
+                            )
                             .child(
                                 div()
                                     .min_h(px(metrics::TOOLBAR_HEIGHT))

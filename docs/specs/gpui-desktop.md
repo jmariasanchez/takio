@@ -150,6 +150,15 @@ In:
   fingerprints and resolved converter paths bind confirmation to the review.
   Filesystem work and the bounded 120-second conversion run on the engine thread.
 - Trash section.
+- Existing-library switching through File > Open Library, Cmd-Shift-O, the
+  command palette and a visible active-folder header. Validate/load the selected
+  folder on the engine worker before replacing the current catalogue. Cancellation
+  and invalid folders leave the old library usable. Do not create, merge, migrate
+  or rebase a selected library, or edit a pristine backup snapshot. Busy operations,
+  metadata edits and open reviews block switching. Library identity guards reject
+  stale dialogs/replies and successful switches reset search, selection and child
+  views. Remember successful selections at a stable profile location, reporting
+  session-only persistence failure and explicit startup fallback when unavailable.
 - Manual recovery through File menu and command palette: Back Up Library and
   Restore Backup to New Folder. Explain catalogue/Trash/managed-file coverage and
   external-reference/conversion-job exclusions before native folder pickers.
@@ -158,14 +167,15 @@ In:
   keeps the current library open and unchanged, and shows counts/location with a
   Reveal action. Picker cancellation writes nothing. Busy state blocks conflicting
   mutations and closing. This is not automatic backup, a complete installation
-  snapshot, in-place replacement, or native switching to a restored library.
+  snapshot or in-place replacement. Opening the restored copy is a separate
+  explicit Open Library action.
 - Command palette (Cmd-K) over every action.
 - Native menu bar with the same actions and accelerators.
 - Light and dark appearance following the system.
 
 Out (remain in CLI/TUI or later cuts): advanced metadata editing, candidate review,
 duplicates, general conversion-job management, custom columns, saved views, export dialogs,
-automatic backups and native library switching. Existing CLI operations remain
+automatic backups and multi-window library sessions. Existing CLI operations remain
 available through `takio`.
 
 ## Acceptance

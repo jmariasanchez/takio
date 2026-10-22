@@ -21,6 +21,9 @@ use crate::engine::{
 };
 use crate::preparation::PreparationPreview;
 
+#[path = "state_library.rs"]
+mod library;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Section {
     Library,
@@ -71,6 +74,10 @@ struct LibrarySnapshot {
 
 pub struct LibraryState {
     engine: Engine,
+    pub library_root: PathBuf,
+    pub library_epoch: u64,
+    pub switching_library: bool,
+    pub preference_path: Option<PathBuf>,
     pub section: Section,
     pub items: Vec<Arc<LibraryItem>>,
     pub facets: Arc<Facets>,
@@ -104,6 +111,10 @@ pub struct LibraryState {
 impl LibraryState {
     pub fn new(engine: Engine, cx: &mut Context<Self>) -> Self {
         let mut this = Self {
+            library_root: engine.root().to_path_buf(),
+            library_epoch: 0,
+            switching_library: false,
+            preference_path: None,
             engine,
             section: Section::Library,
             items: Vec::new(),
@@ -166,6 +177,9 @@ impl LibraryState {
 
     /// Issue a fresh query for the current section, query text, and filters.
     pub fn reload(&mut self, cx: &mut Context<Self>) {
+        if self.switching_library {
+            return;
+        }
         self.debounce = None;
         self.generation = self.generation.wrapping_add(1);
         let generation = self.generation;
@@ -200,7 +214,7 @@ impl LibraryState {
     /// Update the query text and reload after a short debounce so fast
     /// typing issues one engine request, not one per keystroke.
     pub fn set_query(&mut self, query: String, cx: &mut Context<Self>) {
-        if self.query == query {
+        if self.switching_library || self.query == query {
             return;
         }
         self.query = query;
@@ -217,6 +231,9 @@ impl LibraryState {
     }
 
     pub fn set_section(&mut self, section: Section, cx: &mut Context<Self>) {
+        if self.switching_library {
+            return;
+        }
         if self.metadata_editing {
             self.set_status(
                 "Save or cancel your book details before switching sections".into(),
@@ -236,6 +253,9 @@ impl LibraryState {
     }
 
     pub fn set_sort(&mut self, column: SortColumn, cx: &mut Context<Self>) {
+        if self.switching_library {
+            return;
+        }
         if self.sort.column == column {
             self.sort.ascending = !self.sort.ascending;
         } else {
@@ -270,6 +290,9 @@ impl LibraryState {
         value: &str,
         cx: &mut Context<Self>,
     ) {
+        if self.switching_library {
+            return;
+        }
         let list = match dimension {
             FilterDimension::Author => &mut self.filters.authors,
             FilterDimension::Tag => &mut self.filters.tags,
@@ -287,7 +310,7 @@ impl LibraryState {
     }
 
     pub fn clear_filters(&mut self, cx: &mut Context<Self>) {
-        if self.filters.is_empty() {
+        if self.switching_library || self.filters.is_empty() {
             return;
         }
         self.filters = Filters::default();
@@ -302,6 +325,9 @@ impl LibraryState {
     }
 
     pub fn select_only(&mut self, index: usize, cx: &mut Context<Self>) {
+        if self.switching_library {
+            return;
+        }
         self.selected.clear();
         self.anchor = None;
         if index < self.items.len() {
@@ -312,6 +338,9 @@ impl LibraryState {
     }
 
     pub fn toggle_select(&mut self, index: usize, cx: &mut Context<Self>) {
+        if self.switching_library {
+            return;
+        }
         if index >= self.items.len() {
             return;
         }
@@ -323,6 +352,9 @@ impl LibraryState {
     }
 
     pub fn select_range_to(&mut self, index: usize, cx: &mut Context<Self>) {
+        if self.switching_library {
+            return;
+        }
         if index >= self.items.len() {
             return;
         }
@@ -337,12 +369,18 @@ impl LibraryState {
     }
 
     pub fn select_all(&mut self, cx: &mut Context<Self>) {
+        if self.switching_library {
+            return;
+        }
         self.selected = (0..self.items.len()).collect();
         cx.notify();
     }
 
     /// Move the anchor by `delta` rows, clamped, replacing the selection.
     pub fn move_selection(&mut self, delta: isize, cx: &mut Context<Self>) {
+        if self.switching_library {
+            return;
+        }
         if self.items.is_empty() {
             return;
         }
@@ -474,6 +512,7 @@ impl LibraryState {
 
     pub fn can_mutate(&self) -> bool {
         !self.busy
+            && !self.switching_library
             && !self.metadata_editing
             && !self.loading
             && self.send_preview.is_none()
@@ -481,7 +520,7 @@ impl LibraryState {
     }
 
     pub fn can_close(&mut self, cx: &mut Context<Self>) -> bool {
-        if self.busy {
+        if self.busy || self.switching_library {
             self.set_status(
                 "Wait for the current operation to finish before closing Takio".into(),
                 true,
@@ -974,6 +1013,7 @@ impl LibraryState {
         cx: &mut Context<Self>,
         handle: impl FnOnce(&mut Self, AppResult<T>, &mut Context<Self>) + 'static,
     ) -> Task<()> {
+        let epoch = self.library_epoch;
         cx.spawn(async move |this: gpui::WeakEntity<Self>, cx| {
             let result = cx
                 .background_executor()
@@ -983,7 +1023,11 @@ impl LibraryState {
                         .unwrap_or_else(|_| Err(AppError::new("storage-unavailable")))
                 })
                 .await;
-            let _ = this.update(cx, |this, cx| handle(this, result, cx));
+            let _ = this.update(cx, |this, cx| {
+                if this.library_epoch == epoch {
+                    handle(this, result, cx);
+                }
+            });
         })
     }
 }
@@ -1081,6 +1125,7 @@ mod tests {
 
     include!("preparation_state_tests.rs");
     include!("recovery_state_tests.rs");
+    include!("library_state_tests.rs");
 
     struct Fixture {
         _temp: tempfile::TempDir,

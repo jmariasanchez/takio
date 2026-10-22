@@ -336,6 +336,80 @@ impl LibraryStore {
         Ok(Self { connection, paths })
     }
 
+    /// Open a current, readable catalogue without creating or migrating it.
+    /// Managed file contents are not read: missing attachments remain manageable.
+    pub fn open_existing(paths: LibraryPaths) -> AppResult<Self> {
+        fn regular_database(paths: &LibraryPaths) -> AppResult<()> {
+            if !fs::symlink_metadata(&paths.database)?.file_type().is_file() {
+                return Err(AppError::new("storage-unavailable"));
+            }
+            Ok(())
+        }
+
+        regular_database(&paths)?;
+        let connection = Connection::open_with_flags(
+            &paths.database,
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+        )?;
+        connection.busy_timeout(std::time::Duration::from_secs(5))?;
+        let mut preflight = Self {
+            connection,
+            paths: paths.clone(),
+        };
+        preflight.validate_catalogue()?;
+        let paths = preflight.paths.clone();
+        drop(preflight);
+
+        regular_database(&paths)?;
+        let connection = Connection::open_with_flags(
+            &paths.database,
+            OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+        )?;
+        connection.busy_timeout(std::time::Duration::from_secs(5))?;
+        connection.pragma_update(None, "foreign_keys", "ON")?;
+        let mut store = Self { connection, paths };
+        // Validate the actual writable handle too, in case the candidate changed.
+        store.validate_catalogue()?;
+        Ok(store)
+    }
+
+    fn validate_catalogue(&mut self) -> AppResult<()> {
+        let version: i64 = self
+            .connection
+            .pragma_query_value(None, "user_version", |row| row.get(0))?;
+        if version != LIBRARY_SCHEMA_VERSION {
+            return Err(AppError::new("incompatible-schema"));
+        }
+        migration::verify_schema_version(&self.connection, version)?;
+        // Keep the recorded ownership spelling for existing purge/backup operations.
+        // A canonical UI root must not implicitly rebase catalogue file paths.
+        let canonical_root = self.paths.root.canonicalize()?;
+        let mut recorded_root = None;
+        let mut statement = self
+            .connection
+            .prepare("SELECT source_path FROM library_item_formats WHERE provenance='managed'")?;
+        for path in statement.query_map([], |row| row.get::<_, String>(0))? {
+            let path = PathBuf::from(path?);
+            let root = existing_owned_root(&path, &canonical_root)?;
+            if recorded_root
+                .as_ref()
+                .is_some_and(|existing| *existing != root)
+            {
+                return Err(AppError::new("integrity-failed"));
+            }
+            recorded_root = Some(root);
+        }
+        if let Some(root) = recorded_root {
+            let database = self.paths.database.clone();
+            self.paths = LibraryPaths::resolve(None, Some(&root.join("library.sqlite")))?;
+            self.paths.database = database;
+        }
+        migration::verify_current(&self.connection, &self.paths)?;
+        self.list(true)?;
+        self.list_trash()?;
+        Ok(())
+    }
+
     pub fn open(paths: LibraryPaths, create: bool) -> AppResult<Self> {
         if !create && !paths.database.is_file() {
             return Err(AppError::new("storage-unavailable"));
@@ -3058,6 +3132,40 @@ fn replace_metadata(transaction: &Transaction<'_>, item: &LibraryItem) -> AppRes
     Ok(())
 }
 
+fn existing_owned_root(path: &Path, canonical_root: &Path) -> AppResult<PathBuf> {
+    use std::path::Component;
+    if !path.is_absolute()
+        || path
+            .components()
+            .any(|part| matches!(part, Component::ParentDir))
+    {
+        return Err(AppError::new("integrity-failed"));
+    }
+    for owned in path.ancestors().skip(1) {
+        let Some(recorded_root) = owned.parent() else {
+            continue;
+        };
+        if owned.file_name().is_some_and(|name| name == "items")
+            && recorded_root
+                .canonicalize()
+                .is_ok_and(|root| root == canonical_root)
+            && path.strip_prefix(owned).is_ok_and(|relative| {
+                !relative.as_os_str().is_empty()
+                    && relative
+                        .components()
+                        .all(|part| matches!(part, Component::Normal(_)))
+            })
+            && match fs::symlink_metadata(owned) {
+                Ok(metadata) => metadata.file_type().is_dir(),
+                Err(error) => error.kind() == std::io::ErrorKind::NotFound,
+            }
+        {
+            return Ok(recorded_root.to_path_buf());
+        }
+    }
+    Err(AppError::new("integrity-failed"))
+}
+
 fn canonical_file(path: &Path) -> AppResult<PathBuf> {
     let path = path
         .canonicalize()
@@ -4559,5 +4667,154 @@ mod tests {
         }
         assert_eq!(store.get(&left.id).unwrap().unwrap().formats.len(), 1);
         assert!(store.get(&right.id).unwrap().is_some());
+    }
+}
+
+#[cfg(test)]
+mod existing_open_tests {
+    use super::*;
+
+    fn paths(root: &Path) -> LibraryPaths {
+        LibraryPaths::resolve(
+            None,
+            Some(&root.canonicalize().unwrap().join("library.sqlite")),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn strict_existing_open_never_creates_or_migrates() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = paths(temp.path());
+        assert!(LibraryStore::open_existing(paths.clone()).is_err());
+        assert!(fs::read_dir(temp.path()).unwrap().next().is_none());
+        for version in [0, 1, LIBRARY_SCHEMA_VERSION + 1] {
+            let connection = Connection::open(&paths.database).unwrap();
+            if version == 1 {
+                connection
+                    .execute_batch(include_str!(
+                        "../tests/fixtures/legacy-library-schemas/schema-v1.sql"
+                    ))
+                    .unwrap();
+            }
+            connection
+                .pragma_update(None, "user_version", version)
+                .unwrap();
+            drop(connection);
+            let before = fs::read(&paths.database).unwrap();
+            assert_eq!(
+                LibraryStore::open_existing(paths.clone())
+                    .err()
+                    .unwrap()
+                    .code(),
+                "incompatible-schema"
+            );
+            assert_eq!(fs::read(&paths.database).unwrap(), before);
+            assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 1);
+            fs::remove_file(&paths.database).unwrap();
+        }
+    }
+
+    #[test]
+    fn strict_existing_open_rejects_domain_and_trash_data_without_writes() {
+        for corruption in [
+            "DELETE FROM library_item_formats",
+            "UPDATE library_items SET title=CAST(x'ff' AS TEXT)",
+            "UPDATE library_item_formats SET content_sha256='bad'",
+            "DROP INDEX library_items_by_title",
+        ] {
+            let temp = tempfile::tempdir().unwrap();
+            let paths = paths(temp.path());
+            let mut store = LibraryStore::open(paths.clone(), true).unwrap();
+            let source = temp.path().join("source.epub");
+            fs::write(&source, b"book").unwrap();
+            let item = store.import(&source, None, false).unwrap();
+            store.trash(&item.id).unwrap();
+            store
+                .connection
+                .pragma_update(None, "ignore_check_constraints", "ON")
+                .unwrap();
+            store.connection.execute_batch(corruption).unwrap();
+            drop(store);
+            let before = fs::read(&paths.database).unwrap();
+            assert!(
+                LibraryStore::open_existing(paths.clone()).is_err(),
+                "{corruption}"
+            );
+            assert_eq!(fs::read(&paths.database).unwrap(), before);
+        }
+    }
+
+    #[test]
+    fn strict_existing_open_keeps_missing_external_files_manageable() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = paths(temp.path());
+        let mut store = LibraryStore::open(paths.clone(), true).unwrap();
+        let source = temp.path().join("source.epub");
+        fs::write(&source, b"book").unwrap();
+        let item = store.import(&source, None, false).unwrap();
+        store.connection.execute(
+            "UPDATE library_item_formats SET provenance='referenced',source_path=?1,content_bytes=NULL,content_sha256=NULL",
+            [source.to_string_lossy()],
+        ).unwrap();
+        drop(store);
+        fs::remove_file(&source).unwrap();
+        let mut reopened = LibraryStore::open_existing(paths).unwrap();
+        assert_eq!(reopened.list(false).unwrap()[0].id, item.id);
+        reopened.trash(&item.id).unwrap();
+        reopened.restore(&item.id).unwrap();
+    }
+
+    #[test]
+    fn strict_existing_open_rejects_copied_roots_and_traversal() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = paths(temp.path());
+        let mut store = LibraryStore::open(paths.clone(), true).unwrap();
+        let source = temp.path().join("source.epub");
+        fs::write(&source, b"book").unwrap();
+        let item = store.import(&source, None, false).unwrap();
+        let copied = tempfile::tempdir().unwrap();
+        fs::copy(&paths.database, copied.path().join("library.sqlite")).unwrap();
+        let copied_paths = LibraryPaths::resolve(
+            None,
+            Some(&copied.path().canonicalize().unwrap().join("library.sqlite")),
+        )
+        .unwrap();
+        assert!(LibraryStore::open_existing(copied_paths).is_err());
+        for invalid in [
+            paths.items.join(".. escape").join("..").join("book.epub"),
+            paths.items.clone(),
+            PathBuf::from("relative/items/book.epub"),
+        ] {
+            store
+                .connection
+                .execute(
+                    "UPDATE library_item_formats SET source_path=?1 WHERE library_item_id=?2",
+                    params![invalid.to_string_lossy(), item.id],
+                )
+                .unwrap();
+            assert!(
+                LibraryStore::open_existing(paths.clone()).is_err(),
+                "{}",
+                invalid.display()
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn strict_existing_open_rejects_items_tree_symlink_outside_root() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = paths(temp.path());
+        let mut store = LibraryStore::open(paths.clone(), true).unwrap();
+        let source = temp.path().join("source.epub");
+        fs::write(&source, b"book").unwrap();
+        store.import(&source, None, false).unwrap();
+        drop(store);
+        let outside = tempfile::tempdir().unwrap();
+        let moved = outside.path().join("items");
+        fs::rename(&paths.items, &moved).unwrap();
+        std::os::unix::fs::symlink(&moved, &paths.items).unwrap();
+        assert!(LibraryStore::open_existing(paths).is_err());
     }
 }

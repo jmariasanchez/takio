@@ -137,7 +137,12 @@ impl Search {
         text: &str,
         cx: &mut Context<Self>,
     ) -> Range<usize> {
-        if self.read_only {
+        if self.read_only
+            || self
+                .state
+                .as_ref()
+                .is_some_and(|state| state.read(cx).switching_library)
+        {
             return self.selection.end..self.selection.end;
         }
         let range = range

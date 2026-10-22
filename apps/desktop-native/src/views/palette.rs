@@ -13,6 +13,16 @@ struct Command {
 }
 const COMMANDS: &[Command] = &[
     Command {
+        label: "Open Library...",
+        hint: "Cmd Shift O",
+        action: || Box::new(crate::OpenLibrary),
+    },
+    Command {
+        label: "Reveal Current Library",
+        hint: "",
+        action: || Box::new(crate::RevealLibrary),
+    },
+    Command {
         label: "Back Up Library...",
         hint: "",
         action: || Box::new(crate::BackUpLibrary),
@@ -451,6 +461,8 @@ mod tests {
     #[test]
     fn empty_filter_preserves_all_command_order() {
         for label in [
+            "Open Library...",
+            "Reveal Current Library",
             "Edit Book Details...",
             "Send Selected Books...",
             "Eject Reader...",

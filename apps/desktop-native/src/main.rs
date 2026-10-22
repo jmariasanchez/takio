@@ -4,7 +4,10 @@
 mod bench;
 mod covers;
 mod engine;
+mod library_location;
+mod preferences;
 mod preparation;
+mod startup;
 mod state;
 mod theme;
 mod views;
@@ -15,7 +18,6 @@ use gpui::{
 };
 use gpui_platform::application;
 
-use crate::engine::Engine;
 use crate::state::LibraryState;
 use crate::theme::Theme;
 use crate::views::workspace::Workspace;
@@ -26,6 +28,8 @@ actions!(
         Quit,
         Import,
         ImportMove,
+        OpenLibrary,
+        RevealLibrary,
         BackUpLibrary,
         RestoreBackupCopy,
         RevealRecovery,
@@ -62,8 +66,14 @@ fn main() {
         Ok(paths) => paths,
         Err(error) => fatal(&format!("could not resolve library path: {}", error.code())),
     };
-    let engine = match Engine::open(paths) {
-        Ok(engine) => engine,
+    let profile = std::env::var_os("TAKIO_DESKTOP_PROFILE_DIR").map(std::path::PathBuf::from);
+    let preference_path = preferences::location(
+        &paths.root,
+        std::env::var_os("TAKIO_DATA_DIR").is_some(),
+        profile.as_deref(),
+    );
+    let (engine, startup_warning) = match startup::open(paths, preference_path.as_deref()) {
+        Ok(opened) => opened,
         Err(error) => fatal(&format!("could not open library: {}", error.code())),
     };
 
@@ -73,6 +83,7 @@ fn main() {
             KeyBinding::new("cmd-q", Quit, None),
             KeyBinding::new("cmd-shift-i", Import, None),
             KeyBinding::new("cmd-o", OpenSelected, None),
+            KeyBinding::new("cmd-shift-o", OpenLibrary, None),
             KeyBinding::new("cmd-e", EditSelected, None),
             KeyBinding::new("cmd-backspace", TrashSelected, None),
             KeyBinding::new("cmd-a", SelectAll, Some("LibraryList")),
@@ -91,7 +102,14 @@ fn main() {
         ]);
         cx.set_menus(menus());
 
-        let state = cx.new(|cx| LibraryState::new(engine.clone(), cx));
+        let state = cx.new(|cx| {
+            let mut state = LibraryState::new(engine.clone(), cx);
+            state.preference_path = preference_path;
+            if let Some(warning) = startup_warning {
+                state.set_status(warning, true, cx);
+            }
+            state
+        });
         let quit_state = state.clone();
         cx.on_action(move |_: &Quit, cx| {
             if quit_state.update(cx, |state, cx| state.can_close(cx)) {
@@ -128,6 +146,9 @@ fn menus() -> Vec<Menu> {
     vec![
         Menu::new("Takio").items([MenuItem::action("Quit Takio", Quit)]),
         Menu::new("File").items([
+            MenuItem::action("Open Library...", OpenLibrary),
+            MenuItem::action("Reveal Current Library", RevealLibrary),
+            MenuItem::separator(),
             MenuItem::action("Import...", Import),
             MenuItem::action("Import and Move...", ImportMove),
             MenuItem::separator(),

@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 
+pub use crate::library_location::OpenedLibrary;
 use crate::preparation::{self, PreparationPreview};
 use takio::conversion::{BackendDiscovery, FormatId};
 use takio::destinations::{self, DeliveryResult, Destination, DestinationKind};
@@ -148,6 +149,11 @@ pub struct SendEntry {
 
 /// Everything the UI can ask the engine to do.
 pub enum Request {
+    OpenLibrary {
+        directory: PathBuf,
+        remember: Option<PathBuf>,
+        reply: Sender<AppResult<OpenedLibrary>>,
+    },
     Backup {
         destination: PathBuf,
         reply: Sender<AppResult<BackupReport>>,
@@ -225,13 +231,20 @@ pub enum Request {
 #[derive(Clone)]
 pub struct Engine {
     sender: Sender<Request>,
+    root: PathBuf,
 }
 
 impl Engine {
     #[cfg(test)]
     pub fn test_channel() -> (Self, Receiver<Request>) {
         let (sender, receiver) = mpsc::channel();
-        (Self { sender }, receiver)
+        (
+            Self {
+                sender,
+                root: PathBuf::new(),
+            },
+            receiver,
+        )
     }
 
     /// Open (or create) the library at `paths` on a dedicated thread.
@@ -244,6 +257,16 @@ impl Engine {
         Self::open_inner(paths, None)
     }
 
+    /// The canonical root opened initially. Later switches return their own root.
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    pub fn open_existing(directory: PathBuf) -> AppResult<Self> {
+        let (store, _) = crate::library_location::open(&directory)?;
+        Self::start(store, None)
+    }
+
     #[cfg(test)]
     pub fn open_with_preparation_backend(
         paths: LibraryPaths,
@@ -254,12 +277,17 @@ impl Engine {
 
     fn open_inner(paths: LibraryPaths, backend: Option<BackendDiscovery>) -> AppResult<Self> {
         let store = LibraryStore::open(paths, true)?;
+        Self::start(store, backend)
+    }
+
+    fn start(store: LibraryStore, backend: Option<BackendDiscovery>) -> AppResult<Self> {
+        let root = store.paths().root.canonicalize()?;
         let (sender, receiver) = mpsc::channel();
         thread::Builder::new()
             .name("takio-engine".into())
             .spawn(move || worker(store, receiver, backend))
             .map_err(|_| AppError::new("storage-unavailable"))?;
-        Ok(Self { sender })
+        Ok(Self { sender, root })
     }
 
     /// Send a request and return the reply receiver. The engine thread
@@ -279,6 +307,21 @@ fn worker(
 ) {
     while let Ok(request) = receiver.recv() {
         match request {
+            Request::OpenLibrary {
+                directory,
+                remember,
+                reply,
+            } => {
+                let result =
+                    crate::library_location::open(&directory).map(|(candidate, mut opened)| {
+                        opened.remember_failed = remember.as_ref().is_some_and(|path| {
+                            crate::preferences::save(path, &opened.root).is_err()
+                        });
+                        store = candidate;
+                        opened
+                    });
+                let _ = reply.send(result);
+            }
             Request::Backup { destination, reply } => {
                 let _ = reply.send(store.backup(&destination));
             }
@@ -844,7 +887,10 @@ mod tests {
         fs::write(&target, b"keep existing").unwrap();
         let (sender, receiver) = mpsc::channel();
         let worker = thread::spawn(move || worker(store, receiver, None));
-        let engine = Engine { sender };
+        let engine = Engine {
+            sender,
+            root: PathBuf::new(),
+        };
         let preview = engine
             .request(|reply| Request::PreviewSend {
                 destination: destination.clone(),
@@ -1125,7 +1171,10 @@ mod tests {
         let item = add_book(&mut store, temp.path(), "Before", "azw3");
         let (sender, receiver) = mpsc::channel();
         let worker = thread::spawn(move || worker(store, receiver, None));
-        let engine = Engine { sender };
+        let engine = Engine {
+            sender,
+            root: PathBuf::new(),
+        };
         let updated = engine
             .request(|reply| Request::Update {
                 id: item.id.clone(),
