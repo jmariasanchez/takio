@@ -54,6 +54,9 @@ hardware, record this gate as blocked, not complete.
 
 - Complete physical-reader acceptance when hardware is available. The native
   platform-picker check now passes in the packaged app, as documented below.
+- Improve measured search-tail latency without changing literal search semantics.
+  The performance iteration below establishes a reproducible baseline. Measure
+  actual input-to-display and scrolling separately before claiming those goals.
 - Make format preparation explicit: preview missing formats and offer optional
   conversion only when a compatible backend is present and the user agrees.
 - Add reference-in-place import and missing-file recovery if real library use
@@ -194,6 +197,37 @@ The combined final gates passed at 10:27 UTC on October 22, 2026:
 No personal library was opened or changed. A read-only `/Volumes` check still
 found only Macintosh HD. No physical reader write, eject, or readability test
 was possible, and none is claimed.
+
+### Live acceptance of the performance build
+
+The signed build from commit `31fc504` was exercised against a fresh isolated
+`TAKIO_DATA_DIR` from 10:29 to 10:35 UTC on October 22, 2026. The real File > Import
+panel selected a disposable folder containing Alpha/Beta/Gamma text books and an
+unsupported `notes.bin`. The rendered status was "Imported 3, skipped 1, failed 0".
+An independent CLI process observed three managed records and passed
+`library verify`. This import used the actual native picker, not a simulated
+response or CLI import.
+
+The real list's Title header changed the order to Gamma/Beta/Alpha while the
+inspector retained "3 books selected". Edit > Find and typing `Beta` narrowed the
+list to one selected book and showed its inspector. File > Move to Trash moved
+only Beta, confirmed independently by `library trash list`. View > Trash rendered
+Beta through the changed bulk-read path. Selecting that row and File > Restore
+returned it to the library. Clearing search displayed all three books in the
+chosen descending order.
+
+Final independent verification reported three active books, zero trashed, and
+three managed formats. `cmp` found each managed text book identical to its
+original. The unsupported file retained its SHA-256 fingerprint
+`32fbd47c241cbc24f7d24a891314081dca31fa5d3948600a8c2cbd9d4a185f65`.
+Normal Takio > Quit Takio exited with code 0. No personal books or reader were
+modified. The disposable fixture remains at
+`$JCODE_SCRATCH_DIR/takio-performance-acceptance.UWxNYc` for reproduction.
+
+The 10,000-book performance numbers above come from the real-GUI state probe and
+store microbenchmarks, not this three-book live smoke test. This run checks the
+user-visible import/search/sort/Trash/restore flow and file safety, not 120 Hz
+scrolling, steady-state memory, or Kindle readability.
 
 ## Implemented and verified on 2026-10-22
 
