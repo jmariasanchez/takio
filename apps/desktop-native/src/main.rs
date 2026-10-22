@@ -4,6 +4,7 @@
 mod bench;
 mod covers;
 mod engine;
+mod preparation;
 mod state;
 mod theme;
 mod views;
@@ -42,6 +43,9 @@ actions!(
         SendSelected,
         ConfirmSend,
         CancelSend,
+        PrepareSelected,
+        ConfirmPreparation,
+        CancelPreparation,
         EjectReader,
     ]
 );
@@ -78,6 +82,7 @@ fn main() {
             KeyBinding::new("cmd-k", TogglePalette, None),
             KeyBinding::new("cmd-r", RefreshDevices, None),
             KeyBinding::new("cmd-shift-s", SendSelected, None),
+            KeyBinding::new("cmd-shift-p", PrepareSelected, None),
             KeyBinding::new("cmd-enter", ConfirmSend, None),
             KeyBinding::new("cmd-.", CancelSend, None),
         ]);
@@ -143,6 +148,10 @@ fn menus() -> Vec<Menu> {
             MenuItem::action("Refresh Devices", RefreshDevices),
         ]),
         Menu::new("Reader").items([
+            MenuItem::action("Prepare for Kindle...", PrepareSelected),
+            MenuItem::action("Convert Reviewed EPUB to AZW3", ConfirmPreparation),
+            MenuItem::action("Cancel Preparation", CancelPreparation),
+            MenuItem::separator(),
             MenuItem::action("Send Selected Books...", SendSelected),
             MenuItem::action("Send Ready Books from Review", ConfirmSend),
             MenuItem::action("Cancel Send Review", CancelSend),

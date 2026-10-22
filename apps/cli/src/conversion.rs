@@ -160,32 +160,48 @@ pub struct Artifact {
 
 #[must_use]
 pub fn discover_ebook_convert() -> BackendDiscovery {
-    if let Some(path) = std::env::var_os("TAKIO_EBOOK_CONVERT").map(PathBuf::from)
-        && executable(&path)
-    {
+    let override_path = std::env::var_os("TAKIO_EBOOK_CONVERT").map(PathBuf::from);
+    let search_path = std::env::var_os("PATH");
+    let cwd = std::env::current_dir().ok();
+    let bundle = cfg!(target_os = "macos")
+        .then(|| Path::new("/Applications/calibre.app/Contents/MacOS/ebook-convert"));
+    discover_with_paths(
+        override_path.as_deref(),
+        search_path.as_deref(),
+        bundle,
+        cwd.as_deref(),
+    )
+}
+
+fn discover_with_paths(
+    override_path: Option<&Path>,
+    search_path: Option<&std::ffi::OsStr>,
+    bundle: Option<&Path>,
+    cwd: Option<&Path>,
+) -> BackendDiscovery {
+    if let Some(path) = override_path.and_then(|path| canonical_executable(path, cwd)) {
         return BackendDiscovery {
             available: true,
             path: Some(path),
             source: "env",
         };
     }
-    if let Some(path) = find_in_path("ebook-convert") {
+    if let Some(path) = search_path.and_then(|value| {
+        std::env::split_paths(value)
+            .find_map(|directory| canonical_executable(&directory.join("ebook-convert"), cwd))
+    }) {
         return BackendDiscovery {
             available: true,
             path: Some(path),
             source: "path",
         };
     }
-    #[cfg(target_os = "macos")]
-    {
-        let path = PathBuf::from("/Applications/calibre.app/Contents/MacOS/ebook-convert");
-        if executable(&path) {
-            return BackendDiscovery {
-                available: true,
-                path: Some(path),
-                source: "macos-bundle",
-            };
-        }
+    if let Some(path) = bundle.and_then(|path| canonical_executable(path, cwd)) {
+        return BackendDiscovery {
+            available: true,
+            path: Some(path),
+            source: "macos-bundle",
+        };
     }
     BackendDiscovery {
         available: false,
@@ -200,6 +216,36 @@ pub fn convert(
     output_format: FormatId,
     profile: &str,
     timeout: Duration,
+) -> AppResult<Artifact> {
+    convert_inner(input, output, output_format, profile, timeout, None)
+}
+
+/// Run the backend selected in an explicit review, without rediscovering another executable.
+pub fn convert_with_backend(
+    input: &Path,
+    output: &Path,
+    output_format: FormatId,
+    profile: &str,
+    timeout: Duration,
+    backend: &Path,
+) -> AppResult<Artifact> {
+    convert_inner(
+        input,
+        output,
+        output_format,
+        profile,
+        timeout,
+        Some(backend),
+    )
+}
+
+fn convert_inner(
+    input: &Path,
+    output: &Path,
+    output_format: FormatId,
+    profile: &str,
+    timeout: Duration,
+    backend: Option<&Path>,
 ) -> AppResult<Artifact> {
     let input = input
         .canonicalize()
@@ -221,9 +267,9 @@ pub fn convert(
     {
         return Err(AppError::new("unsupported-conversion"));
     }
-    let discovery = discover_ebook_convert();
-    let backend = discovery
-        .path
+    let backend = backend
+        .map(Path::to_path_buf)
+        .or_else(|| discover_ebook_convert().path)
         .ok_or_else(|| AppError::new("backend-unavailable"))?;
     let parent = output
         .parent()
@@ -298,13 +344,126 @@ pub fn fingerprint(path: &Path) -> AppResult<(u64, String)> {
 }
 
 fn executable(path: &Path) -> bool {
-    path.is_file()
+    let Ok(metadata) = path.metadata() else {
+        return false;
+    };
+    if !metadata.is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        metadata.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    true
 }
 
-fn find_in_path(name: &str) -> Option<PathBuf> {
-    std::env::var_os("PATH").and_then(|value| {
-        std::env::split_paths(&value)
-            .map(|directory| directory.join(name))
-            .find(|candidate| executable(candidate))
-    })
+fn canonical_executable(path: &Path, cwd: Option<&Path>) -> Option<PathBuf> {
+    let path = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        cwd?.join(path)
+    };
+    let canonical = path.canonicalize().ok()?;
+    executable(&canonical).then_some(canonical)
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn backend_probe_requires_regular_executable_file() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("ebook-convert");
+        assert!(!executable(&path));
+        assert!(!executable(directory.path()));
+        fs::write(&path, "#!/bin/sh\nexit 0\n").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(!executable(&path));
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(executable(&path));
+    }
+
+    fn script(directory: &Path, marker: &str) -> PathBuf {
+        fs::create_dir_all(directory).unwrap();
+        let path = directory.join("ebook-convert");
+        fs::write(&path, format!("#!/bin/sh\nprintf '{marker}'\n")).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
+        path
+    }
+
+    #[test]
+    fn relative_override_executes_reviewed_cwd_candidate_not_path_candidate() {
+        let directory = tempfile::tempdir().unwrap();
+        let cwd = directory.path().join("cwd");
+        let elsewhere = directory.path().join("elsewhere");
+        let approved = script(&cwd, "approved");
+        script(&elsewhere, "wrong-path-backend");
+        let discovered = discover_with_paths(
+            Some(Path::new("ebook-convert")),
+            Some(elsewhere.as_os_str()),
+            None,
+            Some(&cwd),
+        );
+        assert_eq!(discovered.source, "env");
+        assert_eq!(
+            discovered.path.as_ref(),
+            Some(&approved.canonicalize().unwrap())
+        );
+        let output = Command::new(discovered.path.unwrap())
+            .env("PATH", &elsewhere)
+            .current_dir(&elsewhere)
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        assert_eq!(output.stdout, b"approved");
+    }
+
+    #[test]
+    fn empty_path_component_is_pinned_to_reviewed_absolute_executable() {
+        let directory = tempfile::tempdir().unwrap();
+        let cwd = directory.path().join("cwd");
+        let elsewhere = directory.path().join("elsewhere");
+        let approved = script(&cwd, "approved");
+        script(&elsewhere, "wrong-path-backend");
+        let search_path = std::env::join_paths([Path::new(""), elsewhere.as_path()]).unwrap();
+        let discovered = discover_with_paths(None, Some(&search_path), None, Some(&cwd));
+        assert_eq!(discovered.source, "path");
+        assert_eq!(
+            discovered.path.as_ref(),
+            Some(&approved.canonicalize().unwrap())
+        );
+        let output = Command::new(discovered.path.unwrap())
+            .env("PATH", &elsewhere)
+            .current_dir(&elsewhere)
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        assert_eq!(output.stdout, b"approved");
+    }
+
+    #[test]
+    fn canonical_discovery_preserves_override_path_bundle_precedence() {
+        let directory = tempfile::tempdir().unwrap();
+        let override_path = script(&directory.path().join("override"), "override");
+        let path_candidate = script(&directory.path().join("bin"), "path");
+        let bundle = script(&directory.path().join("bundle"), "bundle");
+        let search_path = path_candidate.parent().unwrap().as_os_str();
+        let discover =
+            || discover_with_paths(Some(&override_path), Some(search_path), Some(&bundle), None);
+        assert_eq!(discover().source, "env");
+        fs::set_permissions(&override_path, fs::Permissions::from_mode(0o600)).unwrap();
+        let found = discover();
+        assert_eq!(found.source, "path");
+        assert_eq!(found.path, Some(path_candidate.canonicalize().unwrap()));
+        fs::remove_file(&path_candidate).unwrap();
+        let found = discover();
+        assert_eq!(found.source, "macos-bundle");
+        assert_eq!(found.path, Some(bundle.canonicalize().unwrap()));
+        fs::remove_file(&bundle).unwrap();
+        assert!(!discover().available);
+    }
 }

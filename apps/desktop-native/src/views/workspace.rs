@@ -191,6 +191,45 @@ impl Workspace {
         .detach();
     }
 
+    fn preparation_review(
+        &self,
+        preview: crate::preparation::PreparationPreview,
+        theme: Theme,
+        cx: &mut Context<Self>,
+    ) -> gpui::Div {
+        let enabled = preview.backend.available && !self.state.read(cx).loading;
+        let backend_message = if preview.backend.available {
+            "Calibre is available. Conversion runs locally and can take up to two minutes."
+        } else {
+            "Calibre was not found. Install Calibre in Applications, then cancel and try again. Advanced setup: set TAKIO_EBOOK_CONVERT to its full executable path."
+        };
+        div()
+            .flex().flex_col().flex_shrink_0().gap_2().p_3()
+            .border_t_1().border_color(theme.border)
+            .child(div().text_sm().font_weight(gpui::FontWeight::SEMIBOLD)
+                .child("Prepare for Kindle"))
+            .child(div().id("preparation-details").max_h(px(160.)).overflow_y_scroll()
+                .flex().flex_col().gap_2()
+                .child(div().text_sm().child(preview.title))
+                .child(div().text_xs().child("EPUB to AZW3. Your EPUB is kept. Nothing has been converted or sent yet."))
+                .child(div().text_xs().text_color(theme.text_secondary).child(backend_message))
+                .children(preview.backend.path.map(|path| {
+                    div().id("preparation-backend-path").overflow_x_scroll().text_xs()
+                        .text_color(theme.text_tertiary).child(path.display().to_string())
+                }))
+                .child(div().text_xs().text_color(theme.text_secondary)
+                    .child("Adds an AZW3 copy to this book in your library. Sending requires a separate review. Conversion does not remove DRM.")))
+            .child(div().flex().flex_wrap().gap_2()
+                .child(toolbar_button("cancel-preparation", "Cancel", true, theme)
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.state.update(cx, |state, cx| state.cancel_preparation(cx));
+                    })))
+                .child(toolbar_button("confirm-preparation", "Convert to AZW3", enabled, theme)
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.state.update(cx, |state, cx| state.confirm_preparation(cx));
+                    }))))
+    }
+
     fn send_review(
         &self,
         preview: crate::engine::SendPreview,
@@ -249,6 +288,7 @@ impl Render for Workspace {
         let can_mutate = read.can_mutate();
         let report = read.delivery_report.clone();
         let preview = read.send_preview.clone();
+        let preparation = read.preparation_preview.clone();
         let exclusions = read.delivery_exclusions.clone();
 
         let summary = if selected > 0 {
@@ -326,6 +366,18 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &crate::SendSelected, window, cx| {
                 this.choose_reader(true, window, cx)
             }))
+            .on_action(cx.listener(|this, _: &crate::PrepareSelected, _, cx| {
+                this.state
+                    .update(cx, |state, cx| state.prepare_selected(cx));
+            }))
+            .on_action(cx.listener(|this, _: &crate::ConfirmPreparation, _, cx| {
+                this.state
+                    .update(cx, |state, cx| state.confirm_preparation(cx));
+            }))
+            .on_action(cx.listener(|this, _: &crate::CancelPreparation, _, cx| {
+                this.state
+                    .update(cx, |state, cx| state.cancel_preparation(cx));
+            }))
             .on_action(cx.listener(|this, _: &crate::ConfirmSend, _, cx| {
                 this.state
                     .update(cx, |state, cx| state.confirm_send_preview(cx));
@@ -333,6 +385,8 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &crate::CancelSend, _, cx| {
                 this.state
                     .update(cx, |state, cx| state.cancel_send_preview(cx));
+                this.state
+                    .update(cx, |state, cx| state.cancel_preparation(cx));
             }))
             .on_action(cx.listener(|this, _: &crate::EjectReader, window, cx| {
                 this.choose_reader(false, window, cx)
@@ -416,6 +470,23 @@ impl Render for Workspace {
                                             ),
                                         )
                                     })
+                                    .when(section == Section::Library && selected == 1, |toolbar| {
+                                        toolbar.child(
+                                            toolbar_button(
+                                                "prepare-book",
+                                                "Prepare for Kindle",
+                                                can_mutate,
+                                                theme,
+                                            )
+                                            .on_click(
+                                                cx.listener(|this, _, _, cx| {
+                                                    this.state.update(cx, |state, cx| {
+                                                        state.prepare_selected(cx)
+                                                    });
+                                                }),
+                                            ),
+                                        )
+                                    })
                                     .when(section == Section::Trash, |toolbar| {
                                         toolbar
                                             .child(
@@ -446,6 +517,10 @@ impl Render for Workspace {
                             )
                             .child(div().flex_1().min_h_0().child(self.list.clone()))
                             .children(preview.map(|preview| self.send_review(preview, theme, cx)))
+                            .children(
+                                preparation
+                                    .map(|preview| self.preparation_review(preview, theme, cx)),
+                            )
                             .children(report.map(|report| {
                                 div()
                                     .flex()

@@ -19,6 +19,7 @@ use takio::output::{AppError, AppResult};
 use crate::engine::{
     Engine, Facets, Filters, ImportMode, Request, SendPreview, SendPreviewEntry, SendReport,
 };
+use crate::preparation::PreparationPreview;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Section {
@@ -82,6 +83,9 @@ pub struct LibraryState {
     pub metadata_save_result: Option<Result<String, String>>,
     pub delivery_report: Option<SendReport>,
     pub send_preview: Option<SendPreview>,
+    pub preparation_preview: Option<PreparationPreview>,
+    preparation_generation: u64,
+    preparation_pending: bool,
     pub delivery_exclusions: Vec<SendPreviewEntry>,
     send_preview_generation: u64,
     generation: u64,
@@ -112,6 +116,9 @@ impl LibraryState {
             metadata_save_result: None,
             delivery_report: None,
             send_preview: None,
+            preparation_preview: None,
+            preparation_generation: 0,
+            preparation_pending: false,
             delivery_exclusions: Vec::new(),
             send_preview_generation: 0,
             generation: 0,
@@ -213,6 +220,7 @@ impl LibraryState {
             return;
         }
         self.cancel_send_preview(cx);
+        self.cancel_preparation(cx);
         self.section = section;
         self.clear_selection();
         self.reload(cx);
@@ -388,7 +396,11 @@ impl LibraryState {
     }
 
     pub fn can_mutate(&self) -> bool {
-        !self.busy && !self.metadata_editing && !self.loading && self.send_preview.is_none()
+        !self.busy
+            && !self.metadata_editing
+            && !self.loading
+            && self.send_preview.is_none()
+            && self.preparation_preview.is_none()
     }
 
     pub fn can_close(&mut self, cx: &mut Context<Self>) -> bool {
@@ -412,7 +424,11 @@ impl LibraryState {
     }
 
     pub fn update_metadata(&mut self, id: String, patch: LibraryPatch, cx: &mut Context<Self>) {
-        if self.busy || self.send_preview.is_some() || self.section != Section::Library {
+        if self.busy
+            || self.send_preview.is_some()
+            || self.preparation_preview.is_some()
+            || self.section != Section::Library
+        {
             self.metadata_save_result = Some(Err("Finish the current operation first".into()));
             cx.notify();
             return;
@@ -615,7 +631,12 @@ impl LibraryState {
     }
 
     pub fn confirm_send_preview(&mut self, cx: &mut Context<Self>) {
-        if self.busy || self.loading || self.metadata_editing || self.section != Section::Library {
+        if self.busy
+            || self.loading
+            || self.metadata_editing
+            || self.preparation_preview.is_some()
+            || self.section != Section::Library
+        {
             return;
         }
         let Some(preview) = self.send_preview.as_ref() else {
@@ -694,6 +715,124 @@ impl LibraryState {
                 Err(error) => this.set_error(error.code(), cx),
             }
             this.refresh_destinations(cx);
+        })
+        .detach();
+    }
+
+    // ----- explicit local preparation -------------------------------------
+
+    pub fn prepare_selected(&mut self, cx: &mut Context<Self>) {
+        if !self.can_mutate() || self.section != Section::Library {
+            return;
+        }
+        let ids = self.selected_ids();
+        if ids.len() != 1 {
+            self.set_status("Select one book to prepare an AZW3 copy".into(), true, cx);
+            return;
+        }
+        self.prepare_item(ids[0].clone(), cx);
+    }
+
+    pub fn prepare_item(&mut self, item_id: String, cx: &mut Context<Self>) {
+        if !self.can_mutate() || self.section != Section::Library {
+            return;
+        }
+        self.busy = true;
+        self.preparation_pending = true;
+        self.delivery_report = None;
+        self.delivery_exclusions.clear();
+        self.preparation_generation = self.preparation_generation.wrapping_add(1);
+        let generation = self.preparation_generation;
+        self.set_status(
+            "Checking EPUB and local conversion backend...".into(),
+            false,
+            cx,
+        );
+        let receiver = self
+            .engine
+            .request(|reply| Request::PreviewPrepare { item_id, reply });
+        self.await_reply(receiver, cx, move |this, result, cx| {
+            this.busy = false;
+            this.preparation_pending = false;
+            if this.preparation_generation != generation || this.section != Section::Library {
+                this.set_status(
+                    "Preparation cancelled. No copy was prepared.".into(),
+                    false,
+                    cx,
+                );
+                return;
+            }
+            match result {
+                Ok(preview) => {
+                    let available = preview.backend.available;
+                    this.preparation_preview = Some(preview);
+                    if available {
+                        this.set_status(
+                            "Review AZW3 preparation. The EPUB will be kept. Nothing sent.".into(),
+                            false,
+                            cx,
+                        );
+                    } else {
+                        this.set_error("backend-unavailable", cx);
+                    }
+                }
+                Err(error) => this.set_error(error.code(), cx),
+            }
+        })
+        .detach();
+    }
+
+    pub fn cancel_preparation(&mut self, cx: &mut Context<Self>) {
+        // A running conversion cannot be cancelled by dismissing its review.
+        if self.preparation_pending || self.preparation_preview.is_some() {
+            self.preparation_generation = self.preparation_generation.wrapping_add(1);
+            self.preparation_preview = None;
+            self.set_status(
+                "Preparation cancelled. No copy was prepared.".into(),
+                false,
+                cx,
+            );
+        }
+    }
+
+    pub fn confirm_preparation(&mut self, cx: &mut Context<Self>) {
+        if self.busy
+            || self.loading
+            || self.metadata_editing
+            || self.send_preview.is_some()
+            || self.section != Section::Library
+        {
+            return;
+        }
+        let Some(preview) = self.preparation_preview.as_ref() else {
+            return;
+        };
+        if !preview.backend.available {
+            self.set_error("backend-unavailable", cx);
+            return;
+        }
+        let preview = self
+            .preparation_preview
+            .take()
+            .expect("checked preparation preview");
+        self.busy = true;
+        self.set_status("Preparing an AZW3 copy locally (120-second conversion limit). EPUB kept. Nothing sent.".into(), false, cx);
+        let receiver = self
+            .engine
+            .request(|reply| Request::PrepareReviewed { preview, reply });
+        self.await_reply(receiver, cx, |this, result, cx| {
+            this.busy = false;
+            match result {
+                Ok(_) => {
+                    this.set_status(
+                        "AZW3 prepared. EPUB kept. Review send when ready.".into(),
+                        false,
+                        cx,
+                    );
+                    this.reload(cx);
+                }
+                Err(error) => this.set_error(error.code(), cx),
+            }
         })
         .detach();
     }
@@ -823,6 +962,17 @@ pub fn humanize_error(code: &str) -> String {
         "verification-failed" => "The copied book could not be verified. Do not rely on this transfer. Check the reader connection and try again.".into(),
         "destination-file-exists" => "A file with that name already exists on the device".into(),
         "send-review-changed" => "The compatible attachment changed after review. Review the send again before copying.".into(),
+        "prepare-source-unavailable" => "The EPUB source cannot be read. Reconnect its drive and check file permissions, then review preparation again.".into(),
+        "prepare-source-changed" => "The EPUB changed after review. Review preparation again before creating a copy.".into(),
+        "prepare-backend-changed" => "The conversion backend changed after review. Review preparation again before creating a copy.".into(),
+        "no-epub-source" => "No EPUB is attached to this book. Add an EPUB source before preparing an AZW3 copy.".into(),
+        "format-exists" => "An AZW3 copy is already attached. Review send to use it. Existing files were not replaced.".into(),
+        "destination-exists" => "A file already exists at the managed destination. It was not overwritten, and its existing bytes were kept. Review the library files before retrying.".into(),
+        "item-trashed" => "This book is in Trash. Restore it to the library, then review the operation again.".into(),
+        "backend-unavailable" => "Local preparation needs Calibre's ebook-convert. Install Calibre, then cancel and review preparation again. Nothing was converted or sent.".into(),
+        "conversion-failed" => "AZW3 preparation failed. The EPUB was kept. Check that the EPUB opens and the local converter works, then retry.".into(),
+        "conversion-timeout" => "AZW3 preparation exceeded the 120-second conversion limit. The EPUB was kept. Check the source and local converter before retrying.".into(),
+        "artifact-invalid" => "The converted file could not be verified. The EPUB was kept. Check the source and local converter before retrying.".into(),
         "format-not-found" => "That book has no file to send".into(),
         "no-compatible-format" | "destination-format-unsupported" => "No compatible file attached. Add an AZW3/PDF for a stock Kindle, or use Amazon's Send to Kindle for EPUB.".into(),
         "invalid-arguments" => "Check the book details and selection, then try again".into(),
@@ -841,6 +991,8 @@ mod tests {
     use std::fs;
     use std::path::Path;
     use takio::paths::LibraryPaths;
+
+    include!("preparation_state_tests.rs");
 
     struct Fixture {
         _temp: tempfile::TempDir,

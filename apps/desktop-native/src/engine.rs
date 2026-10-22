@@ -11,7 +11,8 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 
-use takio::conversion::FormatId;
+use crate::preparation::{self, PreparationPreview};
+use takio::conversion::{BackendDiscovery, FormatId};
 use takio::destinations::{self, DeliveryResult, Destination, DestinationKind};
 use takio::import_scan::{ImportScan, scan_imports};
 use takio::model::{BookFormat, LibraryItem, LibraryPatch};
@@ -147,6 +148,14 @@ pub struct SendEntry {
 
 /// Everything the UI can ask the engine to do.
 pub enum Request {
+    PreviewPrepare {
+        item_id: String,
+        reply: Sender<AppResult<PreparationPreview>>,
+    },
+    PrepareReviewed {
+        preview: PreparationPreview,
+        reply: Sender<AppResult<LibraryItem>>,
+    },
     Query {
         query: String,
         filters: Filters,
@@ -210,6 +219,12 @@ pub struct Engine {
 }
 
 impl Engine {
+    #[cfg(test)]
+    pub fn test_channel() -> (Self, Receiver<Request>) {
+        let (sender, receiver) = mpsc::channel();
+        (Self { sender }, receiver)
+    }
+
     /// Open (or create) the library at `paths` on a dedicated thread.
     ///
     /// # Errors
@@ -217,11 +232,23 @@ impl Engine {
     /// Returns the store's open error so the UI can show it before any
     /// window exists.
     pub fn open(paths: LibraryPaths) -> AppResult<Self> {
+        Self::open_inner(paths, None)
+    }
+
+    #[cfg(test)]
+    pub fn open_with_preparation_backend(
+        paths: LibraryPaths,
+        backend: BackendDiscovery,
+    ) -> AppResult<Self> {
+        Self::open_inner(paths, Some(backend))
+    }
+
+    fn open_inner(paths: LibraryPaths, backend: Option<BackendDiscovery>) -> AppResult<Self> {
         let store = LibraryStore::open(paths, true)?;
         let (sender, receiver) = mpsc::channel();
         thread::Builder::new()
             .name("takio-engine".into())
-            .spawn(move || worker(store, receiver))
+            .spawn(move || worker(store, receiver, backend))
             .map_err(|_| AppError::new("storage-unavailable"))?;
         Ok(Self { sender })
     }
@@ -236,9 +263,34 @@ impl Engine {
     }
 }
 
-fn worker(mut store: LibraryStore, receiver: Receiver<Request>) {
+fn worker(
+    mut store: LibraryStore,
+    receiver: Receiver<Request>,
+    preparation_backend: Option<BackendDiscovery>,
+) {
     while let Ok(request) = receiver.recv() {
         match request {
+            Request::PreviewPrepare { item_id, reply } => {
+                let result = match &preparation_backend {
+                    Some(backend) => {
+                        preparation::preview_with_backend(&store, &item_id, backend.clone())
+                    }
+                    None => preparation::preview(&store, &item_id),
+                };
+                let _ = reply.send(result);
+            }
+            Request::PrepareReviewed { preview, reply } => {
+                let result = match &preparation_backend {
+                    Some(backend) => preparation::prepare_with_backend(
+                        &mut store,
+                        &preview,
+                        backend.clone(),
+                        std::time::Duration::from_secs(120),
+                    ),
+                    None => preparation::prepare(&mut store, &preview),
+                };
+                let _ = reply.send(result);
+            }
             Request::Query {
                 query,
                 filters,
@@ -772,7 +824,7 @@ mod tests {
         let target = destination.path.join("documents/Existing preview.azw3");
         fs::write(&target, b"keep existing").unwrap();
         let (sender, receiver) = mpsc::channel();
-        let worker = thread::spawn(move || worker(store, receiver));
+        let worker = thread::spawn(move || worker(store, receiver, None));
         let engine = Engine { sender };
         let preview = engine
             .request(|reply| Request::PreviewSend {
@@ -1053,7 +1105,7 @@ mod tests {
         let (temp, mut store, destination) = delivery_fixture();
         let item = add_book(&mut store, temp.path(), "Before", "azw3");
         let (sender, receiver) = mpsc::channel();
-        let worker = thread::spawn(move || worker(store, receiver));
+        let worker = thread::spawn(move || worker(store, receiver, None));
         let engine = Engine { sender };
         let updated = engine
             .request(|reply| Request::Update {

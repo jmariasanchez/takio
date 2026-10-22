@@ -2,6 +2,7 @@
 use super::*;
 use crate::engine::{Engine, Filters, Request};
 use crate::state::LibraryState;
+use crate::{CancelPreparation, ConfirmPreparation, PrepareSelected};
 use gpui::{AppContext, TestAppContext, WindowHandle};
 use std::{path::PathBuf, time::Duration};
 use takio::{model::LibraryItem, paths::LibraryPaths};
@@ -29,12 +30,42 @@ fn settle(state: &LibraryEntity, cx: &mut TestAppContext) {
 }
 
 fn fixture(trash: bool, cx: &mut TestAppContext) -> Fixture {
+    fixture_with_preparation_backend(trash, None, cx)
+}
+
+fn fixture_with_preparation_backend(
+    trash: bool,
+    backend_available: Option<bool>,
+    cx: &mut TestAppContext,
+) -> Fixture {
     cx.executor().allow_parking();
     cx.update(|cx| cx.set_global(Theme::LIGHT));
     let temp = tempfile::tempdir().unwrap();
     let paths =
         LibraryPaths::resolve(None, Some(&temp.path().join("library/library.sqlite"))).unwrap();
-    let engine = Engine::open(paths).unwrap();
+    let engine = if let Some(available) = backend_available {
+        use std::os::unix::fs::PermissionsExt;
+        let converter = temp.path().join("ebook-convert");
+        // Synthetic converter/artifact boundary only. The real worker and managed
+        // attachment store run below, but these bytes do not prove EPUB readability.
+        std::fs::write(
+            &converter,
+            "#!/bin/sh\nset -eu\nprintf 'called\\n' >> \"$0.calls\"\nprintf 'synthetic AZW3 fixture' > \"$2\"\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&converter, std::fs::Permissions::from_mode(0o700)).unwrap();
+        Engine::open_with_preparation_backend(
+            paths,
+            takio::conversion::BackendDiscovery {
+                available,
+                path: available.then_some(converter),
+                source: "test",
+            },
+        )
+        .unwrap()
+    } else {
+        Engine::open(paths).unwrap()
+    };
     let originals = ["Alpha", "Beta"]
         .map(|title| {
             let path = temp.path().join(format!("{title}.epub"));
@@ -92,6 +123,237 @@ fn fixture(trash: bool, cx: &mut TestAppContext) -> Fixture {
         originals,
         books,
     }
+}
+
+fn preparation_catalogue(f: &Fixture) -> Vec<LibraryItem> {
+    f.engine
+        .request(|reply| Request::Query {
+            query: String::new(),
+            filters: Filters::default(),
+            reply,
+        })
+        .recv()
+        .unwrap()
+        .unwrap()
+}
+
+fn preparation_files(f: &Fixture) -> std::collections::BTreeMap<PathBuf, Vec<u8>> {
+    fn collect(path: &std::path::Path, files: &mut std::collections::BTreeMap<PathBuf, Vec<u8>>) {
+        for entry in std::fs::read_dir(path).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                collect(&path, files);
+            } else if !path
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("library.sqlite")
+            {
+                files.insert(path.clone(), std::fs::read(path).unwrap());
+            }
+        }
+    }
+    let mut files = std::collections::BTreeMap::new();
+    collect(f._temp.path(), &mut files);
+    files
+}
+
+#[gpui::test]
+fn native_preparation_toolbar_review_and_pointer_cancel_are_read_only(cx: &mut TestAppContext) {
+    let f = fixture_with_preparation_backend(false, Some(true), cx);
+    let before_catalogue = format!("{:?}", preparation_catalogue(&f));
+    let before_files = preparation_files(&f);
+    click_control(&f, "prepare-book", cx);
+    settle(&f.state, cx);
+    f.state.read_with(cx, |state, _| {
+        let preview = state
+            .preparation_preview
+            .as_ref()
+            .expect("toolbar opens review");
+        assert_eq!(preview.item_id, state.items[0].id);
+        assert!(preview.backend.available);
+        assert!(!state.can_mutate());
+        assert!(state.delivery_report.is_none());
+    });
+    assert_eq!(format!("{:?}", preparation_catalogue(&f)), before_catalogue);
+    assert_eq!(preparation_files(&f), before_files);
+    click_control(&f, "cancel-preparation", cx);
+    settle(&f.state, cx);
+    f.state.read_with(cx, |state, _| {
+        assert!(state.preparation_preview.is_none());
+        assert!(state.can_mutate());
+    });
+    assert_eq!(format!("{:?}", preparation_catalogue(&f)), before_catalogue);
+    assert_eq!(preparation_files(&f), before_files);
+}
+
+#[gpui::test]
+fn native_preparation_menu_action_review_and_cancel_are_read_only(cx: &mut TestAppContext) {
+    let f = fixture_with_preparation_backend(false, Some(true), cx);
+    let before_catalogue = format!("{:?}", preparation_catalogue(&f));
+    let before_files = preparation_files(&f);
+    f.window
+        .update(cx, |_, window, cx| {
+            window.dispatch_action(Box::new(PrepareSelected), cx)
+        })
+        .unwrap();
+    settle(&f.state, cx);
+    assert!(
+        f.state
+            .read_with(cx, |state, _| state.preparation_preview.is_some())
+    );
+    f.window
+        .update(cx, |_, window, cx| {
+            window.dispatch_action(Box::new(CancelPreparation), cx)
+        })
+        .unwrap();
+    settle(&f.state, cx);
+    assert!(
+        f.state
+            .read_with(cx, |state, _| state.preparation_preview.is_none())
+    );
+    assert_eq!(format!("{:?}", preparation_catalogue(&f)), before_catalogue);
+    assert_eq!(preparation_files(&f), before_files);
+}
+
+#[gpui::test]
+fn native_preparation_pending_action_cancel_discards_late_review(cx: &mut TestAppContext) {
+    let f = fixture_with_preparation_backend(false, Some(true), cx);
+    let before_files = preparation_files(&f);
+    let before_catalogue = format!("{:?}", preparation_catalogue(&f));
+    f.window
+        .update(cx, |_, window, cx| {
+            window.dispatch_action(Box::new(PrepareSelected), cx);
+            window.dispatch_action(Box::new(CancelPreparation), cx);
+        })
+        .unwrap();
+    settle(&f.state, cx);
+    f.state.read_with(cx, |state, _| {
+        assert!(state.preparation_preview.is_none());
+        assert!(state.can_mutate());
+    });
+    assert_eq!(preparation_files(&f), before_files);
+    assert_eq!(format!("{:?}", preparation_catalogue(&f)), before_catalogue);
+}
+
+#[gpui::test]
+fn native_preparation_missing_backend_blocks_pointer_and_action_confirmation(
+    cx: &mut TestAppContext,
+) {
+    let f = fixture_with_preparation_backend(false, Some(false), cx);
+    let before_files = preparation_files(&f);
+    let before_catalogue = format!("{:?}", preparation_catalogue(&f));
+    click_control(&f, "prepare-book", cx);
+    settle(&f.state, cx);
+    f.state.read_with(cx, |state, _| {
+        assert!(
+            !state
+                .preparation_preview
+                .as_ref()
+                .unwrap()
+                .backend
+                .available
+        );
+        assert!(
+            state
+                .status
+                .as_ref()
+                .unwrap()
+                .text
+                .contains("Install Calibre")
+        );
+    });
+    click_control(&f, "confirm-preparation", cx);
+    f.window
+        .update(cx, |_, window, cx| {
+            window.dispatch_action(Box::new(ConfirmPreparation), cx)
+        })
+        .unwrap();
+    settle(&f.state, cx);
+    f.state.read_with(cx, |state, _| {
+        assert!(state.preparation_preview.is_some());
+        assert!(!state.busy);
+        assert!(state.delivery_report.is_none());
+    });
+    assert_eq!(preparation_files(&f), before_files);
+    assert_eq!(format!("{:?}", preparation_catalogue(&f)), before_catalogue);
+}
+
+#[gpui::test]
+fn native_preparation_confirmation_keeps_captured_book_and_never_sends(cx: &mut TestAppContext) {
+    let f = fixture_with_preparation_backend(false, Some(true), cx);
+    let reader = reader(&f, cx);
+    let before_files = preparation_files(&f);
+    let chosen = f.state.read_with(cx, |state, _| state.items[0].id.clone());
+    click_control(&f, "prepare-book", cx);
+    settle(&f.state, cx);
+    f.state.update(cx, |state, cx| {
+        state.selected.clear();
+        state.selected.insert(1);
+        state.anchor = Some(1);
+        cx.notify();
+    });
+    click_control(&f, "confirm-preparation", cx);
+    f.window
+        .update(cx, |_, window, cx| {
+            window.dispatch_action(Box::new(ConfirmPreparation), cx);
+            window.dispatch_action(Box::new(ConfirmPreparation), cx);
+        })
+        .unwrap();
+    settle(&f.state, cx);
+    let catalogue = preparation_catalogue(&f);
+    for book in &catalogue {
+        assert_eq!(book.formats.len(), if book.id == chosen { 2 } else { 1 });
+        assert!(
+            book.formats
+                .iter()
+                .any(|format| format.format == takio::conversion::FormatId::Epub)
+        );
+        if book.id == chosen {
+            let output = book
+                .formats
+                .iter()
+                .find(|format| format.format == takio::conversion::FormatId::Azw3)
+                .unwrap();
+            assert_eq!(
+                std::fs::read(&output.source_path).unwrap(),
+                b"synthetic AZW3 fixture"
+            );
+        }
+    }
+    f.window
+        .update(cx, |_, window, cx| {
+            window.dispatch_action(Box::new(ConfirmPreparation), cx)
+        })
+        .unwrap();
+    settle(&f.state, cx);
+    assert_eq!(
+        std::fs::read_to_string(f._temp.path().join("ebook-convert.calls")).unwrap(),
+        "called\n"
+    );
+    for (path, bytes) in before_files {
+        assert_eq!(std::fs::read(path).unwrap(), bytes);
+    }
+    assert_eq!(
+        std::fs::read_dir(reader.path.join("documents"))
+            .unwrap()
+            .count(),
+        0
+    );
+    assert_reader_untouched(&reader);
+    f.state.read_with(cx, |state, _| {
+        assert!(state.preparation_preview.is_none());
+        assert!(state.send_preview.is_none());
+        assert!(state.delivery_report.is_none());
+        assert!(
+            state
+                .status
+                .as_ref()
+                .unwrap()
+                .text
+                .contains("AZW3 prepared")
+        );
+    });
 }
 
 fn trash_ids(engine: &Engine) -> Vec<String> {

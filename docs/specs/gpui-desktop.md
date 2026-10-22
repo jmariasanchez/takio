@@ -141,13 +141,21 @@ In:
   and asks for a new review if the compatible attachment changed. Blocked books
   remain visible separately from attempted-transfer failures. Preview is not a
   delivery guarantee, conversion, content snapshot, or physical readability test.
+- Explicit single-book **Prepare for Kindle**: review a local EPUB-to-AZW3
+  conversion and the detected Calibre executable, then Convert or Cancel.
+  Cmd-Shift-P, the Reader menu, toolbar and command palette open the same review.
+  Preparation preserves the EPUB and attaches a verified managed AZW3 copy. It
+  does not require a connected reader, install a converter, remove DRM, or send.
+  Missing converters show setup guidance and disable confirmation. Source
+  fingerprints and resolved converter paths bind confirmation to the review.
+  Filesystem work and the bounded 120-second conversion run on the engine thread.
 - Trash section.
 - Command palette (Cmd-K) over every action.
 - Native menu bar with the same actions and accelerators.
 - Light and dark appearance following the system.
 
 Out (remain in CLI/TUI or later cuts): advanced metadata editing, candidate review,
-duplicates, conversion jobs, custom columns, saved views, export dialogs,
+duplicates, general conversion-job management, custom columns, saved views, export dialogs,
 backup/restore. These keep working through `takio`.
 
 ## Acceptance

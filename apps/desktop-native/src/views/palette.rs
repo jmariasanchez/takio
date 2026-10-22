@@ -33,6 +33,21 @@ const COMMANDS: &[Command] = &[
         action: || Box::new(crate::EditSelected),
     },
     Command {
+        label: "Prepare for Kindle...",
+        hint: "Cmd Shift P",
+        action: || Box::new(crate::PrepareSelected),
+    },
+    Command {
+        label: "Convert Reviewed EPUB to AZW3",
+        hint: "",
+        action: || Box::new(crate::ConfirmPreparation),
+    },
+    Command {
+        label: "Cancel Preparation",
+        hint: "",
+        action: || Box::new(crate::CancelPreparation),
+    },
+    Command {
         label: "Send Selected Books...",
         hint: "Cmd Shift S",
         action: || Box::new(crate::SendSelected),
