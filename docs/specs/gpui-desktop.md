@@ -122,6 +122,21 @@ backup/restore. These keep working through `takio`.
 5. The Electron app is removed from the default `bun run build` and `check`
    scripts once 1 to 4 pass; its directory is deleted in a follow-up commit.
 
+## Measured result
+
+`scripts/compare-desktops.sh` launches both desktops five times against one
+deterministic 10,000-book library on the same machine and reports medians.
+On an Apple Silicon laptop (2026-10-22):
+
+| | Electron | Native GPUI |
+| --- | --- | --- |
+| Library usable (spawn to first query landed) | 420 ms | 143 ms |
+| Memory, whole process tree | 324 MB | 115 MB |
+| On disk | ~250 MB bundle | 10.7 MB signed .app |
+
+Both numbers already include the bulk-hydration fix to the shared store;
+before it the Electron renderer waited roughly 800 ms on the same query.
+
 ## Platform
 
 macOS first (Metal). Linux follows via the `wayland`/`x11` features of GPUI;
