@@ -159,6 +159,71 @@ The single empty-library packaging smoke run had first paint 316.657 ms and
 query 410.866 ms. That cold smoke run is not the defined five-run median gate,
 and neither measurement certifies scroll frame times or search input-to-paint.
 
+### Whole-result audit after physical acceptance
+
+At 11:51 UTC the scope was rechecked against the two explicit requests: focus on
+the product, then continue with the connected Kindle. Selecting pre-send review
+rather than strategy work was an inference, as was treating "all done" as the
+bounded core journey rather than every item in the future roadmap. The later
+Kindle request makes physical acceptance the immediate priority, but does not
+retroactively prove approval of every earlier product choice. Review, captured
+format/source consent, and manifest preservation all serve that same journey.
+The manifest fix was necessary follow-through before adding a record alongside
+146 existing ones, not authorization to modify personal books or reader settings.
+No incompatible pre-scope change was found that needed reverting. No automatic
+conversion, account access, device configuration, or unrelated expansion was added.
+
+The entire committed result was rerun, not just the three new tests:
+`cargo fmt --all --check`, `cargo test --offline --workspace` (258 passed, two
+intentionally ignored), strict workspace/all-target Clippy, `git diff --check`,
+and strict bundle signature verification all passed again at 11:51 UTC. Every
+repository test named in the earlier whole-product matrix below ran in this
+suite. A read-only name-to-log cross-check found all 45 distinct named checks
+across that matrix and this audit recorded as passing, with none missing.
+A fresh five-run startup gate at 11:53 UTC passed with medians of 106.270 ms
+paint, 158.394 ms query, and 124,128 KiB RSS. The release and packaged executable
+have the same Mach-O build UUID and code-section hash. Whole-file hashes differ
+because bundle signing replaces the linker signature with the app signature.
+
+The production signed app was also restarted with the actual isolated physical-
+acceptance library. The native menu selected the persisted test book, and Send
+Selected Books displayed `Connect a USB reader, then use Refresh readers`.
+Independent public CLI calls returned one active managed TXT, valid schema and
+library integrity, and zero destinations. `cmp` confirmed original and managed
+bytes remained identical. `/Volumes/Kindle` remained absent. Normal Quit exited
+0. This was an actual app/public-interface recovery check, not a test stub.
+
+| Requirement / changed output | Current-result check and observation | Acceptance boundary |
+| --- | --- | --- |
+| Native add and durable catalogue, originals preserved | Actual picker import in the physical run, followed by this production-app restart and public CLI `library list` / `library verify`; one managed TXT persisted and `cmp` passed. Whole-suite import/search/edit/trash tests also passed again. | Disposable source and isolated library only. |
+| Read-only compatibility review from both entry points | Actual Reader chooser and sidebar displayed one ready TXT with nothing sent. Physical preview/Cancel preserved exact original manifest bytes. Rerun `preview_reports_ordered_readiness_without_writing` and both sidebar pointer tests passed. | Physical one-ready selection, plus native integration coverage for other selections. |
+| Fresh capability/source checks and compatible formats | Rerun `preview_refreshes_capabilities_and_prefers_attached_formats`, `preview_rejects_unreadable_source`, and `stock_kindle_rejects_epub_even_with_stale_koreader_feature` passed. | Temporary reader directories exercise fresh detection logic, not additional hardware models. |
+| Confirm only reviewed IDs, format and source path | Rerun `send_confirmation_uses_preview_ids_and_ignores_repeated_confirmation`, `send_chooser_uses_ids_captured_before_selection_changes`, and `reviewed_send_rejects_changed_preference_or_source_path` passed. Actual physical confirmation copied the displayed TXT. | File bytes are not snapshotted at review time. |
+| Cancel, all-blocked, exclusions, and overlap guards | Rerun pending-preview and completed-preview cancellation, all-blocked, mixed-send exclusions, and `pending_review_blocks_mutations_and_cancel_restores_actions` passed. Actual physical Cancel wrote nothing. | Race/blocked cases use controlled native state tests. Earlier real-app mixed-selection evidence remains explicitly simulated at the reader boundary. |
+| Bound work and recheck before writing | Rerun `preview_bounds_before_io_and_requires_connected_destination`, `reviewed_send_delivers_unchanged_ready_files_only_and_is_bounded`, and `confirm_send_rechecks_source_reader_capabilities_disconnect_and_collision` passed. | No deliberate disconnect during a real hardware write. |
+| Honest success and failure outputs; no overwrite | Actual FAT32 send displayed one sent and verified; duplicate displayed zero sent/one failed and the collision reason. Independent exact-byte checks proved no overwrite. Rerun publication/symlink and multi-result regressions passed. | Readiness does not guarantee collision-free delivery or device rendering. |
+| Preserve existing delivery history on replacement and failure | Actual FAT32 replacement retained all 146 prior records and added exactly one. Rerun all three manifest regressions: 146-record retention, injected failed publication preserving exact prior bytes with no stage, and malformed manifest unchanged. | Failure injection is a unit boundary; real successful replacement was separately exercised. No power-loss durability claim. |
+| Preserve existing reader documents | Physical before/after comparison retained all 204 prior file sizes/mtimes. Only the test TXT and identified AppleDouble companion appeared. | Existing personal content was not read or fully hashed. |
+| Eject and recover when absent | Actual native eject removed the mount and discovery. This audit's production restart/send showed actionable reconnect guidance, not success. Independent CLI again returned no destinations. | Ejection already completed; the audit did not remount or add more test files. |
+| Deployable native result and bounded startup | Repeated strict signature check, actual production restart/normal exit, all 85 native tests and five-run 10k startup gate passed. | Accessibility completeness, scrolling and input-to-paint latency remain unmeasured. |
+| Readable book on Kindle screen | Test document is available with the stated checkpoint, but no user confirmation or device-screen photo has arrived. | **Externally blocked, not passed.** No Mac-side hash or simulated test closes this requirement. |
+
+The new physical observations establish that the review/no-overwrite/manifest/eject
+flow works on actual USB FAT32 hardware, not merely reader-shaped directories.
+The observed improvement from the earlier before/after comparison remains the
+ability to see compatibility and cancel before any copy. The manifest-failure
+regression now demonstrates retained prior bytes at the publication failure
+boundary rather than relying on inspection of the new rename call. These are
+specific correctness improvements, not evidence of user preference, broad Kindle
+compatibility, or complete product-roadmap delivery.
+
+No physical send was repeated during this audit because the device had been
+safely ejected and the user was asked to read it. The 11:43-11:47 physical run used
+the same executable code being audited, so its observations remain applicable.
+The screen check is deferred from executable session tasks to prevent automated
+retry loops, but remains an open product acceptance gate here. That administrative
+deferral does not convert a missing observation into a passing result.
+
 ## Product iteration: review before sending
 
 Interpretation audit: the explicit request was to focus on the product. Choosing
