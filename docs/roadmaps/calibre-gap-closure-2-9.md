@@ -1,8 +1,9 @@
 # Calibre Gap Closure Program: Areas 2 Through 9
 
-> Active product map. This program supersedes earlier permanent exclusions for
-> reading, editing, browser reading, and extension workflows. Those capabilities
-> are now in scope, but they remain phased and acceptance-gated.
+> Historical product map, superseded for new work by
+> `../plans/2026-10-22-focused-native-library.md`. Reader/editor, browser reading,
+> and extension expansion are not current first-version priorities. Existing
+> implemented capabilities remain supported.
 
 ## Destination
 

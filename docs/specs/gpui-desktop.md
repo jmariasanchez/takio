@@ -79,16 +79,20 @@ entity and re-render on `cx.notify()`.
 
 Sorting is done in the engine thread on the full result set, not in the view.
 
-### Rendering budget
+### Performance gates and remaining goals
 
-- First paint: under 150 ms from `main` on a warm cache.
-- Library with 10,000 items visible and scrolling: 120 Hz, no frame over 8 ms.
-- Query keystroke to list update: under 80 ms p95 on 10k items (engine
-  already measures 61 ms p95 for the SQL alone; debounce at 60 ms).
-- Idle RSS with a 10k library open: under 150 MB.
+`scripts/bench-desktop-native.sh` measures five real GUI starts against a
+generated 10,000-item catalogue. It enforces these median startup budgets:
 
-A `bench` binary target in the crate measures first paint and query latency
-against a generated 10k library and fails above budget. CI runs it on macOS.
+- First paint: at most 150 ms from process startup.
+- Initial full-list query completion: at most 400 ms from startup.
+- RSS sampled at startup completion: at most 150,000 KiB.
+
+The following are design goals, not measurements or gates satisfied by that
+script: 120 Hz scrolling with no frame over 8 ms, search keystroke-to-list update
+below 80 ms p95, and steady-state idle memory. Scrolling and interactive search
+require separate sampling. The existing 60 ms search debounce must be included
+in any future end-to-end input measurement, not subtracted from it.
 
 ## Scope for the first cut (v1)
 
@@ -116,8 +120,9 @@ backup/restore. These keep working through `takio`.
 ## Acceptance
 
 1. `cargo build --release -p takio-desktop` produces one binary under 12 MB.
-2. `scripts/bench-desktop-native.sh` passes the rendering budget on a
-   generated 10k library.
+2. `scripts/bench-desktop-native.sh` passes the three measured startup budgets
+   above on a generated 10k library. This does not certify scrolling or search
+   input latency.
 3. Every v1 action is exercised by an integration test driving the
    `LibraryState` entity against a temp library (GPUI `TestAppContext`).
 4. `scripts/package-desktop-native.sh` yields a launchable `Takio.app` with
