@@ -11,6 +11,34 @@ use crate::state::{LibraryEntity, SortColumn, author_label};
 use crate::theme::{Theme, metrics};
 use crate::{OpenSelected, SelectAll, SelectNext, SelectPrevious, TrashSelected};
 
+#[derive(Clone, Copy, Debug)]
+struct ColumnLayout {
+    title: f32,
+    author: f32,
+    series: Option<f32>,
+    formats: f32,
+    added: Option<f32>,
+}
+
+impl ColumnLayout {
+    fn for_viewport(width: f32) -> Self {
+        let available = (width - metrics::SIDEBAR_WIDTH - metrics::INSPECTOR_WIDTH).max(0.);
+        let expanded = available >= 700.;
+        let formats = available.min(80.);
+        let series = expanded.then_some((available * 0.18).min(180.));
+        let added = expanded.then_some(96.);
+        let remaining = available - formats - series.unwrap_or(0.) - added.unwrap_or(0.);
+        let title = (remaining * 0.62).floor();
+        Self {
+            title,
+            author: remaining - title,
+            series,
+            formats,
+            added,
+        }
+    }
+}
+
 pub struct LibraryList {
     state: LibraryEntity,
     focus: FocusHandle,
@@ -67,6 +95,9 @@ impl LibraryList {
             .w(px(width))
             .flex_shrink_0()
             .px_2()
+            .overflow_hidden()
+            .text_ellipsis()
+            .whitespace_nowrap()
             .cursor_pointer()
             .text_color(if active {
                 theme.text
@@ -87,11 +118,12 @@ impl Focusable for LibraryList {
 }
 
 impl Render for LibraryList {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = *cx.global::<Theme>();
         let state = self.state.clone();
         let count = state.read(cx).items.len();
-        let focused = self.focus.contains_focused(_window, cx);
+        let focused = self.focus.contains_focused(window, cx);
+        let columns = ColumnLayout::for_viewport(f32::from(window.viewport_size().width));
 
         let header = div()
             .flex()
@@ -101,18 +133,26 @@ impl Render for LibraryList {
             .border_color(theme.border)
             .text_xs()
             .font_weight(gpui::FontWeight::SEMIBOLD)
-            .child(self.header_cell("Title", SortColumn::Title, 360., &theme, cx))
-            .child(self.header_cell("Author", SortColumn::Author, 220., &theme, cx))
-            .child(self.header_cell("Series", SortColumn::Series, 160., &theme, cx))
+            .child(self.header_cell("Title", SortColumn::Title, columns.title, &theme, cx))
+            .child(self.header_cell("Author", SortColumn::Author, columns.author, &theme, cx))
+            .children(
+                columns
+                    .series
+                    .map(|width| self.header_cell("Series", SortColumn::Series, width, &theme, cx)),
+            )
             .child(
                 div()
-                    .w(px(120.))
+                    .w(px(columns.formats))
                     .flex_shrink_0()
                     .px_2()
                     .text_color(theme.text_secondary)
                     .child("Formats"),
             )
-            .child(self.header_cell("Added", SortColumn::Added, 110., &theme, cx));
+            .children(
+                columns
+                    .added
+                    .map(|width| self.header_cell("Added", SortColumn::Added, width, &theme, cx)),
+            );
 
         let list_state = state.clone();
         let rows = uniform_list(
@@ -125,11 +165,19 @@ impl Render for LibraryList {
                 range
                     .filter_map(|index| items.get(index).map(|item| (index, item)))
                     .map(|(index, item)| {
-                        row(index, item, selected.contains(&index), focused, &theme).on_click(
-                            cx.listener(move |this, event, _, cx| {
-                                this.on_row_click(index, event, cx);
-                            }),
+                        row(
+                            index,
+                            item,
+                            selected.contains(&index),
+                            focused,
+                            &theme,
+                            columns,
                         )
+                        .on_click(cx.listener(
+                            move |this, event, _, cx| {
+                                this.on_row_click(index, event, cx);
+                            },
+                        ))
                     })
                     .collect::<Vec<_>>()
             }),
@@ -180,7 +228,13 @@ impl Render for LibraryList {
                     .items_center()
                     .justify_center()
                     .text_color(theme.text_tertiary)
-                    .child(empty_label(&state, cx))
+                    .child(
+                        div()
+                            .w_full()
+                            .px_4()
+                            .text_center()
+                            .child(empty_label(&state, cx)),
+                    )
                     .into_any_element()
             } else {
                 rows.into_any_element()
@@ -194,6 +248,7 @@ fn row(
     selected: bool,
     focused: bool,
     theme: &Theme,
+    columns: ColumnLayout,
 ) -> gpui::Stateful<Div> {
     let background = if selected {
         if focused {
@@ -221,19 +276,27 @@ fn row(
         .bg(background)
         .hover(|style| style.bg(theme.row_hover))
         .cursor_default()
-        .child(cell(360., item.title.clone(), theme.text))
-        .child(cell(220., author_label(item), theme.text_secondary))
+        .child(cell(columns.title, item.title.clone(), theme.text))
         .child(cell(
-            160.,
-            item.series.clone().unwrap_or_default(),
+            columns.author,
+            author_label(item),
             theme.text_secondary,
         ))
-        .child(cell(120., formats, theme.text_tertiary))
-        .child(cell(
-            110.,
-            item.added_at.get(..10).unwrap_or("").to_owned(),
-            theme.text_tertiary,
-        ))
+        .children(columns.series.map(|width| {
+            cell(
+                width,
+                item.series.clone().unwrap_or_default(),
+                theme.text_secondary,
+            )
+        }))
+        .child(cell(columns.formats, formats, theme.text_tertiary))
+        .children(columns.added.map(|width| {
+            cell(
+                width,
+                item.added_at.get(..10).unwrap_or("").to_owned(),
+                theme.text_tertiary,
+            )
+        }))
 }
 
 fn cell(width: f32, text: impl Into<SharedString>, color: gpui::Rgba) -> Div {
@@ -261,5 +324,53 @@ fn empty_label(state: &LibraryEntity, cx: &App) -> &'static str {
             }
             crate::state::Section::Trash => "Trash is empty",
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn assert_fits(viewport: f32, columns: ColumnLayout) {
+        let total = columns.title
+            + columns.author
+            + columns.formats
+            + columns.series.unwrap_or(0.)
+            + columns.added.unwrap_or(0.);
+        let available = viewport - metrics::SIDEBAR_WIDTH - metrics::INSPECTOR_WIDTH;
+        assert!(
+            (total - available).abs() < 0.01,
+            "columns {total} must fit {available}"
+        );
+        assert!(columns.title >= 180.);
+        assert!(columns.author >= 110.);
+        assert!(columns.formats >= 80.);
+    }
+
+    #[test]
+    fn narrow_900_keeps_title_author_formats_visible() {
+        let columns = ColumnLayout::for_viewport(900.);
+        assert_fits(900., columns);
+        assert!(columns.series.is_none());
+        assert!(columns.added.is_none());
+    }
+
+    #[test]
+    fn normal_1280_shows_every_column_without_overflow() {
+        let columns = ColumnLayout::for_viewport(1280.);
+        assert_fits(1280., columns);
+        assert!(columns.series.is_some());
+        assert!(columns.added.is_some());
+    }
+
+    #[test]
+    fn wide_1800_gives_extra_space_to_title_and_author() {
+        let normal = ColumnLayout::for_viewport(1280.);
+        let columns = ColumnLayout::for_viewport(1800.);
+        assert_fits(1800., columns);
+        assert!(columns.series.is_some());
+        assert!(columns.added.is_some());
+        assert!(columns.title > normal.title);
+        assert!(columns.author > normal.author);
     }
 }
