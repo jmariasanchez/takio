@@ -407,9 +407,10 @@ Acceptance checks, recorded before implementation:
   not physical hardware. Run native tests, formatting, strict native Clippy, and
   exercise the app where the environment permits.
 
-This is the first part of explicit format preparation, not a conversion UI.
-Backend discovery and user-approved conversion remain follow-up work. Search-tail
-latency and physical-reader acceptance remain open, not displaced or completed.
+At this checkpoint this was the first part of explicit format preparation, not
+a conversion UI. Backend discovery and user-approved conversion were subsequently
+implemented and validated in the native EPUB preparation slice above. Search-tail
+latency and on-device reading acceptance remain open, not displaced or completed.
 
 ### Observed acceptance: 2026-10-22
 
@@ -523,6 +524,72 @@ and diff checks passed again. Production source bytes are unchanged by this
 recheck. The feedback loop is closed for the bounded review-before-send behavior,
 not for the unconfirmed feature priority, physical Kindle readability, conversion,
 or broader user satisfaction.
+
+## Cold-search follow-up: 2026-10-22
+
+After the real-EPUB acceptance, continued product work was interpreted as taking
+the next documented core gap, not expanding into batch conversion or claiming
+that every roadmap item was complete. The bounded check was to reproduce slow
+searches in the existing native workflow and locate the delay before changing
+literal semantics, debounce, threading, or hydration.
+
+`bash scripts/bench-desktop-native.sh --interactions` exercised five real GUI
+processes with five cycles each against the disposable 10,000-book catalogue.
+The uninstrumented baseline passed all 100 result-count, sort and selection
+checks and existing budgets. Matching search median was 92.794 ms, p95 370.690 ms,
+maximum 379.833 ms. The first matching search in each process took 256-380 ms,
+while later matches were about 90-97 ms. Clear-search median was 109.281 ms and
+p95 112.446 ms. These are state-dispatch-to-notification timings, including the
+60 ms debounce, not keyboard-to-paint or scrolling measurements.
+
+Temporary timing probes were then added and removed. Repeated runs tested the
+following boundaries without changing query results or the search algorithm:
+
+| Boundary checked | Observation | Conclusion supported |
+| --- | --- | --- |
+| Debounce creation and resumption | Early timers resumed around 60-77 ms, even when searches took over 300 ms | Moving timer creation is not an evidenced tail-latency fix |
+| Reader discovery on the serial engine worker | 0.049-2.577 ms in the worker-boundary run | Reader discovery does not explain these delays |
+| Store query versus reply receipt | Cold matching store calls took 148-285 ms in four processes, closely tracked by receipt | The major measured delay is inside query execution, not just waiting for its reply |
+| Snapshot preparation and foreground callback | Typically around 1.5-2 ms preparation and a near-immediate callback after preparation during interactions | Facet construction or foreground delivery did not explain the measured interaction tails |
+| ID selection versus bulk hydration | First matching selection 6-44 ms, hydration 32-111 ms in the final stage run | No single predicate-only bottleneck is established |
+| First clear versus later full-list reads | First clear sometimes spent 98 ms selecting IDs with 40 ms hydration, or 10 ms selecting IDs with 178 ms hydration. Later full-list reads were about 2 ms selection and 39 ms hydration | Cold delay can affect either stage, including a query without a search predicate |
+
+This narrows the investigation but does **not** establish whether the remaining
+cost is CPU execution, scheduling/preemption, allocation contention, or another
+cold-process effect. Instrumented matching-search p95 varied down to 198.886 ms
+while clear-search p95 rose to 255.273 ms, despite no algorithmic change. That
+variation is not an optimization result. The legacy store `search` microbenchmark
+below is also not a substitute for the native `query_items` path.
+
+No cache, FTS substitution, debounce change, worker priority change or speculative
+hydration rewrite was retained. All diagnostic source and script changes were
+removed, restoring the verified preparation implementation. The next justified
+investigation is a cold-process CPU/scheduling profile across both ID selection
+and hydration, rather than treating either stage's wall time as CPU time. The
+below-80-ms interactive-search goal remains unmet and physical reading remains
+unobserved.
+
+Final verification after removing every probe:
+
+- `git diff --exit-code -- apps scripts` passed. Only this evidence document
+  changed, so no new search optimization is being shipped.
+- `cargo fmt --all --check`, `cargo test --offline --workspace`, and
+  `cargo clippy --offline --workspace --all-targets -- -D warnings` passed:
+  118 engine, 57 CLI, 2 custom-field and 109 native tests, 286 total. The two
+  existing wall-clock benchmark tests remain intentionally ignored.
+- The clean native interaction rerun passed all 100 behavior checks. Matching
+  search median/p95 was 92.659/334.803 ms, clear-search 109.782/238.094 ms,
+  select-all/reload 44.479/45.367 ms, and sort dispatch 0.023/0.037 ms. Startup
+  medians were 119.259 ms paint, 175.453 ms query and 123,744 KiB RSS. Existing
+  budgets passed, but search tails remain variable and above the design goal.
+- `bash scripts/package-desktop-native.sh` rebuilt the clean app, verified its
+  ad-hoc signature and launched it against an empty temporary profile. It
+  reported zero books and produced the 11,117,873-byte native bundle. This is
+  local packaging, not notarization or publication.
+- Repeated original-file audits passed for all three real EPUBs: original
+  hashes, sizes and modification times remained unchanged. The public CLI
+  integrity check still reported three active books and six managed formats
+  in the isolated preparation library. No new device write was performed.
 
 ## Performance iteration: 2026-10-22
 
