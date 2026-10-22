@@ -216,20 +216,23 @@ impl Render for Workspace {
         };
 
         let status_bar = div()
-            .h(px(24.))
+            .min_h(px(24.))
             .flex_shrink_0()
             .flex()
             .items_center()
             .px_3()
+            .py_1()
             .gap_3()
             .border_t_1()
             .border_color(theme.border)
             .bg(theme.window_bg)
             .text_xs()
             .text_color(theme.text_secondary)
-            .child(summary)
+            .child(div().flex_shrink_0().child(summary))
             .children(status.map(|status| {
                 div()
+                    .flex_1()
+                    .min_w_0()
                     .text_color(if status.is_error {
                         theme.danger
                     } else {

@@ -479,6 +479,14 @@ impl LibraryState {
             this.busy = false;
             match result {
                 Ok(_) => this.set_status(format!("{verb} {count} item(s)"), false, cx),
+                Err(error) if count > 1 => this.set_status(
+                    format!(
+                        "{} Earlier books may already have changed. Books after the failure were not processed. Review the refreshed list before retrying.",
+                        humanize_error(error.code())
+                    ),
+                    true,
+                    cx,
+                ),
                 Err(error) => this.set_error(error.code(), cx),
             }
             this.reload(cx);
@@ -678,7 +686,10 @@ pub fn humanize_error(code: &str) -> String {
         "storage-unavailable" => "The library could not be read".into(),
         "unsupported-format" => "That file format is not supported".into(),
         "not-found" | "item-not-found" => "That book is no longer in the library".into(),
-        "destination-unavailable" => "The device is not available".into(),
+        "destination-unavailable" | "unknown-destination" => "The reader is no longer available. Reconnect it with a data-capable USB cable, then choose Refresh readers and try again.".into(),
+        "source-unavailable" => "The book's file is unavailable. Check that its drive is connected and the file still exists, then try again.".into(),
+        "copy-failed" => "The copy could not be completed. Check the reader connection, available space, and write permissions before retrying.".into(),
+        "verification-failed" => "The copied book could not be verified. Do not rely on this transfer. Check the reader connection and try again.".into(),
         "destination-file-exists" => "A file with that name already exists on the device".into(),
         "format-not-found" => "That book has no file to send".into(),
         "no-compatible-format" | "destination-format-unsupported" => "No compatible file attached. Add an AZW3/PDF for a stock Kindle, or use Amazon's Send to Kindle for EPUB.".into(),
@@ -1017,6 +1028,117 @@ mod tests {
             .update(cx, |s, cx| s.set_section(Section::Library, cx));
         settle(&f.state, cx);
         assert_eq!(titles(&f.state, cx), ["Alpha", "Beta", "Delta", "Gamma"]);
+    }
+
+    #[gpui::test]
+    fn partial_mutation_failures_warn_and_reload_committed_changes(cx: &mut TestAppContext) {
+        for operation in ["trash", "restore", "purge"] {
+            let f = fixture(cx);
+            let (first, last) = f
+                .state
+                .read_with(cx, |s, _| (s.items[0].clone(), s.items[2].clone()));
+            if operation != "trash" {
+                f.state.update(cx, |s, cx| {
+                    s.select_all(cx);
+                    s.trash_selected(cx);
+                });
+                settle(&f.state, cx);
+                f.state
+                    .update(cx, |s, cx| s.set_section(Section::Trash, cx));
+                settle(&f.state, cx);
+            }
+            f.state.update(cx, |s, cx| {
+                s.mutate_ids(
+                    vec![first.id.clone(), "absent-item".into(), last.id.clone()],
+                    |ids, reply| match operation {
+                        "trash" => Request::Trash { ids, reply },
+                        "restore" => Request::Restore { ids, reply },
+                        _ => Request::Purge { ids, reply },
+                    },
+                    "Updated",
+                    cx,
+                );
+            });
+            settle(&f.state, cx);
+            assert_eq!(titles(&f.state, cx), ["Beta", "Gamma"], "{operation}");
+            f.state.read_with(cx, |s, _| {
+                let status = s.status.as_ref().unwrap();
+                assert!(status.is_error);
+                assert!(
+                    status
+                        .text
+                        .contains("Earlier books may already have changed")
+                );
+                assert!(
+                    status
+                        .text
+                        .contains("Books after the failure were not processed")
+                );
+                assert!(status.text.contains("Review the refreshed list"));
+                assert!(!s.busy);
+            });
+            assert!(f._temp.path().join("Alpha.epub").exists());
+            assert!(last.source_path.exists());
+            if operation == "purge" {
+                assert!(!first.source_path.exists());
+            } else {
+                assert!(first.source_path.exists());
+                f.state.update(cx, |s, cx| {
+                    s.set_section(
+                        if operation == "trash" {
+                            Section::Trash
+                        } else {
+                            Section::Library
+                        },
+                        cx,
+                    );
+                });
+                settle(&f.state, cx);
+                assert_eq!(titles(&f.state, cx), ["Alpha"], "{operation}");
+            }
+        }
+    }
+
+    #[gpui::test]
+    fn disconnected_send_reports_reconnect_guidance_without_recreating_reader(
+        cx: &mut TestAppContext,
+    ) {
+        let f = fixture(cx);
+        let volumes = f._temp.path().join("volumes");
+        let mount = volumes.join("Kindle");
+        fs::create_dir_all(mount.join("documents")).unwrap();
+        fs::create_dir_all(mount.join("system")).unwrap();
+        let destination = takio::destinations::authorize(&mount, &volumes).unwrap();
+        fs::remove_dir_all(&mount).unwrap();
+        f.state.update(cx, |s, cx| {
+            s.select_only(0, cx);
+            s.send_selected_to(destination, cx);
+        });
+        settle(&f.state, cx);
+        f.state.read_with(cx, |s, _| {
+            let report = s.delivery_report.as_ref().unwrap();
+            let code = report.entries[0].result.as_ref().unwrap_err();
+            assert_eq!(code, "unknown-destination");
+            let message = humanize_error(code);
+            assert!(message.contains("Reconnect"));
+            assert!(message.contains("Refresh readers"));
+            assert!(s.status.as_ref().unwrap().is_error);
+        });
+        assert!(!mount.exists());
+    }
+
+    #[test]
+    fn transfer_errors_include_actionable_recovery_without_raw_codes() {
+        for (code, guidance) in [
+            ("unknown-destination", "Refresh readers"),
+            ("source-unavailable", "file still exists"),
+            ("copy-failed", "available space"),
+            ("verification-failed", "Do not rely on this transfer"),
+        ] {
+            let message = humanize_error(code);
+            assert!(message.contains(guidance), "{message}");
+            assert!(!message.contains(code), "{message}");
+        }
     }
 
     #[gpui::test]
