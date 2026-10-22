@@ -95,10 +95,6 @@ impl LibraryState {
         this
     }
 
-    pub fn engine(&self) -> &Engine {
-        &self.engine
-    }
-
     pub fn selected_items(&self) -> Vec<&LibraryItem> {
         self.selected
             .iter()

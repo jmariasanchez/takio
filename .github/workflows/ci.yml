@@ -109,6 +109,16 @@ jobs:
       - name: Require Apple Silicon runner
         run: test "$(uname -m)" = arm64
 
+      - name: Install Metal toolchain for GPUI shaders
+        run: xcodebuild -downloadComponent MetalToolchain
+
+      - name: Check native GPUI desktop
+        run: |
+          cargo clippy -p takio-desktop --all-targets -- -D warnings
+          cargo test -p takio-desktop
+          cargo build --release -p takio-desktop
+          test "$(stat -f %z target/release/takio-desktop)" -lt 12000000
+
       - name: Check native macOS app
         run: bun run check:native:macos
 

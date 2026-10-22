@@ -18,6 +18,7 @@ binary never launches Bun as a fallback.
 | Boundary | Responsibility |
 | --- | --- |
 | `apps/cli` | Rust CLI, Ratatui interface, SQLite library, conversion queue, Calibre adapters, content server, and verified delivery |
+| `apps/desktop-native` | GPUI desktop that links `apps/cli` as a library: engine thread, state entity, virtualized views, native menus and dialogs |
 | `apps/desktop` | Electron shell, context-isolated preload, React renderer, native dialogs, and Rust sidecar packaging |
 | `packages/core` | Renderer-side ebook domain schemas and format vocabulary |
 | `packages/library-contract` | Runtime-neutral desktop wire schemas |

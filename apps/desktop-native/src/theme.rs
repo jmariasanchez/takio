@@ -16,10 +16,8 @@ pub struct Theme {
     pub text: Rgba,
     pub text_secondary: Rgba,
     pub text_tertiary: Rgba,
-    pub text_on_accent: Rgba,
     pub accent: Rgba,
     pub danger: Rgba,
-    pub dark: bool,
 }
 
 impl Theme {
@@ -34,10 +32,8 @@ impl Theme {
         text: rgb_const(0x1c1b19),
         text_secondary: rgb_const(0x5c5a55),
         text_tertiary: rgb_const(0x8f8c85),
-        text_on_accent: rgb_const(0xffffff),
         accent: rgb_const(0x2f6fdb),
         danger: rgb_const(0xc8362b),
-        dark: false,
     };
 
     pub const DARK: Self = Self {
@@ -51,10 +47,8 @@ impl Theme {
         text: rgb_const(0xeceae4),
         text_secondary: rgb_const(0xa5a29b),
         text_tertiary: rgb_const(0x6f6c66),
-        text_on_accent: rgb_const(0xffffff),
         accent: rgb_const(0x5b8def),
         danger: rgb_const(0xe5584d),
-        dark: true,
     };
 
     pub fn for_appearance(appearance: WindowAppearance) -> Self {

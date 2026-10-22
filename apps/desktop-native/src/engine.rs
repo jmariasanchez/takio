@@ -12,7 +12,7 @@ use std::thread;
 
 use takio::destinations::{self, DeliveryResult, Destination};
 use takio::import_scan::{ImportScan, scan_imports};
-use takio::model::{LibraryItem, LibraryPatch};
+use takio::model::LibraryItem;
 use takio::output::{AppError, AppResult};
 use takio::paths::LibraryPaths;
 use takio::store::{LibraryQueryFilters, LibraryStore};
@@ -92,10 +92,6 @@ pub enum Request {
         filters: Filters,
         reply: Sender<AppResult<Vec<LibraryItem>>>,
     },
-    Get {
-        id: String,
-        reply: Sender<AppResult<Option<LibraryItem>>>,
-    },
     ListTrash {
         reply: Sender<AppResult<Vec<LibraryItem>>>,
     },
@@ -103,11 +99,6 @@ pub enum Request {
         roots: Vec<PathBuf>,
         mode: ImportMode,
         reply: Sender<AppResult<ImportScan>>,
-    },
-    Update {
-        id: String,
-        patch: LibraryPatch,
-        reply: Sender<AppResult<LibraryItem>>,
     },
     Trash {
         ids: Vec<String>,
@@ -140,7 +131,6 @@ pub enum Request {
 #[derive(Clone)]
 pub struct Engine {
     sender: Sender<Request>,
-    pub paths: LibraryPaths,
 }
 
 impl Engine {
@@ -151,13 +141,13 @@ impl Engine {
     /// Returns the store's open error so the UI can show it before any
     /// window exists.
     pub fn open(paths: LibraryPaths) -> AppResult<Self> {
-        let store = LibraryStore::open(paths.clone(), true)?;
+        let store = LibraryStore::open(paths, true)?;
         let (sender, receiver) = mpsc::channel();
         thread::Builder::new()
             .name("takio-engine".into())
             .spawn(move || worker(store, receiver))
             .map_err(|_| AppError::new("storage-unavailable"))?;
-        Ok(Self { sender, paths })
+        Ok(Self { sender })
     }
 
     /// Send a request and return the reply receiver. The engine thread
@@ -190,9 +180,6 @@ fn worker(mut store: LibraryStore, receiver: Receiver<Request>) {
                 );
                 let _ = reply.send(result);
             }
-            Request::Get { id, reply } => {
-                let _ = reply.send(store.get(&id));
-            }
             Request::ListTrash { reply } => {
                 let _ = reply.send(store.list_trash());
             }
@@ -202,9 +189,6 @@ fn worker(mut store: LibraryStore, receiver: Receiver<Request>) {
                         false
                     });
                 let _ = reply.send(result);
-            }
-            Request::Update { id, patch, reply } => {
-                let _ = reply.send(store.update(&id, patch));
             }
             Request::Trash { ids, reply } => {
                 let _ = reply.send(each(&ids, |id| store.trash(id)));

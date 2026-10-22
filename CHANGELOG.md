@@ -8,6 +8,14 @@ and are not a claim that a published release contains every entry below.
 
 ### Added
 
+- Native GPUI desktop (`apps/desktop-native`): one 10.7 MB binary that links
+  the Rust engine in-process. Virtualized library table, incremental search,
+  facet sidebar, inspector with background cover decoding, command palette,
+  native menus and file dialogs, trash, device send/eject, light and dark
+  themes. On a 10,000-book library: 84 ms to first paint, 136 ms to a fully
+  loaded list, 118 MB RSS (medians of five launches, enforced by
+  `scripts/bench-desktop-native.sh`). `scripts/package-desktop-native.sh`
+  produces a signed Takio.app.
 - Local SQLite ebook libraries with explicit managed/reference ownership,
   multi-format books, rich metadata, covers, reversible trash, and duplicate review.
 - Electron/React library workspace with paged tables, facets, inspectors,
@@ -34,6 +42,10 @@ and are not a claim that a published release contains every entry below.
 
 ### Changed
 
+- Library reads hydrate items with one query per child table instead of
+  seven queries per item. Listing or querying 10,000 books went from
+  ~800 ms to ~135 ms end to end; the CLI query benchmark p95 dropped from
+  61 ms to 35 ms.
 - Replaced the Tauri desktop with Electron and the Bun CLI with one Rust
   executable used by both the terminal interface and desktop sidecar.
 - Advanced library storage to schema v12 with canonical cross-runtime custom

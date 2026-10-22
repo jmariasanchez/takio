@@ -264,6 +264,7 @@ operating system's installed applications.
 
 ```text
 apps/desktop                Electron + React local-first desktop UI
+apps/desktop-native         GPUI desktop linking the Rust engine in-process (see docs/specs/gpui-desktop.md)
 apps/cli                    Rust CLI, Ratatui interface, SQLite store, jobs, and delivery
 packages/core               Shared TypeScript domain used by the desktop renderer
 packages/library-contract   Runtime-neutral desktop wire schemas

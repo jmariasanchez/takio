@@ -1,6 +1,8 @@
 //! Takio native desktop. One process, one binary: the GPUI renderer links
 //! the library engine directly and talks to it over an in-process channel.
 
+mod bench;
+mod covers;
 mod engine;
 mod state;
 mod theme;
@@ -40,6 +42,10 @@ actions!(
 );
 
 fn main() {
+    let started = std::time::Instant::now();
+    if std::env::var_os("TAKIO_DESKTOP_BENCH").is_some() {
+        return bench::run(started);
+    }
     let paths = match engine::resolve_paths() {
         Ok(paths) => paths,
         Err(error) => fatal(&format!("could not resolve library path: {}", error.code())),
