@@ -390,12 +390,7 @@ impl LibraryStore {
         let ids = statement
             .query_map([], |row| row.get::<_, String>(0))?
             .collect::<Result<Vec<_>, _>>()?;
-        ids.into_iter()
-            .map(|id| {
-                self.read_item(&id)?
-                    .ok_or_else(|| AppError::new("invalid-stored-data"))
-            })
-            .collect()
+        read_items_required(&self.connection, &ids)
     }
 
     pub fn get(&self, id: &str) -> AppResult<Option<LibraryItem>> {
@@ -429,12 +424,7 @@ impl LibraryStore {
         let ids = statement
             .query_map([needle], |row| row.get::<_, String>(0))?
             .collect::<Result<Vec<_>, _>>()?;
-        ids.into_iter()
-            .map(|id| {
-                self.read_item(&id)?
-                    .ok_or_else(|| AppError::new("invalid-stored-data"))
-            })
-            .collect()
+        read_items_required(&self.connection, &ids)
     }
 
     pub fn query_items(
@@ -1886,6 +1876,14 @@ impl LibraryStore {
 fn read_item_from(connection: &Connection, id: &str) -> AppResult<Option<LibraryItem>> {
     let mut items = read_items_bulk(connection, std::slice::from_ref(&id.to_owned()))?;
     Ok(items.pop())
+}
+
+fn read_items_required(connection: &Connection, ids: &[String]) -> AppResult<Vec<LibraryItem>> {
+    let items = read_items_bulk(connection, ids)?;
+    if items.len() != ids.len() {
+        return Err(AppError::new("invalid-stored-data"));
+    }
+    Ok(items)
 }
 
 /// Hydrate many items with one query per child table instead of seven
@@ -3621,6 +3619,197 @@ fn rebase_owned_paths(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn seed_hydration_books(store: &mut LibraryStore, count: usize) {
+        let transaction = store.connection.transaction().unwrap();
+        transaction
+            .execute(
+                "INSERT INTO tags VALUES ('signal-one','Signal One'),('signal-two','Signal Two')",
+                [],
+            )
+            .unwrap();
+        for index in (0..count).rev() {
+            let id = format!("book-{index:05}");
+            let title = if index % 2 == 0 { "Signal" } else { "signal" };
+            transaction.execute(
+                "INSERT INTO library_items(id,title,added_at) VALUES(?1,?2,'2026-10-22T00:00:00Z')",
+                params![id, title],
+            ).unwrap();
+            transaction.execute(
+                "INSERT INTO library_item_formats(library_item_id,format,source_path,added_at,provenance,position)
+                 VALUES(?1,'epub','/fixture/book.epub','2026-10-22','referenced',0)", [&id],
+            ).unwrap();
+            if index % 2 == 0 {
+                transaction.execute(
+                    "UPDATE library_items SET author='Legacy',series='Shelf',series_index=2.5,publisher='Publisher',
+                     published_date='2020',rating=7,description='Description',cover_path='/fixture/cover.jpg',updated_at='2026-10-22' WHERE id=?1", [&id],
+                ).unwrap();
+                transaction.execute(
+                    "INSERT INTO library_item_formats(library_item_id,format,source_path,added_at,provenance,position)
+                     VALUES(?1,'pdf','/fixture/book.pdf','2026-10-22','referenced',1)", [&id],
+                ).unwrap();
+                transaction.execute("INSERT INTO library_item_authors VALUES(?1,'Signal Writer','Writer, Signal',0),(?1,'Signal Coauthor',NULL,1)", [&id]).unwrap();
+                transaction
+                    .execute(
+                        "INSERT INTO library_item_languages VALUES(?1,'fr',0),(?1,'en',1)",
+                        [&id],
+                    )
+                    .unwrap();
+                transaction.execute("INSERT INTO library_item_tags VALUES(?1,'signal-two',0),(?1,'signal-one',1)", [&id]).unwrap();
+                transaction
+                    .execute(
+                        "INSERT INTO library_item_identifiers VALUES(?1,'fixture',?1)",
+                        [&id],
+                    )
+                    .unwrap();
+                transaction
+                    .execute(
+                        "INSERT INTO library_item_custom_metadata VALUES(?1,'shelf','Favorites')",
+                        [&id],
+                    )
+                    .unwrap();
+            }
+        }
+        transaction.commit().unwrap();
+    }
+
+    #[test]
+    fn search_and_trash_hydration_preserve_metadata_and_chunk_order() {
+        for count in [0, 1, 500, 501, 1001] {
+            let temp = tempfile::tempdir().unwrap();
+            let paths =
+                LibraryPaths::resolve(None, Some(&temp.path().join("library.sqlite"))).unwrap();
+            let mut store = LibraryStore::open(paths, true).unwrap();
+            seed_hydration_books(&mut store, count);
+            let expected: Vec<_> = (0..count)
+                .map(|index| store.get(&format!("book-{index:05}")).unwrap().unwrap())
+                .collect();
+            assert_eq!(
+                serde_json::to_value(store.search("SIGNAL").unwrap()).unwrap(),
+                serde_json::to_value(&expected).unwrap()
+            );
+            assert!(store.list_trash().unwrap().is_empty());
+            store.connection.execute("UPDATE library_items SET trashed_at=CASE WHEN CAST(substr(id,6) AS INTEGER)%2=0 THEN '2026-10-22' ELSE '2026-10-21' END", []).unwrap();
+            let expected_trash: Vec<_> = expected
+                .iter()
+                .step_by(2)
+                .chain(expected.iter().skip(1).step_by(2))
+                .collect();
+            assert_eq!(
+                serde_json::to_value(store.list_trash().unwrap()).unwrap(),
+                serde_json::to_value(expected_trash).unwrap()
+            );
+            assert!(store.search("Signal").unwrap().is_empty());
+        }
+    }
+
+    #[test]
+    fn search_hydration_preserves_literal_escaping_and_deduplication() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = LibraryPaths::resolve(None, Some(&temp.path().join("library.sqlite"))).unwrap();
+        let mut store = LibraryStore::open(paths, true).unwrap();
+        seed_hydration_books(&mut store, 2);
+        store
+            .connection
+            .execute(
+                "UPDATE library_items SET title=?1 WHERE id='book-00000'",
+                [r"Signal 100%_\ literal"],
+            )
+            .unwrap();
+        for query in ["%", "_", "\\", r"100%_\"] {
+            let items = store.search(query).unwrap();
+            assert_eq!(items.len(), 1);
+            assert_eq!(items[0].id, "book-00000");
+        }
+        assert_eq!(store.search("Signal").unwrap().len(), 2);
+        assert!(store.search("missing").unwrap().is_empty());
+    }
+
+    #[test]
+    fn search_and_trash_hydration_reject_invalid_formats() {
+        for invalid in [
+            "UPDATE library_item_formats SET format='invalid' WHERE library_item_id='book-00000' AND position=0",
+            "DELETE FROM library_item_formats WHERE library_item_id='book-00000'",
+        ] {
+            let temp = tempfile::tempdir().unwrap();
+            let paths =
+                LibraryPaths::resolve(None, Some(&temp.path().join("library.sqlite"))).unwrap();
+            let mut store = LibraryStore::open(paths, true).unwrap();
+            seed_hydration_books(&mut store, 501);
+            store.connection.execute(invalid, []).unwrap();
+            assert_eq!(
+                store.search("Signal").unwrap_err().code(),
+                "invalid-stored-data"
+            );
+            store
+                .connection
+                .execute("UPDATE library_items SET trashed_at='2026-10-22'", [])
+                .unwrap();
+            assert_eq!(
+                store.list_trash().unwrap_err().code(),
+                "invalid-stored-data"
+            );
+        }
+    }
+
+    #[test]
+    fn required_hydration_rejects_missing_selected_records() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = LibraryPaths::resolve(None, Some(&temp.path().join("library.sqlite"))).unwrap();
+        let mut store = LibraryStore::open(paths, true).unwrap();
+        seed_hydration_books(&mut store, 501);
+        let ids: Vec<_> = (0..501).map(|index| format!("book-{index:05}")).collect();
+        store
+            .connection
+            .execute("DELETE FROM library_items WHERE id='book-00500'", [])
+            .unwrap();
+        assert_eq!(
+            read_items_required(&store.connection, &ids)
+                .unwrap_err()
+                .code(),
+            "invalid-stored-data"
+        );
+    }
+
+    /// Run with cargo test -p takio --release --lib benchmark_search_and_trash_hydration -- --ignored --nocapture
+    #[test]
+    #[ignore = "release performance report, not a wall-clock correctness gate"]
+    fn benchmark_search_and_trash_hydration() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = LibraryPaths::resolve(None, Some(&temp.path().join("library.sqlite"))).unwrap();
+        let mut store = LibraryStore::open(paths, true).unwrap();
+        seed_hydration_books(&mut store, 10_000);
+        for operation in ["search", "trash"] {
+            if operation == "trash" {
+                store
+                    .connection
+                    .execute("UPDATE library_items SET trashed_at='2026-10-22'", [])
+                    .unwrap();
+            }
+            let mut samples = Vec::new();
+            for iteration in 0..23 {
+                let started = std::time::Instant::now();
+                let items = if operation == "search" {
+                    store.search("Signal")
+                } else {
+                    store.list_trash()
+                }
+                .unwrap();
+                let elapsed = started.elapsed().as_secs_f64() * 1000.0;
+                assert_eq!(items.len(), 10_000);
+                assert!(items.windows(2).all(|pair| pair[0].id < pair[1].id));
+                if iteration >= 3 {
+                    samples.push(elapsed);
+                }
+            }
+            samples.sort_by(f64::total_cmp);
+            eprintln!(
+                "{operation}: 10000 books, 20 samples, median {:.3} ms, p95 {:.3} ms",
+                (samples[9] + samples[10]) / 2.0,
+                samples[18]
+            );
+        }
+    }
 
     #[test]
     fn custom_column_lists_reject_invalid_untrimmed_reserved_and_noncontiguous_rows() {

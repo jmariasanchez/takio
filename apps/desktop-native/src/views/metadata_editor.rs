@@ -471,7 +471,7 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
         state.update(cx, |state, _| {
-            state.items = vec![item()];
+            state.items = vec![std::sync::Arc::new(item())];
             state.selected.insert(0);
             state.metadata_editing = true;
         });

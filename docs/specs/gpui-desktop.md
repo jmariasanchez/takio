@@ -77,7 +77,17 @@ column and direction, and a `generation: u64` that every in-flight request
 carries. Results from a superseded generation are dropped. Views observe the
 entity and re-render on `cx.notify()`.
 
-Sorting is done in the engine thread on the full result set, not in the view.
+Query results are sorted and counted into facets on the background executor
+before the snapshot lands in state. Books are immutable `Arc<LibraryItem>` values
+so a new sort shares metadata rather than cloning a whole catalogue. Sorting an
+already loaded list does not requery SQLite. The old rows remain visible while
+the sorted snapshot is prepared, and mutation actions wait for it to finish.
+Selection is reconciled by hashed IDs, including the primary selected book and
+selection changes made while sorting. Superseded snapshots cannot replace newer
+queries. Replaced catalogues are released off the UI thread.
+
+Facets are shared immutable snapshots. Sidebar rendering only copies the visible
+values of expanded groups, not every facet on each selection notification.
 
 ### Performance gates and remaining goals
 
@@ -93,6 +103,21 @@ script: 120 Hz scrolling with no frame over 8 ms, search keystroke-to-list updat
 below 80 ms p95, and steady-state idle memory. Scrolling and interactive search
 require separate sampling. The existing 60 ms search debounce must be included
 in any future end-to-end input measurement, not subtracted from it.
+
+`bash scripts/bench-desktop-native.sh --interactions` additionally exercises the
+production state in a real GUI against the same deterministic 10,000-book library.
+Each of five processes runs five cycles of matching search, clearing search,
+sorting, and select-all/reload. The script validates counts, sort order, search
+matches, and retained selections before reporting median and nearest-rank p95
+from 25 samples per operation. Search timing includes the 60 ms debounce.
+`dispatchMs` measures only the initiating UI call. `settledMs` ends at the result
+notification. Neither measures actual keyboard-to-display latency or scrolling,
+and low dispatch time alone does not prove result application meets a frame budget.
+The opt-in interaction gates require title-sort dispatch p95 at most 8 ms and
+select-all/reload settled p95 at most 200 ms. Sort samples retain zero selected
+books on the first cycle and 5,000 search matches on later cycles. The reload
+samples select and retain all 10,000 books. These gates do not certify the
+separate below-80-ms search goal.
 
 ## Scope for the first cut (v1)
 

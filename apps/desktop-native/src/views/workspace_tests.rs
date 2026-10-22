@@ -154,7 +154,7 @@ fn purge_approval_uses_captured_ids_not_changed_selection(cx: &mut TestAppContex
     });
     cx.simulate_prompt_answer("Delete permanently");
     settle(&f.state, cx);
-    assert_eq!(trash_ids(&f.engine), vec![other.id]);
+    assert_eq!(trash_ids(&f.engine), vec![other.id.clone()]);
     assert!(
         chosen
             .formats

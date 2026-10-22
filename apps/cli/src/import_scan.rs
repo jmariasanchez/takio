@@ -103,6 +103,13 @@ where
                         continue;
                     }
                 };
+                if !observe && detect_format(&canonical).is_none() {
+                    outcomes.push(ImportOutcome::Skipped {
+                        source_path: source,
+                        reason: "unsupported-format",
+                    });
+                    continue;
+                }
                 let fingerprint = match fingerprint(&canonical) {
                     Ok(value) => value,
                     Err(code) => {
@@ -307,5 +314,231 @@ fn import_failure_code(code: &str) -> &'static str {
         "storage-unavailable" => "storage-unavailable",
         "source-changed" => "source-changed",
         _ => "unreadable",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::paths::LibraryPaths;
+
+    fn open_store(root: &Path) -> LibraryStore {
+        let paths = LibraryPaths::resolve(None, Some(&root.join("library.sqlite"))).unwrap();
+        LibraryStore::open(paths, true).unwrap()
+    }
+
+    #[test]
+    fn mixed_scan_preserves_unsupported_sources_in_copy_and_move_modes() {
+        for move_source in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let mut store = open_store(temp.path());
+            let supported = temp.path().join("book.epub");
+            let unsupported = temp.path().join("notes.bin");
+            let missing = temp.path().join("missing.bin");
+            fs::write(&supported, b"ebook fixture").unwrap();
+            fs::write(&unsupported, b"keep these bytes").unwrap();
+            let scan = scan_imports(
+                &mut store,
+                &[supported.clone(), unsupported.clone(), missing.clone()],
+                move_source,
+                false,
+                || false,
+            )
+            .unwrap();
+            assert!(!scan.stopped);
+            assert_eq!(
+                (
+                    scan.counts.total,
+                    scan.counts.imported,
+                    scan.counts.skipped,
+                    scan.counts.failed,
+                    scan.counts.duplicates
+                ),
+                (3, 1, 1, 1, 0)
+            );
+            let ImportOutcome::Imported { item, .. } = &scan.outcomes[0] else {
+                panic!("expected imported book");
+            };
+            assert!(store.get(&item.id).unwrap().is_some());
+            assert_eq!(
+                fs::read(&item.formats[0].source_path).unwrap(),
+                b"ebook fixture"
+            );
+            assert!(
+                matches!(&scan.outcomes[1], ImportOutcome::Skipped { source_path, reason: "unsupported-format" } if source_path == &unsupported)
+            );
+            assert!(
+                matches!(&scan.outcomes[2], ImportOutcome::Failed { source_path, code: "not-found" } if source_path == &missing)
+            );
+            assert_eq!(fs::read(&unsupported).unwrap(), b"keep these bytes");
+            assert_eq!(supported.exists(), !move_source);
+            if !move_source {
+                assert_eq!(fs::read(&supported).unwrap(), b"ebook fixture");
+            }
+        }
+    }
+
+    #[test]
+    fn watch_suppresses_unsupported_repeats_but_observes_changed_content() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("notes.bin");
+        fs::write(&source, b"first").unwrap();
+        for move_source in [false, true] {
+            fs::write(&source, b"first").unwrap();
+            let mut store = open_store(temp.path());
+            let scan = scan_imports(
+                &mut store,
+                std::slice::from_ref(&source),
+                move_source,
+                true,
+                || false,
+            )
+            .unwrap();
+            assert_eq!(scan.counts.skipped, 1);
+            drop(store);
+            let mut store = open_store(temp.path());
+            let repeated = scan_imports(
+                &mut store,
+                std::slice::from_ref(&source),
+                move_source,
+                true,
+                || false,
+            )
+            .unwrap();
+            assert_eq!(repeated.counts.total, 0);
+            // Same length: suppression must use content, not just byte count.
+            fs::write(&source, b"other").unwrap();
+            let changed = scan_imports(
+                &mut store,
+                std::slice::from_ref(&source),
+                move_source,
+                true,
+                || false,
+            )
+            .unwrap();
+            assert_eq!((changed.counts.total, changed.counts.skipped), (1, 1));
+            let repeated = scan_imports(
+                &mut store,
+                std::slice::from_ref(&source),
+                move_source,
+                true,
+                || false,
+            )
+            .unwrap();
+            assert_eq!(repeated.counts.total, 0);
+            assert_eq!(fs::read(&source).unwrap(), b"other");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unsupported_scan_does_not_require_read_permission() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let mut store = open_store(temp.path());
+        let source = temp.path().join("unreadable.bin");
+        fs::write(&source, b"preserved").unwrap();
+        let permissions = fs::metadata(&source).unwrap().permissions();
+        fs::set_permissions(&source, fs::Permissions::from_mode(0o000)).unwrap();
+        // Privileged processes may bypass Unix mode bits. Do not assume denial.
+        let denied = match fs::File::open(&source) {
+            Err(error) => {
+                assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+                true
+            }
+            Ok(_) => false,
+        };
+        for move_source in [false, true] {
+            let scan = scan_imports(
+                &mut store,
+                std::slice::from_ref(&source),
+                move_source,
+                false,
+                || false,
+            )
+            .unwrap();
+            assert_eq!((scan.counts.skipped, scan.counts.failed), (1, 0));
+            let watch = scan_imports(
+                &mut store,
+                std::slice::from_ref(&source),
+                move_source,
+                true,
+                || false,
+            )
+            .unwrap();
+            if denied {
+                assert!(matches!(
+                    &watch.outcomes[..],
+                    [ImportOutcome::Failed {
+                        code: "unreadable",
+                        ..
+                    }]
+                ));
+            }
+        }
+        fs::set_permissions(&source, permissions).unwrap();
+        assert_eq!(fs::read(source).unwrap(), b"preserved");
+        eprintln!("Unix read denial exercised: {denied}");
+    }
+
+    #[test]
+    fn cancellation_before_processing_preserves_unsupported_source() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut store = open_store(temp.path());
+        let source = temp.path().join("notes.bin");
+        fs::write(&source, b"preserved").unwrap();
+        let mut calls = 0;
+        let scan = scan_imports(
+            &mut store,
+            std::slice::from_ref(&source),
+            true,
+            false,
+            || {
+                calls += 1;
+                calls > 1
+            },
+        )
+        .unwrap();
+        assert!(scan.stopped);
+        assert_eq!(scan.counts.total, 0);
+        assert_eq!(fs::read(source).unwrap(), b"preserved");
+    }
+
+    #[test]
+    #[ignore = "release microbenchmark using generated temporary files"]
+    fn benchmark_unsupported_scan() {
+        use std::time::Instant;
+
+        let temp = tempfile::tempdir().unwrap();
+        let mut store = open_store(temp.path());
+        for bytes in [1024, 64 * 1024 * 1024] {
+            let source = temp.path().join(format!("unsupported-{bytes}.bin"));
+            fs::write(&source, vec![0x5a; bytes]).unwrap();
+            let mut timings = Vec::new();
+            for _ in 0..21 {
+                let start = Instant::now();
+                let scan = scan_imports(
+                    &mut store,
+                    std::slice::from_ref(&source),
+                    false,
+                    false,
+                    || false,
+                )
+                .unwrap();
+                timings.push(start.elapsed());
+                assert_eq!((scan.counts.total, scan.counts.skipped), (1, 1));
+            }
+            timings.remove(0);
+            timings.sort();
+            eprintln!(
+                "unsupported bytes={bytes} samples={} median_us={} min_us={} max_us={}",
+                timings.len(),
+                timings[timings.len() / 2].as_micros(),
+                timings[0].as_micros(),
+                timings.last().unwrap().as_micros()
+            );
+            assert_eq!(fs::metadata(source).unwrap().len(), bytes as u64);
+        }
     }
 }

@@ -5,8 +5,9 @@
 //! stay declarative. Every async reply carries the `generation` it was issued
 //! under; stale replies are dropped.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::mpsc::Receiver;
 use std::time::Duration;
 
@@ -53,11 +54,16 @@ pub struct Status {
     pub is_error: bool,
 }
 
+struct LibrarySnapshot {
+    items: Vec<Arc<LibraryItem>>,
+    facets: Arc<Facets>,
+}
+
 pub struct LibraryState {
     engine: Engine,
     pub section: Section,
-    pub items: Vec<LibraryItem>,
-    pub facets: Facets,
+    pub items: Vec<Arc<LibraryItem>>,
+    pub facets: Arc<Facets>,
     pub selected: BTreeSet<usize>,
     pub anchor: Option<usize>,
     pub query: String,
@@ -74,7 +80,7 @@ pub struct LibraryState {
     pub metadata_save_result: Option<Result<String, String>>,
     pub delivery_report: Option<SendReport>,
     generation: u64,
-    pending: Option<Task<()>>,
+    sorting: bool,
     debounce: Option<Task<()>>,
 }
 
@@ -84,7 +90,7 @@ impl LibraryState {
             engine,
             section: Section::Library,
             items: Vec::new(),
-            facets: Facets::default(),
+            facets: Arc::new(Facets::default()),
             selected: BTreeSet::new(),
             anchor: None,
             query: String::new(),
@@ -101,7 +107,7 @@ impl LibraryState {
             metadata_save_result: None,
             delivery_report: None,
             generation: 0,
-            pending: None,
+            sorting: false,
             debounce: None,
         };
         this.reload(cx);
@@ -113,6 +119,7 @@ impl LibraryState {
         self.selected
             .iter()
             .filter_map(|index| self.items.get(*index))
+            .map(Arc::as_ref)
             .collect()
     }
 
@@ -128,15 +135,19 @@ impl LibraryState {
             .filter(|index| self.selected.contains(index))
             .or_else(|| self.selected.iter().next().copied())
             .and_then(|index| self.items.get(index))
+            .map(Arc::as_ref)
     }
 
     // ----- queries ---------------------------------------------------------
 
     /// Issue a fresh query for the current section, query text, and filters.
     pub fn reload(&mut self, cx: &mut Context<Self>) {
+        self.debounce = None;
         self.generation = self.generation.wrapping_add(1);
         let generation = self.generation;
+        let sort = self.sort;
         self.loading = true;
+        self.sorting = false;
         let receiver = match self.section {
             Section::Library => {
                 let query = self.query.clone();
@@ -149,22 +160,16 @@ impl LibraryState {
             }
             Section::Trash => self.engine.request(|reply| Request::ListTrash { reply }),
         };
-        self.pending = Some(self.await_reply(receiver, cx, move |this, result, cx| {
-            if this.generation != generation {
-                return;
-            }
-            this.loading = false;
-            match result {
-                Ok(mut items) => {
-                    sort_items(&mut items, this.sort);
-                    this.facets = Facets::from_items(&items);
-                    this.reconcile_selection(&items);
-                    this.items = items;
-                }
-                Err(error) => this.set_error(error.code(), cx),
-            }
-            cx.notify();
-        }));
+        let task = cx.background_executor().spawn(async move {
+            let items = receiver
+                .recv()
+                .unwrap_or_else(|_| Err(AppError::new("storage-unavailable")))?;
+            let facets = Arc::new(Facets::from_items(&items));
+            let mut items: Vec<_> = items.into_iter().map(Arc::new).collect();
+            sort_items(&mut items, sort);
+            Ok(LibrarySnapshot { items, facets })
+        });
+        self.await_snapshot(task, generation, cx).detach();
         cx.notify();
     }
 
@@ -177,6 +182,7 @@ impl LibraryState {
         self.query = query;
         self.generation = self.generation.wrapping_add(1);
         self.loading = true;
+        self.sorting = false;
         self.debounce = Some(cx.spawn(async move |this, cx| {
             cx.background_executor()
                 .timer(Duration::from_millis(60))
@@ -212,9 +218,23 @@ impl LibraryState {
                 ascending: true,
             };
         }
-        let selected_ids = self.selected_ids();
-        sort_items(&mut self.items, self.sort);
-        self.select_ids(&selected_ids);
+        if self.loading && !self.sorting {
+            self.reload(cx);
+            return;
+        }
+        self.generation = self.generation.wrapping_add(1);
+        self.loading = true;
+        self.sorting = true;
+        let generation = self.generation;
+        let sort = self.sort;
+        // Share book metadata while retaining the visible rows until sorting finishes.
+        let mut items = self.items.clone();
+        let facets = self.facets.clone();
+        let task = cx.background_executor().spawn(async move {
+            sort_items(&mut items, sort);
+            Ok(LibrarySnapshot { items, facets })
+        });
+        self.await_snapshot(task, generation, cx).detach();
         cx.notify();
     }
 
@@ -305,24 +325,18 @@ impl LibraryState {
         self.select_only(next, cx);
     }
 
-    fn select_ids(&mut self, ids: &[String]) {
-        self.selected = self
-            .items
+    fn reconcile_selection(&mut self, new_items: &[Arc<LibraryItem>]) {
+        let ids: HashSet<&str> = self
+            .selected
             .iter()
-            .enumerate()
-            .filter(|(_, item)| ids.contains(&item.id))
-            .map(|(index, _)| index)
+            .filter_map(|index| self.items.get(*index))
+            .map(|item| item.id.as_str())
             .collect();
-        self.anchor = self.selected.iter().next().copied();
-    }
-
-    fn reconcile_selection(&mut self, new_items: &[LibraryItem]) {
-        let ids = self.selected_ids();
         let primary_id = self.primary_selected().map(|item| item.id.clone());
         self.selected = new_items
             .iter()
             .enumerate()
-            .filter(|(_, item)| ids.contains(&item.id))
+            .filter(|(_, item)| ids.contains(item.id.as_str()))
             .map(|(index, _)| index)
             .collect();
         self.anchor = primary_id
@@ -618,6 +632,44 @@ impl LibraryState {
 
     // ----- plumbing --------------------------------------------------------
 
+    fn await_snapshot(
+        &self,
+        task: Task<AppResult<LibrarySnapshot>>,
+        generation: u64,
+        cx: &mut Context<Self>,
+    ) -> Task<()> {
+        cx.spawn(async move |this, cx| {
+            // Let obsolete waiters finish so cancellation cannot destroy a completed
+            // catalogue on the foreground executor before this cleanup runs.
+            let mut result = Some(task.await);
+            let _ = this.update(cx, |this, cx| {
+                if this.generation != generation {
+                    return;
+                }
+                this.loading = false;
+                this.sorting = false;
+                match result.take().expect("snapshot handled once") {
+                    Ok(snapshot) => {
+                        this.reconcile_selection(&snapshot.items);
+                        let old_items = std::mem::replace(&mut this.items, snapshot.items);
+                        let old_facets = std::mem::replace(&mut this.facets, snapshot.facets);
+                        // Releasing a whole catalogue can also be expensive.
+                        cx.background_executor()
+                            .spawn(async move { drop((old_items, old_facets)) })
+                            .detach();
+                    }
+                    Err(error) => this.set_error(error.code(), cx),
+                }
+                cx.notify();
+            });
+            if let Some(result) = result {
+                cx.background_executor()
+                    .spawn(async move { drop(result) })
+                    .detach();
+            }
+        })
+    }
+
     /// Wait for an engine reply off the main thread, then apply `handle`
     /// on the main thread. The receiver is polled on the background
     /// executor so a slow engine never blocks a frame.
@@ -662,8 +714,8 @@ pub fn author_label(item: &LibraryItem) -> String {
     item.author.clone().unwrap_or_default()
 }
 
-fn sort_items(items: &mut [LibraryItem], sort: Sort) {
-    let key = |item: &LibraryItem| -> String {
+fn sort_items(items: &mut [Arc<LibraryItem>], sort: Sort) {
+    let key = |item: &Arc<LibraryItem>| -> String {
         match sort.column {
             SortColumn::Title => item.title.to_lowercase(),
             SortColumn::Author => author_label(item).to_lowercase(),
@@ -824,6 +876,7 @@ mod tests {
         f.state.update(cx, |s, cx| s.select_only(0, cx));
         f.state
             .update(cx, |s, cx| s.set_sort(SortColumn::Title, cx));
+        settle(&f.state, cx);
         assert_eq!(titles(&f.state, cx), ["Gamma", "Beta", "Alpha"]);
         assert_eq!(
             f.state
@@ -833,6 +886,7 @@ mod tests {
         );
         f.state
             .update(cx, |s, cx| s.set_sort(SortColumn::Author, cx));
+        settle(&f.state, cx);
         assert!(
             f.state.read_with(cx, |s, _| s.sort.ascending),
             "new column starts ascending"
@@ -855,6 +909,155 @@ mod tests {
         cx.executor().advance_clock(Duration::from_millis(100));
         settle(&f.state, cx);
         assert_eq!(titles(&f.state, cx).len(), 3);
+    }
+
+    #[gpui::test]
+    fn sorting_retains_visible_rows_and_uses_latest_selection(cx: &mut TestAppContext) {
+        let f = fixture(cx);
+        let original = f.state.read_with(cx, |s, _| s.items[0].clone());
+        f.state.update(cx, |s, cx| {
+            s.select_only(0, cx);
+            s.set_sort(SortColumn::Title, cx);
+            assert!(s.loading);
+            assert!(!s.can_mutate());
+            assert!(Arc::ptr_eq(&s.items[0], &original));
+            assert_eq!(s.items[0].title, "Alpha");
+            s.select_only(2, cx);
+        });
+        settle(&f.state, cx);
+        f.state.read_with(cx, |s, _| {
+            assert_eq!(s.primary_selected().unwrap().title, "Gamma");
+            assert_eq!(s.anchor, Some(0));
+            assert!(Arc::ptr_eq(&s.items[2], &original));
+            assert!(s.can_mutate());
+        });
+    }
+
+    #[gpui::test]
+    fn rapid_sort_search_and_section_changes_only_land_latest_snapshot(cx: &mut TestAppContext) {
+        let f = fixture(cx);
+        f.state.update(cx, |s, cx| {
+            s.set_sort(SortColumn::Title, cx);
+            s.set_query("Alpha".into(), cx);
+            s.set_sort(SortColumn::Author, cx);
+        });
+        settle(&f.state, cx);
+        assert_eq!(titles(&f.state, cx), ["Alpha"]);
+        let generation = f.state.read_with(cx, |s, _| s.generation);
+        cx.executor().advance_clock(Duration::from_millis(100));
+        settle(&f.state, cx);
+        assert_eq!(f.state.read_with(cx, |s, _| s.generation), generation);
+        f.state.update(cx, |s, cx| {
+            s.set_sort(SortColumn::Title, cx);
+            s.set_section(Section::Trash, cx);
+        });
+        settle(&f.state, cx);
+        assert!(titles(&f.state, cx).is_empty());
+        f.state.update(cx, |s, cx| {
+            s.set_query(String::new(), cx);
+            s.set_section(Section::Library, cx);
+            s.set_sort(SortColumn::Title, cx);
+        });
+        settle(&f.state, cx);
+        assert_eq!(titles(&f.state, cx), ["Gamma", "Beta", "Alpha"]);
+    }
+
+    #[gpui::test]
+    fn rapid_sorts_do_not_requery_the_loaded_catalogue(cx: &mut TestAppContext) {
+        let f = fixture(cx);
+        let (engine, id) = f
+            .state
+            .read_with(cx, |s, _| (s.engine.clone(), s.items[1].id.clone()));
+        engine
+            .request(|reply| Request::Trash {
+                ids: vec![id],
+                reply,
+            })
+            .recv()
+            .unwrap()
+            .unwrap();
+        f.state.update(cx, |s, cx| {
+            s.set_sort(SortColumn::Title, cx);
+            s.set_sort(SortColumn::Title, cx);
+            s.set_sort(SortColumn::Title, cx);
+        });
+        settle(&f.state, cx);
+        assert_eq!(titles(&f.state, cx), ["Gamma", "Beta", "Alpha"]);
+        f.state.update(cx, |s, cx| s.reload(cx));
+        settle(&f.state, cx);
+        assert_eq!(titles(&f.state, cx), ["Gamma", "Alpha"]);
+    }
+
+    #[gpui::test]
+    fn completed_snapshot_superseded_before_application_does_not_end_loading(
+        cx: &mut TestAppContext,
+    ) {
+        let f = fixture(cx);
+        f.state.update(cx, |s, cx| {
+            let ready = Task::ready(Ok(LibrarySnapshot {
+                items: vec![s.items[0].clone()],
+                facets: s.facets.clone(),
+            }));
+            s.await_snapshot(ready, s.generation, cx).detach();
+            s.set_query("Beta".into(), cx);
+        });
+        cx.run_until_parked();
+        assert!(f.state.read_with(cx, |s, _| s.loading));
+        assert_eq!(titles(&f.state, cx), ["Alpha", "Beta", "Gamma"]);
+        cx.executor().advance_clock(Duration::from_millis(100));
+        settle(&f.state, cx);
+        assert_eq!(titles(&f.state, cx), ["Beta"]);
+    }
+
+    #[gpui::test]
+    fn ten_thousand_selected_rows_keep_primary_book_when_sorted(cx: &mut TestAppContext) {
+        let f = fixture(cx);
+        f.state.update(cx, |s, cx| {
+            let template = s.items[0].as_ref();
+            s.items = (0..10_000)
+                .map(|index| {
+                    let mut item = template.clone();
+                    item.id = format!("book-{index:05}");
+                    item.title = item.id.clone();
+                    Arc::new(item)
+                })
+                .collect();
+            s.select_all(cx);
+            s.anchor = Some(7_000);
+            s.set_sort(SortColumn::Title, cx);
+        });
+        settle(&f.state, cx);
+        f.state.read_with(cx, |s, _| {
+            assert_eq!(s.selected.len(), 10_000);
+            assert_eq!(s.primary_selected().unwrap().id, "book-07000");
+            assert_eq!(s.anchor, Some(2_999));
+            assert_eq!(s.items[0].id, "book-09999");
+        });
+    }
+
+    #[gpui::test]
+    fn filtered_selection_keeps_survivors_then_clears_missing_primary(cx: &mut TestAppContext) {
+        let f = fixture(cx);
+        f.state.update(cx, |s, cx| {
+            s.select_all(cx);
+            s.anchor = Some(2);
+            s.set_query("Alpha".into(), cx);
+        });
+        cx.executor().advance_clock(Duration::from_millis(100));
+        settle(&f.state, cx);
+        f.state.read_with(cx, |s, _| {
+            assert_eq!(s.selected.len(), 1);
+            assert_eq!(s.primary_selected().unwrap().title, "Alpha");
+        });
+        f.state
+            .update(cx, |s, cx| s.set_query("missing-book".into(), cx));
+        cx.executor().advance_clock(Duration::from_millis(100));
+        settle(&f.state, cx);
+        f.state.read_with(cx, |s, _| {
+            assert!(s.selected.is_empty());
+            assert_eq!(s.anchor, None);
+            assert!(s.primary_selected().is_none());
+        });
     }
 
     #[gpui::test]

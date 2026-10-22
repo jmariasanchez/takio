@@ -64,6 +64,137 @@ Only expand this list when an observed core-workflow problem justifies it.
 Acceptance evidence for each implemented slice belongs below, with commands and
 limitations rather than speculative completion claims.
 
+## Performance iteration: 2026-10-22
+
+The requested speed and simplicity work targets the existing Rust/GPUI desktop,
+not a Rails application. Keep the add, organize, find, and send workflow intact.
+Do not introduce automatic moves, a watcher, or a new background service.
+
+Observed gaps and checks to run before claiming improvement:
+
+- Selection reconciliation currently scans a vector of selected IDs for every
+  result row. Measure select-all followed by sorting and reloading a generated
+  10,000-book library. Replace quadratic matching without losing the primary
+  selected book, including when results disappear or asynchronous replies race.
+- Query completion currently sorts and builds facets on the UI thread, despite
+  the native specification. Measure state-action dispatch and settled-result
+  latency in the real GUI, including search's debounce. Keep expensive result
+  preparation off-thread, preserve visible results while loading, and reject
+  stale replies. Exercise rapid sort/search/section changes in native tests.
+- Audit shared-store search and Trash reads for repeated per-book SQL queries.
+  Reuse existing bulk hydration only after comparing full metadata and ordering,
+  including empty results and results spanning a bulk-query chunk boundary.
+- The sidebar clones all facets on every state notification even though it
+  renders at most 50 values per expanded group. Avoid copying hidden values.
+- Non-watch folder import fingerprints unsupported files before skipping them.
+  Skip those contents without reading them, while preserving watch accounting,
+  supported-book verification, copy/move ownership, and honest per-file results.
+
+Reproducible gates: `cargo fmt --all --check`, native tests and strict Clippy,
+workspace tests when the shared store changes, the existing five-start benchmark,
+and an opt-in real-GUI interaction benchmark with validated result counts.
+Interaction state timing is not keyboard-to-display or scroll-frame timing.
+Record baseline and final measurements below. Physical reader acceptance remains
+blocked without hardware and is not inferred from any performance test.
+
+### Measured performance slice
+
+Before/after release measurements on this machine, using disposable data:
+
+| Operation | Before median | After median | Scope |
+| --- | --- | --- | --- |
+| Native title sort, initiating UI call | 66.789 ms | 0.023 ms | 10,000 rows, typically 5,000 retained selections |
+| Native title sort, settled state | 66.790 ms | 0.564 ms | Same workload, asynchronous preparation included |
+| Native select-all then reload | 134.786 ms | 42.881 ms | All 10,000 selected IDs retained |
+| Native matching search | 159.838 ms | 93.037 ms | 5,000 matches, includes unchanged 60 ms debounce |
+| Native clear search | 177.279 ms | 109.840 ms | 10,000 results, includes debounce |
+| Store `search` | 237.142 ms | 44.472 ms | 10,000 books, half with rich metadata |
+| Store `list_trash` | 230.440 ms | 36.765 ms | Same catalogue, all trashed |
+
+The native workload is `bash scripts/bench-desktop-native.sh --interactions`:
+five processes, five cycles each, 25 samples per operation. Sort dispatch p95
+fell from 67.281 ms to 0.035 ms; all-selected reload p95 fell from 136.110 ms to
+43.927 ms. The first sort in each process has no selection, later sorts retain
+the 5,000 search matches. A separate native test covers 10,000 selected rows and
+primary-book identity. These are state-notification timings, not physical input
+or frame-presentation measurements.
+
+Search tail latency remains a limitation: matching-search p95 was 293.002 ms
+after the change, clearing-search p95 was 204.012 ms. The below-80-ms interactive
+search design goal is **not** satisfied. Startup budgets still passed: median
+paint 99.237 ms, initial query 152.488 ms, startup RSS 124,240 KiB. The comparable
+baseline RSS was 118,512 KiB, so this trades some memory for immutable snapshots
+and responsive updates, remaining below the 150,000 KiB startup budget.
+
+The store workload is
+`cargo test -p takio --release --lib benchmark_search_and_trash_hydration -- --ignored --nocapture`.
+It performs three warmups and 20 measured reads per operation. Search p95 fell
+from 247.809 ms to 44.818 ms; Trash p95 from 239.791 ms to 37.199 ms. The SQL
+selection, literal escaping, ordering, and errors are unchanged. Only hydration
+reuses the existing bounded bulk reader rather than issuing child-table queries
+for every book. These store numbers exclude GUI, process startup, and JSON output.
+
+New native regressions cover visible rows during sorting, shared book metadata,
+latest selection and primary identity, rapid sort/search/section changes,
+cancelled debounce, 10,000 selected rows, and disappearing selected books.
+Store parity checks cover 0/1/500/501/1,001 rows, rich/empty metadata, repeated
+search joins, literal wildcard escaping, Trash order, malformed formats, and
+missing selected records. Native 65 tests, engine 107 tests, CLI 57 tests, and
+2 custom-field tests passed, along with strict native and CLI Clippy. The store
+performance test is intentionally ignored by default rather than making unit
+tests depend on wall-clock speed.
+
+A second real-GUI run with enforced interaction gates passed: title-sort
+dispatch p95 0.038 ms (budget 8 ms), all-selected reload p95 44.145 ms (budget
+200 ms), all 100 interaction result checks, and the unchanged startup budgets.
+The old baseline's 67.281 ms sort dispatch fails the new gate. These captures
+preceded the separate store optimization; the active native query already used
+bulk hydration, while the shared change benefits Trash and legacy search.
+
+### Folder imports and final automated gates
+
+Non-watch imports now identify unsupported formats before fingerprinting their
+contents. Watch mode still fingerprints them so unchanged files are suppressed
+and changed content is accounted for correctly. Supported books retain their
+existing duplicate checks and verified copy behavior. Unsupported files remain
+untouched even in explicitly requested move mode. Missing files still fail
+honestly rather than being counted as unsupported.
+
+`cargo test -p takio --release --lib benchmark_unsupported_scan -- --ignored --nocapture`
+uses generated temporary 1 KiB and 64 MiB files, with one warmup and 20 samples.
+Reported median for skipping the 64 MiB file fell from 117,896 microseconds to
+12 microseconds. This measures the scan call, not total folder import, supported
+book copying, or process startup. Tests cover copy/move source preservation,
+mixed outcomes, cancellation, persistent watch suppression and same-size content
+changes. The Unix permission test exercised actual read denial on this machine:
+unsupported input was skipped without reading, while watch mode reported unreadable.
+
+Independent review found and resolved two additional performance paths: a
+completed snapshot could be destroyed on the foreground executor when its waiter
+was cancelled, and a second sort during an in-flight local sort reissued SQL.
+Snapshot waiters now finish and dispose obsolete or closed-entity results in the
+background. Consecutive local sorts reuse the loaded books. Regression tests
+exercise a ready-but-not-applied obsolete result and an external Trash mutation
+that must stay invisible through rapid sorts until an explicit reload.
+
+The combined final gates passed at 10:27 UTC on October 22, 2026:
+
+- `cargo fmt --all --check`, `git diff --check`, strict workspace Clippy, and
+  `cargo test --workspace`: 237 passed (111 engine, 57 CLI, 2 custom-field,
+  67 native), with the two manual performance reports ignored by default.
+- Final five-start/100-interaction run: median first paint 100.961 ms, first
+  query 152.933 ms, startup RSS 123,680 KiB. Sort dispatch p95 0.034 ms and
+  select-all/reload settled p95 44.522 ms passed their budgets. Settled sort
+  median was 0.607 ms, reload 43.034 ms, matching search 92.629 ms, clear search
+  109.860 ms. Matching search p95 was 351.350 ms, so the search-tail goal remains
+  open rather than hidden by the median improvement.
+- `bash scripts/package-desktop-native.sh`: signed `dist/Takio.app`, strict
+  signature verification and isolated startup passed, 10,969,121 bytes.
+
+No personal library was opened or changed. A read-only `/Volumes` check still
+found only Macintosh HD. No physical reader write, eject, or readability test
+was possible, and none is claimed.
+
 ## Implemented and verified on 2026-10-22
 
 - Native details editor with explicit Save/Cancel, title validation, semicolon

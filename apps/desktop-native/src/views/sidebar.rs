@@ -194,27 +194,27 @@ impl Render for Sidebar {
             (
                 "Authors",
                 FilterDimension::Author,
-                facets.authors,
-                filters.authors,
+                &facets.authors,
+                &filters.authors,
             ),
-            ("Tags", FilterDimension::Tag, facets.tags, filters.tags),
+            ("Tags", FilterDimension::Tag, &facets.tags, &filters.tags),
             (
                 "Series",
                 FilterDimension::Series,
-                facets.series,
-                filters.series,
+                &facets.series,
+                &filters.series,
             ),
             (
                 "Formats",
                 FilterDimension::Format,
-                facets.formats,
-                filters.formats,
+                &facets.formats,
+                &filters.formats,
             ),
             (
                 "Languages",
                 FilterDimension::Language,
-                facets.languages,
-                filters.languages,
+                &facets.languages,
+                &filters.languages,
             ),
         ] {
             let collapsed = self.collapsed.contains(name);
@@ -238,7 +238,8 @@ impl Render for Sidebar {
                 continue;
             }
             let remaining = values.len().saturating_sub(50);
-            for (index, (value, count)) in values.into_iter().take(50).enumerate() {
+            for (index, (value, count)) in values.iter().take(50).enumerate() {
+                let value = value.clone();
                 let selected = active.contains(&value.to_lowercase());
                 groups = groups.child(
                     div()

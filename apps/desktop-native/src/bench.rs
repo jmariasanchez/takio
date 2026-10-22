@@ -1,7 +1,7 @@
 //! Opt-in startup probe using the real workspace and engine.
 use crate::{
     engine::{self, Engine},
-    state::LibraryState,
+    state::{LibraryState, SortColumn},
     theme::Theme,
     views::workspace::Workspace,
 };
@@ -18,6 +18,7 @@ struct Measurements {
     items: usize,
     reported: bool,
     presented: bool,
+    interactions: Option<Entity<LibraryState>>,
 }
 impl Measurements {
     fn finish(&mut self, cx: &mut App) {
@@ -39,7 +40,104 @@ impl Measurements {
             "{{\"firstPaintMs\":{paint:.3},\"firstQueryMs\":{query:.3},\"items\":{},\"rssKb\":{rss}}}",
             self.items
         );
-        cx.quit();
+        if let Some(state) = self.interactions.take() {
+            cx.defer(move |cx| InteractionProbe::start(state, cx));
+        } else {
+            cx.quit();
+        }
+    }
+}
+
+// These timings cover production state dispatch through result notification,
+// not keyboard input, paint completion, or scrolling. Query timings retain the
+// production debounce. The script imposes a hard process timeout.
+struct InteractionProbe {
+    step: usize,
+    started: Option<Instant>,
+    dispatch_ms: f64,
+}
+
+impl InteractionProbe {
+    const STEPS: usize = 20;
+
+    fn start(state: Entity<LibraryState>, cx: &mut App) {
+        let probe = Rc::new(RefCell::new(Self {
+            step: 0,
+            started: None,
+            dispatch_ms: 0.,
+        }));
+        let observed = probe.clone();
+        cx.observe(&state, move |state, cx| {
+            let mut probe = observed.borrow_mut();
+            let Some(started) = probe.started else {
+                return;
+            };
+            let current = state.read(cx);
+            if current.loading {
+                return;
+            }
+            let settled_ms = started.elapsed().as_secs_f64() * 1000.;
+            if current.status.as_ref().is_some_and(|status| status.is_error) {
+                crate::fatal("interaction query failed");
+            }
+            let phase = probe.step % 4;
+            let expected = if phase == 0 { 5000 } else { 10000 };
+            if current.items.len() != expected {
+                crate::fatal("interaction returned unexpected item count");
+            }
+            if phase == 0
+                && current.items.iter().any(|item| !item.title.starts_with("Signal "))
+            {
+                crate::fatal("interaction returned unexpected search results");
+            }
+            if phase == 2
+                && current.items.windows(2).any(|pair| {
+                    if current.sort.ascending {
+                        pair[0].title > pair[1].title
+                    } else {
+                        pair[0].title < pair[1].title
+                    }
+                })
+            {
+                crate::fatal("interaction returned incorrectly sorted results");
+            }
+            if phase == 3 && current.selected.len() != expected {
+                crate::fatal("interaction reload did not retain every selected item");
+            }
+            let operation = ["query_signal", "query_clear", "sort_title", "select_all_reload"][phase];
+            println!(
+                "{{\"kind\":\"interaction\",\"operation\":\"{operation}\",\"sample\":{},\"settledMs\":{settled_ms:.3},\"dispatchMs\":{:.3},\"expectedItems\":{expected},\"items\":{},\"selectedItems\":{},\"correct\":true}}",
+                probe.step / 4 + 1, probe.dispatch_ms, current.items.len(), current.selected.len()
+            );
+            probe.started = None;
+            probe.step += 1;
+            if probe.step == Self::STEPS {
+                println!("{{\"kind\":\"interactions_complete\",\"samples\":{}}}", Self::STEPS);
+                cx.quit();
+            } else {
+                let probe = observed.clone();
+                let state = state.clone();
+                cx.defer(move |cx| Self::dispatch(probe, state, cx));
+            }
+        })
+        .detach();
+        Self::dispatch(probe, state, cx);
+    }
+
+    fn dispatch(probe: Rc<RefCell<Self>>, state: Entity<LibraryState>, cx: &mut App) {
+        let phase = probe.borrow().step % 4;
+        let started = Instant::now();
+        probe.borrow_mut().started = Some(started);
+        state.update(cx, |state, cx| match phase {
+            0 => state.set_query("Signal".into(), cx),
+            1 => state.set_query(String::new(), cx),
+            2 => state.set_sort(SortColumn::Title, cx),
+            _ => {
+                state.select_all(cx);
+                state.reload(cx);
+            }
+        });
+        probe.borrow_mut().dispatch_ms = started.elapsed().as_secs_f64() * 1000.;
     }
 }
 
@@ -83,7 +181,11 @@ pub fn run(started: Instant) {
         cx.set_global(Theme::LIGHT);
         cx.set_menus(crate::menus());
         let state = cx.new(|cx| LibraryState::new(engine, cx));
-        let measurements = Rc::new(RefCell::new(Measurements::default()));
+        let measurements = Rc::new(RefCell::new(Measurements {
+            interactions: (std::env::var("TAKIO_DESKTOP_BENCH_INTERACTIONS").as_deref() == Ok("1"))
+                .then(|| state.clone()),
+            ..Measurements::default()
+        }));
         let query_measurements = measurements.clone();
         cx.observe(&state, move |state, cx| {
             let state = state.read(cx);
