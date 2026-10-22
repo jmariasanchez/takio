@@ -591,6 +591,70 @@ Final verification after removing every probe:
   integrity check still reported three active books and six managed formats
   in the isolated preparation library. No new device write was performed.
 
+### Packaged-app acceptance recheck: October 22, 13:21-13:35 UTC
+
+The clean `dist/Takio.app` was exercised again, without benchmark mode or injected
+state actions, against a fresh temporary library. The native file picker imported
+the three real EPUB copies. The first picker automation selected only one file,
+which the public CLI audit caught; the other two were then imported individually
+before further checks. This was not counted as a successful three-file import.
+The originals and the earlier acceptance library were not changed.
+
+| Requirement / public output | Actual observation and check |
+| --- | --- |
+| Default import preserves originals | Native import produced three managed EPUB attachments. CLI `library list` and `library verify` reported three active books and three formats. All original hashes, sizes and modification times matched the pre-import baseline. |
+| Review is explicit and read-only | Reader > Prepare for Kindle opened the sample-01 review, showed EPUB-to-AZW3 and the detected converter, and said nothing had been converted or sent. Full catalogue fields and managed file hashes equaled the imported baseline. |
+| Cancel does not convert | Reader > Cancel Preparation closed review. Catalogue and file snapshots still equaled the imported baseline, with no preparation stage or AZW3. |
+| Confirmation produces a usable local attachment | Cmd-Shift-P reopened review and the visible Convert to AZW3 button was clicked. The app reported AZW3 prepared, EPUB kept, and review send when ready. Only sample-01 gained AZW3, moving the library from three to four managed formats. Real Calibre `ebook-meta` parsed the new output's title and author metadata. |
+| Never overwrite existing AZW3 | Repeating preparation showed that an AZW3 was already attached and existing files were not replaced. Every catalogue field and managed file hash equaled the post-conversion snapshot. |
+| Missing backend is actionable and cannot confirm | After quitting and reopening without the scratch converter override, sample-02 review displayed Calibre installation guidance. Invoking Reader > Convert Reviewed EPUB to AZW3 created no output or attachment. Snapshot equality passed, then the review was canceled. |
+| Preparation persists without requiring the converter | Restart displayed all three books and sample-01's additional format. CLI integrity reported three active books, four managed formats, no lost attachments and unchanged EPUB hashes. No Send action was invoked. |
+| Real keyboard search finds the intended book | Cmd-F followed by `sample-01` visibly reduced the list to that book. This used the shipped input control, not direct state dispatch. |
+| Literal wildcard query does not become a SQL wildcard | Replacing the input with `%` displayed No books match. Escape restored all three books and the prepared format. |
+| Latest input wins and case-insensitive matching survives | `sample-03` was immediately replaced with `SAMPLE-02` through keyboard events. Only sample-02 was visible after settling. |
+| Selection remains on a surviving book | Selected sample-02, widened the query to `sample`, and observed all three results while the inspector still identified sample-02. |
+| Search and restart do not mutate books | Full public catalogue output and every managed file hash after searching and restart equaled the post-conversion snapshot. Original hashes, sizes and mtimes also still matched. |
+
+The preparation feedback loop therefore has a concrete before/after outcome:
+an EPUB-only book became an explicitly prepared, parseable AZW3 plus its unchanged
+EPUB, through the shipped UI, and remained so after restart. The three earlier
+real-book roundtrips provide broader content-preservation evidence. Neither check
+proves rendering on the physical Kindle.
+
+The complete mapped automated checks were rerun **after** this real-app pass:
+
+- `cargo test --offline --workspace`: 286 passed, two intentional benchmark
+  ignores. Preparation failure coverage includes missing/changed/trashed sources,
+  backend changes, timeout, collision, failed/empty/symlink output and cleanup.
+  Native state/window tests cover captured selection, pending cancellation,
+  repeated confirmation, busy-action exclusion and no automatic sending. Those
+  deterministic failure checks use controlled backends, not a claim that every
+  failure was triggered through the real converter in this recheck.
+- Native search/selection tests include `query_is_debounced_and_filters`,
+  `debounce_immediately_blocks_actions_on_stale_results`,
+  `rapid_sort_search_and_section_changes_only_land_latest_snapshot`,
+  `filtered_selection_keeps_survivors_then_clears_missing_primary`, and
+  `ten_thousand_selected_rows_keep_primary_book_when_sorted`. All passed. The
+  suite also reran metadata editing, import/move cancellation, Trash/restore,
+  captured purge confirmation and send-review/collision/disconnect paths.
+- Formatting and strict whole-workspace Clippy passed. The packaging script
+  rebuilt and verified the ad-hoc signature, then launched the actual bundle in
+  an empty temporary profile. The bundle remained 11,117,873 bytes. Both real-book
+  library integrity audits passed after packaging; all test app instances exited.
+- The 10,000-book native interaction benchmark again passed all 100 correctness
+  checks, startup budgets and sort/reload budgets. Matching-search median/p95 was
+  92.498/357.993 ms, clearing 108.868/146.985 ms, reload 42.644/46.059 ms and sort
+  dispatch 0.024/0.038 ms. Startup medians were 107.153 ms paint, 167.875 ms query
+  and 124,944 KiB RSS.
+
+**Search is not claimed to be faster.** No implementation changed during this
+recheck. The real keyboard path now has explicit correctness and preservation
+observations, but the below-80-ms latency goal remains open. Screenshots/OCR were
+used to observe results, not to invent sub-frame timing. State-settlement
+benchmark results still cannot certify keyboard-to-paint or scrolling. The
+remaining performance work is profiling and an independently validated fix, not
+another declaration that existing passing tests imply a speed improvement.
+
 ## Performance iteration: 2026-10-22
 
 The requested speed and simplicity work targets the existing Rust/GPUI desktop,
