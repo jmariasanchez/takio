@@ -512,3 +512,288 @@ fn humanize_error(code: &str) -> String {
 
 /// Convenience alias so views can declare their dependency plainly.
 pub type LibraryEntity = Entity<LibraryState>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::{AppContext, TestAppContext};
+    use std::fs;
+    use std::path::Path;
+    use takio::paths::LibraryPaths;
+
+    struct Fixture {
+        _temp: tempfile::TempDir,
+        state: Entity<LibraryState>,
+    }
+
+    fn epub(dir: &Path, name: &str) -> PathBuf {
+        let path = dir.join(format!("{name}.epub"));
+        fs::write(&path, format!("book {name}")).unwrap();
+        path
+    }
+
+    /// Open a scratch library with three books and wait for the first load.
+    fn fixture(cx: &mut TestAppContext) -> Fixture {
+        // Engine replies arrive from a real OS thread, so the deterministic
+        // executor must be allowed to park while it waits.
+        cx.executor().allow_parking();
+        let temp = tempfile::tempdir().unwrap();
+        let paths = LibraryPaths::resolve(None, Some(&temp.path().join("library.sqlite"))).unwrap();
+        let engine = Engine::open(paths).unwrap();
+        let roots = vec![
+            epub(temp.path(), "Beta"),
+            epub(temp.path(), "Alpha"),
+            epub(temp.path(), "Gamma"),
+        ];
+        engine
+            .request(|reply| Request::Import {
+                roots,
+                mode: ImportMode::Copy,
+                reply,
+            })
+            .recv()
+            .unwrap()
+            .unwrap();
+        let state = cx.new(|cx| LibraryState::new(engine, cx));
+        settle(&state, cx);
+        Fixture { _temp: temp, state }
+    }
+
+    /// Drive the executor until the state is no longer loading.
+    fn settle(state: &Entity<LibraryState>, cx: &mut TestAppContext) {
+        for _ in 0..200 {
+            cx.run_until_parked();
+            if !state.read_with(cx, |state, _| state.loading) {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        panic!("state never finished loading");
+    }
+
+    fn titles(state: &Entity<LibraryState>, cx: &mut TestAppContext) -> Vec<String> {
+        state.read_with(cx, |state, _| {
+            state.items.iter().map(|item| item.title.clone()).collect()
+        })
+    }
+
+    #[gpui::test]
+    fn initial_load_sorts_by_title(cx: &mut TestAppContext) {
+        let f = fixture(cx);
+        assert_eq!(titles(&f.state, cx), ["Alpha", "Beta", "Gamma"]);
+        assert!(f.state.read_with(cx, |s, _| s.selected.is_empty()));
+        assert_eq!(
+            f.state
+                .read_with(cx, |s, _| s.facets.formats.get("epub").copied()),
+            Some(3)
+        );
+    }
+
+    #[gpui::test]
+    fn selection_modes(cx: &mut TestAppContext) {
+        let f = fixture(cx);
+        f.state.update(cx, |s, cx| s.select_only(1, cx));
+        assert_eq!(f.state.read_with(cx, |s, _| s.selected_ids().len()), 1);
+        assert_eq!(
+            f.state
+                .read_with(cx, |s, _| s.primary_selected().unwrap().title.clone()),
+            "Beta"
+        );
+
+        f.state.update(cx, |s, cx| s.toggle_select(2, cx));
+        assert_eq!(f.state.read_with(cx, |s, _| s.selected.len()), 2);
+        f.state.update(cx, |s, cx| s.toggle_select(2, cx));
+        assert_eq!(f.state.read_with(cx, |s, _| s.selected.len()), 1);
+
+        f.state.update(cx, |s, cx| s.select_only(0, cx));
+        f.state.update(cx, |s, cx| s.select_range_to(2, cx));
+        assert_eq!(f.state.read_with(cx, |s, _| s.selected.len()), 3);
+
+        f.state.update(cx, |s, cx| s.select_only(0, cx));
+        f.state.update(cx, |s, cx| s.move_selection(5, cx));
+        assert_eq!(
+            f.state.read_with(cx, |s, _| s.anchor),
+            Some(2),
+            "clamped at end"
+        );
+        f.state.update(cx, |s, cx| s.move_selection(-10, cx));
+        assert_eq!(
+            f.state.read_with(cx, |s, _| s.anchor),
+            Some(0),
+            "clamped at start"
+        );
+
+        f.state.update(cx, |s, cx| s.select_all(cx));
+        assert_eq!(f.state.read_with(cx, |s, _| s.selected.len()), 3);
+        f.state.update(cx, |s, _| s.clear_selection());
+        assert!(f.state.read_with(cx, |s, _| s.selected.is_empty()));
+    }
+
+    #[gpui::test]
+    fn sort_toggles_direction_and_keeps_selection(cx: &mut TestAppContext) {
+        let f = fixture(cx);
+        f.state.update(cx, |s, cx| s.select_only(0, cx));
+        f.state
+            .update(cx, |s, cx| s.set_sort(SortColumn::Title, cx));
+        assert_eq!(titles(&f.state, cx), ["Gamma", "Beta", "Alpha"]);
+        assert_eq!(
+            f.state
+                .read_with(cx, |s, _| s.primary_selected().unwrap().title.clone()),
+            "Alpha",
+            "selection follows the item, not the row index"
+        );
+        f.state
+            .update(cx, |s, cx| s.set_sort(SortColumn::Author, cx));
+        assert!(
+            f.state.read_with(cx, |s, _| s.sort.ascending),
+            "new column starts ascending"
+        );
+    }
+
+    #[gpui::test]
+    fn query_is_debounced_and_filters(cx: &mut TestAppContext) {
+        let f = fixture(cx);
+        f.state.update(cx, |s, cx| s.set_query("a".into(), cx));
+        f.state.update(cx, |s, cx| s.set_query("al".into(), cx));
+        f.state.update(cx, |s, cx| s.set_query("alp".into(), cx));
+        // Before the debounce timer fires nothing has been requested.
+        assert_eq!(titles(&f.state, cx).len(), 3);
+        cx.executor().advance_clock(Duration::from_millis(100));
+        settle(&f.state, cx);
+        assert_eq!(titles(&f.state, cx), ["Alpha"]);
+
+        f.state.update(cx, |s, cx| s.set_query(String::new(), cx));
+        cx.executor().advance_clock(Duration::from_millis(100));
+        settle(&f.state, cx);
+        assert_eq!(titles(&f.state, cx).len(), 3);
+    }
+
+    #[gpui::test]
+    fn facet_filter_round_trip(cx: &mut TestAppContext) {
+        let f = fixture(cx);
+        f.state.update(cx, |s, cx| {
+            s.toggle_filter(FilterDimension::Format, "EPUB", cx)
+        });
+        settle(&f.state, cx);
+        assert_eq!(
+            f.state.read_with(cx, |s, _| s.filters.formats.clone()),
+            ["epub"],
+            "lowercased"
+        );
+        assert_eq!(titles(&f.state, cx).len(), 3);
+
+        // Values within one dimension are ORed (epub OR pdf), matching the
+        // CLI and the facet semantics users expect; dimensions AND together.
+        f.state.update(cx, |s, cx| {
+            s.toggle_filter(FilterDimension::Format, "pdf", cx)
+        });
+        settle(&f.state, cx);
+        assert_eq!(
+            titles(&f.state, cx).len(),
+            3,
+            "epub OR pdf still matches every book"
+        );
+        f.state.update(cx, |s, cx| {
+            s.toggle_filter(FilterDimension::Author, "nobody", cx)
+        });
+        settle(&f.state, cx);
+        assert_eq!(
+            titles(&f.state, cx).len(),
+            0,
+            "format AND author narrows to nothing"
+        );
+
+        f.state.update(cx, |s, cx| s.clear_filters(cx));
+        settle(&f.state, cx);
+        assert!(f.state.read_with(cx, |s, _| s.filters.is_empty()));
+        assert_eq!(titles(&f.state, cx).len(), 3);
+    }
+
+    #[gpui::test]
+    fn trash_restore_purge_through_sections(cx: &mut TestAppContext) {
+        let f = fixture(cx);
+        f.state.update(cx, |s, cx| s.select_only(1, cx));
+        f.state.update(cx, |s, cx| s.trash_selected(cx));
+        settle(&f.state, cx);
+        assert_eq!(titles(&f.state, cx), ["Alpha", "Gamma"]);
+        assert!(
+            f.state
+                .read_with(cx, |s, _| s.status.as_ref().unwrap().text.contains("Trash"))
+        );
+
+        f.state
+            .update(cx, |s, cx| s.set_section(Section::Trash, cx));
+        settle(&f.state, cx);
+        assert_eq!(titles(&f.state, cx), ["Beta"]);
+        assert!(
+            f.state.read_with(cx, |s, _| s.selected.is_empty()),
+            "section change clears selection"
+        );
+
+        f.state.update(cx, |s, cx| s.select_only(0, cx));
+        f.state.update(cx, |s, cx| s.restore_selected(cx));
+        settle(&f.state, cx);
+        assert!(titles(&f.state, cx).is_empty());
+
+        f.state
+            .update(cx, |s, cx| s.set_section(Section::Library, cx));
+        settle(&f.state, cx);
+        assert_eq!(titles(&f.state, cx), ["Alpha", "Beta", "Gamma"]);
+
+        f.state.update(cx, |s, cx| s.select_only(0, cx));
+        f.state.update(cx, |s, cx| s.trash_selected(cx));
+        settle(&f.state, cx);
+        f.state
+            .update(cx, |s, cx| s.set_section(Section::Trash, cx));
+        settle(&f.state, cx);
+        f.state.update(cx, |s, cx| s.select_all(cx));
+        f.state.update(cx, |s, cx| s.purge_selected(cx));
+        settle(&f.state, cx);
+        assert!(titles(&f.state, cx).is_empty());
+        f.state
+            .update(cx, |s, cx| s.set_section(Section::Library, cx));
+        settle(&f.state, cx);
+        assert_eq!(titles(&f.state, cx), ["Beta", "Gamma"]);
+    }
+
+    #[gpui::test]
+    fn stale_replies_are_dropped(cx: &mut TestAppContext) {
+        let f = fixture(cx);
+        // Issue two reloads back to back. Only the newest generation may
+        // land; the state must never flip to a result from the first.
+        f.state.update(cx, |s, cx| {
+            s.query = "zzz-no-match".into();
+            s.reload(cx);
+            s.query = String::new();
+            s.reload(cx);
+        });
+        settle(&f.state, cx);
+        assert_eq!(titles(&f.state, cx).len(), 3);
+    }
+
+    #[gpui::test]
+    fn import_reports_counts_and_reloads(cx: &mut TestAppContext) {
+        let f = fixture(cx);
+        let extra = epub(f._temp.path(), "Delta");
+        f.state
+            .update(cx, |s, cx| s.import(vec![extra], ImportMode::Copy, cx));
+        settle(&f.state, cx);
+        assert_eq!(titles(&f.state, cx), ["Alpha", "Beta", "Delta", "Gamma"]);
+        let status = f.state.read_with(cx, |s, _| s.status.clone().unwrap());
+        assert!(status.text.starts_with("Imported 1"), "{}", status.text);
+        assert!(!status.is_error);
+    }
+
+    #[gpui::test]
+    fn error_codes_are_humanized(cx: &mut TestAppContext) {
+        let f = fixture(cx);
+        f.state
+            .update(cx, |s, cx| s.set_error("unsupported-format", cx));
+        let status = f.state.read_with(cx, |s, _| s.status.clone().unwrap());
+        assert!(status.is_error);
+        assert!(
+            !status.text.contains("unsupported-format"),
+            "code must not leak verbatim"
+        );
+    }
+}

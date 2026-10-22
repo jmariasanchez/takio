@@ -27,6 +27,7 @@ gpui_platform = { package = "gpui-pre-platform", version = "=0.3.9", features = 
 gpui_platform = { package = "gpui-pre-platform", version = "=0.3.9", features = ["font-kit", "wayland", "x11"] }
 
 [dev-dependencies]
+gpui = { package = "gpui-pre", version = "=0.3.9", default-features = false, features = ["font-kit", "test-support"] }
 tempfile = "3.20"
 
 [lints]
