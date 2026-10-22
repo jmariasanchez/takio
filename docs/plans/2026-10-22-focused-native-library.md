@@ -30,8 +30,9 @@ features remain supported, not removed to make the desktop simpler.
 The native first version targets mounted USB mass-storage readers using the
 existing Rust destination implementation. The native engine applies conservative,
 tested format preferences to freshly detected reader capabilities. Unsupported books fail
-with a next step rather than silently sending unreadable bytes. Conversion is
-available in the CLI but is not automatically run by this desktop flow.
+with a next step rather than silently sending unreadable bytes. Explicit
+single-book EPUB-to-AZW3 preparation is available in the desktop when Calibre is
+present and reviewed by the user. Sending never automatically converts a book.
 
 MTP, Amazon-account integration, email delivery, SSH setup, collection sync,
 DRM removal, a reader/editor, plugins, news, and a new conversion engine are not
@@ -58,9 +59,10 @@ hardware, record this gate as blocked, not complete.
 - Improve measured search-tail latency without changing literal search semantics.
   The performance iteration below establishes a reproducible baseline. Measure
   actual input-to-display and scrolling separately before claiming those goals.
-- Continue explicit format preparation: pre-send readiness review is implemented
-  below. Offer optional conversion only when a compatible backend is present and
-  the user agrees. Backend discovery and conversion controls remain incomplete.
+- Validate prepared EPUB/AZW3 books on the physical reader. Native single-book
+  preparation, backend discovery and explicit conversion controls now pass the
+  real-book Mac-side acceptance below. Calibre remains an external dependency.
+  Batch conversion and persistent conversion-job management remain out of scope.
 - Add reference-in-place import and missing-file recovery if real library use
   shows these are needed. Preserve caller ownership.
 - Decide whether MTP is needed from actual reader demand, not from simulated
@@ -69,6 +71,153 @@ hardware, record this gate as blocked, not complete.
 Only expand this list when an observed core-workflow problem justifies it.
 Acceptance evidence for each implemented slice belongs below, with commands and
 limitations rather than speculative completion claims.
+
+## Native EPUB preparation: October 22, 2026
+
+The user approved continuing the missing product work and explicitly offered
+existing EPUBs on the Mac for validation. This slice prioritizes real EPUB handling
+and the missing local preparation action, rather than claiming to implement all
+future recovery, performance, transport, and accessibility work at once. Personal
+files may be read and copied for the requested tests, never moved, modified,
+uploaded, or committed. Three size-diverse EPUB copies are isolated in session
+scratch storage; a private baseline records original hashes, sizes and mtimes.
+
+The smallest coherent action is **Prepare for Kindle** for one selected EPUB:
+review EPUB-to-AZW3 preparation and detected converter, then explicitly Convert or
+Cancel. A connected reader is not required to prepare a library attachment.
+The conversion runs on the engine thread using the existing conversion backend
+and verified-artifact attachment API. The source EPUB remains attached and
+unchanged. Sending remains a separate review and confirmation, never a conversion
+side effect. No automatic installation or DRM removal is added to the product.
+
+Requirements and checks for this slice:
+
+- Menu, command palette and visible book action open the same read-only review.
+  Cancel, including a pending preview, creates no attachment or conversion output.
+- Backend discovery occurs off the UI thread. Missing or non-executable backend
+  produces setup guidance, disables confirmation, and does not pretend conversion
+  succeeded. Validation uses an official signed converter copied to scratch only.
+- Confirmation binds the original item, source path/fingerprint, output AZW3 and
+  converter path. Selection changes cannot redirect it. Changed/trashed/missing
+  sources, existing AZW3 and stale backend must fail without replacing anything.
+- Conversion operates on a private copy, uses a bounded timeout, validates a
+  nonempty regular output, and calls verified managed attachment publication.
+  Failure retains EPUB, reports an actionable error, and cleans private stages.
+- Busy/review state blocks conflicting mutation/send/eject and duplicate confirm.
+  Completion refreshes formats with an honest prepared-but-not-sent result.
+- Native state/window tests cover these branches; real packaged-app import,
+  review/cancel, unavailable backend, approved conversion, restart persistence,
+  public CLI integrity and original hashes provide end-user boundary checks.
+- Real converted artifacts are checked with the converter's own parser and local
+  roundtrip inspection where supported. This does not replace opening a book on
+  the physical Kindle, which is currently safely ejected and unavailable.
+
+### Observed preparation results
+
+Implementation commit: `844772c`. The rebuilt, ad-hoc signed `dist/Takio.app`
+completed real-book acceptance from 12:40 to 12:52 UTC. Personal book names and
+content are not included here. The three samples were selected from local EPUBs
+by size and copied to an isolated profile, not imported into the user's real
+library. No reader was mounted and no hardware write was attempted.
+
+| Requirement / changed output | Concrete check and observed result |
+| --- | --- |
+| Native copy import | File > Import > Add books imported all three real EPUB copies. Status: `Imported 3, skipped 0, failed 0`. Public CLI `library list` and `library verify` showed three active managed EPUBs. |
+| Visible action, menu, shortcut and palette | Reader > Prepare for Kindle, Cmd-Shift-P, the actual toolbar hitbox, and the command-palette Prepare command each opened the captured book's review in the signed app. |
+| Missing backend | Launch without the override displayed installation/full-path guidance. Invoking native menu confirmation created no attachment. Cancel removed the review. CLI and original-file audits still showed exactly three EPUBs and no preparation stage. |
+| Available backend, read-only review | With the signed scratch converter, review displayed its exact resolved executable path, EPUB-to-AZW3, source-preservation and separate-send guidance. Cmd-. canceled. Independent catalogue/file checks still showed no AZW3 or staging output. |
+| Consent binds the reviewed book | Opened sample-01 review with the toolbar, changed table selection, then clicked Convert to AZW3. Only sample-01 received the new attachment. The other two retained only EPUB until their own explicit confirmations. |
+| Real conversion and publication | All three independent confirmations completed with `AZW3 prepared. EPUB kept. Review send when ready.` Public verification showed six managed formats across three active books. No private staging directories remained. |
+| Original preservation | After import, cancellations, each conversion, repeat refusal and restart, SHA-256, byte size and modification time of all three original files matched the pre-test baseline. All isolated inputs and managed EPUB hashes also matched. |
+| No overwrite | Repeating preparation for an already-prepared book displayed existing-AZW3 guidance. All three output hashes and six managed attachments remained unchanged. |
+| Persistence | Normal Quit and relaunch without a converter retained all three EPUB/AZW3 pairs. Public CLI integrity checks still passed. The compact table ellipsized the format list at the tested 900-point width, so the public catalogue independently verified complete format IDs. |
+| No implicit send | Preparation did not create a transfer result. Explicit Send afterward displayed `Connect a USB reader, then use Refresh readers`. `/Volumes` contained only the Mac system volume. |
+| Output is parseable, not merely nonempty | Calibre's real `ebook-meta` parsed each native-produced AZW3. Its real `ebook-convert` roundtripped each to a new EPUB. ZIP CRC, container/OPF, every spine reference and text extraction passed. All original unique words were present in each roundtrip. This is not a visual or on-device reading test. |
+| Failure and overlap safety | The final native suite exercised pending cancellation, stale replies, missing/changed/trashed source, changed backend, existing attachment, output collision, failed/empty/symlink output, timeout, duplicate confirm, close/mutation/send/eject guards and failure messaging. These controlled failure checks use isolated source fixtures and fake executables, not physical reader or real-backend timeout evidence. |
+
+Real artifact observations:
+
+| Sample | Original EPUB bytes | Managed AZW3 bytes | Original / roundtrip spine entries | Original / roundtrip word tokens | Original / roundtrip images |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Small | 627,169 | 946,162 | 83 / 83 | 132,927 / 132,927 | 9 / 9 |
+| Medium | 2,128,340 | 2,288,805 | 21 / 22 | 81,529 / 81,602 | 6 / 6 |
+| Large | 13,280,031 | 13,997,376 | 28 / 28 | 90,897 / 90,897 | 1,096 / 1,096 |
+
+The medium EPUB contained an encryption descriptor. The initial audit expected
+its conversion might fail, but the unmodified official backend succeeded. The
+expected attachment set was corrected to this observed result. An encryption
+descriptor alone is not proof of unreadable DRM-protected content. No DRM-removal
+plugin, bypass or source modification was used. Its roundtrip added one spine
+entry and 73 word tokens, so this is not claimed to be a byte-identical or
+structure-identical conversion.
+
+Reproduction uses an isolated `root`, three caller-owned EPUB copies, and a local
+Calibre executable. Launch the signed app first without, then with,
+`TAKIO_EBOOK_CONVERT` and use the native steps in the table. The public audit
+commands are:
+
+```sh
+TAKIO_DATA_DIR="$root/library" dist/Takio.app/Contents/MacOS/takio-desktop
+# Quit normally before relaunching with the reviewed local converter.
+TAKIO_DATA_DIR="$root/library" TAKIO_EBOOK_CONVERT="$converter" \
+  CALIBRE_CONFIG_DIRECTORY="$root/calibre-config" \
+  dist/Takio.app/Contents/MacOS/takio-desktop
+
+target/debug/takio library list --db "$root/library/library.sqlite"
+target/debug/takio library verify --db "$root/library/library.sqlite"
+# Parse each returned managed AZW3 without modifying it, then roundtrip into a new path.
+"$calibre_bin/ebook-meta" "$managed_azw3"
+"$converter" "$managed_azw3" "$new_roundtrip_epub"
+```
+
+The private session baseline and read-only audit scripts retain the exact original
+hashes and output hashes outside the repository. An early audit incorrectly used
+an extra `library` path component and treated the JSON `value` object as the item
+array. It stopped rather than passing. After correcting the native database path
+and reading `value.items`, every audit above passed against the actual app's data.
+
+### Final gates and remaining boundaries
+
+- `cargo fmt --all --check`: pass.
+- `cargo test --offline --workspace`: **286 passed**, comprising 118 library,
+  57 CLI, 2 custom-column integration and 109 native tests. Two existing benchmark
+  tests remain ignored. All 24 native workspace-window tests passed, including
+  five new pointer/action preparation tests using the real worker and store.
+- `cargo clippy --offline --workspace --all-targets -- -D warnings`: pass.
+- `git diff --check`: pass.
+- `bash scripts/package-desktop-native.sh`: pass, strict ad-hoc signature valid,
+  11,117,873-byte bundle, isolated packaged startup and all three interactive
+  launches exited 0. The single packaging smoke sample was 171.522 ms first paint,
+  236.635 ms query and 93,760 KiB RSS. This is not a rerun of the five-sample 10k
+  performance budget, nor proof of interactive search/scrolling targets.
+
+The first full-suite and release-build attempts ran out of disk space. Only
+regenerable Rust incremental caches and this session's downloaded installer were
+removed. The unchanged implementation then passed the complete suite and build.
+No personal library files were removed to free space.
+
+Independent review found and prompted fixes for bare-name converter resolution
+and two raw failure messages. Discovery now resolves qualified executable
+candidates to absolute canonical paths before review, preserving env/PATH/bundle
+precedence. Regressions prove that a different child PATH or working directory
+cannot redirect the approved converter. Managed-file collisions and post-review
+Trash changes now give preservation/re-review guidance. Starting preparation also
+clears stale transfer results.
+
+Calibre 9.16.0 was downloaded from its official distribution, verified with macOS
+signature/notarization checks, and copied only into scratch for this validation.
+It was not installed in Applications or bundled into Takio. Normal use still
+requires a discoverable local Calibre installation or explicit executable path.
+The backend is pinned by resolved path, not executable content hash. Native output
+validation guarantees regular/nonempty verified bytes, not complete AZW3 semantic
+validation for arbitrary backends. The shared converter's process-grandchild
+termination and the store's cross-process publication races remain preexisting
+boundaries, not claims resolved by this slice.
+
+**Physical EPUB/AZW3 rendering and the earlier Kindle reading checkpoint remain
+unobserved.** The Kindle is safely ejected. No Mac-side parser, roundtrip or native
+state test closes that external gate. Search-tail latency, scrolling/accessibility
+measurement, missing-reference recovery and MTP remain separate product work.
 
 ## Physical Kindle acceptance: October 22, 2026
 
