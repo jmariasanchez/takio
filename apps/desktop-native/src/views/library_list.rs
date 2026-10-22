@@ -256,7 +256,9 @@ fn empty_label(state: &LibraryEntity, cx: &App) -> &'static str {
         "No books match"
     } else {
         match read.section {
-            crate::state::Section::Library => "Import a book to get started",
+            crate::state::Section::Library => {
+                "Add books or drop files here. Your originals stay where they are."
+            }
             crate::state::Section::Trash => "Trash is empty",
         }
     }

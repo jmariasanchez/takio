@@ -92,12 +92,16 @@ against a generated 10k library and fails above budget. CI runs it on macOS.
 
 ## Scope for the first cut (v1)
 
+Product priorities follow `../plans/2026-10-22-focused-native-library.md`, not
+Calibre parity. Advanced engine capabilities need not all become desktop UI.
+
 In:
 - Library list with title, authors, series, formats, added date columns;
   sortable; multi-select; keyboard navigation.
 - Incremental literal search; facet filters by author, tag, series, language,
   format in the sidebar.
 - Inspector: cover, every metadata field, formats with provenance, path.
+- Basic details editor: title, authors, series, tags, explicit Save/Cancel.
 - Actions: import files/folders (native open panel, copy or move), open in
   default app, move to trash, restore, purge, send to mounted device, eject.
 - Trash section.
@@ -105,7 +109,7 @@ In:
 - Native menu bar with the same actions and accelerators.
 - Light and dark appearance following the system.
 
-Out (remain in CLI/TUI or later cuts): metadata editing, candidate review,
+Out (remain in CLI/TUI or later cuts): advanced metadata editing, candidate review,
 duplicates, conversion jobs, custom columns, saved views, export dialogs,
 backup/restore. These keep working through `takio`.
 

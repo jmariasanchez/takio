@@ -31,6 +31,15 @@ impl Render for Sidebar {
         let destinations = state.destinations.clone();
         let facets = state.facets.clone();
         let filters = state.filters.clone();
+        let selected = state.selected.len();
+        let available = state.can_mutate();
+        let can_send = available && section == Section::Library && selected > 0;
+        let refreshing = state.refreshing_devices;
+        let device_error = state.device_error.clone();
+        let readers: Vec<_> = destinations
+            .into_iter()
+            .filter(|device| !matches!(device.kind, takio::destinations::DestinationKind::Generic))
+            .collect();
         let mut sidebar = div()
             .w(px(metrics::SIDEBAR_WIDTH))
             .flex_shrink_0()
@@ -68,49 +77,99 @@ impl Render for Sidebar {
             div()
                 .mt_3()
                 .px_2()
+                .flex()
+                .justify_between()
                 .text_color(theme.text_tertiary)
-                .child("Devices"),
+                .child("Readers")
+                .child(
+                    div()
+                        .id("refresh-readers")
+                        .text_xs()
+                        .cursor_pointer()
+                        .text_color(theme.accent)
+                        .child(if refreshing { "Checking..." } else { "Refresh" })
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.state
+                                .update(cx, |state, cx| state.refresh_destinations(cx))
+                        })),
+                ),
         );
-        for (index, destination) in destinations.into_iter().enumerate() {
+        if readers.is_empty() {
+            sidebar = sidebar.child(div().px_2().py_2().text_xs().text_color(theme.text_secondary)
+                .child(device_error.unwrap_or_else(|| "Connect your reader with a data-capable USB cable, then Refresh. Only mounted USB readers appear here. MTP is not supported yet.".into())));
+        }
+        for (index, destination) in readers.into_iter().enumerate() {
             let send = destination.clone();
             sidebar = sidebar.child(
                 div()
                     .flex()
-                    .items_center()
-                    .gap_2()
+                    .flex_col()
+                    .gap_1()
                     .px_2()
-                    .h(px(26.))
+                    .py_2()
                     .child(
                         div()
-                            .id(("device", index))
-                            .flex_1()
                             .min_w_0()
                             .text_ellipsis()
                             .overflow_hidden()
-                            .cursor_pointer()
-                            .child(destination.name.clone())
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.state.update(cx, |state, cx| {
-                                    if state.primary_selected().is_some() {
-                                        state.send_selected_to(send.clone(), cx);
-                                    }
-                                });
-                            })),
+                            .child(destination.name.clone()),
                     )
                     .child(
                         div()
-                            .id(("eject", index))
-                            .text_xs()
-                            .text_color(theme.text_tertiary)
-                            .cursor_pointer()
-                            .child("Eject")
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.state
-                                    .update(cx, |state, cx| state.eject(destination.clone(), cx));
-                            })),
+                            .flex()
+                            .gap_2()
+                            .items_center()
+                            .child(
+                                div()
+                                    .id(("send-device", index))
+                                    .text_xs()
+                                    .px_2()
+                                    .py_1()
+                                    .rounded(px(metrics::RADIUS))
+                                    .bg(theme.row_selected_inactive)
+                                    .text_color(if can_send {
+                                        theme.accent
+                                    } else {
+                                        theme.text_tertiary
+                                    })
+                                    .when(can_send, |button| button.cursor_pointer())
+                                    .child(if can_send {
+                                        format!("Send {selected} selected")
+                                    } else {
+                                        "Select books to send".to_owned()
+                                    })
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.state.update(cx, |state, cx| {
+                                            state.send_selected_to(send.clone(), cx)
+                                        });
+                                    })),
+                            )
+                            .child(
+                                div()
+                                    .id(("eject", index))
+                                    .text_xs()
+                                    .text_color(if available {
+                                        theme.text_secondary
+                                    } else {
+                                        theme.text_tertiary
+                                    })
+                                    .when(available, |button| button.cursor_pointer())
+                                    .child("Eject")
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.state.update(cx, |state, cx| {
+                                            state.eject(destination.clone(), cx)
+                                        });
+                                    })),
+                            ),
                     ),
             );
         }
+        sidebar = sidebar.child(div().px_2().py_2().flex().flex_col().gap_1()
+            .child(div().text_xs().text_color(theme.text_secondary).child("Have an EPUB? Reveal its file in the inspector, then upload it yourself on Amazon."))
+            .child(div().id("amazon-send-to-kindle").text_xs().text_color(theme.accent).cursor_pointer()
+                .child("Open Send to Kindle website")
+                .on_click(|_, _, cx| cx.open_url("https://www.amazon.com/sendtokindle")))
+            .child(div().text_xs().text_color(theme.text_tertiary).child("Opens your browser. Takio does not upload files or confirm Amazon delivery.")));
         let mut groups = div()
             .id("facets")
             .mt_3()

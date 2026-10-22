@@ -28,6 +28,21 @@ const COMMANDS: &[Command] = &[
         action: || Box::new(crate::OpenSelected),
     },
     Command {
+        label: "Edit Book Details...",
+        hint: "Cmd E",
+        action: || Box::new(crate::EditSelected),
+    },
+    Command {
+        label: "Send Selected Books...",
+        hint: "Cmd Shift S",
+        action: || Box::new(crate::SendSelected),
+    },
+    Command {
+        label: "Eject Reader...",
+        hint: "",
+        action: || Box::new(crate::EjectReader),
+    },
+    Command {
         label: "Move to Trash",
         hint: "Cmd Backspace",
         action: || Box::new(crate::TrashSelected),
@@ -395,7 +410,13 @@ mod tests {
 
     #[test]
     fn empty_filter_preserves_all_command_order() {
-        assert_eq!(COMMANDS.len(), 12);
+        for label in [
+            "Edit Book Details...",
+            "Send Selected Books...",
+            "Eject Reader...",
+        ] {
+            assert!(COMMANDS.iter().any(|command| command.label == label));
+        }
         assert_eq!(
             matching_commands(""),
             (0..COMMANDS.len()).collect::<Vec<_>>()
@@ -409,7 +430,9 @@ mod tests {
             .map(|index| COMMANDS[index].label)
             .collect();
         assert_eq!(labels, ["Show Library", "Show Trash"]);
-        assert_eq!(matching_commands("permanent"), vec![5]);
+        let permanent = matching_commands("permanent");
+        assert_eq!(permanent.len(), 1);
+        assert_eq!(COMMANDS[permanent[0]].label, "Delete Permanently");
     }
 
     #[test]

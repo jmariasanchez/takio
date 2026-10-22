@@ -26,6 +26,7 @@ actions!(
         Import,
         ImportMove,
         OpenSelected,
+        EditSelected,
         TrashSelected,
         RestoreSelected,
         PurgeSelected,
@@ -38,6 +39,8 @@ actions!(
         ShowTrash,
         TogglePalette,
         RefreshDevices,
+        SendSelected,
+        EjectReader,
     ]
 );
 
@@ -57,11 +60,11 @@ fn main() {
 
     application().run(move |cx: &mut App| {
         cx.set_global(Theme::LIGHT);
-        cx.on_action(|_: &Quit, cx| cx.quit());
         cx.bind_keys([
             KeyBinding::new("cmd-q", Quit, None),
             KeyBinding::new("cmd-shift-i", Import, None),
             KeyBinding::new("cmd-o", OpenSelected, None),
+            KeyBinding::new("cmd-e", EditSelected, None),
             KeyBinding::new("cmd-backspace", TrashSelected, None),
             KeyBinding::new("cmd-a", SelectAll, Some("LibraryList")),
             KeyBinding::new("down", SelectNext, Some("LibraryList")),
@@ -72,10 +75,17 @@ fn main() {
             KeyBinding::new("cmd-2", ShowTrash, None),
             KeyBinding::new("cmd-k", TogglePalette, None),
             KeyBinding::new("cmd-r", RefreshDevices, None),
+            KeyBinding::new("cmd-shift-s", SendSelected, None),
         ]);
         cx.set_menus(menus());
 
         let state = cx.new(|cx| LibraryState::new(engine.clone(), cx));
+        let quit_state = state.clone();
+        cx.on_action(move |_: &Quit, cx| {
+            if quit_state.update(cx, |state, cx| state.can_close(cx)) {
+                cx.quit();
+            }
+        });
         let bounds = Bounds::centered(None, size(px(1280.), px(800.)), cx);
         cx.open_window(
             WindowOptions {
@@ -90,6 +100,10 @@ fn main() {
             },
             |window, cx| {
                 cx.set_global(Theme::for_appearance(window.appearance()));
+                let close_state = state.clone();
+                window.on_window_should_close(cx, move |_, cx| {
+                    close_state.update(cx, |state, cx| state.can_close(cx))
+                });
                 cx.new(|cx| Workspace::new(state.clone(), window, cx))
             },
         )
@@ -106,6 +120,7 @@ fn menus() -> Vec<Menu> {
             MenuItem::action("Import and Move...", ImportMove),
             MenuItem::separator(),
             MenuItem::action("Open", OpenSelected),
+            MenuItem::action("Edit Book Details...", EditSelected),
             MenuItem::separator(),
             MenuItem::action("Move to Trash", TrashSelected),
             MenuItem::action("Restore from Trash", RestoreSelected),
@@ -122,6 +137,11 @@ fn menus() -> Vec<Menu> {
             MenuItem::separator(),
             MenuItem::action("Command Palette", TogglePalette),
             MenuItem::action("Refresh Devices", RefreshDevices),
+        ]),
+        Menu::new("Reader").items([
+            MenuItem::action("Send Selected Books...", SendSelected),
+            MenuItem::action("Eject Reader...", EjectReader),
+            MenuItem::action("Refresh Readers", RefreshDevices),
         ]),
     ]
 }
