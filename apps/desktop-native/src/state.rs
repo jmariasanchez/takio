@@ -16,7 +16,9 @@ use takio::destinations::Destination;
 use takio::model::{LibraryItem, LibraryPatch};
 use takio::output::{AppError, AppResult};
 
-use crate::engine::{Engine, Facets, Filters, ImportMode, Request, SendReport};
+use crate::engine::{
+    Engine, Facets, Filters, ImportMode, Request, SendPreview, SendPreviewEntry, SendReport,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Section {
@@ -79,6 +81,9 @@ pub struct LibraryState {
     pub saving_metadata: bool,
     pub metadata_save_result: Option<Result<String, String>>,
     pub delivery_report: Option<SendReport>,
+    pub send_preview: Option<SendPreview>,
+    pub delivery_exclusions: Vec<SendPreviewEntry>,
+    send_preview_generation: u64,
     generation: u64,
     sorting: bool,
     debounce: Option<Task<()>>,
@@ -106,6 +111,9 @@ impl LibraryState {
             saving_metadata: false,
             metadata_save_result: None,
             delivery_report: None,
+            send_preview: None,
+            delivery_exclusions: Vec::new(),
+            send_preview_generation: 0,
             generation: 0,
             sorting: false,
             debounce: None,
@@ -204,6 +212,7 @@ impl LibraryState {
         if self.section == section {
             return;
         }
+        self.cancel_send_preview(cx);
         self.section = section;
         self.clear_selection();
         self.reload(cx);
@@ -379,7 +388,7 @@ impl LibraryState {
     }
 
     pub fn can_mutate(&self) -> bool {
-        !self.busy && !self.metadata_editing && !self.loading
+        !self.busy && !self.metadata_editing && !self.loading && self.send_preview.is_none()
     }
 
     pub fn can_close(&mut self, cx: &mut Context<Self>) -> bool {
@@ -403,7 +412,7 @@ impl LibraryState {
     }
 
     pub fn update_metadata(&mut self, id: String, patch: LibraryPatch, cx: &mut Context<Self>) {
-        if self.busy || self.section != Section::Library {
+        if self.busy || self.send_preview.is_some() || self.section != Section::Library {
             self.metadata_save_result = Some(Err("Finish the current operation first".into()));
             cx.notify();
             return;
@@ -563,15 +572,85 @@ impl LibraryState {
         }
         self.busy = true;
         self.delivery_report = None;
-        let name = destination.name.clone();
+        self.delivery_exclusions.clear();
+        self.send_preview_generation = self.send_preview_generation.wrapping_add(1);
+        let generation = self.send_preview_generation;
         self.set_status(
-            format!("Sending {} book(s) to {name}...", item_ids.len()),
+            format!(
+                "Checking {} book(s) for {}...",
+                item_ids.len(),
+                destination.name
+            ),
             false,
             cx,
         );
-        let receiver = self.engine.request(|reply| Request::SendMany {
+        let receiver = self.engine.request(|reply| Request::PreviewSend {
             destination,
             item_ids,
+            reply,
+        });
+        self.await_reply(receiver, cx, move |this, result, cx| {
+            this.busy = false;
+            if this.send_preview_generation != generation || this.section != Section::Library {
+                this.set_status("Send review cancelled. Nothing was sent.".into(), false, cx);
+                return;
+            }
+            match result {
+                Ok(preview) => {
+                    let ready = preview.ready_count();
+                    let blocked = preview.entries.len() - ready;
+                    this.send_preview = Some(preview);
+                    this.set_status(format!("Review send: {ready} ready, {blocked} need attention. Nothing sent yet."), false, cx);
+                }
+                Err(error) => this.set_error(error.code(), cx),
+            }
+        }).detach();
+    }
+
+    pub fn cancel_send_preview(&mut self, cx: &mut Context<Self>) {
+        self.send_preview_generation = self.send_preview_generation.wrapping_add(1);
+        if self.send_preview.take().is_some() {
+            self.set_status("Send review cancelled. Nothing was sent.".into(), false, cx);
+        }
+    }
+
+    pub fn confirm_send_preview(&mut self, cx: &mut Context<Self>) {
+        if self.busy || self.loading || self.metadata_editing || self.section != Section::Library {
+            return;
+        }
+        let Some(preview) = self.send_preview.as_ref() else {
+            return;
+        };
+        if preview.ready_count() == 0 {
+            return;
+        }
+        let preview = self.send_preview.take().expect("checked preview");
+        let (ready, excluded) = preview
+            .entries
+            .into_iter()
+            .partition(|entry| entry.result.is_ok());
+        self.delivery_exclusions = excluded;
+        self.deliver_reviewed(preview.destination, ready, cx);
+    }
+
+    fn deliver_reviewed(
+        &mut self,
+        destination: Destination,
+        entries: Vec<SendPreviewEntry>,
+        cx: &mut Context<Self>,
+    ) {
+        self.busy = true;
+        self.delivery_report = None;
+        let excluded = self.delivery_exclusions.len();
+        let name = destination.name.clone();
+        self.set_status(
+            format!("Sending {} book(s) to {name}...", entries.len()),
+            false,
+            cx,
+        );
+        let receiver = self.engine.request(|reply| Request::SendReviewed {
+            destination,
+            entries,
             reply,
         });
         self.await_reply(receiver, cx, move |this, result, cx| {
@@ -585,7 +664,7 @@ impl LibraryState {
                         .count();
                     let failed = report.entries.len() - sent;
                     this.set_status(
-                        format!("Sent {sent} to {name}, {failed} failed"),
+                        format!("Sent {sent} to {name}, {failed} failed, {excluded} not sent"),
                         failed > 0,
                         cx,
                     );
@@ -743,6 +822,7 @@ pub fn humanize_error(code: &str) -> String {
         "copy-failed" => "The copy could not be completed. Check the reader connection, available space, and write permissions before retrying.".into(),
         "verification-failed" => "The copied book could not be verified. Do not rely on this transfer. Check the reader connection and try again.".into(),
         "destination-file-exists" => "A file with that name already exists on the device".into(),
+        "send-review-changed" => "The compatible attachment changed after review. Review the send again before copying.".into(),
         "format-not-found" => "That book has no file to send".into(),
         "no-compatible-format" | "destination-format-unsupported" => "No compatible file attached. Add an AZW3/PDF for a stock Kindle, or use Amazon's Send to Kindle for EPUB.".into(),
         "invalid-arguments" => "Check the book details and selection, then try again".into(),
@@ -1319,10 +1399,9 @@ mod tests {
         });
         settle(&f.state, cx);
         f.state.read_with(cx, |s, _| {
-            let report = s.delivery_report.as_ref().unwrap();
-            let code = report.entries[0].result.as_ref().unwrap_err();
-            assert_eq!(code, "unknown-destination");
-            let message = humanize_error(code);
+            assert!(s.delivery_report.is_none());
+            assert!(s.send_preview.is_none());
+            let message = &s.status.as_ref().unwrap().text;
             assert!(message.contains("Reconnect"));
             assert!(message.contains("Refresh readers"));
             assert!(s.status.as_ref().unwrap().is_error);
@@ -1436,6 +1515,71 @@ mod tests {
     }
 
     #[gpui::test]
+    fn cancelled_preflight_cannot_reappear_after_section_round_trip(cx: &mut TestAppContext) {
+        for change_section in [false, true] {
+            let f = fixture(cx);
+            let volumes = f._temp.path().join("volumes");
+            let mount = volumes.join("Kindle");
+            for directory in ["documents", "system", "koreader"] {
+                fs::create_dir_all(mount.join(directory)).unwrap();
+            }
+            let destination = takio::destinations::authorize(&mount, &volumes).unwrap();
+            f.state.update(cx, |s, cx| {
+                s.select_all(cx);
+                s.send_selected_to(destination, cx);
+                if change_section {
+                    s.set_section(Section::Trash, cx);
+                    s.set_section(Section::Library, cx);
+                } else {
+                    s.cancel_send_preview(cx);
+                }
+            });
+            settle(&f.state, cx);
+            f.state.update(cx, |s, cx| {
+                assert!(s.send_preview.is_none());
+                assert!(s.delivery_report.is_none());
+                assert!(s.can_mutate());
+                s.confirm_send_preview(cx);
+                assert!(!s.busy);
+                assert!(s.status.as_ref().unwrap().text.contains("Nothing was sent"));
+            });
+            assert_eq!(fs::read_dir(mount.join("documents")).unwrap().count(), 0);
+            assert!(!mount.join(".takio").exists());
+        }
+    }
+
+    #[gpui::test]
+    fn pending_review_blocks_mutations_and_cancel_restores_actions(cx: &mut TestAppContext) {
+        let f = fixture(cx);
+        let volumes = f._temp.path().join("volumes");
+        let mount = volumes.join("Kindle");
+        for directory in ["documents", "system", "koreader"] {
+            fs::create_dir_all(mount.join(directory)).unwrap();
+        }
+        let destination = takio::destinations::authorize(&mount, &volumes).unwrap();
+        f.state.update(cx, |s, cx| {
+            s.select_all(cx);
+            s.send_selected_to(destination.clone(), cx);
+        });
+        settle(&f.state, cx);
+        f.state.update(cx, |s, cx| {
+            assert!(!s.can_mutate());
+            s.trash_selected(cx);
+            s.eject(destination.clone(), cx);
+            s.send_selected_to(destination, cx);
+            s.update_metadata(s.items[0].id.clone(), LibraryPatch::default(), cx);
+            assert!(!s.busy);
+            assert_eq!(s.send_preview.as_ref().unwrap().entries.len(), 3);
+            s.cancel_send_preview(cx);
+            assert!(s.can_mutate());
+        });
+        settle(&f.state, cx);
+        assert_eq!(titles(&f.state, cx), ["Alpha", "Beta", "Gamma"]);
+        assert_eq!(fs::read_dir(mount.join("documents")).unwrap().count(), 0);
+        assert!(!mount.join(".takio").exists());
+    }
+
+    #[gpui::test]
     fn multi_send_reports_each_book_and_survives_reload(cx: &mut TestAppContext) {
         let f = fixture(cx);
         let pdf = f._temp.path().join("Readable.pdf");
@@ -1458,9 +1602,24 @@ mod tests {
             s.reload(cx);
         });
         settle(&f.state, cx);
+        f.state.update(cx, |s, cx| {
+            let preview = s.send_preview.as_ref().unwrap();
+            assert_eq!(preview.entries.len(), 4);
+            assert_eq!(preview.ready_count(), 1);
+            assert!(s.delivery_report.is_none());
+            assert!(!s.can_mutate());
+            assert_eq!(fs::read_dir(device.join("documents")).unwrap().count(), 0);
+            s.select_only(0, cx);
+            s.confirm_send_preview(cx);
+            s.confirm_send_preview(cx);
+            s.eject(destination.clone(), cx);
+            s.reload(cx);
+        });
+        settle(&f.state, cx);
         f.state.read_with(cx, |s, _| {
             let report = s.delivery_report.as_ref().unwrap();
-            assert_eq!(report.entries.len(), 4);
+            assert_eq!(report.entries.len(), 1);
+            assert_eq!(s.delivery_exclusions.len(), 3);
             assert_eq!(
                 report
                     .entries
@@ -1474,7 +1633,7 @@ mod tests {
                     .as_ref()
                     .unwrap()
                     .text
-                    .contains("1 to Kindle, 3 failed")
+                    .contains("1 to Kindle, 0 failed, 3 not sent")
             );
         });
         let inventory = takio::destinations::inventory(&destination).unwrap();

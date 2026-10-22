@@ -38,6 +38,16 @@ const COMMANDS: &[Command] = &[
         action: || Box::new(crate::SendSelected),
     },
     Command {
+        label: "Send Ready Books from Review",
+        hint: "Cmd Enter",
+        action: || Box::new(crate::ConfirmSend),
+    },
+    Command {
+        label: "Cancel Send Review",
+        hint: "Cmd .",
+        action: || Box::new(crate::CancelSend),
+    },
+    Command {
         label: "Eject Reader...",
         hint: "",
         action: || Box::new(crate::EjectReader),

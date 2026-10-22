@@ -313,6 +313,13 @@ fn send_chooser_uses_ids_captured_before_selection_changes(cx: &mut TestAppConte
     cx.simulate_prompt_answer(&reader.name);
     settle(&f.state, cx);
     f.state.read_with(cx, |state, _| {
+        let preview = state.send_preview.as_ref().unwrap();
+        assert_eq!(preview.ready_ids(), vec![chosen.id.clone()]);
+        assert!(state.delivery_report.is_none());
+    });
+    assert_reader_untouched(&reader);
+    confirm_send(&f, cx);
+    f.state.read_with(cx, |state, _| {
         let report = state.delivery_report.as_ref().unwrap();
         assert_eq!(report.entries.len(), 1);
         assert_eq!(report.entries[0].item_id, chosen.id);
@@ -355,6 +362,349 @@ fn send_chooser_cancel_writes_nothing(cx: &mut TestAppContext) {
         0
     );
     assert_files_unchanged(&f);
+}
+
+fn assert_reader_untouched(reader: &takio::destinations::Destination) {
+    assert_eq!(
+        std::fs::read_dir(reader.path.join("documents"))
+            .unwrap()
+            .count(),
+        0
+    );
+    assert!(!reader.path.join(".takio").exists());
+}
+
+#[cfg(debug_assertions)]
+fn click_control(f: &Fixture, selector: &'static str, cx: &mut TestAppContext) {
+    cx.run_until_parked();
+    cx.update_window(f.window.into(), |_, window, cx| window.draw(cx).clear(cx))
+        .unwrap();
+    let mut visual = gpui::VisualTestContext::from_window(f.window.into(), cx);
+    let bounds = visual
+        .debug_bounds(selector)
+        .unwrap_or_else(|| panic!("missing rendered control: {selector}"));
+    assert!(bounds.size.width > px(0.) && bounds.size.height > px(0.));
+    visual.simulate_click(bounds.center(), gpui::Modifiers::none());
+    settle(&f.state, cx);
+}
+
+#[cfg(debug_assertions)]
+#[gpui::test]
+fn sidebar_pointer_review_cancel_writes_nothing(cx: &mut TestAppContext) {
+    let f = fixture(false, cx);
+    let reader = reader(&f, cx);
+    let chosen = f.state.read_with(cx, |state, _| state.selected_ids());
+    let before: Vec<_> = f
+        .originals
+        .iter()
+        .chain(f.books.iter().map(|book| &book.source_path))
+        .map(|path| (path.clone(), std::fs::read(path).unwrap()))
+        .collect();
+
+    click_control(&f, "send-device", cx);
+    assert!(!cx.has_pending_prompt());
+    f.state.read_with(cx, |state, _| {
+        assert_eq!(state.send_preview.as_ref().unwrap().ready_ids(), chosen);
+        assert!(state.delivery_report.is_none());
+    });
+    assert_reader_untouched(&reader);
+
+    click_control(&f, "cancel-send-review", cx);
+    f.state.read_with(cx, |state, _| {
+        assert!(state.send_preview.is_none());
+        assert!(state.delivery_report.is_none());
+        assert!(state.delivery_exclusions.is_empty());
+        assert!(state.can_mutate());
+    });
+    assert_reader_untouched(&reader);
+    for (path, bytes) in before {
+        assert_eq!(std::fs::read(path).unwrap(), bytes);
+    }
+}
+
+#[cfg(debug_assertions)]
+#[gpui::test]
+fn sidebar_pointer_send_ready_uses_reviewed_selection(cx: &mut TestAppContext) {
+    let f = fixture(false, cx);
+    let reader = reader(&f, cx);
+    let chosen = f.state.read_with(cx, |state, _| state.items[0].clone());
+    let original_bytes = std::fs::read(&f.originals[0]).unwrap();
+    let managed_bytes = std::fs::read(&chosen.source_path).unwrap();
+
+    click_control(&f, "send-device", cx);
+    assert!(!cx.has_pending_prompt());
+    f.state.read_with(cx, |state, _| {
+        assert_eq!(
+            state.send_preview.as_ref().unwrap().ready_ids(),
+            vec![chosen.id.clone()]
+        );
+        assert!(state.delivery_report.is_none());
+    });
+    assert_reader_untouched(&reader);
+    f.state.update(cx, |state, cx| state.select_only(1, cx));
+
+    click_control(&f, "confirm-send-review", cx);
+    f.state.read_with(cx, |state, _| {
+        assert!(state.send_preview.is_none());
+        let report = state.delivery_report.as_ref().unwrap();
+        assert_eq!(report.entries.len(), 1);
+        assert_eq!(report.entries[0].item_id, chosen.id);
+        let delivered = report.entries[0].result.as_ref().unwrap();
+        assert_eq!(std::fs::read(&delivered.path).unwrap(), managed_bytes);
+    });
+    let inventory = takio::destinations::inventory(&reader).unwrap();
+    assert_eq!(inventory.len(), 1);
+    assert_eq!(inventory[0].record.item_id, chosen.id);
+    assert_eq!(inventory[0].status, "present");
+    assert_eq!(
+        std::fs::read_dir(reader.path.join("documents"))
+            .unwrap()
+            .count(),
+        1
+    );
+    assert_eq!(std::fs::read(&chosen.source_path).unwrap(), managed_bytes);
+    assert_eq!(std::fs::read(&f.originals[0]).unwrap(), original_bytes);
+    assert_files_unchanged(&f);
+}
+
+fn preview_selected(
+    f: &Fixture,
+    reader: &takio::destinations::Destination,
+    cx: &mut TestAppContext,
+) {
+    f.window
+        .update(cx, |_, window, cx| {
+            window.dispatch_action(Box::new(crate::SendSelected), cx);
+        })
+        .unwrap();
+    cx.run_until_parked();
+    assert!(cx.has_pending_prompt());
+    cx.simulate_prompt_answer(&reader.name);
+    settle(&f.state, cx);
+    assert!(
+        f.state
+            .read_with(cx, |state, _| state.send_preview.is_some())
+    );
+    assert_reader_untouched(reader);
+}
+
+fn confirm_send(f: &Fixture, cx: &mut TestAppContext) {
+    f.window
+        .update(cx, |_, window, cx| {
+            window.dispatch_action(Box::new(crate::ConfirmSend), cx);
+        })
+        .unwrap();
+    settle(&f.state, cx);
+}
+
+#[gpui::test]
+fn cancel_send_review_and_later_confirm_write_nothing(cx: &mut TestAppContext) {
+    let f = fixture(false, cx);
+    let reader = reader(&f, cx);
+    preview_selected(&f, &reader, cx);
+    f.window
+        .update(cx, |_, window, cx| {
+            window.dispatch_action(Box::new(crate::CancelSend), cx);
+        })
+        .unwrap();
+    settle(&f.state, cx);
+    confirm_send(&f, cx);
+    f.state.read_with(cx, |state, _| {
+        assert!(state.send_preview.is_none());
+        assert!(state.delivery_report.is_none());
+        assert!(state.delivery_exclusions.is_empty());
+    });
+    assert_reader_untouched(&reader);
+    assert_files_unchanged(&f);
+}
+
+#[gpui::test]
+fn cancel_send_while_preview_is_pending_discards_reply(cx: &mut TestAppContext) {
+    let f = fixture(false, cx);
+    let reader = reader(&f, cx);
+    f.state
+        .update(cx, |state, cx| state.send_selected_to(reader.clone(), cx));
+    assert!(f.state.read_with(cx, |state, _| state.busy));
+    f.window
+        .update(cx, |_, window, cx| {
+            window.dispatch_action(Box::new(crate::CancelSend), cx);
+        })
+        .unwrap();
+    settle(&f.state, cx);
+    confirm_send(&f, cx);
+    f.state.read_with(cx, |state, _| {
+        assert!(state.send_preview.is_none());
+        assert!(state.delivery_report.is_none());
+    });
+    assert_reader_untouched(&reader);
+    assert_files_unchanged(&f);
+}
+
+#[gpui::test]
+fn mixed_send_review_confirms_only_ready_ids_and_retains_exclusions(cx: &mut TestAppContext) {
+    let f = fixture(false, cx);
+    let reader = reader(&f, cx);
+    let (ready, blocked) = f.state.read_with(cx, |state, _| {
+        (state.items[0].clone(), state.items[1].clone())
+    });
+    std::fs::remove_file(&blocked.formats[0].source_path).unwrap();
+    f.state.update(cx, |state, _| {
+        state.selected.insert(1);
+    });
+    preview_selected(&f, &reader, cx);
+    f.state.read_with(cx, |state, _| {
+        let preview = state.send_preview.as_ref().unwrap();
+        assert_eq!(preview.entries.len(), 2);
+        assert_eq!(preview.ready_ids(), vec![ready.id.clone()]);
+        assert_eq!(
+            preview.entries[1].result.as_ref().unwrap_err(),
+            "source-unavailable"
+        );
+    });
+    confirm_send(&f, cx);
+    f.state.read_with(cx, |state, _| {
+        assert!(state.send_preview.is_none());
+        let report = state.delivery_report.as_ref().unwrap();
+        assert_eq!(report.entries.len(), 1);
+        assert_eq!(report.entries[0].item_id, ready.id);
+        assert!(report.entries[0].result.is_ok());
+        assert_eq!(state.delivery_exclusions.len(), 1);
+        assert_eq!(state.delivery_exclusions[0].item_id, blocked.id);
+        assert_eq!(
+            state.delivery_exclusions[0].result.as_ref().unwrap_err(),
+            "source-unavailable"
+        );
+    });
+    let inventory = takio::destinations::inventory(&reader).unwrap();
+    assert_eq!(inventory.len(), 1);
+    assert_eq!(inventory[0].record.item_id, ready.id);
+    assert!(f.originals.iter().all(|path| path.exists()));
+}
+
+#[gpui::test]
+fn all_blocked_send_review_cannot_confirm(cx: &mut TestAppContext) {
+    let f = fixture(false, cx);
+    let reader = reader(&f, cx);
+    std::fs::remove_dir(reader.path.join("koreader")).unwrap();
+    f.state.update(cx, |state, _| {
+        state.selected.insert(1);
+    });
+    preview_selected(&f, &reader, cx);
+    confirm_send(&f, cx);
+    f.state.read_with(cx, |state, _| {
+        let preview = state.send_preview.as_ref().unwrap();
+        assert_eq!(preview.ready_count(), 0);
+        assert_eq!(preview.entries.len(), 2);
+        assert!(
+            preview
+                .entries
+                .iter()
+                .all(|entry| entry.result.as_ref().unwrap_err() == "no-compatible-format")
+        );
+        assert!(state.delivery_report.is_none());
+    });
+    assert_reader_untouched(&reader);
+    assert_files_unchanged(&f);
+}
+
+#[gpui::test]
+fn send_confirmation_uses_preview_ids_and_ignores_repeated_confirmation(cx: &mut TestAppContext) {
+    let f = fixture(false, cx);
+    let reader = reader(&f, cx);
+    let chosen = f.state.read_with(cx, |state, _| state.items[0].clone());
+    preview_selected(&f, &reader, cx);
+    f.state.update(cx, |state, _| {
+        state.selected.clear();
+        state.selected.insert(1);
+        state.anchor = Some(1);
+    });
+    f.window
+        .update(cx, |_, window, cx| {
+            window.dispatch_action(Box::new(crate::ConfirmSend), cx);
+            window.dispatch_action(Box::new(crate::ConfirmSend), cx);
+        })
+        .unwrap();
+    settle(&f.state, cx);
+    confirm_send(&f, cx);
+    f.state.read_with(cx, |state, _| {
+        assert!(state.send_preview.is_none());
+        let report = state.delivery_report.as_ref().unwrap();
+        assert_eq!(report.entries.len(), 1);
+        assert_eq!(report.entries[0].item_id, chosen.id);
+        assert!(report.entries[0].result.is_ok());
+    });
+    let inventory = takio::destinations::inventory(&reader).unwrap();
+    assert_eq!(inventory.len(), 1);
+    assert_eq!(inventory[0].record.item_id, chosen.id);
+    assert_eq!(
+        std::fs::read_dir(reader.path.join("documents"))
+            .unwrap()
+            .count(),
+        1
+    );
+    assert_files_unchanged(&f);
+}
+
+#[gpui::test]
+fn confirm_send_rechecks_source_reader_capabilities_disconnect_and_collision(
+    cx: &mut TestAppContext,
+) {
+    for change in ["source", "capabilities", "disconnect", "collision"] {
+        let f = fixture(false, cx);
+        let reader = reader(&f, cx);
+        let chosen = f.state.read_with(cx, |state, _| state.items[0].clone());
+        preview_selected(&f, &reader, cx);
+        let target =
+            reader
+                .path
+                .join("documents")
+                .join(takio::destinations::destination_file_name(
+                    &chosen.title,
+                    chosen.author.as_deref(),
+                    "epub",
+                ));
+        let expected = match change {
+            "source" => {
+                std::fs::remove_file(&chosen.formats[0].source_path).unwrap();
+                "source-unavailable"
+            }
+            "capabilities" => {
+                std::fs::remove_dir(reader.path.join("koreader")).unwrap();
+                "no-compatible-format"
+            }
+            "disconnect" => {
+                std::fs::remove_dir_all(&reader.path).unwrap();
+                "unknown-destination"
+            }
+            "collision" => {
+                std::fs::write(&target, b"other writer's bytes").unwrap();
+                "destination-file-exists"
+            }
+            _ => unreachable!(),
+        };
+        confirm_send(&f, cx);
+        f.state.read_with(cx, |state, _| {
+            let report = state.delivery_report.as_ref().unwrap();
+            assert_eq!(report.entries.len(), 1);
+            assert_eq!(report.entries[0].item_id, chosen.id);
+            assert_eq!(report.entries[0].result.as_ref().unwrap_err(), expected);
+        });
+        assert!(!reader.path.join(".takio").exists());
+        if change == "disconnect" {
+            assert!(!reader.path.exists());
+        } else if change == "collision" {
+            assert_eq!(std::fs::read(&target).unwrap(), b"other writer's bytes");
+            assert_eq!(
+                std::fs::read_dir(reader.path.join("documents"))
+                    .unwrap()
+                    .count(),
+                1
+            );
+        } else {
+            assert_reader_untouched(&reader);
+        }
+        assert!(f.originals.iter().all(|path| path.exists()));
+    }
 }
 
 #[gpui::test]

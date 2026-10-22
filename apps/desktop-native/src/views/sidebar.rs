@@ -122,6 +122,7 @@ impl Render for Sidebar {
                             .child(
                                 div()
                                     .id(("send-device", index))
+                                    .debug_selector(|| "send-device".to_owned())
                                     .text_xs()
                                     .px_2()
                                     .py_1()
@@ -134,7 +135,7 @@ impl Render for Sidebar {
                                     })
                                     .when(can_send, |button| button.cursor_pointer())
                                     .child(if can_send {
-                                        format!("Send {selected} selected")
+                                        format!("Review {selected} to send")
                                     } else {
                                         "Select books to send".to_owned()
                                     })

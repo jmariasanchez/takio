@@ -6,6 +6,7 @@
 //! `library service` loop did, but without a process boundary or JSON.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
@@ -89,6 +90,46 @@ pub enum ImportMode {
 /// Larger batches are rejected before any destination is modified.
 pub const MAX_SEND_ITEMS: usize = 256;
 
+/// Format/source readiness only, not a promise of delivery or collision avoidance.
+#[derive(Clone, Debug)]
+pub struct SendPreview {
+    pub destination: Destination,
+    pub entries: Vec<SendPreviewEntry>,
+}
+
+#[derive(Clone, Debug)]
+pub struct SendPreviewEntry {
+    pub item_id: String,
+    /// Stored title, or the requested ID when the item could not be loaded.
+    pub title: String,
+    pub result: Result<ReadyFile, String>,
+}
+
+/// Reviewed selection, not an immutable snapshot of the file's bytes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReadyFile {
+    pub format: FormatId,
+    pub source_path: PathBuf,
+}
+
+impl SendPreview {
+    #[cfg(test)]
+    pub fn ready_ids(&self) -> Vec<String> {
+        self.entries
+            .iter()
+            .filter(|entry| entry.result.is_ok())
+            .map(|entry| entry.item_id.clone())
+            .collect()
+    }
+
+    pub fn ready_count(&self) -> usize {
+        self.entries
+            .iter()
+            .filter(|entry| entry.result.is_ok())
+            .count()
+    }
+}
+
 /// One outcome per requested ID, in request order, including failures.
 #[derive(Clone, Debug, Default)]
 pub struct SendReport {
@@ -140,6 +181,17 @@ pub enum Request {
         volumes_root: PathBuf,
         reply: Sender<AppResult<Vec<Destination>>>,
     },
+    PreviewSend {
+        destination: Destination,
+        item_ids: Vec<String>,
+        reply: Sender<AppResult<SendPreview>>,
+    },
+    SendReviewed {
+        destination: Destination,
+        entries: Vec<SendPreviewEntry>,
+        reply: Sender<AppResult<SendReport>>,
+    },
+    #[cfg(test)]
     SendMany {
         destination: Destination,
         item_ids: Vec<String>,
@@ -232,6 +284,21 @@ fn worker(mut store: LibraryStore, receiver: Receiver<Request>) {
             } => {
                 let _ = reply.send(destinations::list(&volumes_root));
             }
+            Request::PreviewSend {
+                destination,
+                item_ids,
+                reply,
+            } => {
+                let _ = reply.send(preview_send(&store, &destination, &item_ids));
+            }
+            Request::SendReviewed {
+                destination,
+                entries,
+                reply,
+            } => {
+                let _ = reply.send(send_reviewed(&store, &destination, &entries));
+            }
+            #[cfg(test)]
             Request::SendMany {
                 destination,
                 item_ids,
@@ -265,17 +332,22 @@ fn send_item(
     if store.list_trash()?.iter().any(|item| item.id == item_id) {
         return Err(AppError::new("item-trashed"));
     }
-    deliver_item(destination, &item)
+    deliver_item(destination, &item, None)
 }
 
-fn send_many(
+fn preview_send(
     store: &LibraryStore,
     destination: &Destination,
     item_ids: &[String],
-) -> AppResult<SendReport> {
+) -> AppResult<SendPreview> {
     if item_ids.len() > MAX_SEND_ITEMS {
         return Err(AppError::new("invalid-arguments"));
     }
+    let root = destination
+        .path
+        .parent()
+        .ok_or_else(|| AppError::new("unknown-destination"))?;
+    let destination = destinations::authorize(&destination.path, root)?;
     let trashed: BTreeSet<_> = store
         .list_trash()?
         .into_iter()
@@ -291,14 +363,107 @@ fn send_many(
                 if trashed.contains(id) {
                     return Err(AppError::new("item-trashed"));
                 }
-                deliver_item(destination, &item)
+                let format = preferred_format(&item, &destination)
+                    .ok_or_else(|| AppError::new("no-compatible-format"))?;
+                let unavailable = || AppError::new("source-unavailable");
+                // Reject directories and special files before opening, then check the handle.
+                if !format.source_path.is_file() {
+                    return Err(unavailable());
+                }
+                let mut source =
+                    std::fs::File::open(&format.source_path).map_err(|_| unavailable())?;
+                if !source.metadata().map_err(|_| unavailable())?.is_file() {
+                    return Err(unavailable());
+                }
+                source.read(&mut [0u8; 1]).map_err(|_| unavailable())?;
+                Ok(ReadyFile {
+                    format: format.format,
+                    source_path: format.source_path.clone(),
+                })
             });
-            SendEntry {
+            SendPreviewEntry {
                 item_id: id.clone(),
                 title,
                 result: result.map_err(|error| error.code().to_owned()),
             }
         })
+        .collect();
+    Ok(SendPreview {
+        destination,
+        entries,
+    })
+}
+
+fn send_reviewed(
+    store: &LibraryStore,
+    destination: &Destination,
+    entries: &[SendPreviewEntry],
+) -> AppResult<SendReport> {
+    if entries.len() > MAX_SEND_ITEMS {
+        return Err(AppError::new("invalid-arguments"));
+    }
+    let trashed: BTreeSet<_> = store
+        .list_trash()?
+        .into_iter()
+        .map(|item| item.id)
+        .collect();
+    Ok(SendReport {
+        entries: entries
+            .iter()
+            .filter_map(|entry| {
+                let ready = entry.result.as_ref().ok()?;
+                Some(send_entry(
+                    store,
+                    destination,
+                    &trashed,
+                    &entry.item_id,
+                    Some(ready),
+                ))
+            })
+            .collect(),
+    })
+}
+
+fn send_entry(
+    store: &LibraryStore,
+    destination: &Destination,
+    trashed: &BTreeSet<String>,
+    id: &str,
+    reviewed: Option<&ReadyFile>,
+) -> SendEntry {
+    let mut title = id.to_owned();
+    let result = store.get(id).and_then(|item| {
+        let item = item.ok_or_else(|| AppError::new("not-found"))?;
+        title.clone_from(&item.title);
+        if trashed.contains(id) {
+            return Err(AppError::new("item-trashed"));
+        }
+        deliver_item(destination, &item, reviewed)
+    });
+    SendEntry {
+        item_id: id.to_owned(),
+        title,
+        result: result.map_err(|error| error.code().to_owned()),
+    }
+}
+
+#[cfg(test)]
+fn send_many(
+    store: &LibraryStore,
+    destination: &Destination,
+    item_ids: &[String],
+) -> AppResult<SendReport> {
+    if item_ids.len() > MAX_SEND_ITEMS {
+        return Err(AppError::new("invalid-arguments"));
+    }
+    let trashed: BTreeSet<_> = store
+        .list_trash()?
+        .into_iter()
+        .map(|item| item.id)
+        .collect();
+    let entries = item_ids
+        .iter()
+        .map(|id| send_entry(store, destination, &trashed, id, None))
         .collect();
     Ok(SendReport { entries })
 }
@@ -339,7 +504,11 @@ fn preferred_format<'a>(
         .find_map(|wanted| item.formats.iter().find(|format| format.format == *wanted))
 }
 
-fn deliver_item(destination: &Destination, item: &LibraryItem) -> AppResult<DeliveryResult> {
+fn deliver_item(
+    destination: &Destination,
+    item: &LibraryItem,
+    reviewed: Option<&ReadyFile>,
+) -> AppResult<DeliveryResult> {
     // Refresh mount detection so a disconnected reader is not recreated as a local folder,
     // and stale caller-provided capabilities cannot permit an incompatible format.
     let root = destination
@@ -349,6 +518,11 @@ fn deliver_item(destination: &Destination, item: &LibraryItem) -> AppResult<Deli
     let destination = destinations::authorize(&destination.path, root)?;
     let format = preferred_format(item, &destination)
         .ok_or_else(|| AppError::new("no-compatible-format"))?;
+    if reviewed.is_some_and(|ready| {
+        ready.format != format.format || ready.source_path != format.source_path
+    }) {
+        return Err(AppError::new("send-review-changed"));
+    }
     let author = item
         .authors
         .first()
@@ -417,6 +591,321 @@ mod tests {
         let source = root.join(format!("{title}.{extension}"));
         fs::write(&source, format!("contents for {title}.{extension}")).unwrap();
         store.import(&source, Some(title), false).unwrap()
+    }
+
+    #[test]
+    fn preview_reports_ordered_readiness_without_writing() {
+        let (temp, mut store, destination) = delivery_fixture();
+        let good = add_book(&mut store, temp.path(), "Ready", "azw3");
+        let incompatible = add_book(&mut store, temp.path(), "EPUB", "epub");
+        let missing = add_book(&mut store, temp.path(), "Missing", "mobi");
+        fs::remove_file(&missing.source_path).unwrap();
+        let trash = add_book(&mut store, temp.path(), "Trash", "pdf");
+        store.trash(&trash.id).unwrap();
+        let directory = add_book(&mut store, temp.path(), "Directory", "txt");
+        fs::remove_file(&directory.source_path).unwrap();
+        fs::create_dir(&directory.source_path).unwrap();
+        let original = fs::read(&good.source_path).unwrap();
+        let ids = vec![
+            good.id.clone(),
+            incompatible.id,
+            missing.id,
+            trash.id,
+            "absent".into(),
+            directory.id,
+        ];
+        let preview = preview_send(&store, &destination, &ids).unwrap();
+        assert_eq!(
+            preview
+                .entries
+                .iter()
+                .map(|entry| &entry.item_id)
+                .collect::<Vec<_>>(),
+            ids.iter().collect::<Vec<_>>()
+        );
+        assert_eq!(
+            preview.entries[0].result.as_ref().map(|ready| ready.format),
+            Ok(FormatId::Azw3)
+        );
+        for (entry, code) in preview.entries[1..].iter().zip([
+            "no-compatible-format",
+            "source-unavailable",
+            "item-trashed",
+            "not-found",
+            "source-unavailable",
+        ]) {
+            assert_eq!(entry.result.as_ref().unwrap_err(), code);
+        }
+        assert_eq!(preview.entries[0].title, "Ready");
+        assert_eq!(preview.entries[3].title, "Trash");
+        assert_eq!(preview.entries[4].title, "absent");
+        assert_eq!(preview.ready_ids(), vec![good.id]);
+        assert_eq!(preview.ready_count(), 1);
+        assert_eq!(fs::read(&good.source_path).unwrap(), original);
+        assert_eq!(
+            fs::read_dir(destination.path.join("documents"))
+                .unwrap()
+                .count(),
+            0
+        );
+        assert_eq!(fs::read_dir(&destination.path).unwrap().count(), 2);
+        assert!(!destination.path.join(".takio").exists());
+    }
+
+    #[test]
+    fn preview_refreshes_capabilities_and_prefers_attached_formats() {
+        let (temp, mut store, mut destination) = delivery_fixture();
+        let item = add_book(&mut store, temp.path(), "Preferred preview", "epub");
+        destination.features.push("koreader".into());
+        let ids = vec![item.id.clone()];
+        let preview = preview_send(&store, &destination, &ids).unwrap();
+        assert!(preview.destination.features.is_empty());
+        assert_eq!(
+            preview.entries[0].result.as_ref().unwrap_err(),
+            "no-compatible-format"
+        );
+        for extension in ["mobi", "azw3"] {
+            let source = temp.path().join(format!("attachment.{extension}"));
+            fs::write(&source, extension).unwrap();
+            store.attach_format(&item.id, &source, true).unwrap();
+        }
+        assert_eq!(
+            preview_send(&store, &destination, &ids).unwrap().entries[0]
+                .result
+                .as_ref()
+                .map(|ready| ready.format),
+            Ok(FormatId::Azw3)
+        );
+        let stored = store.get(&item.id).unwrap().unwrap();
+        let selected = stored
+            .formats
+            .iter()
+            .find(|format| format.format == FormatId::Azw3)
+            .unwrap();
+        fs::remove_file(&selected.source_path).unwrap();
+        assert_eq!(
+            preview_send(&store, &destination, &ids).unwrap().entries[0]
+                .result
+                .as_ref()
+                .unwrap_err(),
+            "source-unavailable"
+        );
+        destination.features.clear();
+        fs::create_dir(destination.path.join("koreader")).unwrap();
+        let preview = preview_send(&store, &destination, &ids).unwrap();
+        assert_eq!(preview.destination.features, vec!["koreader"]);
+        assert_eq!(
+            preview.entries[0].result.as_ref().map(|ready| ready.format),
+            Ok(FormatId::Epub)
+        );
+        fs::remove_dir(destination.path.join("koreader")).unwrap();
+        fs::remove_dir(destination.path.join("system")).unwrap();
+        fs::create_dir(destination.path.join(".kobo")).unwrap();
+        let preview = preview_send(&store, &destination, &ids).unwrap();
+        assert!(matches!(preview.destination.kind, DestinationKind::Kobo));
+        assert_eq!(
+            preview.entries[0].result.as_ref().map(|ready| ready.format),
+            Ok(FormatId::Epub)
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn preview_rejects_unreadable_source() {
+        use std::os::unix::fs::PermissionsExt;
+        let (temp, mut store, destination) = delivery_fixture();
+        let item = add_book(&mut store, temp.path(), "Unreadable", "azw3");
+        let permissions = fs::metadata(&item.source_path).unwrap().permissions();
+        fs::set_permissions(&item.source_path, fs::Permissions::from_mode(0o000)).unwrap();
+        let unreadable = std::fs::File::open(&item.source_path).is_err();
+        let preview = preview_send(&store, &destination, &[item.id]).unwrap();
+        fs::set_permissions(&item.source_path, permissions).unwrap();
+        // Privileged test processes can still read mode-000 files.
+        if unreadable {
+            assert_eq!(
+                preview.entries[0].result.as_ref().unwrap_err(),
+                "source-unavailable"
+            );
+        } else {
+            assert_eq!(
+                preview.entries[0].result.as_ref().map(|ready| ready.format),
+                Ok(FormatId::Azw3)
+            );
+        }
+    }
+
+    #[test]
+    fn preview_bounds_before_io_and_requires_connected_destination() {
+        let (_temp, store, destination) = delivery_fixture();
+        assert_eq!(
+            preview_send(&store, &destination, &vec!["absent".into(); MAX_SEND_ITEMS])
+                .unwrap()
+                .entries
+                .len(),
+            MAX_SEND_ITEMS
+        );
+        let empty = preview_send(&store, &destination, &[]).unwrap();
+        assert_eq!(empty.ready_count(), 0);
+        assert!(empty.ready_ids().is_empty());
+        fs::remove_dir_all(&destination.path).unwrap();
+        assert_eq!(
+            preview_send(
+                &store,
+                &destination,
+                &vec!["absent".into(); MAX_SEND_ITEMS + 1]
+            )
+            .unwrap_err()
+            .code(),
+            "invalid-arguments"
+        );
+        assert_eq!(
+            preview_send(&store, &destination, &[]).unwrap_err().code(),
+            "unknown-destination"
+        );
+        assert!(!destination.path.exists());
+    }
+
+    #[test]
+    fn worker_preview_does_not_promise_collision_free_delivery() {
+        let (temp, mut store, destination) = delivery_fixture();
+        let item = add_book(&mut store, temp.path(), "Existing preview", "azw3");
+        let target = destination.path.join("documents/Existing preview.azw3");
+        fs::write(&target, b"keep existing").unwrap();
+        let (sender, receiver) = mpsc::channel();
+        let worker = thread::spawn(move || worker(store, receiver));
+        let engine = Engine { sender };
+        let preview = engine
+            .request(|reply| Request::PreviewSend {
+                destination: destination.clone(),
+                item_ids: vec![item.id],
+                reply,
+            })
+            .recv()
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            preview.entries[0].result.as_ref().map(|ready| ready.format),
+            Ok(FormatId::Azw3)
+        );
+        assert_eq!(fs::read(&target).unwrap(), b"keep existing");
+        assert_eq!(
+            fs::read_dir(destination.path.join("documents"))
+                .unwrap()
+                .count(),
+            1
+        );
+        assert!(!destination.path.join(".takio").exists());
+        let report = engine
+            .request(|reply| Request::SendReviewed {
+                destination: preview.destination.clone(),
+                entries: preview.entries,
+                reply,
+            })
+            .recv()
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            report.entries[0].result.as_ref().unwrap_err(),
+            "destination-file-exists"
+        );
+        assert_eq!(fs::read(target).unwrap(), b"keep existing");
+        drop(engine);
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn reviewed_send_rejects_changed_preference_or_source_path() {
+        for change in ["capabilities", "preferred-attachment", "source-path"] {
+            let (temp, mut store, destination) = delivery_fixture();
+            let item = add_book(&mut store, temp.path(), "Reviewed", "epub");
+            let mobi = temp.path().join("reviewed.mobi");
+            fs::write(&mobi, b"reviewed mobi").unwrap();
+            store.attach_format(&item.id, &mobi, false).unwrap();
+            let preview =
+                preview_send(&store, &destination, std::slice::from_ref(&item.id)).unwrap();
+            assert_eq!(
+                preview.entries[0].result.as_ref().unwrap().format,
+                FormatId::Mobi
+            );
+            match change {
+                "capabilities" => {
+                    fs::create_dir(destination.path.join("koreader")).unwrap();
+                }
+                "preferred-attachment" => {
+                    let azw3 = temp.path().join("preferred.azw3");
+                    fs::write(&azw3, b"new preferred attachment").unwrap();
+                    store.attach_format(&item.id, &azw3, true).unwrap();
+                }
+                "source-path" => {
+                    store.remove_format(&item.id, FormatId::Mobi).unwrap();
+                    let replacement = temp.path().join("replacement.mobi");
+                    fs::write(&replacement, b"replacement attachment").unwrap();
+                    store.attach_format(&item.id, &replacement, false).unwrap();
+                }
+                _ => unreachable!(),
+            }
+            let report = send_reviewed(&store, &preview.destination, &preview.entries).unwrap();
+            assert_eq!(report.entries.len(), 1);
+            assert_eq!(
+                report.entries[0].result.as_ref().unwrap_err(),
+                "send-review-changed",
+                "{change}"
+            );
+            assert_eq!(
+                fs::read_dir(destination.path.join("documents"))
+                    .unwrap()
+                    .count(),
+                0
+            );
+            assert!(!destination.path.join(".takio").exists());
+            assert_eq!(fs::read(&mobi).unwrap(), b"reviewed mobi");
+        }
+    }
+
+    #[test]
+    fn reviewed_send_preserves_no_compatible_format_error() {
+        let (temp, mut store, destination) = delivery_fixture();
+        fs::create_dir(destination.path.join("koreader")).unwrap();
+        let item = add_book(&mut store, temp.path(), "EPUB reviewed", "epub");
+        let preview = preview_send(&store, &destination, &[item.id]).unwrap();
+        fs::remove_dir(destination.path.join("koreader")).unwrap();
+        let report = send_reviewed(&store, &preview.destination, &preview.entries).unwrap();
+        assert_eq!(
+            report.entries[0].result.as_ref().unwrap_err(),
+            "no-compatible-format"
+        );
+        assert!(!destination.path.join(".takio").exists());
+    }
+
+    #[test]
+    fn reviewed_send_delivers_unchanged_ready_files_only_and_is_bounded() {
+        let (temp, mut store, destination) = delivery_fixture();
+        let ready = add_book(&mut store, temp.path(), "Reviewed ready", "azw3");
+        let blocked = add_book(&mut store, temp.path(), "Reviewed blocked", "epub");
+        let preview = preview_send(&store, &destination, &[blocked.id, ready.id.clone()]).unwrap();
+        let selected = preview.entries[1].result.as_ref().unwrap();
+        assert_eq!(selected.format, FormatId::Azw3);
+        assert_eq!(selected.source_path, ready.formats[0].source_path);
+        assert_eq!(
+            send_reviewed(
+                &store,
+                &destination,
+                &vec![preview.entries[1].clone(); MAX_SEND_ITEMS + 1]
+            )
+            .unwrap_err()
+            .code(),
+            "invalid-arguments"
+        );
+        assert!(!destination.path.join(".takio").exists());
+        let report = send_reviewed(&store, &preview.destination, &preview.entries).unwrap();
+        assert_eq!(report.entries.len(), 1);
+        assert_eq!(report.entries[0].item_id, ready.id);
+        let result = report.entries[0].result.as_ref().unwrap();
+        assert_eq!(
+            fs::read(&result.path).unwrap(),
+            fs::read(&selected.source_path).unwrap()
+        );
+        assert_eq!(destinations::inventory(&destination).unwrap().len(), 1);
     }
 
     #[test]

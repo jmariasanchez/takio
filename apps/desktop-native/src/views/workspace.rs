@@ -161,12 +161,15 @@ impl Workspace {
                 .map(|device| PromptButton::new(device.name.clone())),
         );
         let message = if send {
-            format!("Send {} selected book(s) to which reader?", ids.len())
+            format!(
+                "Send {} selected book(s): review for which reader?",
+                ids.len()
+            )
         } else {
             "Eject which reader?".to_owned()
         };
         let answer = window.prompt(PromptLevel::Info, &message,
-            Some(if send { "Takio sends attached compatible formats only. Existing files are never overwritten. Each result is reported." } else { "Wait for a successful eject before unplugging the USB cable." }),
+            Some(if send { "Next, review compatible formats and any blocked books. Nothing is sent until you confirm Send ready." } else { "Wait for a successful eject before unplugging the USB cable." }),
             &buttons, cx);
         let state = self.state.clone();
         cx.spawn(async move |_, cx| {
@@ -187,6 +190,45 @@ impl Workspace {
         })
         .detach();
     }
+
+    fn send_review(
+        &self,
+        preview: crate::engine::SendPreview,
+        theme: Theme,
+        cx: &mut Context<Self>,
+    ) -> gpui::Div {
+        let ready = preview.ready_count();
+        let blocked = preview.entries.len() - ready;
+        let enabled = ready > 0 && !self.state.read(cx).loading;
+        div()
+            .flex().flex_col().flex_shrink_0().gap_2().p_3()
+            .border_t_1().border_color(theme.border)
+            .child(div().text_sm().font_weight(gpui::FontWeight::SEMIBOLD)
+                .child(format!("Review send to {}", preview.destination.name)))
+            .child(div().text_xs().text_color(theme.text_secondary)
+                .child(format!("{ready} ready, {blocked} need attention. Nothing sent yet.")))
+            .child(div().id("send-review-books").max_h(px(130.)).overflow_y_scroll()
+                .children(preview.entries.into_iter().map(|entry| {
+                    let (message, blocked) = match entry.result {
+                        Ok(file) => (format!("Ready as {}", file.format.as_str().to_uppercase()), false),
+                        Err(code) => (format!("Not ready: {}", humanize_error(&code)), true),
+                    };
+                    div().py_1().text_xs()
+                        .text_color(if blocked { theme.danger } else { theme.text_secondary })
+                        .child(format!("{}: {message}", entry.title))
+                })))
+            .child(div().text_xs().text_color(theme.text_tertiary)
+                .child("No conversion. Files are checked again when sending. Existing reader files are never overwritten."))
+            .child(div().flex().flex_wrap().gap_2()
+                .child(toolbar_button("cancel-send-review", "Cancel", true, theme)
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.state.update(cx, |state, cx| state.cancel_send_preview(cx));
+                    })))
+                .child(toolbar_button("confirm-send-review", format!("Send {ready} ready"), enabled, theme)
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.state.update(cx, |state, cx| state.confirm_send_preview(cx));
+                    }))))
+    }
 }
 
 impl Focusable for Workspace {
@@ -206,6 +248,8 @@ impl Render for Workspace {
         let section = read.section;
         let can_mutate = read.can_mutate();
         let report = read.delivery_report.clone();
+        let preview = read.send_preview.clone();
+        let exclusions = read.delivery_exclusions.clone();
 
         let summary = if selected > 0 {
             format!("{selected} of {count} selected")
@@ -281,6 +325,14 @@ impl Render for Workspace {
             }))
             .on_action(cx.listener(|this, _: &crate::SendSelected, window, cx| {
                 this.choose_reader(true, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &crate::ConfirmSend, _, cx| {
+                this.state
+                    .update(cx, |state, cx| state.confirm_send_preview(cx));
+            }))
+            .on_action(cx.listener(|this, _: &crate::CancelSend, _, cx| {
+                this.state
+                    .update(cx, |state, cx| state.cancel_send_preview(cx));
             }))
             .on_action(cx.listener(|this, _: &crate::EjectReader, window, cx| {
                 this.choose_reader(false, window, cx)
@@ -393,6 +445,7 @@ impl Render for Workspace {
                                     }),
                             )
                             .child(div().flex_1().min_h_0().child(self.list.clone()))
+                            .children(preview.map(|preview| self.send_review(preview, theme, cx)))
                             .children(report.map(|report| {
                                 div()
                                     .flex()
@@ -417,14 +470,17 @@ impl Render for Workspace {
                                                     .on_click(cx.listener(|this, _, _, cx| {
                                                         this.state.update(cx, |state, cx| {
                                                             state.delivery_report = None;
+                                                            state.delivery_exclusions.clear();
                                                             cx.notify();
                                                         })
                                                     })),
                                             ),
                                     )
                                     .child(
-                                        div().id("transfer-results").overflow_y_scroll().children(
-                                            report.entries.into_iter().map(|entry| {
+                                        div()
+                                            .id("transfer-results")
+                                            .overflow_y_scroll()
+                                            .children(report.entries.into_iter().map(|entry| {
                                                 let (message, error) = match entry.result {
                                                     Ok(_) => {
                                                         ("Sent and verified".to_owned(), false)
@@ -441,8 +497,20 @@ impl Render for Workspace {
                                                         theme.text_secondary
                                                     })
                                                     .child(format!("{}: {message}", entry.title))
-                                            }),
-                                        ),
+                                            }))
+                                            .children(exclusions.into_iter().map(|entry| {
+                                                div()
+                                                    .py_1()
+                                                    .text_xs()
+                                                    .text_color(theme.text_secondary)
+                                                    .child(format!(
+                                                        "{}: Not sent (blocked in review). {}",
+                                                        entry.title,
+                                                        humanize_error(
+                                                            entry.result.as_ref().unwrap_err()
+                                                        )
+                                                    ))
+                                            })),
                                     )
                             })),
                     )
@@ -455,12 +523,13 @@ impl Render for Workspace {
 
 fn toolbar_button(
     id: &'static str,
-    label: &'static str,
+    label: impl Into<gpui::SharedString>,
     enabled: bool,
     theme: Theme,
 ) -> gpui::Stateful<gpui::Div> {
     div()
         .id(id)
+        .debug_selector(move || id.to_owned())
         .px_2()
         .py_1()
         .text_sm()
@@ -476,5 +545,5 @@ fn toolbar_button(
                 .cursor_pointer()
                 .hover(|style| style.bg(theme.row_hover))
         })
-        .child(label)
+        .child(label.into())
 }

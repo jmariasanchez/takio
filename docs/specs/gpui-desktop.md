@@ -133,6 +133,14 @@ In:
 - Basic details editor: title, authors, series, tags, explicit Save/Cancel.
 - Actions: import files/folders (native open panel, copy or move), open in
   default app, move to trash, restore, purge, send to mounted device, eject.
+- Sending starts with a read-only review of the captured selection and freshly
+  detected reader. Show each ready attachment's format and each blocked book's
+  reason. Explicit Send ready and Cancel actions are available in the review,
+  Reader menu, and command palette. Cmd-Enter confirms, Cmd-. cancels. Confirmation
+  keeps the reviewed IDs, formats, and source paths, rechecks them before copying,
+  and asks for a new review if the compatible attachment changed. Blocked books
+  remain visible separately from attempted-transfer failures. Preview is not a
+  delivery guarantee, conversion, content snapshot, or physical readability test.
 - Trash section.
 - Command palette (Cmd-K) over every action.
 - Native menu bar with the same actions and accelerators.

@@ -40,6 +40,8 @@ actions!(
         TogglePalette,
         RefreshDevices,
         SendSelected,
+        ConfirmSend,
+        CancelSend,
         EjectReader,
     ]
 );
@@ -76,6 +78,8 @@ fn main() {
             KeyBinding::new("cmd-k", TogglePalette, None),
             KeyBinding::new("cmd-r", RefreshDevices, None),
             KeyBinding::new("cmd-shift-s", SendSelected, None),
+            KeyBinding::new("cmd-enter", ConfirmSend, None),
+            KeyBinding::new("cmd-.", CancelSend, None),
         ]);
         cx.set_menus(menus());
 
@@ -140,6 +144,8 @@ fn menus() -> Vec<Menu> {
         ]),
         Menu::new("Reader").items([
             MenuItem::action("Send Selected Books...", SendSelected),
+            MenuItem::action("Send Ready Books from Review", ConfirmSend),
+            MenuItem::action("Cancel Send Review", CancelSend),
             MenuItem::action("Eject Reader...", EjectReader),
             MenuItem::action("Refresh Readers", RefreshDevices),
         ]),

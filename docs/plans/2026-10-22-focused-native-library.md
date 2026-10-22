@@ -57,8 +57,9 @@ hardware, record this gate as blocked, not complete.
 - Improve measured search-tail latency without changing literal search semantics.
   The performance iteration below establishes a reproducible baseline. Measure
   actual input-to-display and scrolling separately before claiming those goals.
-- Make format preparation explicit: preview missing formats and offer optional
-  conversion only when a compatible backend is present and the user agrees.
+- Continue explicit format preparation: pre-send readiness review is implemented
+  below. Offer optional conversion only when a compatible backend is present and
+  the user agrees. Backend discovery and conversion controls remain incomplete.
 - Add reference-in-place import and missing-file recovery if real library use
   shows these are needed. Preserve caller ownership.
 - Test a physical Kindle and decide whether MTP is the next needed transport.
@@ -66,6 +67,91 @@ hardware, record this gate as blocked, not complete.
 Only expand this list when an observed core-workflow problem justifies it.
 Acceptance evidence for each implemented slice belongs below, with commands and
 limitations rather than speculative completion claims.
+
+## Product iteration: review before sending
+
+The next product slice addresses a visible gap in the existing send flow:
+incompatible formats are explained only after a send attempt. Before any reader
+write, show a read-only review of the captured selection and chosen reader, with
+the attached format for each ready book and a reason for every blocked book.
+Offer explicit Send ready and Cancel actions. Never convert automatically.
+
+Acceptance checks, recorded before implementation:
+
+- Native menu and sidebar send actions both open the same review. Preview and
+  Cancel leave source files, reader files, and the delivery manifest unchanged.
+- A mixed selection shows ready and blocked counts. Confirmation sends only the
+  captured ready IDs, even if selection changes, and reports excluded books
+  separately from transfer failures. All-blocked selections cannot send.
+- Detection and source checks happen on the engine thread. Preview uses fresh
+  reader capabilities, not cached sidebar data. Actual sends still reauthorize,
+  verify copied bytes, reject trashed books, and refuse overwrites.
+- Tests cover disconnects, source loss, collisions after preview, cancellation,
+  stale selection, and repeated clicks. Use temporary reader-shaped directories,
+  not physical hardware. Run native tests, formatting, strict native Clippy, and
+  exercise the app where the environment permits.
+
+This is the first part of explicit format preparation, not a conversion UI.
+Backend discovery and user-approved conversion remain follow-up work. Search-tail
+latency and physical-reader acceptance remain open, not displaced or completed.
+
+### Observed acceptance: 2026-10-22
+
+The completed slice adds read-only review to both send entry points, with a
+scrollable per-book list, explicit Send ready/Cancel, and keyboard/menu/palette
+access. Blocked books are retained in transfer results separately from failures
+of attempted copies. Pending review blocks mutations and eject. Cancellation and
+section changes invalidate late preview replies. Confirmation uses the original
+reviewed IDs, not the current selection.
+
+Independent review found that reselecting a preferred format during confirmation
+could silently send a different attachment than the one displayed. The confirmed
+request now retains the reviewed format and source path. Fresh authorization and
+attachment checks reject a changed preference/path with a re-review message.
+Preview does not snapshot file bytes or promise available space, collision-free
+delivery, or physical readability. Actual copies retain verification and
+no-overwrite protection. No shared Rust engine behavior or CLI interface changed.
+
+Automated gates:
+
+- `cargo test -p takio-desktop`: 85 passed, including 18 additional tests for
+  preview, source checks, cancellation, changed attachments, and native controls.
+  Pointer tests click the real sidebar, Cancel, and Send ready hitboxes.
+- `cargo test --workspace`: 255 passed (111 engine, 57 CLI, 2 custom-field,
+  85 native), with the two existing manual benchmarks ignored by default.
+- `cargo fmt --all --check`, `git diff --check`, and
+  `cargo clippy -p takio-desktop --all-targets -- -D warnings`: passed.
+- `bash scripts/package-desktop-native.sh`: strict ad-hoc signature verification
+  and isolated startup passed. Bundle size: 11,034,961 bytes.
+- `bash scripts/bench-desktop-native.sh`: five 10,000-book starts passed existing
+  budgets. Median paint 98.674 ms, query 157.185 ms, RSS 124,240 KiB. Log:
+  `$JCODE_SCRATCH_DIR/takio-send-review-startup.log`. No new interactive latency
+  or scrolling claim is made.
+
+The signed app was exercised from 11:00 to 11:05 UTC against
+`$JCODE_SCRATCH_DIR/takio-send-review.s6FhNv/library`. A disposable 20 MiB HFS+
+disk image, mounted as `TakioReview-s6FhNv`, supplied `documents` and `system`
+directories for normal production reader detection. This was not real hardware.
+
+1. File > Import selected the disposable inputs folder through the native picker.
+   The app reported two imports, no skips/failures, and preserved both originals.
+2. Sidebar Review opened a one-ready/one-blocked review: TXT ready, EPUB blocked
+   with guidance. Independent filesystem checks found no documents or manifest.
+   Reader > Cancel Send Review still left both absent.
+3. Reader > Send Selected Books opened the same review through the native chooser.
+   After changing selection to the blocked EPUB, Cmd-Enter still sent the reviewed
+   TXT only. Visible results said "Sent and verified" and "Not sent (blocked in
+   review)". Summary: one sent, zero failed, one not sent.
+4. Independent comparison found the delivered TXT byte-identical to its original.
+   The manifest contained exactly one 46-byte TXT record with SHA-256
+   `9ec56d6820e224a7ccdc7d11ffbc8ab9ccf5f44772323eba7d16204c41bd343e`.
+5. A second review of the EPUB alone showed zero ready. Confirmation through the
+   native menu wrote nothing. Cmd-. cancelled. The manifest and documents stayed
+   unchanged.
+6. Native Eject successfully unmounted only the disposable image. Normal Quit
+   exited with code 0. A separate CLI process verified two active managed books,
+   no Trash, and intact fingerprints. Original bytes also matched the exact
+   fixtures after app exit. No personal books or physical reader were modified.
 
 ## Performance iteration: 2026-10-22
 
