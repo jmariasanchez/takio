@@ -160,14 +160,16 @@ pub fn send(
     if overwrite && target.exists() {
         fs::remove_file(&target).map_err(|_| AppError::new("copy-failed"))?;
     }
-    if let Err(error) = fs::rename(&partial, &target) {
+    let publication = if overwrite {
+        fs::rename(&partial, &target).map_err(publication_error)
+    } else {
+        publish_noclobber(&partial, &target, &expected)
+    };
+    if let Err(error) = publication {
         let _ = fs::remove_file(&partial);
-        return Err(if error.kind() == std::io::ErrorKind::AlreadyExists {
-            AppError::new("destination-file-exists")
-        } else {
-            AppError::new("copy-failed")
-        });
+        return Err(error);
     }
+    let _ = fs::remove_file(&partial);
     if hash_file(&target)? != expected {
         let _ = fs::remove_file(&target);
         return Err(AppError::new("verification-failed"));
@@ -321,17 +323,64 @@ fn copy_and_hash(source: &Path, target: &Path) -> AppResult<(u64, String)> {
         .create_new(true)
         .write(true)
         .open(target)
-        .map_err(|_| AppError::new("copy-failed"))?;
-    let fingerprint = crate::fingerprint::copy_and_hash(&mut input, &mut output).map_err(
-        |error| match error {
-            CopyError::Read(_) => AppError::new("source-unavailable"),
-            CopyError::Write(_) => AppError::new("copy-failed"),
-        },
-    )?;
-    output
-        .sync_all()
-        .map_err(|_| AppError::new("copy-failed"))?;
-    Ok(fingerprint)
+        .map_err(publication_error)?;
+    let result = (|| {
+        let fingerprint = crate::fingerprint::copy_and_hash(&mut input, &mut output).map_err(
+            |error| match error {
+                CopyError::Read(_) => AppError::new("source-unavailable"),
+                CopyError::Write(_) => AppError::new("copy-failed"),
+            },
+        )?;
+        output
+            .sync_all()
+            .map_err(|_| AppError::new("copy-failed"))?;
+        Ok(fingerprint)
+    })();
+    drop(output);
+    if result.is_err() {
+        let _ = fs::remove_file(target);
+    }
+    result
+}
+
+fn publication_error(error: std::io::Error) -> AppError {
+    if error.kind() == std::io::ErrorKind::AlreadyExists {
+        AppError::new("destination-file-exists")
+    } else {
+        AppError::new("copy-failed")
+    }
+}
+
+fn publish_noclobber(partial: &Path, target: &Path, expected: &(u64, String)) -> AppResult<()> {
+    match fs::hard_link(partial, target) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            Err(publication_error(error))
+        }
+        Err(_) => publish_exclusive_copy(partial, target, expected),
+    }
+}
+
+/// FAT readers may not support hard links. Exclusive creation still prevents clobbering,
+/// but a crash during this non-atomic fallback can leave an untracked partial target.
+/// Only a fully synced and verified copy is reported as a successful delivery.
+fn publish_exclusive_copy(
+    partial: &Path,
+    target: &Path,
+    expected: &(u64, String),
+) -> AppResult<()> {
+    let copied = copy_and_hash(partial, target)?;
+    let verification = hash_file(target).and_then(|actual| {
+        if copied == *expected && actual == *expected {
+            Ok(())
+        } else {
+            Err(AppError::new("verification-failed"))
+        }
+    });
+    if verification.is_err() {
+        let _ = fs::remove_file(target);
+    }
+    verification
 }
 
 fn hash_file(path: &Path) -> AppResult<(u64, String)> {
@@ -398,6 +447,79 @@ mod tests {
     use super::*;
 
     #[test]
+    fn publication_preserves_a_target_created_after_preflight() {
+        let temporary = tempfile::tempdir().unwrap();
+        let partial = temporary.path().join("verified.partial");
+        let target = temporary.path().join("book.azw3");
+        fs::write(&partial, b"new book").unwrap();
+        let expected = hash_file(&partial).unwrap();
+        assert!(!target.exists());
+        fs::write(&target, b"other writer's book").unwrap();
+        for publish in [publish_noclobber, publish_exclusive_copy] {
+            assert_eq!(
+                publish(&partial, &target, &expected).unwrap_err().code(),
+                "destination-file-exists"
+            );
+            assert_eq!(fs::read(&target).unwrap(), b"other writer's book");
+            assert_eq!(fs::read(&partial).unwrap(), b"new book");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn publication_preserves_dangling_and_live_symlinks() {
+        let temporary = tempfile::tempdir().unwrap();
+        let partial = temporary.path().join("verified.partial");
+        let target = temporary.path().join("book.azw3");
+        let referent = temporary.path().join("external-book");
+        fs::write(&partial, b"new book").unwrap();
+        let expected = hash_file(&partial).unwrap();
+        std::os::unix::fs::symlink(&referent, &target).unwrap();
+        assert!(!target.exists());
+        for publish in [publish_noclobber, publish_exclusive_copy] {
+            assert_eq!(
+                publish(&partial, &target, &expected).unwrap_err().code(),
+                "destination-file-exists"
+            );
+            assert_eq!(fs::read_link(&target).unwrap(), referent);
+            assert!(!referent.exists());
+        }
+        fs::write(&referent, b"external bytes").unwrap();
+        for publish in [publish_noclobber, publish_exclusive_copy] {
+            assert_eq!(
+                publish(&partial, &target, &expected).unwrap_err().code(),
+                "destination-file-exists"
+            );
+            assert_eq!(fs::read_link(&target).unwrap(), referent);
+            assert_eq!(fs::read(&referent).unwrap(), b"external bytes");
+        }
+    }
+
+    #[test]
+    fn exclusive_copy_fallback_verifies_bytes_and_cleans_failed_new_output() {
+        let temporary = tempfile::tempdir().unwrap();
+        let partial = temporary.path().join("verified.partial");
+        let target = temporary.path().join("book.azw3");
+        fs::write(&partial, b"verified book").unwrap();
+        let expected = hash_file(&partial).unwrap();
+        publish_exclusive_copy(&partial, &target, &expected).unwrap();
+        assert_eq!(hash_file(&target).unwrap(), expected);
+        assert_eq!(fs::read(&partial).unwrap(), b"verified book");
+
+        let failed_target = temporary.path().join("failed.azw3");
+        let incorrect = (expected.0 + 1, expected.1.clone());
+        assert_eq!(
+            publish_exclusive_copy(&partial, &failed_target, &incorrect)
+                .unwrap_err()
+                .code(),
+            "verification-failed"
+        );
+        assert!(!failed_target.exists());
+        assert_eq!(hash_file(&target).unwrap(), expected);
+        assert!(partial.exists());
+    }
+
+    #[test]
     fn destination_names_are_safe_and_bounded() {
         let name = destination_file_name(&"A".repeat(300), Some("Author/Name"), "epub");
         assert!(name.chars().count() <= 180);
@@ -451,5 +573,34 @@ mod tests {
             inventory(&destination).expect("inventory")[0].status,
             "present"
         );
+
+        fs::write(&source, b"replacement bytes").unwrap();
+        assert_eq!(
+            send(
+                &destination,
+                "book-1",
+                &source,
+                "Book.epub",
+                "epub",
+                None,
+                false
+            )
+            .unwrap_err()
+            .code(),
+            "destination-file-exists"
+        );
+        assert_eq!(fs::read(&result.path).unwrap(), b"epub bytes");
+        send(
+            &destination,
+            "book-1",
+            &source,
+            "Book.epub",
+            "epub",
+            None,
+            true,
+        )
+        .unwrap();
+        assert_eq!(fs::read(&result.path).unwrap(), b"replacement bytes");
+        assert_eq!(inventory(&destination).unwrap()[0].status, "present");
     }
 }
