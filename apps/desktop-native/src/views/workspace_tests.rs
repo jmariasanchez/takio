@@ -7,6 +7,8 @@ use gpui::{AppContext, TestAppContext, WindowHandle};
 use std::{path::PathBuf, time::Duration};
 use takio::{model::LibraryItem, paths::LibraryPaths};
 
+include!("workspace_recovery_tests.rs");
+
 struct Fixture {
     _temp: tempfile::TempDir,
     engine: Engine,

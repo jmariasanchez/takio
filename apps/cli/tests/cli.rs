@@ -2396,6 +2396,28 @@ fn backup_restore_rebases_managed_files_into_a_new_library() {
         fs::read(marker).expect("read unrelated parent file"),
         b"unrelated"
     );
+    let restored_bytes = fs::read(&restored).expect("read restored database");
+    let repeat_restore = cargo_bin_cmd!("takio")
+        .args(["library", "restore-backup", "--db"])
+        .arg(&restored)
+        .args(["--source"])
+        .arg(&backup)
+        .output()
+        .expect("repeat restore");
+    assert!(!repeat_restore.status.success());
+    assert_eq!(failure_code(&repeat_restore.stdout), "destination-exists");
+    assert_eq!(fs::read(&restored).unwrap(), restored_bytes);
+    let manifest = fs::read(backup.join("manifest.json")).unwrap();
+    let repeat_backup = cargo_bin_cmd!("takio")
+        .args(["library", "backup", "--db"])
+        .arg(&original)
+        .args(["--dest"])
+        .arg(&backup)
+        .output()
+        .expect("repeat backup");
+    assert!(!repeat_backup.status.success());
+    assert_eq!(failure_code(&repeat_backup.stdout), "destination-exists");
+    assert_eq!(fs::read(backup.join("manifest.json")).unwrap(), manifest);
 }
 
 #[test]

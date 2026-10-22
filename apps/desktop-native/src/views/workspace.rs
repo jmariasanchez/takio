@@ -4,6 +4,9 @@
 #[path = "workspace_tests.rs"]
 mod tests;
 
+#[path = "workspace_recovery.rs"]
+mod recovery;
+
 use gpui::{
     App, Context, Entity, ExternalPaths, FocusHandle, Focusable, IntoElement, ParentElement,
     PathPromptOptions, PromptButton, PromptLevel, Render, Styled, Window, div, prelude::*, px,
@@ -27,6 +30,7 @@ pub struct Workspace {
     inspector: Entity<crate::views::inspector::Inspector>,
     palette: Entity<crate::views::palette::Palette>,
     focus: FocusHandle,
+    recovery_prompt_open: bool,
 }
 
 impl Workspace {
@@ -52,6 +56,7 @@ impl Workspace {
             palette,
             search,
             sidebar,
+            recovery_prompt_open: false,
         }
     }
 
@@ -289,6 +294,7 @@ impl Render for Workspace {
         let report = read.delivery_report.clone();
         let preview = read.send_preview.clone();
         let preparation = read.preparation_preview.clone();
+        let recovery = read.recovery_outcome.clone();
         let exclusions = read.delivery_exclusions.clone();
 
         let summary = if selected > 0 {
@@ -339,6 +345,17 @@ impl Render for Workspace {
             }))
             .on_action(cx.listener(|this, _: &ImportMove, window, cx| {
                 this.prompt_import(ImportMode::Move, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &crate::BackUpLibrary, window, cx| {
+                this.prompt_recovery(false, window, cx);
+            }))
+            .on_action(
+                cx.listener(|this, _: &crate::RestoreBackupCopy, window, cx| {
+                    this.prompt_recovery(true, window, cx);
+                }),
+            )
+            .on_action(cx.listener(|this, _: &crate::RevealRecovery, _, cx| {
+                this.reveal_recovery(cx);
             }))
             .on_action(cx.listener(|this, _: &crate::EditSelected, window, cx| {
                 this.inspector
@@ -516,6 +533,67 @@ impl Render for Workspace {
                                     }),
                             )
                             .child(div().flex_1().min_h_0().child(self.list.clone()))
+                            .children(recovery.map(|outcome| {
+                                div()
+                                    .id("recovery-result")
+                                    .flex()
+                                    .flex_col()
+                                    .gap_2()
+                                    .flex_shrink_0()
+                                    .max_h(px(220.))
+                                    .border_t_1()
+                                    .border_color(theme.border)
+                                    .p_3()
+                                    .text_sm()
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .flex_wrap()
+                                            .flex_shrink_0()
+                                            .gap_2()
+                                            .child(
+                                                toolbar_button(
+                                                    "reveal-recovery",
+                                                    "Reveal folder",
+                                                    true,
+                                                    theme,
+                                                )
+                                                .on_click(cx.listener(|this, _, _, cx| {
+                                                    this.reveal_recovery(cx)
+                                                })),
+                                            )
+                                            .child(
+                                                toolbar_button(
+                                                    "dismiss-recovery",
+                                                    "Dismiss",
+                                                    true,
+                                                    theme,
+                                                )
+                                                .on_click(cx.listener(|this, _, _, cx| {
+                                                    this.state.update(cx, |state, cx| {
+                                                        state.recovery_outcome = None;
+                                                        cx.notify();
+                                                    });
+                                                })),
+                                            ),
+                                    )
+                                    .child(
+                                        div()
+                                            .id("recovery-details")
+                                            .min_h_0()
+                                            .overflow_y_scroll()
+                                            .child(div().child(outcome.summary))
+                                            .child(
+                                                div()
+                                                    .text_xs()
+                                                    .text_color(theme.text_secondary)
+                                                    .child(outcome.detail),
+                                            )
+                                            .child(div().text_xs().child(
+                                                outcome.path.to_string_lossy().into_owned(),
+                                            )),
+                                    )
+                            }))
                             .children(preview.map(|preview| self.send_review(preview, theme, cx)))
                             .children(
                                 preparation

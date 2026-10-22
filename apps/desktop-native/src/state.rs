@@ -57,6 +57,13 @@ pub struct Status {
     pub is_error: bool,
 }
 
+#[derive(Clone, Debug)]
+pub struct RecoveryOutcome {
+    pub path: PathBuf,
+    pub summary: String,
+    pub detail: String,
+}
+
 struct LibrarySnapshot {
     items: Vec<Arc<LibraryItem>>,
     facets: Arc<Facets>,
@@ -74,6 +81,7 @@ pub struct LibraryState {
     pub sort: Sort,
     pub loading: bool,
     pub status: Option<Status>,
+    pub recovery_outcome: Option<RecoveryOutcome>,
     pub destinations: Vec<Destination>,
     pub refreshing_devices: bool,
     pub device_error: Option<String>,
@@ -107,6 +115,7 @@ impl LibraryState {
             sort: Sort::default(),
             loading: false,
             status: None,
+            recovery_outcome: None,
             destinations: Vec::new(),
             refreshing_devices: false,
             device_error: None,
@@ -363,6 +372,74 @@ impl LibraryState {
     }
 
     // ----- mutations -------------------------------------------------------
+
+    pub fn back_up_library(&mut self, destination: PathBuf, cx: &mut Context<Self>) {
+        if !self.can_mutate() {
+            self.set_status("Finish the current operation or save/cancel your edits, then choose Back Up Library again. No new backup was started.".into(), true, cx);
+            return;
+        }
+        self.busy = true;
+        self.recovery_outcome = None;
+        self.set_status("Copying and verifying library backup...".into(), false, cx);
+        let receiver = self
+            .engine
+            .request(|reply| Request::Backup { destination, reply });
+        self.await_reply(receiver, cx, |this, result, cx| {
+            this.busy = false;
+            match result {
+                Ok(report) => {
+                    let summary = format!("Backup verified: {} managed format(s)", report.managed_files);
+                    this.recovery_outcome = Some(RecoveryOutcome {
+                        path: report.destination_path,
+                        summary: summary.clone(),
+                        detail: "Includes the catalogue, Trash and managed files. External referenced files and conversion jobs are not included. Keep a copy on a separate drive.".into(),
+                    });
+                    this.set_status(summary, false, cx);
+                }
+                Err(error) => this.set_status(recovery_error(error.code()), true, cx),
+            }
+        }).detach();
+    }
+
+    pub fn restore_backup_copy(
+        &mut self,
+        source: PathBuf,
+        destination: PathBuf,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.can_mutate() {
+            self.set_status("Finish the current operation or save/cancel your edits, then choose Restore Backup again. No restore was started.".into(), true, cx);
+            return;
+        }
+        self.busy = true;
+        self.recovery_outcome = None;
+        self.set_status(
+            "Restoring and verifying a separate library copy...".into(),
+            false,
+            cx,
+        );
+        let receiver = self.engine.request(|reply| Request::RestoreBackupCopy {
+            source,
+            destination,
+            reply,
+        });
+        self.await_reply(receiver, cx, |this, result, cx| {
+            this.busy = false;
+            match result {
+                Ok(report) => {
+                    let summary = format!("Restore verified: {} book(s), {} in Trash, {} managed format(s)",
+                        report.report.active_items, report.report.trashed_items, report.report.verified_managed_formats);
+                    this.recovery_outcome = Some(RecoveryOutcome {
+                        path: report.database_path.parent().expect("restored database has a parent").to_path_buf(),
+                        summary: summary.clone(),
+                        detail: format!("Your current library is unchanged and still open. {} external reference(s) still need their original files. Conversion jobs are not restored.", report.report.referenced_formats),
+                    });
+                    this.set_status(summary, false, cx);
+                }
+                Err(error) => this.set_status(recovery_error(error.code()), true, cx),
+            }
+        }).detach();
+    }
 
     pub fn import(&mut self, roots: Vec<PathBuf>, mode: ImportMode, cx: &mut Context<Self>) {
         if roots.is_empty() || !self.can_mutate() {
@@ -981,6 +1058,16 @@ pub fn humanize_error(code: &str) -> String {
     }
 }
 
+fn recovery_error(code: &str) -> String {
+    match code {
+        "destination-exists" => "That location already exists. Choose a new folder name. Existing files were not replaced.".into(),
+        "invalid-arguments" => "Choose a new folder outside the current library and backup. Do not place recovery copies inside either library.".into(),
+        "source-invalid" | "incompatible-schema" | "invalid-stored-data" => "This is not a supported, safe Takio backup. Choose the complete backup folder created by a compatible Takio version. Your current library was not replaced.".into(),
+        "integrity-failed" => "The recovery copy could not be verified. A managed file or catalogue may be missing or changed. Keep the original library and try a different backup or destination.".into(),
+        _ => "The recovery copy could not be completed. Check free space, drive connections and permissions. Your current library was not replaced. Inspect the destination before retrying with a new folder name.".into(),
+    }
+}
+
 /// Convenience alias so views can declare their dependency plainly.
 pub type LibraryEntity = Entity<LibraryState>;
 
@@ -993,6 +1080,7 @@ mod tests {
     use takio::paths::LibraryPaths;
 
     include!("preparation_state_tests.rs");
+    include!("recovery_state_tests.rs");
 
     struct Fixture {
         _temp: tempfile::TempDir,

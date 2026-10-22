@@ -13,6 +13,21 @@ struct Command {
 }
 const COMMANDS: &[Command] = &[
     Command {
+        label: "Back Up Library...",
+        hint: "",
+        action: || Box::new(crate::BackUpLibrary),
+    },
+    Command {
+        label: "Restore Backup to New Folder...",
+        hint: "",
+        action: || Box::new(crate::RestoreBackupCopy),
+    },
+    Command {
+        label: "Reveal Last Recovery Copy",
+        hint: "",
+        action: || Box::new(crate::RevealRecovery),
+    },
+    Command {
         label: "Import...",
         hint: "Cmd Shift I",
         action: || Box::new(crate::Import),

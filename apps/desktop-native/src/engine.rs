@@ -18,7 +18,7 @@ use takio::import_scan::{ImportScan, scan_imports};
 use takio::model::{BookFormat, LibraryItem, LibraryPatch};
 use takio::output::{AppError, AppResult};
 use takio::paths::LibraryPaths;
-use takio::store::{LibraryQueryFilters, LibraryStore};
+use takio::store::{BackupReport, LibraryQueryFilters, LibraryStore, RestoreReport};
 
 /// Facet filters applied conjunctively to a query.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -148,6 +148,15 @@ pub struct SendEntry {
 
 /// Everything the UI can ask the engine to do.
 pub enum Request {
+    Backup {
+        destination: PathBuf,
+        reply: Sender<AppResult<BackupReport>>,
+    },
+    RestoreBackupCopy {
+        source: PathBuf,
+        destination: PathBuf,
+        reply: Sender<AppResult<RestoreReport>>,
+    },
     PreviewPrepare {
         item_id: String,
         reply: Sender<AppResult<PreparationPreview>>,
@@ -270,6 +279,16 @@ fn worker(
 ) {
     while let Ok(request) = receiver.recv() {
         match request {
+            Request::Backup { destination, reply } => {
+                let _ = reply.send(store.backup(&destination));
+            }
+            Request::RestoreBackupCopy {
+                source,
+                destination,
+                reply,
+            } => {
+                let _ = reply.send(store.restore_backup_copy(&source, &destination));
+            }
             Request::PreviewPrepare { item_id, reply } => {
                 let result = match &preparation_backend {
                     Some(backend) => {

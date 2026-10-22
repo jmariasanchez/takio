@@ -26,6 +26,7 @@ use crate::output::{AppError, AppResult};
 use crate::paths::LibraryPaths;
 
 mod migration;
+mod recovery;
 
 pub const LIBRARY_SCHEMA_VERSION: i64 = 12;
 pub const METADATA_AUDIT_KEY: &str = "takio_metadata_audit";
@@ -1619,120 +1620,22 @@ impl LibraryStore {
     }
 
     pub fn backup(&self, destination: &Path) -> AppResult<BackupReport> {
-        let destination = safe_new_tree_path(destination, &self.paths.root)?;
-        if destination.exists() {
-            return Err(AppError::new("destination-exists"));
-        }
-        let result = (|| -> AppResult<BackupReport> {
-            fs::create_dir_all(&destination).map_err(|_| AppError::new("backup-failed"))?;
-            let database_path = destination.join("library.sqlite");
-            let backup_paths = LibraryPaths::resolve(None, Some(&database_path))?;
-            let mut output =
-                Connection::open(&database_path).map_err(|_| AppError::new("backup-failed"))?;
-            let backup = rusqlite::backup::Backup::new(&self.connection, &mut output)
-                .map_err(|_| AppError::new("backup-failed"))?;
-            backup
-                .run_to_completion(16, std::time::Duration::from_millis(10), None)
-                .map_err(|_| AppError::new("backup-failed"))?;
-            drop(backup);
-            rebase_owned_paths(&mut output, &self.paths, &backup_paths)
-                .map_err(|_| AppError::new("backup-failed"))?;
-            drop(output);
-            copy_tree_if_present(&self.paths.items, &backup_paths.items)?;
-            copy_tree_if_present(&self.paths.covers, &backup_paths.covers)?;
-            let report = Self::open(backup_paths.clone(), false)?.verify()?;
-            let managed_files = report.managed_formats;
-            let manifest = serde_json::json!({
-                "version": 1,
-                "schemaVersion": LIBRARY_SCHEMA_VERSION,
-                "createdAt": Utc::now().to_rfc3339(),
-                "sourceRoot": backup_paths.root,
-                "managedFiles": managed_files,
-            });
-            fs::write(
-                destination.join("manifest.json"),
-                serde_json::to_vec_pretty(&manifest).map_err(|_| AppError::new("backup-failed"))?,
-            )
-            .map_err(|_| AppError::new("backup-failed"))?;
-            Ok(BackupReport {
-                destination_path: backup_paths.root,
-                database_path: backup_paths.database,
-                managed_files,
-            })
-        })();
-        if result.is_err() {
-            let _ = fs::remove_dir_all(&destination);
-        }
-        result
+        recovery::backup(self, destination)
     }
 
     pub fn restore_backup(source: &Path, paths: LibraryPaths) -> AppResult<RestoreReport> {
-        let source = source
-            .canonicalize()
-            .map_err(|_| AppError::new("source-invalid"))?;
-        let destinations = [&paths.database, &paths.jobs, &paths.items, &paths.covers];
-        let destination_exists = destinations.iter().any(|path| path.exists());
-        let destination_overlaps_source = destinations.iter().any(|path| path.starts_with(&source));
-        if !source.is_dir() || destination_overlaps_source || destination_exists {
-            return Err(AppError::new(if destination_exists {
-                "destination-exists"
-            } else {
-                "source-invalid"
-            }));
-        }
-        let manifest: Value = serde_json::from_slice(
-            &fs::read(source.join("manifest.json")).map_err(|_| AppError::new("source-invalid"))?,
-        )
-        .map_err(|_| AppError::new("source-invalid"))?;
-        if manifest.get("version").and_then(Value::as_u64) != Some(1)
-            || manifest.get("schemaVersion").and_then(Value::as_i64) != Some(LIBRARY_SCHEMA_VERSION)
-            || manifest.get("sourceRoot").and_then(Value::as_str).is_none()
-            || !source.join("library.sqlite").is_file()
-        {
-            return Err(AppError::new("source-invalid"));
-        }
-        let source_paths = LibraryPaths::resolve(
-            None,
-            Some(
-                &Path::new(
-                    manifest
-                        .get("sourceRoot")
-                        .and_then(Value::as_str)
-                        .ok_or_else(|| AppError::new("source-invalid"))?,
-                )
-                .join("library.sqlite"),
-            ),
-        )?;
-        let created_root = !paths.root.exists();
-        let result = (|| -> AppResult<RestoreReport> {
-            fs::create_dir_all(&paths.root).map_err(|_| AppError::new("restore-failed"))?;
-            fs::copy(source.join("library.sqlite"), &paths.database)
-                .map_err(|_| AppError::new("restore-failed"))?;
-            copy_tree_if_present(&source.join("items"), &paths.items)
-                .map_err(|_| AppError::new("restore-failed"))?;
-            copy_tree_if_present(&source.join("covers"), &paths.covers)
-                .map_err(|_| AppError::new("restore-failed"))?;
-            let mut connection =
-                Connection::open(&paths.database).map_err(|_| AppError::new("restore-failed"))?;
-            rebase_owned_paths(&mut connection, &source_paths, &paths)
-                .map_err(|_| AppError::new("restore-failed"))?;
-            drop(connection);
-            let report = Self::open(paths.clone(), false)?.verify()?;
-            Ok(RestoreReport {
-                source_path: source,
-                database_path: paths.database.clone(),
-                report,
-            })
-        })();
-        if result.is_err() {
-            let _ = fs::remove_file(&paths.database);
-            let _ = fs::remove_dir_all(&paths.items);
-            let _ = fs::remove_dir_all(&paths.covers);
-            if created_root {
-                let _ = fs::remove_dir(&paths.root);
-            }
-        }
-        result
+        recovery::restore(source, paths, false)
+    }
+
+    /// Restore a separate library without replacing or switching the current library.
+    pub fn restore_backup_copy(
+        &self,
+        source: &Path,
+        destination: &Path,
+    ) -> AppResult<RestoreReport> {
+        let destination = recovery::disjoint_destination(destination, &self.paths.root)?;
+        let paths = LibraryPaths::resolve(None, Some(&destination.join("library.sqlite")))?;
+        recovery::restore(source, paths, true)
     }
 
     pub fn list_saved_views(&self) -> AppResult<Vec<SavedView>> {
@@ -3518,51 +3421,6 @@ fn count_with_param(connection: &Connection, sql: &str, value: &str) -> AppResul
 fn as_i64(value: u64) -> AppResult<i64> {
     i64::try_from(value).map_err(|_| AppError::new("storage-unavailable"))
 }
-fn copy_tree_if_present(source: &Path, target: &Path) -> AppResult<()> {
-    if !source.exists() {
-        return Ok(());
-    }
-    for entry in walkdir::WalkDir::new(source) {
-        let entry = entry.map_err(|_| AppError::new("backup-failed"))?;
-        let relative = entry
-            .path()
-            .strip_prefix(source)
-            .map_err(|_| AppError::new("backup-failed"))?;
-        let out = target.join(relative);
-        if entry.file_type().is_dir() {
-            fs::create_dir_all(&out).map_err(|_| AppError::new("backup-failed"))?;
-        } else if entry.file_type().is_file() {
-            fs::copy(entry.path(), out).map_err(|_| AppError::new("backup-failed"))?;
-        }
-    }
-    Ok(())
-}
-
-fn safe_new_tree_path(path: &Path, owned_root: &Path) -> AppResult<PathBuf> {
-    if path.as_os_str().is_empty()
-        || path
-            .components()
-            .any(|component| matches!(component, std::path::Component::ParentDir))
-    {
-        return Err(AppError::new("invalid-arguments"));
-    }
-    let path = if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        std::env::current_dir()?.join(path)
-    };
-    if path == owned_root || path.starts_with(owned_root) {
-        return Err(AppError::new("invalid-arguments"));
-    }
-    if let Some(parent) = path.parent()
-        && let Ok(parent) = parent.canonicalize()
-        && (parent == owned_root || parent.starts_with(owned_root))
-    {
-        return Err(AppError::new("invalid-arguments"));
-    }
-    Ok(path)
-}
-
 fn rebase_owned_paths(
     connection: &mut Connection,
     source: &LibraryPaths,

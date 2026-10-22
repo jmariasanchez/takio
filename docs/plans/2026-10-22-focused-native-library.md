@@ -53,6 +53,9 @@ hardware, record this gate as blocked, not complete.
 
 ## Next iterations, in order
 
+- Deliver the recovery-first roadmap explicitly approved on October 22 at 14:32
+  UTC, below. This advances safe native backup and restore ahead of optional
+  expansion while the physical reading gate remains externally blocked.
 - Finish the on-device reading check for the physical-reader acceptance run below.
   Native import, review/cancel, verified USB transfer, duplicate refusal, and safe
   eject now pass on the connected Kindle. Its screen remains unobserved.
@@ -71,6 +74,138 @@ hardware, record this gate as blocked, not complete.
 Only expand this list when an observed core-workflow problem justifies it.
 Acceptance evidence for each implemented slice belongs below, with commands and
 limitations rather than speculative completion claims.
+
+## Approved long-term directions: October 22, 14:32 UTC
+
+The user approved proceeding with the four directions discussed, not just a
+proposal document. Implement them in bounded, tested slices. Existing core safety
+and physical-acceptance gates still apply; approval is not permission to replace
+personal files, publish releases, change accounts or write to hardware.
+
+1. **Trust and recovery:** expose verified backup and restore safely in the native
+   app, then opt-in automatic catalogue backups with explicit storage/retention,
+   tested restore and portable export. Reuse migration backups already in the
+   engine. Do not call a catalogue snapshot a complete installation backup.
+2. **Collection cleanup:** native duplicate review, missing-reference relinking,
+   explicit reference-in-place imports and bulk metadata preview/undo. Preserve
+   caller ownership. Suggestions never silently merge books or reorganize files.
+3. **Reader reliability:** explicit per-reader preferences, already-transferred
+   feedback and interruption recovery with verified copies. Broader transport
+   support follows demand and physical hardware tests, not simulated success.
+4. **Native quality:** keyboard and accessibility workflows, measured large-library
+   responsiveness, and a safe signed-update/recovery path. Publishing, signing
+   account access and installing updates require separate authorization.
+
+### First slice: native manual backup and verified restore copy
+
+The CLI already has catalogue/managed-file snapshots and path-rebased restore.
+The native app lacks these controls. Review found shared-engine overwrite/cleanup,
+alias containment and unsafe snapshot-entry gaps that must be hardened before
+exposing them, rather than wrapping unsafe filesystem behavior in a dialog.
+
+Acceptance recorded before implementation:
+
+- File menu and command palette offer **Back Up Library** and **Restore Backup
+  to New Folder**. Native explanation and pickers are cancelable with no writes.
+- Backup copies the whole catalogue, including Trash and managed formats/covers,
+  not only the visible selection. State explicitly that externally referenced
+  files and conversion jobs are not included. Recommend a separate drive for
+  protection against drive failure without claiming local copies provide it.
+- Restore creates and verifies a separate new library directory. It never merges
+  into, replaces or switches the currently open library. Show its exact location
+  and a Reveal action. Opening/switching recovered libraries and startup recovery
+  after a corrupt current database remain a later coherent slice.
+- All filesystem, SQLite, copying and verification work runs on the engine thread
+  with typed results. Busy state blocks overlapping mutation/send/eject/close and
+  duplicate submissions. Completion is not discarded when browsing changes.
+- Existing destinations, path aliases/nesting, malformed snapshots, symlinks,
+  special entries and integrity failures must not overwrite/delete existing data
+  or report success. Cleanup owns only paths created by that attempt. Keep CLI
+  restore into an existing parent with unrelated files working.
+- Native state/window tests exercise confirmation and each picker cancellation,
+  whole-library backup, restored metadata/Trash/bytes, collision and corruption
+  errors, busy guards and unchanged current catalogue/originals. Shared engine and
+  CLI tests cover filesystem safety. Run the packaged UI on isolated fixtures,
+  independently inspect restored bytes/catalogue, and run formatting, native and
+  CLI tests plus strict Clippy before committing.
+
+Automatic backups, retention deletion, full-installation snapshots, portable
+export UI and native library switching are not implied complete by this slice.
+
+### Manual recovery acceptance: October 22, 15:11 UTC
+
+Implemented File-menu and command-palette backup, restore-to-new-folder and
+Reveal Last Recovery Copy. Both recovery operations use typed requests on the
+existing engine worker. They include the whole catalogue regardless of current
+filter/selection and retain their result when browsing changes. Native dialogs
+explain the coverage, exclusions and separate-copy behavior before choosing paths.
+Busy state prevents duplicate submissions, mutations, sends, ejects and closing.
+
+The shared engine now reserves output entries exclusively and rolls back only
+entries created by that attempt, without recursive deletion of another writer's
+files. Canonical nearest-existing ancestors enforce disjoint roots even through
+aliases and nonexistent intermediate directories. Traversal, symlink/special
+tree entries, unsafe owned paths, malformed/oversized manifests and SQLite
+sidecars are rejected. Restore validates the copied schema/domain and managed
+fingerprints before rebasing paths, including rejection of extra triggers/views.
+Online SQLite backup captures live WAL content and emits a standalone DELETE-mode
+database. The existing CLI restore can still use a parent with unrelated files.
+
+Observed checks:
+
+- `cargo fmt --all --check`, `cargo test --offline --workspace`,
+  `cargo clippy --offline --workspace --all-targets -- -D warnings` and
+  `git diff --check` pass. **320 tests pass:** 133 engine, 57 CLI,
+  two custom-field integration and 128 native. Two existing engine benchmarks
+  remain ignored. The existing dependency future-incompatibility warning for
+  `block 0.1.6` remains, not a new application warning.
+- Fifteen focused engine recovery tests cover round trips, moved backups, Trash,
+  external-reference exclusions, cover presence, corruption, source/destination
+  aliases, collisions, dangling symlinks, special files, schema callbacks, WAL,
+  bounded manifests and owned-only cleanup. CLI repeat backup/restore assertions
+  preserve existing destinations. Five native state tests and fourteen native
+  window tests cover the workflow, all five cancellation points, busy/edit guards,
+  stale picker acceptance and result dismissal without deleting the copy.
+- `bash scripts/package-desktop-native.sh` passes strict ad-hoc signature and
+  launch checks. The final bundle is **11,298,913 bytes**. Empty-library smoke
+  metrics were 141.388 ms paint, 192.479 ms initial query and 94,896 KiB RSS.
+- `bash scripts/bench-desktop-native.sh --interactions` passes all existing
+  startup/state gates with 100 correct interactions across five processes on the
+  generated 10k catalogue. Startup medians: 101.604 ms paint, 126.129 ms query,
+  125,392 KiB RSS. Sort dispatch p95: 0.037 ms; select-all/reload settlement p95:
+  44.740 ms. Matching search p95 remains 263.591 ms and clear p95 200.633 ms,
+  including debounce. This is a regression check, not evidence that the separate
+  below-80-ms search or keyboard-to-paint/scrolling goals have been met.
+- Ran the actual packaged File-menu dialogs and native folder pickers against an
+  isolated two-book fixture. Canceling backup wrote nothing. Accepted backup and
+  separate restore preserved one active book, one in Trash, tags, series and both
+  managed TXT payloads. Independent public-CLI catalogue comparison and SHA-256
+  checks confirmed restored metadata/bytes, unchanged current catalogue/originals
+  and unchanged backup tree. Reveal selected exactly the restored directory in
+  Finder. No personal library or reader was modified.
+- The first screenshot exposed a clipped Dismiss button in a narrow window.
+  Moved Reveal/Dismiss above independently scrolling details, added a real pointer
+  regression, reran all gates, and repeated packaged restore into another new
+  directory. The final screenshot shows both controls and the exact result path.
+  A fresh explicit `TAKIO_DATA_DIR=<restored-copy>` launch displayed Recovery Beta
+  in Trash. This validates opening the recovered copy via configuration, not a
+  native library-switching feature.
+
+Reproduce the UI check with two disposable managed files, edit one book's tags and
+series, move the other to Trash, then use File > Back Up Library and File > Restore
+Backup to New Folder with distinct new destinations outside the library. Compare
+active/Trash catalogues and format hashes with the originals, use Reveal, quit,
+and explicitly launch against the recovered directory to inspect Trash. Private
+logs, independent audit script and screenshots are in the session scratch folder
+`takio-native-recovery.5kRfmU`, not committed fixtures or personal book data.
+
+Limitations: this is a verified catalogue/managed-file copy, not an atomic
+filesystem or complete installation snapshot. External reference bytes and
+conversion jobs remain excluded. Covers are checked as existing regular files,
+not independently fingerprinted. No hostile concurrent path-swap resistance or
+power-loss durability guarantee is claimed. Automatic backups/retention and
+opening/recovering libraries through the native UI are next recovery work, not
+completed here. Physical reading and the separate search-tail goal remain open.
 
 ## Native EPUB preparation: October 22, 2026
 

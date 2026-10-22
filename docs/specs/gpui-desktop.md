@@ -150,13 +150,23 @@ In:
   fingerprints and resolved converter paths bind confirmation to the review.
   Filesystem work and the bounded 120-second conversion run on the engine thread.
 - Trash section.
+- Manual recovery through File menu and command palette: Back Up Library and
+  Restore Backup to New Folder. Explain catalogue/Trash/managed-file coverage and
+  external-reference/conversion-job exclusions before native folder pickers.
+  Both operations use the serial engine worker, verify copied managed bytes and
+  never overwrite an existing destination. Restore creates a separate library,
+  keeps the current library open and unchanged, and shows counts/location with a
+  Reveal action. Picker cancellation writes nothing. Busy state blocks conflicting
+  mutations and closing. This is not automatic backup, a complete installation
+  snapshot, in-place replacement, or native switching to a restored library.
 - Command palette (Cmd-K) over every action.
 - Native menu bar with the same actions and accelerators.
 - Light and dark appearance following the system.
 
 Out (remain in CLI/TUI or later cuts): advanced metadata editing, candidate review,
 duplicates, general conversion-job management, custom columns, saved views, export dialogs,
-backup/restore. These keep working through `takio`.
+automatic backups and native library switching. Existing CLI operations remain
+available through `takio`.
 
 ## Acceptance
 
