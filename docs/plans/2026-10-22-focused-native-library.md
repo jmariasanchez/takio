@@ -1372,3 +1372,16 @@ The measured performance gates cover startup only. Scroll frame-time and
 interactive-search p95 goals in the native specification are explicitly unmeasured.
 The Amazon link is an external browser handoff: no account, upload, or delivery
 acceptance was attempted, and none is claimed.
+
+## Physical follow-up: October 24, 2026
+
+- The October 22 TXT check book now has a stock-reader `.mbp1` sidecar written
+  at 11:52, after the 11:47 send. This is device-side evidence that it was opened.
+- CLI EPUB send to the same KOReader Kindle (no Calibre installed): an isolated
+  1,532-byte test EPUB arrived byte-identical as `documents/check.epub`, SHA-256
+  `a71ed61f...e029`. Resending refused with `destination-file-exists`. The only
+  other directory change was the macOS `._check.epub` companion file.
+- Gaps found: `library add` titles the book from the filename ("check") instead of
+  the EPUB metadata, and `send --dest Kindle` returns `unknown-destination` even
+  though `destination list` reports id `Kindle` (only the mount path works).
+- Pending: user opens `check.epub` in KOReader and sees `TAKIO-EPUB-20261024-OK`.
