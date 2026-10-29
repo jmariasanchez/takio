@@ -1742,3 +1742,37 @@ Acceptance before code:
 Remaining, blocked on the user: a physical Kindle (detection on a real USB
 reader, then reading a pulled-in or sent book on the device) and a person using
 the visible window.
+
+### Desktop reader import: independent re-validation
+
+The worker-built import slice (engine request, state method, sidebar control and
+its four tests) was rechecked without relying on its own report.
+
+- **Tests read line by line.** Each one asserts what its name claims: mixed
+  reader contents with a recursive byte snapshot; guards for an open send
+  review, busy, editing and Trash; an unplugged reader; and a pointer click
+  that hides the control while a store `.azw` remains.
+- **Mutation testing.** Each mutant was applied alone, the native suite was run,
+  and the tree was restored (`takio-mutants*.sh`, logs in the session scratch
+  folder). All 12 compilable mutants fail at least one test: no Library-section
+  guard; no `can_mutate` guard; no rescan after import; no format-skip note;
+  `busy` never cleared; no reader re-authorization; sidebar count using
+  `not_in_library`; control never shown; volume poll ignoring changes; poll
+  ignoring an open review; and refresh not clearing shelves. One first-pass
+  "kill" turned out to be a compile error and was redone as a compiling
+  mutant. The last mutant survived at first and exposed a gap: a failed volume
+  listing kept stale ● marks in place. `failed_volume_listing_clears_stale_reader_marks`
+  now kills it.
+- **Real paths** (`takio-import-real.sh`, FAT image at `/Volumes/KINDLE`, the
+  desktop's own `import_from_reader` through the snapshot harness): a nested
+  3-page PDF and a z-library TXT were imported, and `.kfx` and `.azw` were
+  skipped with the status naming both. An `.sdr` folder was ignored. The reader
+  tree was byte-identical afterwards, the CLI list showed all three books on
+  KINDLE, and `library verify` passed. In a real unplug race, the image was
+  detached after the reader was offered and before the engine import ran. The
+  library stayed at 3 books, the shelf cleared, and the status gave reconnect
+  guidance. That guidance now says the reader reappears on its own.
+- **Gates on the committed tree:** fmt, `git diff --check`, strict Clippy for
+  the workspace and for the snapshot feature, and 5 consecutive
+  `TMPDIR=/private/tmp/ cargo test --workspace` runs, each 152 engine, 62 CLI,
+  2 custom-field and 184 native passing.
