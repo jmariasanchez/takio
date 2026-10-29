@@ -9,6 +9,7 @@
 use std::collections::{BTreeSet, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 use serde::Serialize;
 
@@ -84,6 +85,55 @@ pub fn scan_files(
     scan(destination, library, &mut |path| {
         crate::fingerprint::hash_file(path).ok()
     })
+}
+
+/// Fingerprints of reader files keyed by path, reused while size and modification
+/// time are unchanged. Readers are only re-read when a file really changed.
+#[derive(Debug, Default)]
+pub struct HashCache {
+    entries: HashMap<PathBuf, (u64, Option<SystemTime>, Fingerprint)>,
+    /// Bytes read to hash files, for measurement.
+    pub hashed_bytes: u64,
+}
+
+impl HashCache {
+    fn fingerprint(&mut self, path: &Path, seen: &mut BTreeSet<PathBuf>) -> Option<Fingerprint> {
+        let metadata = fs::metadata(path).ok()?;
+        let modified = metadata.modified().ok();
+        seen.insert(path.to_path_buf());
+        if let Some((len, time, fingerprint)) = self.entries.get(path)
+            && *len == metadata.len()
+            && *time == modified
+            && modified.is_some()
+        {
+            return Some(fingerprint.clone());
+        }
+        let fingerprint = crate::fingerprint::hash_file(path).ok()?;
+        self.hashed_bytes += fingerprint.0;
+        self.entries.insert(
+            path.to_path_buf(),
+            (metadata.len(), modified, fingerprint.clone()),
+        );
+        Some(fingerprint)
+    }
+}
+
+/// Scan, reusing `cache` for files whose size and modification time are unchanged.
+/// Entries for files no longer hashed are dropped so the cache stays bounded.
+pub fn scan_cached(
+    destination: &Destination,
+    library: &[ActiveFingerprint],
+    cache: &mut HashCache,
+) -> AppResult<ReaderShelf> {
+    let mut seen = BTreeSet::new();
+    let shelf = scan(destination, library, &mut |path| {
+        cache.fingerprint(path, &mut seen)
+    })?;
+    let prefix = &destination.path;
+    cache
+        .entries
+        .retain(|path, _| !path.starts_with(prefix) || seen.contains(path));
+    Ok(shelf)
 }
 
 /// Scan, obtaining fingerprints through `hash` so callers can cache unchanged files.
@@ -521,6 +571,55 @@ mod tests {
         let again = import_unmatched(&mut f.store, &destination).unwrap();
         assert_eq!((again.counts.imported, again.counts.skipped), (0, 1));
         assert_eq!(snapshot(&f.kindle), before);
+    }
+
+    #[test]
+    fn cached_rescans_read_nothing_until_a_file_changes() {
+        let mut f = fixture();
+        let id = import(&mut f, "Kindred.epub", b"kindred bytes");
+        let copy = f.kindle.join("documents/Kindred.epub");
+        fs::write(&copy, b"kindred bytes").unwrap();
+        let destination = destinations::authorize(&f.kindle, &f.volumes).unwrap();
+        let library = f.store.active_fingerprints().unwrap();
+        let mut cache = HashCache::default();
+
+        assert_eq!(
+            scan_cached(&destination, &library, &mut cache)
+                .unwrap()
+                .in_library,
+            1
+        );
+        assert_eq!(cache.hashed_bytes, 13);
+        assert_eq!(
+            scan_cached(&destination, &library, &mut cache)
+                .unwrap()
+                .in_library,
+            1
+        );
+        assert_eq!(
+            cache.hashed_bytes, 13,
+            "an unchanged file is not read again"
+        );
+
+        // Same size, new bytes, later modification time: re-read and no longer matched.
+        fs::write(&copy, b"kindred bytez").unwrap();
+        let later = std::time::SystemTime::now() + std::time::Duration::from_secs(10);
+        fs::File::options()
+            .write(true)
+            .open(&copy)
+            .unwrap()
+            .set_modified(later)
+            .unwrap();
+        let changed = scan_cached(&destination, &library, &mut cache).unwrap();
+        assert_eq!(cache.hashed_bytes, 26);
+        assert!(!changed.item_ids().contains(id.as_str()));
+
+        fs::remove_file(&copy).unwrap();
+        scan_cached(&destination, &library, &mut cache).unwrap();
+        assert!(
+            cache.entries.is_empty(),
+            "entries for removed files are dropped"
+        );
     }
 
     #[test]

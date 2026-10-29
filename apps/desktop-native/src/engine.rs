@@ -315,6 +315,8 @@ fn worker(
     receiver: Receiver<Request>,
     preparation_backend: Option<BackendDiscovery>,
 ) {
+    // Reader files are re-read only when their size or modification time changed.
+    let mut reader_hashes = takio::reader_shelf::HashCache::default();
     while let Ok(request) = receiver.recv() {
         match request {
             Request::OpenLibrary {
@@ -417,8 +419,11 @@ fn worker(
                         .into_iter()
                         .filter(|destination| !matches!(destination.kind, DestinationKind::Generic))
                         .map(|destination| {
-                            let shelf =
-                                takio::reader_shelf::scan_files(&destination, &fingerprints);
+                            let shelf = takio::reader_shelf::scan_cached(
+                                &destination,
+                                &fingerprints,
+                                &mut reader_hashes,
+                            );
                             (destination, shelf)
                         })
                         .collect()
