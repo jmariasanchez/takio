@@ -118,6 +118,33 @@ pub fn authorize(path: &Path, root: &Path) -> AppResult<Destination> {
         .ok_or_else(|| AppError::new("unknown-destination"))
 }
 
+/// Resolve `--dest` as the `id` shown by `destination list` (a bare name such as
+/// `Kindle`, case-insensitive when unambiguous) or as a mount path. Either way only
+/// a volume listed under `root` is returned.
+pub fn resolve(dest: &Path, root: &Path) -> AppResult<Destination> {
+    let mut components = dest.components();
+    if let (Some(Component::Normal(name)), None) = (components.next(), components.next())
+        && let Some(name) = name.to_str()
+    {
+        let mounted = list(root)?;
+        if let Some(found) = mounted.iter().find(|candidate| candidate.id == name) {
+            return Ok(found.clone());
+        }
+        let mut folded = mounted
+            .iter()
+            .filter(|candidate| candidate.id.eq_ignore_ascii_case(name));
+        if let (Some(found), None) = (folded.next(), folded.next()) {
+            return Ok(found.clone());
+        }
+    }
+    authorize(dest, root)
+}
+
+/// Delivery records Takio wrote to this reader, without verifying the files.
+pub fn delivery_records(destination: &Destination) -> AppResult<Vec<DeliveryRecord>> {
+    Ok(read_manifest(destination)?.deliveries)
+}
+
 pub fn send(
     destination: &Destination,
     item_id: &str,

@@ -128,10 +128,11 @@ cargo run -p takio -- library import --source-path ~/Books/example.epub
 cargo run -p takio -- library verify
 cargo run -p takio -- library backup --dest ~/Backups/takio-library
 cargo run -p takio -- library search --query "Ursula Le Guin"
-cargo run -p takio -- library list --human
+cargo run -p takio -- library list --human   # titles, authors, and which mounted reader holds each
 cargo run -p takio -- plan --input ~/Books/example.epub --to pdf --json
 cargo run -p takio -- jobs enqueue --input ~/Books/example.epub --to pdf --output ~/Books/example.pdf
 cargo run -p takio -- destination list
+cargo run -p takio -- destination books --dest Kindle --human
 
 # Native desktop app (macOS; needs the Xcode Metal toolchain:
 # xcodebuild -downloadComponent MetalToolchain)
@@ -249,7 +250,7 @@ The Rust migration currently exposes the core daily-driver and automation surfac
 | `takio library trash list`, `move`, `restore`, `purge` | Remove items recoverably or purge them permanently. |
 | `takio library import-calibre`, `import-watch`; `takio metadata extract`, `fetch`, `candidates`; `takio polish` | Import or watch libraries, use bounded Calibre metadata and polishing tools, and explicitly review local or online metadata candidates. Candidate covers use opaque, expiring descriptors and require a separate apply choice. `metadata candidates reconcile` performs ordered, cancellable, read-only discovery for up to 64 books with at most four workers. |
 | `takio jobs enqueue`, `list`, `get`, `cancel`, `retry`, `retry-attachment`, `run-next`, `drain` | Manage the schema-v4 durable foreground conversion queue and reconcile completed outputs with library items. |
-| `takio destination list`, `inventory`, `reconcile`, `remove`, `eject`, `rooted-kindle-send` | Discover mounted volumes, manage verified delivery records, or explicitly opt into hardened SSH/SCP delivery. |
+| `takio destination list`, `books`, `inventory`, `reconcile`, `remove`, `eject`, `rooted-kindle-send` | Discover mounted volumes, list a reader's books read-only and match them to the library, manage verified delivery records, or explicitly opt into hardened SSH/SCP delivery. `--dest` takes the id from `destination list` (for example `Kindle`) or the mount path. |
 | `takio send` | Copy and SHA-256 verify an attached format on an authorized mounted destination. |
 | `takio serve` | Run an authenticated, loopback-only, read-only HTTP catalogue and format server. |
 

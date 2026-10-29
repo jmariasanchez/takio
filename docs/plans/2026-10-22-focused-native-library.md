@@ -1442,3 +1442,80 @@ showed mostly producer names and placeholder titles. Eight PDFs keep cleaned
 filename titles without authors. If a folder and a file inside it are both
 chosen, the folder entry wins, so that file is classified. Encrypted or
 non-Flate object streams yield unknown page counts and import as books.
+
+## What is on my reader: October 29, 2026
+
+The user's premise: point Takio at existing books once, then simply open the app
+or CLI and see "these are my books, and these are the ones on my Kindle."
+Import, recognition and the shared default library already cover the first
+half. Neither surface can answer the second: the desktop shows a reader only as
+a Send/Eject target, `library list --human` shows IDs and titles but no authors
+or reader status, and `--dest Kindle` fails with `unknown-destination` even
+though `destination list` reports that id (October 24 gap).
+
+Acceptance before code:
+
+- `--dest` on `send` and every `destination` subcommand accepts either the mount
+  path or the `id` printed by `destination list`. Unknown names still fail with
+  `unknown-destination`. No path outside the volumes root is ever authorized.
+- A shared, read-only engine function lists the books on a mounted reader:
+  ebook-format files in its book folder (`documents` on Kindle, whole volume for
+  Kobo/generic), bounded in depth and count, skipping hidden entries, symlinks,
+  sidecars and Kindle system folders. Each file is matched to an active library
+  book by exact size and SHA-256 against managed formats, falling back to the
+  Takio delivery manifest's recorded fingerprint. Unmatched files are reported
+  as "not in library", never imported or modified. Nothing on the reader or in
+  the library is written.
+- `takio destination books --dest <id|path>` returns that list (JSON, or a
+  readable table with `--human`). `library list --human` adds Author and, when
+  Kindle or Kobo readers are mounted, an "On reader" column naming them.
+  `library list` JSON output is unchanged. Generic USB drives are never scanned
+  implicitly. Only files whose size equals a candidate are read and hashed.
+- The desktop scans connected readers off the UI thread after each reader
+  refresh and successful send, marks matching rows in the book list, names the
+  reader in the inspector, and shows "N of your books on this reader" plus the
+  count of files not in the library in the sidebar. A stale scan cannot apply
+  after a library switch or a newer refresh.
+- Checks: engine tests for matching (managed hash, manifest fallback, changed
+  file, trashed book, system/hidden/sidecar exclusion, bounds); CLI tests for
+  id resolution and `destination books`; native state tests for marking, stale
+  scan rejection and send refresh; fmt, workspace tests and strict Clippy; a
+  release-CLI run against a reader-shaped scratch volume. A simulated volume
+  does not prove behavior on a physical Kindle.
+
+### Observed reader-shelf results: CLI and shared engine
+
+- New shared module `reader_shelf` and `LibraryStore::active_fingerprints`.
+  `destinations::resolve` accepts the listed id (exact, then unambiguous
+  case-folded) or a mount path, and still authorizes only volumes listed under
+  the volumes root. `send`, `inventory`, `reconcile`, `remove`, `eject` and the
+  new `destination books` use it. `destination books` opens the catalogue
+  read-only and fails with `storage-unavailable` rather than creating a library.
+- Seven engine tests: content matching with same-size different bytes, `._`
+  companions, `.sdr`, `dictionaries`, `system`, `My Clippings.txt` and non-book
+  files excluded and reader bytes unchanged; trashed books unmatched until
+  restored; delivery-record fallback for a referenced format and rejection after
+  the file changes; missing `documents` and the 5,000-book bound; Kobo whole-
+  volume scan skipping `.kobo`; only same-size candidates hashed; id/path/unknown
+  and `../Kindle` resolution. Three CLI tests cover send and inventory by id,
+  `destination books` JSON/human output with no reader, catalogue or library
+  creation side effects, and `library list --human` authors, On reader column,
+  no-reader message and unchanged JSON.
+- `cargo fmt -p takio --check`, strict `cargo clippy -p takio --all-targets` and
+  `TMPDIR=/private/tmp/ cargo test -p takio` pass: 149 engine (2 ignored),
+  60 CLI and 2 custom-field tests.
+- Release-CLI journey on fresh scratch data (`takio-reader-shelf-acceptance.sh`
+  in the session scratch folder): `import-many` on a nested Downloads folder
+  imported 2, skipped 1 non-book, failed 0. `library list --human` showed
+  "Kindred, Octavia E. Butler, On reader Kindle" for a copy already on the
+  reader under another filename, and "Kindle: 1 of these books, 1 other
+  file(s)" for a store `.azw`. `destination books --dest Kindle --human`
+  listed both files and ignored `.sdr` and `My Clippings.txt`. `send --dest
+  Kindle` (the October 24 failure) delivered the second book, and the next list
+  showed both on Kindle. Originals and pre-existing reader files were hash-
+  identical afterwards, and `library verify` passed.
+
+Limitations: matching is exact bytes only. A copy that a reader, Calibre or
+Amazon converted or re-wrapped is listed as "not in library". Files in
+`documents` subfolders are found up to six levels deep. The physical Kindle was
+not connected for this run.

@@ -24,6 +24,7 @@ use crate::model::{LibraryPatch, Patch};
 use crate::output::{AppError, AppResult, print_success};
 use crate::paths::LibraryPaths;
 use crate::portable_library;
+use crate::reader_shelf;
 use crate::store::{
     DuplicatePairReviewRequest, LIBRARY_SCHEMA_VERSION, LibraryQueryFilters, LibraryQueryScope,
     LibraryQuerySyntax, LibraryStore, ListDuplicateCandidatesRequest, METADATA_AUDIT_KEY,
@@ -222,8 +223,13 @@ enum LibraryCommand {
     List {
         #[arg(long)]
         db: Option<PathBuf>,
-        #[arg(long, help = "Print a readable table instead of the JSON envelope")]
+        #[arg(
+            long,
+            help = "Print a readable table, including which mounted readers hold each book"
+        )]
         human: bool,
+        #[arg(long, default_value = "/Volumes")]
+        volumes_root: PathBuf,
     },
     #[command(about = "Get one book by ID")]
     Get {
@@ -737,6 +743,22 @@ enum DestinationCommand {
         dest: PathBuf,
         #[arg(long, default_value = "/Volumes")]
         volumes_root: PathBuf,
+    },
+    #[command(
+        about = "List the book files on a mounted reader and which library books they are, read-only"
+    )]
+    Books {
+        #[arg(long)]
+        db: Option<PathBuf>,
+        #[arg(
+            long,
+            help = "Reader id from `destination list` (for example Kindle) or its mount path"
+        )]
+        dest: PathBuf,
+        #[arg(long, default_value = "/Volumes")]
+        volumes_root: PathBuf,
+        #[arg(long, help = "Print a readable table instead of the JSON envelope")]
+        human: bool,
     },
     #[command(about = "Re-verify recorded deliveries against the files on the destination")]
     Reconcile {
@@ -1782,24 +1804,16 @@ fn library(command: LibraryCommand, library: Option<&str>) -> AppResult<()> {
                 json!({"item":store.import(&source_path, title.as_deref(), move_source)?}),
             )
         }
-        LibraryCommand::List { db, human } => {
+        LibraryCommand::List {
+            db,
+            human,
+            volumes_root,
+        } => {
             let paths = LibraryPaths::resolve(library, db.as_deref())?;
-            let items = LibraryStore::open(paths, true)?.list(false)?;
+            let store = LibraryStore::open(paths, true)?;
+            let items = store.list(false)?;
             if human {
-                println!("{:<36} {:<34} Formats", "ID", "Title");
-                for item in &items {
-                    println!(
-                        "{:<36} {:<34} {}",
-                        item.id,
-                        truncate(&item.title, 32),
-                        item.formats
-                            .iter()
-                            .map(|format| format.format.as_str())
-                            .collect::<Vec<_>>()
-                            .join(",")
-                    );
-                }
-                Ok(())
+                print_human_list(&store, &items, &volumes_root)
             } else {
                 print_success(json!({"items":items}))
             }
@@ -3664,23 +3678,48 @@ fn destination(command: DestinationCommand, library: Option<&str>) -> AppResult<
             print_success(json!({"destinations":destinations::list(&volumes_root)?}))
         }
         DestinationCommand::Eject { dest, volumes_root } => {
-            let device = destinations::authorize(&dest, &volumes_root)?;
+            let device = destinations::resolve(&dest, &volumes_root)?;
             destinations::eject(&device)?;
             print_success(json!({"destinationId":device.id}))
         }
         DestinationCommand::Inventory { dest, volumes_root }
         | DestinationCommand::Reconcile { dest, volumes_root } => {
-            let device = destinations::authorize(&dest, &volumes_root)?;
+            let device = destinations::resolve(&dest, &volumes_root)?;
             print_success(
                 json!({"destinationId":device.id,"entries":destinations::inventory(&device)?}),
             )
+        }
+        DestinationCommand::Books {
+            db,
+            dest,
+            volumes_root,
+            human,
+        } => {
+            let device = destinations::resolve(&dest, &volumes_root)?;
+            let paths = LibraryPaths::resolve(library, db.as_deref())?;
+            let shelf = reader_shelf::scan_files(&device, &catalogue_fingerprints(paths)?)?;
+            if !human {
+                return print_success(shelf);
+            }
+            println!(
+                "{}: {} of your books, {} other file(s)",
+                device.name, shelf.in_library, shelf.not_in_library
+            );
+            for entry in &shelf.books {
+                let label = entry.title.as_deref().unwrap_or("(not in library)");
+                println!("  {:<40} {}", truncate(label, 40), entry.path);
+            }
+            if shelf.truncated {
+                println!("  Stopped at the scan limit. Some files are not listed.");
+            }
+            Ok(())
         }
         DestinationCommand::Remove {
             dest,
             id,
             volumes_root,
         } => {
-            let device = destinations::authorize(&dest, &volumes_root)?;
+            let device = destinations::resolve(&dest, &volumes_root)?;
             print_success(
                 json!({"destinationId":device.id,"removed":destinations::remove(&device,&id)?}),
             )
@@ -3731,7 +3770,7 @@ fn send(
     let item = LibraryStore::open(paths, true)?
         .get(id)?
         .ok_or_else(|| AppError::new("unknown-item"))?;
-    let device = destinations::authorize(dest, volumes_root)?;
+    let device = destinations::resolve(dest, volumes_root)?;
     let selected = format
         .map_or_else(
             || preferred(&item.formats, device.kind),
@@ -3824,6 +3863,105 @@ fn job_path(library: Option<&str>, db: Option<&Path>) -> AppResult<PathBuf> {
         .map(Path::to_path_buf)
         .unwrap_or(LibraryPaths::resolve(library, None)?.jobs))
 }
+/// Fingerprints from an existing library, opened read-only so a scan never creates one.
+fn catalogue_fingerprints(paths: LibraryPaths) -> AppResult<Vec<crate::store::ActiveFingerprint>> {
+    LibraryStore::open_read_only(paths)?.active_fingerprints()
+}
+
+fn print_human_list(
+    store: &LibraryStore,
+    items: &[crate::model::LibraryItem],
+    volumes_root: &Path,
+) -> AppResult<()> {
+    // Only recognizable readers are scanned; a generic USB drive is never walked implicitly.
+    let readers: Vec<_> = destinations::list(volumes_root)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|device| !matches!(device.kind, DestinationKind::Generic))
+        .collect();
+    let library = if readers.is_empty() {
+        Vec::new()
+    } else {
+        store.active_fingerprints()?
+    };
+    let mut on_reader: BTreeMap<String, Vec<&str>> = BTreeMap::new();
+    let mut summaries = Vec::new();
+    for reader in &readers {
+        match reader_shelf::scan_files(reader, &library) {
+            Ok(shelf) => {
+                for id in shelf.item_ids() {
+                    on_reader
+                        .entry(id.to_owned())
+                        .or_default()
+                        .push(reader.name.as_str());
+                }
+                summaries.push(format!(
+                    "{}: {} of these books, {} other file(s){}",
+                    reader.name,
+                    shelf.in_library,
+                    shelf.not_in_library,
+                    if shelf.truncated {
+                        " (scan limit reached)"
+                    } else {
+                        ""
+                    }
+                ));
+            }
+            Err(error) => summaries.push(format!(
+                "{}: could not be read ({})",
+                reader.name,
+                error.code()
+            )),
+        }
+    }
+    let reader_column = !readers.is_empty();
+    let mut header = format!("{:<40} {:<26} {:<10}", "Title", "Author", "Formats");
+    if reader_column {
+        header.push_str(&format!(" {:<12}", "On reader"));
+    }
+    println!("{header} ID");
+    for item in items {
+        let author = if item.authors.is_empty() {
+            item.author.clone().unwrap_or_default()
+        } else {
+            item.authors
+                .iter()
+                .map(|author| author.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        let formats = item
+            .formats
+            .iter()
+            .map(|format| format.format.as_str())
+            .collect::<Vec<_>>()
+            .join(",");
+        let mut line = format!(
+            "{:<40} {:<26} {:<10}",
+            truncate(&item.title, 40),
+            truncate(&author, 26),
+            truncate(&formats, 10)
+        );
+        if reader_column {
+            let names = on_reader
+                .get(&item.id)
+                .map(|names| names.join(","))
+                .unwrap_or_default();
+            line.push_str(&format!(" {:<12}", truncate(&names, 12)));
+        }
+        println!("{line} {}", item.id);
+    }
+    println!();
+    println!("{} book(s) in the library", items.len());
+    if readers.is_empty() {
+        println!("No Kindle or Kobo reader is mounted.");
+    }
+    for summary in summaries {
+        println!("{summary}");
+    }
+    Ok(())
+}
+
 fn truncate(value: &str, max: usize) -> String {
     if value.chars().count() <= max {
         value.to_owned()

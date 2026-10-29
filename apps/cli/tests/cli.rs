@@ -3665,3 +3665,231 @@ fn send_delivers_to_the_default_kobo_mount_root() {
         "present"
     );
 }
+
+fn reader_fixture() -> (
+    tempfile::TempDir,
+    std::path::PathBuf,
+    std::path::PathBuf,
+    String,
+) {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let database = temp.path().join("library/library.sqlite");
+    let source = temp
+        .path()
+        .join("Kindred (Octavia E. Butler) (z-library.sk).txt");
+    fs::write(&source, b"kindred bytes for the reader").expect("write source ebook");
+    let imported = cargo_bin_cmd!("takio")
+        .args(["library", "import-many", "--db"])
+        .arg(&database)
+        .args(["--source-path"])
+        .arg(&source)
+        .output()
+        .expect("import ebook");
+    let item_id = success_value(&imported.stdout)["outcomes"][0]["item"]["id"]
+        .as_str()
+        .expect("item id")
+        .to_owned();
+    let volumes = temp.path().join("Volumes");
+    for directory in ["documents", "system"] {
+        fs::create_dir_all(volumes.join("Kindle").join(directory)).expect("reader shape");
+    }
+    (temp, database, volumes, item_id)
+}
+
+#[test]
+fn reader_id_from_destination_list_works_for_send_and_inventory() {
+    let (_temp, database, volumes, item_id) = reader_fixture();
+    let sent = cargo_bin_cmd!("takio")
+        .args(["send", "--db"])
+        .arg(&database)
+        .args(["--id", &item_id, "--dest", "Kindle", "--volumes-root"])
+        .arg(&volumes)
+        .output()
+        .expect("send by reader id");
+    assert!(
+        sent.status.success(),
+        "{}",
+        String::from_utf8_lossy(&sent.stdout)
+    );
+    let path = success_value(&sent.stdout)["path"]
+        .as_str()
+        .expect("delivered path")
+        .to_owned();
+    assert!(
+        path.ends_with("documents/Octavia E. Butler - Kindred.txt"),
+        "{path}"
+    );
+
+    let inventory = cargo_bin_cmd!("takio")
+        .args([
+            "destination",
+            "inventory",
+            "--dest",
+            "kindle",
+            "--volumes-root",
+        ])
+        .arg(&volumes)
+        .output()
+        .expect("inventory by case-folded id");
+    assert_eq!(
+        success_value(&inventory.stdout)["entries"][0]["status"],
+        "present"
+    );
+    for unknown in ["Kobo", "../Kindle"] {
+        let output = cargo_bin_cmd!("takio")
+            .args([
+                "destination",
+                "inventory",
+                "--dest",
+                unknown,
+                "--volumes-root",
+            ])
+            .arg(&volumes)
+            .output()
+            .expect("unknown reader");
+        assert_eq!(failure_code(&output.stdout), "unknown-destination");
+    }
+}
+
+#[test]
+fn destination_books_lists_reader_files_and_library_matches_without_writing() {
+    let (temp, database, volumes, item_id) = reader_fixture();
+    let documents = volumes.join("Kindle/documents");
+    fs::write(
+        documents.join("kindred-copy.txt"),
+        b"kindred bytes for the reader",
+    )
+    .unwrap();
+    fs::write(documents.join("Bought On Device.azw"), b"store book").unwrap();
+    let before: Vec<_> = fs::read_dir(&documents)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect();
+    let catalogue = fs::read(&database).unwrap();
+
+    let output = cargo_bin_cmd!("takio")
+        .args(["destination", "books", "--db"])
+        .arg(&database)
+        .args(["--dest", "Kindle", "--volumes-root"])
+        .arg(&volumes)
+        .output()
+        .expect("list reader books");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let shelf = success_value(&output.stdout);
+    assert_eq!(shelf["inLibrary"], 1);
+    assert_eq!(shelf["notInLibrary"], 1);
+    assert_eq!(shelf["books"][1]["path"], "documents/kindred-copy.txt");
+    assert_eq!(shelf["books"][1]["itemId"], item_id);
+    assert_eq!(shelf["books"][1]["title"], "Kindred");
+    assert!(shelf["books"][0].get("itemId").is_none());
+
+    let human = cargo_bin_cmd!("takio")
+        .args(["destination", "books", "--human", "--db"])
+        .arg(&database)
+        .args(["--dest", "Kindle", "--volumes-root"])
+        .arg(&volumes)
+        .output()
+        .expect("readable reader books");
+    let text = String::from_utf8(human.stdout).unwrap();
+    assert!(
+        text.starts_with("Kindle: 1 of your books, 1 other file(s)"),
+        "{text}"
+    );
+    assert!(text.contains("(not in library)"), "{text}");
+
+    let mut after: Vec<_> = fs::read_dir(&documents)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect();
+    after.sort();
+    let mut before = before;
+    before.sort();
+    assert_eq!(after, before, "the reader is not modified");
+    assert!(!volumes.join("Kindle/.takio").exists());
+    assert_eq!(fs::read(&database).unwrap(), catalogue);
+
+    let missing = temp.path().join("missing/library.sqlite");
+    let output = cargo_bin_cmd!("takio")
+        .args(["destination", "books", "--db"])
+        .arg(&missing)
+        .args(["--dest", "Kindle", "--volumes-root"])
+        .arg(&volumes)
+        .output()
+        .expect("missing library");
+    assert_eq!(failure_code(&output.stdout), "storage-unavailable");
+    assert!(!missing.exists(), "a reader scan never creates a library");
+}
+
+#[test]
+fn human_list_shows_authors_and_which_reader_holds_each_book() {
+    let (temp, database, volumes, _item_id) = reader_fixture();
+    let other = temp.path().join("Parable of the Sower.epub");
+    fs::write(&other, b"not on the reader").unwrap();
+    add_book(&database, &other);
+    let list = |volumes: &std::path::Path| {
+        let output = cargo_bin_cmd!("takio")
+            .args(["library", "list", "--human", "--db"])
+            .arg(&database)
+            .args(["--volumes-root"])
+            .arg(volumes)
+            .output()
+            .expect("readable list");
+        assert!(output.status.success());
+        String::from_utf8(output.stdout).unwrap()
+    };
+
+    let text = list(&volumes);
+    assert!(text.contains("On reader"), "{text}");
+    assert!(
+        text.contains("Kindle: 0 of these books, 0 other file(s)"),
+        "{text}"
+    );
+
+    fs::write(
+        volumes.join("Kindle/documents/Kindred.txt"),
+        b"kindred bytes for the reader",
+    )
+    .unwrap();
+    let text = list(&volumes);
+    let kindred = text
+        .lines()
+        .find(|line| line.starts_with("Kindred"))
+        .unwrap();
+    assert!(kindred.contains("Octavia E. Butler"), "{kindred}");
+    assert!(kindred.contains("Kindle"), "{kindred}");
+    let sower = text
+        .lines()
+        .find(|line| line.starts_with("Parable of the Sower"))
+        .unwrap();
+    assert!(!sower.contains("Kindle"), "{sower}");
+    assert!(text.contains("2 book(s) in the library"), "{text}");
+    assert!(
+        text.contains("Kindle: 1 of these books, 0 other file(s)"),
+        "{text}"
+    );
+
+    let none = temp.path().join("NoVolumes");
+    fs::create_dir(&none).unwrap();
+    let text = list(&none);
+    assert!(!text.contains("On reader"), "{text}");
+    assert!(
+        text.contains("No Kindle or Kobo reader is mounted."),
+        "{text}"
+    );
+
+    let json = cargo_bin_cmd!("takio")
+        .args(["library", "list", "--db"])
+        .arg(&database)
+        .output()
+        .expect("json list");
+    let items = success_value(&json.stdout)["items"].clone();
+    assert_eq!(items.as_array().unwrap().len(), 2);
+    assert!(
+        items[0].get("onReader").is_none(),
+        "JSON output is unchanged"
+    );
+}

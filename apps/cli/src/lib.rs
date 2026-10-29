@@ -15,6 +15,7 @@ pub mod model;
 pub mod output;
 pub mod paths;
 pub mod portable_library;
+pub mod reader_shelf;
 pub mod server;
 pub mod store;
 pub mod tui;

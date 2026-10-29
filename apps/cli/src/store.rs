@@ -79,6 +79,14 @@ pub struct ImportWatchObservation {
     pub outcome: &'static str,
 }
 
+/// One active book, and one managed format's recorded fingerprint when it has one.
+#[derive(Clone, Debug)]
+pub struct ActiveFingerprint {
+    pub item_id: String,
+    pub title: String,
+    pub fingerprint: Option<(u64, String)>,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct VerifyReport {
@@ -647,6 +655,42 @@ impl LibraryStore {
         }
         self.read_item(&id)?
             .ok_or_else(|| AppError::new("storage-unavailable"))
+    }
+
+    /// Every active (not trashed) book with the recorded size and SHA-256 of each managed
+    /// format. Books without a managed format appear once with no fingerprint.
+    pub fn active_fingerprints(&self) -> AppResult<Vec<ActiveFingerprint>> {
+        let mut statement = self.connection.prepare(
+            "SELECT i.id, i.title, f.content_bytes, f.content_sha256
+             FROM library_items i LEFT JOIN library_item_formats f
+               ON f.library_item_id = i.id AND f.provenance = 'managed'
+             WHERE i.trashed_at IS NULL
+             ORDER BY i.id, f.position",
+        )?;
+        let rows = statement.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<i64>>(2)?,
+                row.get::<_, Option<String>>(3)?,
+            ))
+        })?;
+        rows.map(|row| {
+            let (item_id, title, bytes, sha256) = row?;
+            let fingerprint = match (bytes, sha256) {
+                (Some(bytes), Some(sha256)) => Some((
+                    u64::try_from(bytes).map_err(|_| AppError::new("invalid-stored-data"))?,
+                    sha256,
+                )),
+                _ => None,
+            };
+            Ok(ActiveFingerprint {
+                item_id,
+                title,
+                fingerprint,
+            })
+        })
+        .collect()
     }
 
     pub fn find_managed_duplicate(
