@@ -379,6 +379,14 @@ fn reader_marks_after_restart_reuse_saved_fingerprints(cx: &mut TestAppContext) 
     let after_import = fs::read(&cache).unwrap();
     assert_ne!(after_import, saved, "the imported file's fingerprint is remembered");
     let before = reader_tree_snapshot(&reader.path);
+    // Saving replaces the file, so an unchanged identity means nothing was re-read.
+    let identity = || {
+        use std::os::unix::fs::MetadataExt;
+        let metadata = fs::metadata(&cache).unwrap();
+        (metadata.ino(), metadata.mtime(), metadata.mtime_nsec())
+    };
+    let saved_identity = identity();
+    std::thread::sleep(Duration::from_millis(20));
 
     // A new engine for the same library, as after quitting and reopening the app.
     let restarted = Engine::open_existing(root.to_path_buf()).unwrap();
@@ -395,6 +403,7 @@ fn reader_marks_after_restart_reuse_saved_fingerprints(cx: &mut TestAppContext) 
         assert!(state.on_reader.contains_key(&book.id));
     });
     assert_eq!(fs::read(&cache).unwrap(), after_import, "nothing new had to be read");
+    assert_eq!(identity(), saved_identity, "the restarted app re-read nothing");
     assert_eq!(reader_tree_snapshot(&reader.path), before, "the reader is not modified");
 }
 

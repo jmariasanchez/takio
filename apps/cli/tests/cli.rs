@@ -3890,6 +3890,26 @@ fn reader_fingerprints_are_remembered_between_commands_and_never_trusted_for_imp
         .output()
         .expect("import from reader");
     assert_eq!(success_value(&imported.stdout)["counts"]["imported"], 1);
+    let saved: serde_json::Value = serde_json::from_slice(&fs::read(&cache).unwrap()).unwrap();
+    let new_item = success_value(&imported.stdout)["outcomes"][0]["item"]["id"].clone();
+    let stored = &success_value(
+        &cargo_bin_cmd!("takio")
+            .args(["library", "get", "--db"])
+            .arg(&database)
+            .args(["--id", new_item.as_str().unwrap()])
+            .output()
+            .unwrap()
+            .stdout,
+    )["item"]["formats"][0]["sourcePath"];
+    let digest = |path: &std::path::Path| {
+        use sha2::Digest;
+        format!("{:x}", sha2::Sha256::digest(fs::read(path).unwrap()))
+    };
+    assert_eq!(
+        saved["entries"][0]["sha256"].as_str(),
+        Some(digest(std::path::Path::new(stored.as_str().unwrap())).as_str()),
+        "the import saved the fingerprint it read, not the stale one"
+    );
     let after = books();
     assert_ne!(
         after["books"][0]["itemId"], item_id,

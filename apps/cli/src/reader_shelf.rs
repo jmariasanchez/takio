@@ -803,6 +803,7 @@ mod tests {
         assert_eq!(snapshot(&f.kindle), before);
     }
 
+    #[cfg(unix)]
     #[test]
     fn saved_cache_lets_a_new_process_rescan_without_reading_the_reader() {
         let mut f = fixture();
@@ -831,7 +832,16 @@ mod tests {
             "the saved cache is reused by a new process"
         );
         let saved = fs::read(root.join(HASH_CACHE_FILE)).unwrap();
+        // A rewrite would replace the file, so its identity shows whether it was rewritten.
+        let identity = || {
+            use std::os::unix::fs::MetadataExt;
+            let metadata = fs::metadata(root.join(HASH_CACHE_FILE)).unwrap();
+            (metadata.ino(), metadata.mtime_nsec(), metadata.mtime())
+        };
+        let before = identity();
+        std::thread::sleep(std::time::Duration::from_millis(20));
         second.save(&root).unwrap();
+        assert_eq!(identity(), before, "unchanged, not rewritten");
         assert_eq!(
             fs::read(root.join(HASH_CACHE_FILE)).unwrap(),
             saved,
@@ -887,6 +897,8 @@ mod tests {
         for body in [
             "not json".to_owned(),
             forged("NOT-HEX"),
+            forged(&"A".repeat(64)),
+            forged(&"g".repeat(64)),
             forged(&"a".repeat(63)),
             forged(&"a".repeat(64)).replace("\"version\":1", "\"version\":2"),
         ] {
