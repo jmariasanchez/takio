@@ -7,6 +7,8 @@ mod engine;
 mod library_location;
 mod preferences;
 mod preparation;
+#[cfg(feature = "snapshot")]
+mod snapshot;
 mod startup;
 mod state;
 mod theme;
@@ -61,6 +63,10 @@ fn main() {
     let started = std::time::Instant::now();
     if std::env::var_os("TAKIO_DESKTOP_BENCH").is_some() {
         return bench::run(started);
+    }
+    #[cfg(feature = "snapshot")]
+    if std::env::var_os("TAKIO_SNAPSHOT_OUTPUT").is_some() {
+        return snapshot::run();
     }
     let paths = match engine::resolve_paths() {
         Ok(paths) => paths,

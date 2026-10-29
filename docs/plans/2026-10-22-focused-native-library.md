@@ -1660,11 +1660,11 @@ Weak points found and fixed in the recheck:
 | `library list --human`: authors, On reader, no-reader message; JSON unchanged | CLI `human_list_shows_authors_...`; both acceptance runs | Pass. No repo script parses the human table |
 | `destination books --human` and import hint only when importable | CLI tests (hint present for TXT, absent for store `.azw`) | Pass |
 | `destination import` copies only unmatched, storable files; reader untouched; repeat no-op | `import_unmatched_...`; CLI `destination_import_...`; release FAT run | Pass. Added Dawn (Octavia E. Butler) and On Writing, skipped `.azw`, reader tree hash-identical, no `.takio` written, repeat imported 0 |
-| Desktop marks rows, inspector names reader, sidebar counts | 5 native `reader_shelf_*` state tests | State pass. **Rendering unobserved** |
+| Desktop marks rows, inspector names reader, sidebar counts | 5 native `reader_shelf_*` state tests; offscreen Metal render of the real `Workspace` (`--features snapshot`) on a scratch library and FAT image at `/Volumes/KINDLE` | Pass, **rendered and seen**: Kindred row shows `● TXT`, Parable of the Sower plain `TXT`; inspector "On reader KINDLE"; sidebar "1 of your books on this reader / ● marks them in the list / 2 other file(s) not in your library / 1 use formats Takio cannot add" |
 | Desktop rescans after refresh, send, import, trash, restore, purge, switch; stale replies dropped | native send, import, trash/restore, stale-reply tests | Pass |
-| Desktop "Add N to library" only for importable files, guarded, unplugged reader guidance | 3 native `reader_import_*` tests and pointer `sidebar_pointer_imports_reader_only_book` | Pass. Pointer click imports EPUB, control hides while `.azw` remains |
+| Desktop "Add N to library" only for importable files, guarded, unplugged reader guidance | 3 native `reader_import_*` tests and pointer `sidebar_pointer_imports_reader_only_book`; render before and after `import_from_reader` on the FAT image | Pass, **rendered**: before shows "Add 1 to library"; after, Dawn by Octavia E. Butler appears with `●`, the control is gone, counts read 2 in library and 1 other, status "Imported 1, skipped 1 (1 in a format Takio cannot store, such as Kindle store books), failed 0", reader tree hash-identical |
 | Scans do not block mutations or startup | `reader_shelf_*` (never `busy`); `bench-desktop-native.sh --interactions` | Pass. Paint 104.5 ms, query 170.9 ms median, sort p95 0.04 ms, select-all/reload p95 46.2 ms, all budgets met |
-| Packaging | `scripts/package-desktop-native.sh` | Pass. Strict signature valid, 11,578,577-byte bundle, bundle launch smoke 144.7 ms paint |
+| Packaging | `scripts/package-desktop-native.sh` | Pass. Strict signature valid, 11,578,577-byte bundle (unchanged with the snapshot feature present but off; its hook string is absent from the binary) |
 | Workspace gates | fmt, `git diff --check`, strict Clippy, `TMPDIR=/private/tmp/ cargo test --workspace` | Pass. 152 engine (2 ignored), 61 CLI, 2 custom-field, 181 native |
 
 Known, unchanged, not caused by this work: `cargo test --release -p
@@ -1672,7 +1672,12 @@ takio-desktop` does not compile because `click_control` is
 `debug_assertions`-only (already true at `acbc1c0`). The 7 recovery tests still
 fail under the `/var` TMPDIR alias.
 
-Blocked on the user, not complete: seeing the rendered marker, inspector row,
-sidebar counts and "Add N to library" in the packaged app (needs Screen
-Recording permission), and the physical Kindle run (connect the device, check
-the shelf counts, import, then open a pulled-in or sent book on the device).
+Blocked on the user, not complete: the physical Kindle run (connect the
+device, check the shelf counts, import, then open a pulled-in or sent book on
+the device), and clicking the controls in the on-screen app (the offscreen
+render proves what is drawn, and pointer tests prove the clicks, but a person
+has not used the window). The render evidence comes from
+`takio-snapshot-acceptance.sh` and `takio-snapshots/{before,after}.png` in the
+session scratch folder. Rendering found and fixed one layout issue: the "(●
+in list)" legend wrapped mid-phrase, and it now reads "● marks them in the
+list" on its own line.

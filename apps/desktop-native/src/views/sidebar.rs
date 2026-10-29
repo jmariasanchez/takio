@@ -123,7 +123,11 @@ impl Render for Sidebar {
                     Some((_, Ok(shelf))) => {
                         let mut text = match shelf.in_library {
                             0 => "None of your books are on this reader".to_owned(),
-                            count => format!("{count} of your books on this reader (● in list)"),
+                            count => {
+                                format!(
+                                    "{count} of your books on this reader\n● marks them in the list"
+                                )
+                            }
                         };
                         if shelf.not_in_library > 0 {
                             text.push_str(&format!(

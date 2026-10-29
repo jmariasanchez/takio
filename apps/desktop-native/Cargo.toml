@@ -30,5 +30,10 @@ gpui_platform = { package = "gpui-pre-platform", version = "=0.3.9", features = 
 [dev-dependencies]
 gpui = { package = "gpui-pre", version = "=0.3.9", default-features = false, features = ["font-kit", "test-support"] }
 
+[features]
+# Opt-in offscreen render of the real workspace to a PNG via Metal, for acceptance
+# evidence without Screen Recording. Not enabled in packaged builds.
+snapshot = ["gpui/test-support", "gpui_platform/test-support"]
+
 [lints]
 workspace = true
