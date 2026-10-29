@@ -97,6 +97,7 @@ pub struct LibraryState {
         Result<takio::reader_shelf::ReaderShelf, String>,
     )>,
     pub on_reader: HashMap<String, Vec<String>>,
+    pub reading: HashMap<String, (String, takio::koreader::ReadingState)>,
     pub scanning_readers: bool,
     reader_scan_generation: u64,
     /// Volume names seen at the last refresh, so polling only acts on a change.
@@ -149,6 +150,7 @@ impl LibraryState {
             destinations: Vec::new(),
             reader_shelves: Vec::new(),
             on_reader: HashMap::new(),
+            reading: HashMap::new(),
             scanning_readers: false,
             reader_scan_generation: 0,
             seen_volumes: None,
@@ -800,7 +802,12 @@ impl LibraryState {
                         this.on_reader
                             .entry(id.to_owned())
                             .or_default()
-                            .push(destination.name.clone());
+                            .push(destination.label());
+                        if let Some(reading) = shelf.reading_for(id) {
+                            this.reading
+                                .entry(id.to_owned())
+                                .or_insert_with(|| (destination.label(), reading.clone()));
+                        }
                     }
                 }
             }
@@ -815,6 +822,7 @@ impl LibraryState {
         self.scanning_readers = false;
         self.reader_shelves.clear();
         self.on_reader.clear();
+        self.reading.clear();
     }
 
     pub fn refresh_destinations(&mut self, cx: &mut Context<Self>) {
@@ -1321,7 +1329,7 @@ pub fn humanize_error(code: &str) -> String {
         "conversion-timeout" => "AZW3 preparation exceeded the 120-second conversion limit. The EPUB was kept. Check the source and local converter before retrying.".into(),
         "artifact-invalid" => "The converted file could not be verified. The EPUB was kept. Check the source and local converter before retrying.".into(),
         "format-not-found" => "That book has no file to send".into(),
-        "no-compatible-format" | "destination-format-unsupported" => "No compatible file attached. Add an AZW3/PDF for a stock Kindle, or use Amazon's Send to Kindle for EPUB.".into(),
+        "no-compatible-format" | "destination-format-unsupported" => "No file this reader can open. KOReader reads EPUB, PDF, MOBI, AZW3, TXT and CBZ. A stock Kindle needs AZW3, MOBI, PDF or TXT.".into(),
         "invalid-arguments" => "Check the book details and selection, then try again".into(),
         "eject-failed" => "The device could not be ejected".into(),
         other => format!("Something went wrong ({other})"),

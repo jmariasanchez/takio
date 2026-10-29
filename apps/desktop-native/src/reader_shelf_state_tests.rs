@@ -1,4 +1,61 @@
 // Included in state::tests. Every reader and library is disposable.
+fn check_reader_progress(cx: &mut TestAppContext, koreader: bool, status: &str) {
+    let f = fixture(cx);
+    let reader = shelf_reader(&f, cx);
+    if !koreader {
+        fs::remove_dir(reader.path.join("koreader")).unwrap();
+    }
+    let book = f.state.read_with(cx, |state, _| state.items[0].clone());
+    fs::copy(&book.source_path, reader.path.join("documents/book.epub")).unwrap();
+    fs::create_dir(reader.path.join("documents/book.sdr")).unwrap();
+    fs::write(
+        reader.path.join("documents/book.sdr/metadata.epub.lua"),
+        format!("return {{ [\"percent_finished\"] = 0.5, [\"summary\"] = {{ [\"status\"] = \"{status}\" }} }}"),
+    )
+    .unwrap();
+    let before = reader_tree_snapshot(&reader.path);
+    f.state.update(cx, |state, cx| state.refresh_destinations(cx));
+    settle(&f.state, cx);
+    f.state.read_with(cx, |state, _| {
+        let shelf = state.reader_shelves[0].1.as_ref().unwrap();
+        assert_eq!(shelf.koreader, koreader);
+        if koreader {
+            let (label, reading) = &state.reading[&book.id];
+            assert_eq!(label, "Kindle (KOReader)");
+            assert_eq!(state.on_reader[&book.id], vec!["Kindle (KOReader)"]);
+            assert_eq!(reading.label().as_deref(), Some(if status == "complete" { "finished" } else { "50%" }));
+            assert_eq!((shelf.finished, shelf.in_progress), if status == "complete" { (1, 0) } else { (0, 1) });
+        } else {
+            assert!(state.reading.is_empty());
+            assert_eq!(state.on_reader[&book.id], vec!["Kindle"]);
+            assert_eq!((shelf.finished, shelf.in_progress), (0, 0));
+            assert!(shelf.reading_for(&book.id).is_none());
+        }
+    });
+    assert_eq!(reader_tree_snapshot(&reader.path), before);
+    f.state.update(cx, |state, cx| {
+        state.destinations.clear();
+        state.scan_readers(cx);
+        assert!(state.reading.is_empty());
+        assert!(state.on_reader.is_empty());
+    });
+}
+
+#[gpui::test]
+fn koreader_shelf_progress_labels_matched_book(cx: &mut TestAppContext) {
+    check_reader_progress(cx, true, "reading");
+}
+
+#[gpui::test]
+fn koreader_shelf_complete_counts_as_finished(cx: &mut TestAppContext) {
+    check_reader_progress(cx, true, "complete");
+}
+
+#[gpui::test]
+fn stock_kindle_ignores_reading_sidecar(cx: &mut TestAppContext) {
+    check_reader_progress(cx, false, "reading");
+}
+
 fn reader_tree_snapshot(root: &std::path::Path) -> Vec<(PathBuf, Option<Vec<u8>>)> {
     fn visit(
         root: &std::path::Path,
@@ -174,7 +231,7 @@ fn reader_shelf_matches_bytes_counts_unknown_and_trash_removes_mark(cx: &mut Tes
     });
     settle(&f.state, cx);
     f.state.read_with(cx, |state, _| {
-        assert_eq!(state.on_reader[&book.id], vec![reader.name.clone()]);
+        assert_eq!(state.on_reader[&book.id], vec![reader.label()]);
         let shelf = state.reader_shelves[0].1.as_ref().unwrap();
         assert_eq!((shelf.in_library, shelf.not_in_library), (1, 1));
     });

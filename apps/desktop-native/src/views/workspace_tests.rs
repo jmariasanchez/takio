@@ -655,6 +655,42 @@ fn click_control(f: &Fixture, selector: &'static str, cx: &mut TestAppContext) {
 
 #[cfg(debug_assertions)]
 #[gpui::test]
+fn amazon_guidance_only_appears_for_connected_stock_kindle(cx: &mut TestAppContext) {
+    let f = fixture(false, cx);
+    let koreader = reader(&f, cx);
+    let volumes = f._temp.path().join("Volumes");
+    let stock_mount = volumes.join("Stock Kindle");
+    for directory in ["documents", "system"] {
+        std::fs::create_dir_all(stock_mount.join(directory)).unwrap();
+    }
+    let stock = takio::destinations::authorize(&stock_mount, &volumes).unwrap();
+    let mut kobo = stock.clone();
+    kobo.kind = takio::destinations::DestinationKind::Kobo;
+    for (destinations, expected) in [
+        (vec![], false),
+        (vec![koreader.clone()], false),
+        (vec![kobo], false),
+        (vec![stock.clone()], true),
+        (vec![koreader, stock], true),
+    ] {
+        f.state.update(cx, |state, cx| {
+            state.destinations = destinations;
+            cx.notify();
+        });
+        cx.run_until_parked();
+        cx.update_window(f.window.into(), |_, window, cx| window.draw(cx).clear(cx))
+            .unwrap();
+        let mut visual = gpui::VisualTestContext::from_window(f.window.into(), cx);
+        assert_eq!(
+            visual.debug_bounds("amazon-send-to-kindle").is_some(),
+            expected
+        );
+    }
+    assert_files_unchanged(&f);
+}
+
+#[cfg(debug_assertions)]
+#[gpui::test]
 fn sidebar_pointer_imports_reader_only_book(cx: &mut TestAppContext) {
     let f = fixture(false, cx);
     let reader = reader(&f, cx);

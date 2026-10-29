@@ -629,36 +629,8 @@ fn preferred_format<'a>(
     item: &'a LibraryItem,
     destination: &Destination,
 ) -> Option<&'a BookFormat> {
-    // A detected KOReader installation can read EPUB directly. Stock Kindle cannot.
-    let preference: &[FormatId] = if destination
-        .features
-        .iter()
-        .any(|feature| feature == "koreader")
-    {
-        &[
-            FormatId::Epub,
-            FormatId::Pdf,
-            FormatId::Mobi,
-            FormatId::Txt,
-            FormatId::Cbz,
-        ]
-    } else {
-        match destination.kind {
-            DestinationKind::Kindle => {
-                &[FormatId::Azw3, FormatId::Mobi, FormatId::Pdf, FormatId::Txt]
-            }
-            DestinationKind::Kobo => &[
-                FormatId::Kepub,
-                FormatId::Epub,
-                FormatId::Pdf,
-                FormatId::Cbz,
-            ],
-            DestinationKind::Generic => return None,
-        }
-    };
-    preference
-        .iter()
-        .find_map(|wanted| item.formats.iter().find(|format| format.format == *wanted))
+    // Shared with the CLI. A detected KOReader reads EPUB directly; stock Kindle cannot.
+    destination.preferred_format(&item.formats)
 }
 
 fn deliver_item(

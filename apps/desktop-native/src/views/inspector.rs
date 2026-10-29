@@ -135,6 +135,14 @@ impl Inspector {
                     .get(&item.id)
                     .map(|names| names.join(", ")),
             ),
+            (
+                "Progress",
+                self.state
+                    .read(cx)
+                    .reading
+                    .get(&item.id)
+                    .and_then(|(_, reading)| reading.label()),
+            ),
             ("Rating", item.rating.map(|rating| rating.to_string())),
             ("Added", item.added_at.get(..10).map(str::to_owned)),
         ] {

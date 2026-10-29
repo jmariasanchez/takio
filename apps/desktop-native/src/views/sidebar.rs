@@ -54,6 +54,10 @@ impl Render for Sidebar {
             .gap_1()
             .text_sm()
             .text_color(theme.text);
+        let has_stock_kindle = readers.iter().any(|reader| {
+            matches!(reader.kind, takio::destinations::DestinationKind::Kindle)
+                && !reader.has_koreader()
+        });
         for (label, target) in [("Library", Section::Library), ("Trash", Section::Trash)] {
             sidebar = sidebar.child(
                 div()
@@ -141,6 +145,12 @@ impl Render for Sidebar {
                                 shelf.not_in_library - shelf.importable
                             ));
                         }
+                        if shelf.koreader && shelf.finished + shelf.in_progress > 0 {
+                            text.push_str(&format!(
+                                "\n{} finished, {} in progress",
+                                shelf.finished, shelf.in_progress
+                            ));
+                        }
                         if shelf.truncated {
                             text.push_str("\nScan limit reached. Counts may be incomplete.");
                         }
@@ -167,7 +177,7 @@ impl Render for Sidebar {
                             .min_w_0()
                             .text_ellipsis()
                             .overflow_hidden()
-                            .child(destination.name.clone()),
+                            .child(destination.label()),
                     )
                     .child(
                         div()
@@ -250,12 +260,14 @@ impl Render for Sidebar {
                     ),
             );
         }
-        sidebar = sidebar.child(div().px_2().py_2().flex().flex_col().gap_1()
+        if has_stock_kindle {
+            sidebar = sidebar.child(div().px_2().py_2().flex().flex_col().gap_1()
             .child(div().text_xs().text_color(theme.text_secondary).child("Have an EPUB? Reveal its file in the inspector, then upload it yourself on Amazon."))
-            .child(div().id("amazon-send-to-kindle").text_xs().text_color(theme.accent).cursor_pointer()
+            .child(div().id("amazon-send-to-kindle").debug_selector(|| "amazon-send-to-kindle".to_owned()).text_xs().text_color(theme.accent).cursor_pointer()
                 .child("Open Send to Kindle website")
                 .on_click(|_, _, cx| cx.open_url("https://www.amazon.com/sendtokindle")))
             .child(div().text_xs().text_color(theme.text_tertiary).child("Opens your browser. Takio does not upload files or confirm Amazon delivery.")));
+        }
         let mut groups = div()
             .id("facets")
             .mt_3()

@@ -61,6 +61,12 @@ reference to a caller-owned file.
    **Send selected** button, or **Reader > Send Selected Books** (Cmd-Shift-S).
    Takio chooses an attached compatible format and reports each result. Stock
    Kindle EPUB-only books are not copied as if they were readable.
+   A jailbroken Kindle (or Kobo) running KOReader is detected by its `koreader`
+   folder and shown as "Kindle (KOReader)". It receives EPUB directly, with no
+   conversion or Amazon upload. Takio reads KOReader's per-book sidecars
+   (`<book>.sdr/metadata.<ext>.lua`) without running them, to show progress
+   ("42%", "finished") and finished/in-progress counts. It never changes
+   KOReader's files, settings or highlights.
 4. If necessary, reveal an EPUB in the inspector and use **Open Send to Kindle
    website** for a manual Amazon upload. This opens the browser only: Takio does
    not access your Amazon account, upload files, or verify Amazon delivery.

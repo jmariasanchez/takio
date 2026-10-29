@@ -1814,3 +1814,49 @@ Acceptance before code:
   render checks; a real FAT image shaped like the device (`koreader/`, author
   folders, `.sdr` sidecars) through the release CLI and the rendered desktop.
   A simulated image does not prove behavior on the physical device.
+
+### Observed KOReader results
+
+- Engine: `Destination::readable_formats` and `preferred_format` are shared by
+  CLI `send` and the desktop. KOReader reads EPUB, PDF, MOBI, AZW3, TXT and
+  CBZ. A stock Kindle reads AZW3, MOBI, PDF and TXT. A recognized reader never
+  gets a fallback format it cannot open. The new `koreader` module tokenizes
+  sidecars without executing them, up to a 4 MiB bound, and reads only the
+  top-level `percent_finished` and `summary.status`. Six engine tests cover a
+  real-shaped sidecar with decoy `percent_finished` and `status` keys in
+  `annotations`, `stats` and a string; finished and on-hold labels; malformed
+  and `os.execute` inputs; book-folder and `koreader/docsettings` locations
+  with `.old` ignored; oversize files; stock Kindle reading nothing; a
+  read-only snapshot; and preference order with no unreadable fallback.
+- CLI test `koreader_kindle_gets_epub_shows_progress_and_never_gets_an_unreadable_file`:
+  the EPUB was sent as `Octavia E. Butler - Kindred.epub`, a DOCX was refused
+  with `no-compatible-format`, and the human and JSON output show KOReader
+  progress. Four native state tests and one window test (from the worker,
+  reviewed): progress labels, complete counted as finished, a stock Kindle
+  ignoring sidecars, and the Amazon guidance shown only when a stock Kindle is
+  connected (none, KOReader, Kobo, stock, mixed).
+- Real FAT image shaped like the device (`takio-koreader-acceptance.sh`):
+  `koreader/`, an `Butler, Octavia/` author folder, `.sdr` sidecars with
+  annotations and `.old` copies, a MOBI only on the reader and a store `.azw`.
+  `destination list` reported `KINDLE kindle ['koreader']`. `destination books
+  --human` printed "KINDLE (KOReader): 2 of your books, 2 other file(s)",
+  "KOReader: 1 finished, 1 in progress", Kindred 67% and Dawn finished. `library
+  list --human` showed "KINDLE 67%" and "KINDLE finished". `send --dest Kindle`
+  delivered the unread book as EPUB. The rendered desktop showed "KINDLE
+  (KOReader)", "1 finished, 1 in progress", ● on all three books, inspector
+  "On reader KINDLE (KOReader)" and "Progress 67%", and no Amazon hint.
+  KOReader's files and sidecars were hash-identical afterwards (only Takio's
+  own delivery manifest and its Finder `._` companion were added), and
+  `library verify` passed.
+- Gates: fmt, `git diff --check`, strict Clippy for the workspace and the
+  snapshot feature, and `TMPDIR=/private/tmp/ cargo test --workspace` (158
+  engine with 2 ignored, 63 CLI, 2 custom-field, 188 native).
+
+Limitations: progress is shown only for books Takio recognizes on the reader,
+and only from sidecars in the book folder or KOReader's `docsettings` mirror,
+not from a custom `docsettings` path or KOReader's hash-based location.
+Highlights, history and statistics are not read. The toolbar still offers
+"Prepare for Kindle" (EPUB to AZW3), which a KOReader user does not need. It
+remains for stock Kindle owners. Wireless sync, KOReader's Calibre wireless
+protocol and MTP are not supported. Not yet seen on the physical device: real
+sidecars, reading progress after the user opens a sent EPUB.
