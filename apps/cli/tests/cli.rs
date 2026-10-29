@@ -3816,16 +3816,94 @@ fn destination_books_lists_reader_files_and_library_matches_without_writing() {
     assert!(!volumes.join("Kindle/.takio").exists());
     assert_eq!(fs::read(&database).unwrap(), catalogue);
 
-    let missing = temp.path().join("missing/library.sqlite");
-    let output = cargo_bin_cmd!("takio")
-        .args(["destination", "books", "--db"])
-        .arg(&missing)
+    // Before any library exists, the reader's books are listed as not in it, and
+    // nothing is created: no library, and no cache in the unrelated folder.
+    for missing in [
+        temp.path().join("missing/library.sqlite"),
+        temp.path().join("library.sqlite"),
+    ] {
+        let output = cargo_bin_cmd!("takio")
+            .args(["destination", "books", "--db"])
+            .arg(&missing)
+            .args(["--dest", "Kindle", "--volumes-root"])
+            .arg(&volumes)
+            .output()
+            .expect("missing library");
+        let shelf = success_value(&output.stdout);
+        assert_eq!(
+            (shelf["inLibrary"].as_u64(), shelf["notInLibrary"].as_u64()),
+            (Some(0), Some(2))
+        );
+        assert_eq!(shelf["importable"], 1, "the .txt copy, not the store .azw");
+        assert!(!missing.exists(), "a reader scan never creates a library");
+        assert!(!missing.with_file_name("reader-hashes.json").exists());
+    }
+    let mut after: Vec<_> = fs::read_dir(&documents)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect();
+    after.sort();
+    assert_eq!(after, before, "the reader is not modified");
+}
+
+#[test]
+fn reader_fingerprints_are_remembered_between_commands_and_never_trusted_for_import() {
+    let (_temp, database, volumes, item_id) = reader_fixture();
+    let copy = volumes.join("Kindle/documents/kindred-copy.txt");
+    fs::write(&copy, b"kindred bytes for the reader").unwrap();
+    let cache = database.with_file_name("reader-hashes.json");
+    let books = || {
+        let output = cargo_bin_cmd!("takio")
+            .args(["destination", "books", "--db"])
+            .arg(&database)
+            .args(["--dest", "Kindle", "--volumes-root"])
+            .arg(&volumes)
+            .output()
+            .expect("list reader books");
+        success_value(&output.stdout)
+    };
+
+    assert_eq!(books()["books"][0]["itemId"], item_id);
+    let saved: serde_json::Value = serde_json::from_slice(&fs::read(&cache).unwrap()).unwrap();
+    assert_eq!(saved["entries"].as_array().map(Vec::len), Some(1));
+    assert_eq!(
+        saved["entries"][0]["sha256"].as_str().map(str::len),
+        Some(64)
+    );
+
+    // Same size and time, different bytes: the shelf trusts the remembered
+    // fingerprint, but import reads the file and adds it as the different book it is.
+    let modified = fs::metadata(&copy).unwrap().modified().unwrap();
+    fs::write(&copy, b"kindred bytes for the readex").unwrap();
+    fs::File::options()
+        .write(true)
+        .open(&copy)
+        .unwrap()
+        .set_modified(modified)
+        .unwrap();
+    assert_eq!(books()["books"][0]["itemId"], item_id);
+    let imported = cargo_bin_cmd!("takio")
+        .args(["destination", "import", "--db"])
+        .arg(&database)
         .args(["--dest", "Kindle", "--volumes-root"])
         .arg(&volumes)
         .output()
-        .expect("missing library");
-    assert_eq!(failure_code(&output.stdout), "storage-unavailable");
-    assert!(!missing.exists(), "a reader scan never creates a library");
+        .expect("import from reader");
+    assert_eq!(success_value(&imported.stdout)["counts"]["imported"], 1);
+    let after = books();
+    assert_ne!(
+        after["books"][0]["itemId"], item_id,
+        "corrected by the import's fresh read"
+    );
+    assert_eq!(
+        (after["inLibrary"].as_u64(), after["notInLibrary"].as_u64()),
+        (Some(1), Some(0))
+    );
+
+    // A damaged cache is ignored and replaced.
+    fs::write(&cache, b"{ not json").unwrap();
+    assert_eq!(books()["inLibrary"], 1);
+    assert!(serde_json::from_slice::<serde_json::Value>(&fs::read(&cache).unwrap()).is_ok());
 }
 
 #[test]

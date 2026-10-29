@@ -361,6 +361,44 @@ fn reader_shelf_stale_reply_cannot_replace_newer_scan_or_library(cx: &mut TestAp
 }
 
 #[gpui::test]
+fn reader_marks_after_restart_reuse_saved_fingerprints(cx: &mut TestAppContext) {
+    let f = fixture(cx);
+    let reader = shelf_reader(&f, cx);
+    let book = f.state.read_with(cx, |state, _| state.items[0].clone());
+    fs::copy(&book.source_path, reader.path.join("documents/book.epub")).unwrap();
+    fs::write(reader.path.join("documents/reader only.epub"), "only on the reader").unwrap();
+    f.state.update(cx, |state, cx| state.scan_readers(cx));
+    settle(&f.state, cx);
+    let root = f._temp.path();
+    let cache = root.join(takio::reader_shelf::HASH_CACHE_FILE);
+    let saved = fs::read(&cache).expect("the scan saved the reader's fingerprints");
+
+    // Import updates the cache with what it read, so the next launch needs no reading.
+    f.state.update(cx, |state, cx| state.import_from_reader(reader.clone(), cx));
+    settle(&f.state, cx);
+    let after_import = fs::read(&cache).unwrap();
+    assert_ne!(after_import, saved, "the imported file's fingerprint is remembered");
+    let before = reader_tree_snapshot(&reader.path);
+
+    // A new engine for the same library, as after quitting and reopening the app.
+    let restarted = Engine::open_existing(root.to_path_buf()).unwrap();
+    let state = cx.new(|cx| LibraryState::new(restarted, cx));
+    settle(&state, cx);
+    state.update(cx, |state, cx| {
+        state.volumes_root = reader.path.parent().unwrap().to_path_buf();
+        state.refresh_destinations(cx);
+    });
+    settle(&state, cx);
+    state.read_with(cx, |state, _| {
+        let shelf = state.reader_shelves[0].1.as_ref().unwrap();
+        assert_eq!((shelf.in_library, shelf.not_in_library), (2, 0));
+        assert!(state.on_reader.contains_key(&book.id));
+    });
+    assert_eq!(fs::read(&cache).unwrap(), after_import, "nothing new had to be read");
+    assert_eq!(reader_tree_snapshot(&reader.path), before, "the reader is not modified");
+}
+
+#[gpui::test]
 fn reader_shelf_import_matches_preexisting_reader_file(cx: &mut TestAppContext) {
     let f = fixture(cx);
     let reader = shelf_reader(&f, cx);

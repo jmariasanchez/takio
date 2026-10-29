@@ -1,6 +1,8 @@
 //! Read-only view of the books on a mounted reader, matched to the library.
 //!
-//! Nothing on the reader or in the library is written. A file counts as one of
+//! Nothing on the reader or in the catalogue is written. A small cache next to the
+//! catalogue remembers the fingerprints of unchanged reader files, so a reader on a
+//! slow USB connection is read in full only once. A file counts as one of
 //! the library's books only when its exact size and SHA-256 equal a managed
 //! format of an active book, or equal the fingerprint Takio recorded when it
 //! delivered that file for a book that is still active. Only files whose size
@@ -9,9 +11,9 @@
 use std::collections::{BTreeSet, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::conversion::detect_format;
 use crate::destinations::{self, Destination, DestinationKind};
@@ -24,6 +26,11 @@ use crate::store::{ActiveFingerprint, LibraryStore};
 const MAX_DEPTH: usize = 6;
 const MAX_ENTRIES: usize = 20_000;
 const MAX_BOOKS: usize = 5_000;
+/// Name of the reader fingerprint cache inside a library folder.
+pub const HASH_CACHE_FILE: &str = "reader-hashes.json";
+const HASH_CACHE_VERSION: u32 = 1;
+const MAX_CACHE_ENTRIES: usize = 4 * MAX_BOOKS;
+const MAX_CACHE_BYTES: u64 = 8 * 1024 * 1024;
 const BOOK_EXTENSIONS: &[&str] = &[
     "azw", "azw3", "cbr", "cbz", "djvu", "epub", "fb2", "kfx", "mobi", "pdf", "prc", "txt",
 ];
@@ -114,14 +121,114 @@ pub fn scan_files(
 
 /// Fingerprints of reader files keyed by path, reused while size and modification
 /// time are unchanged. Readers are only re-read when a file really changed.
+///
+/// The cache only decides which marks are shown. Importing and sending always read
+/// the bytes they act on.
 #[derive(Debug, Default)]
 pub struct HashCache {
     entries: HashMap<PathBuf, (u64, Option<SystemTime>, Fingerprint)>,
     /// Bytes read to hash files, for measurement.
     pub hashed_bytes: u64,
+    /// Entries changed since the cache was loaded or saved.
+    dirty: bool,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StoredCache {
+    version: u32,
+    entries: Vec<StoredEntry>,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StoredEntry {
+    path: String,
+    bytes: u64,
+    modified_secs: u64,
+    modified_nanos: u32,
+    sha256: String,
 }
 
 impl HashCache {
+    /// The cache saved in `library_root`. A missing, oversized or malformed cache is
+    /// empty, so the worst case is reading the reader again.
+    #[must_use]
+    pub fn load(library_root: &Path) -> Self {
+        let path = library_root.join(HASH_CACHE_FILE);
+        let stored = fs::symlink_metadata(&path)
+            .ok()
+            .filter(|metadata| metadata.is_file() && metadata.len() <= MAX_CACHE_BYTES)
+            .and_then(|_| fs::read(&path).ok())
+            .and_then(|bytes| serde_json::from_slice::<StoredCache>(&bytes).ok())
+            .filter(|stored| {
+                stored.version == HASH_CACHE_VERSION && stored.entries.len() <= MAX_CACHE_ENTRIES
+            });
+        let mut cache = Self::default();
+        for entry in stored.map(|stored| stored.entries).unwrap_or_default() {
+            let valid = entry.modified_nanos < 1_000_000_000
+                && entry.sha256.len() == 64
+                && entry
+                    .sha256
+                    .bytes()
+                    .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'));
+            let modified =
+                UNIX_EPOCH.checked_add(Duration::new(entry.modified_secs, entry.modified_nanos));
+            if valid && let Some(modified) = modified {
+                cache.entries.insert(
+                    PathBuf::from(entry.path),
+                    (entry.bytes, Some(modified), (entry.bytes, entry.sha256)),
+                );
+            }
+        }
+        cache
+    }
+
+    /// Save changed entries into `library_root`, replacing the file atomically. Does
+    /// nothing when unchanged or when the library folder does not exist, so reading
+    /// a reader never creates a library.
+    ///
+    /// # Errors
+    ///
+    /// Returns the I/O error when the cache could not be written. Callers may ignore
+    /// it: the cache is only an optimization.
+    pub fn save(&mut self, library_root: &Path) -> std::io::Result<()> {
+        if !self.dirty || !fs::symlink_metadata(library_root).is_ok_and(|meta| meta.is_dir()) {
+            return Ok(());
+        }
+        let mut entries: Vec<StoredEntry> = self
+            .entries
+            .iter()
+            .filter_map(|(path, (bytes, modified, (_, sha256)))| {
+                let since = modified.as_ref()?.duration_since(UNIX_EPOCH).ok()?;
+                Some(StoredEntry {
+                    path: path.to_str()?.to_owned(),
+                    bytes: *bytes,
+                    modified_secs: since.as_secs(),
+                    modified_nanos: since.subsec_nanos(),
+                    sha256: sha256.clone(),
+                })
+            })
+            .collect();
+        entries.sort_by(|left, right| left.path.cmp(&right.path));
+        let body = serde_json::to_vec(&StoredCache {
+            version: HASH_CACHE_VERSION,
+            entries,
+        })
+        .map_err(std::io::Error::other)?;
+        let mut staged = tempfile::Builder::new()
+            .prefix(".reader-hashes-")
+            .suffix(".tmp")
+            .tempfile_in(library_root)?;
+        // Not synced: after a crash a torn file is malformed and ignored, never trusted.
+        std::io::Write::write_all(&mut staged, &body)?;
+        staged
+            .persist(library_root.join(HASH_CACHE_FILE))
+            .map_err(|error| error.error)?;
+        self.dirty = false;
+        Ok(())
+    }
+
     fn fingerprint(&mut self, path: &Path, seen: &mut BTreeSet<PathBuf>) -> Option<Fingerprint> {
         let metadata = fs::metadata(path).ok()?;
         let modified = metadata.modified().ok();
@@ -133,14 +240,38 @@ impl HashCache {
         {
             return Some(fingerprint.clone());
         }
+        self.read(path, metadata.len(), modified)
+    }
+
+    /// Hash `path` now, ignoring any cached entry, and remember the result.
+    fn refresh(&mut self, path: &Path) -> Option<Fingerprint> {
+        let metadata = fs::metadata(path).ok()?;
+        self.read(path, metadata.len(), metadata.modified().ok())
+    }
+
+    fn read(&mut self, path: &Path, len: u64, modified: Option<SystemTime>) -> Option<Fingerprint> {
         let fingerprint = crate::fingerprint::hash_file(path).ok()?;
         self.hashed_bytes += fingerprint.0;
-        self.entries.insert(
-            path.to_path_buf(),
-            (metadata.len(), modified, fingerprint.clone()),
-        );
+        self.remember(path, len, modified, fingerprint.clone());
         Some(fingerprint)
     }
+
+    fn remember(
+        &mut self,
+        path: &Path,
+        len: u64,
+        modified: Option<SystemTime>,
+        fingerprint: Fingerprint,
+    ) {
+        self.entries
+            .insert(path.to_path_buf(), (len, modified, fingerprint));
+        self.dirty = true;
+    }
+}
+
+fn stamp(path: &Path) -> Option<(u64, SystemTime)> {
+    let metadata = fs::metadata(path).ok()?;
+    Some((metadata.len(), metadata.modified().ok()?))
 }
 
 /// Scan, reusing `cache` for files whose size and modification time are unchanged.
@@ -155,9 +286,15 @@ pub fn scan_cached(
         cache.fingerprint(path, &mut seen)
     })?;
     let prefix = &destination.path;
+    let before = cache.entries.len();
     cache
         .entries
         .retain(|path, _| !path.starts_with(prefix) || seen.contains(path));
+    // Readers that are never connected again must not grow the cache without bound.
+    if cache.entries.len() > MAX_CACHE_ENTRIES {
+        cache.entries.retain(|path, _| path.starts_with(prefix));
+    }
+    cache.dirty |= cache.entries.len() != before;
     Ok(shelf)
 }
 
@@ -300,18 +437,56 @@ pub fn scan(
 /// Copy every book file on the reader that matches no active library book into the
 /// library. The reader is only read. Files are explicit sources, so short PDFs are
 /// kept and formats the library cannot store are reported as skipped.
+///
+/// Every file is read fresh, never trusted from `cache`. The fingerprints read here
+/// are then remembered, so the next scan shows the new marks without reading the
+/// reader again.
 pub fn import_unmatched(
     store: &mut LibraryStore,
     destination: &Destination,
+    cache: &mut HashCache,
 ) -> AppResult<ImportScan> {
-    let shelf = scan_files(destination, &store.active_fingerprints()?)?;
+    let shelf = scan(destination, &store.active_fingerprints()?, &mut |path| {
+        cache.refresh(path)
+    })?;
     let sources: Vec<PathBuf> = shelf
         .books
         .iter()
         .filter(|entry| entry.item_id.is_none())
         .map(|entry| destination.path.join(&entry.path))
         .collect();
-    scan_imports(store, &sources, false, false, || false)
+    let stamps: HashMap<&Path, (u64, SystemTime)> = sources
+        .iter()
+        .filter_map(|source| Some((source.as_path(), stamp(source)?)))
+        .collect();
+    let scan = scan_imports(store, &sources, false, false, || false)?;
+    let mut managed: HashMap<String, Vec<Fingerprint>> = HashMap::new();
+    for book in store.active_fingerprints()? {
+        if let Some(fingerprint) = book.fingerprint {
+            managed.entry(book.item_id).or_default().push(fingerprint);
+        }
+    }
+    for outcome in &scan.outcomes {
+        let crate::import_scan::ImportOutcome::Imported { source_path, item } = outcome else {
+            continue;
+        };
+        // The verified copy's fingerprint is the source's, provided the source was not
+        // changed during the import and exactly one of the book's copies has its size.
+        let Some(&(bytes, modified)) = stamps.get(source_path.as_path()) else {
+            continue;
+        };
+        let mut same_size = managed
+            .get(&item.id)
+            .into_iter()
+            .flatten()
+            .filter(|fingerprint| fingerprint.0 == bytes);
+        if let (Some(fingerprint), None) = (same_size.next(), same_size.next())
+            && stamp(source_path) == Some((bytes, modified))
+        {
+            cache.remember(source_path, bytes, Some(modified), fingerprint.clone());
+        }
+    }
+    Ok(scan)
 }
 
 fn skipped(entry: &walkdir::DirEntry) -> bool {
@@ -583,8 +758,9 @@ mod tests {
         fs::write(documents.join("Dawn.sdr/Dawn.txt"), b"reading position").unwrap();
         let before = snapshot(&f.kindle);
         let destination = destinations::authorize(&f.kindle, &f.volumes).unwrap();
+        let mut cache = HashCache::default();
 
-        let scan = import_unmatched(&mut f.store, &destination).unwrap();
+        let scan = import_unmatched(&mut f.store, &destination, &mut cache).unwrap();
 
         assert_eq!(snapshot(&f.kindle), before, "the reader is not modified");
         assert_eq!(
@@ -622,9 +798,206 @@ mod tests {
         assert_eq!(after.importable, 0, "nothing left that an import could add");
         assert!(after.item_ids().contains(kindred.as_str()));
 
-        let again = import_unmatched(&mut f.store, &destination).unwrap();
+        let again = import_unmatched(&mut f.store, &destination, &mut cache).unwrap();
         assert_eq!((again.counts.imported, again.counts.skipped), (0, 1));
         assert_eq!(snapshot(&f.kindle), before);
+    }
+
+    #[test]
+    fn saved_cache_lets_a_new_process_rescan_without_reading_the_reader() {
+        let mut f = fixture();
+        let id = import(&mut f, "Kindred.epub", b"kindred bytes");
+        let copy = f.kindle.join("documents/Kindred.epub");
+        fs::write(&copy, b"kindred bytes").unwrap();
+        let destination = destinations::authorize(&f.kindle, &f.volumes).unwrap();
+        let library = f.store.active_fingerprints().unwrap();
+        let root = f.store.paths().root.clone();
+
+        let mut first = HashCache::load(&root);
+        assert_eq!(
+            scan_cached(&destination, &library, &mut first)
+                .unwrap()
+                .in_library,
+            1
+        );
+        assert_eq!(first.hashed_bytes, 13);
+        first.save(&root).unwrap();
+
+        let mut second = HashCache::load(&root);
+        let shelf = scan_cached(&destination, &library, &mut second).unwrap();
+        assert!(shelf.item_ids().contains(id.as_str()));
+        assert_eq!(
+            second.hashed_bytes, 0,
+            "the saved cache is reused by a new process"
+        );
+        let saved = fs::read(root.join(HASH_CACHE_FILE)).unwrap();
+        second.save(&root).unwrap();
+        assert_eq!(
+            fs::read(root.join(HASH_CACHE_FILE)).unwrap(),
+            saved,
+            "unchanged, not rewritten"
+        );
+
+        // A file edited on the reader after the cache was saved is read again.
+        fs::write(&copy, b"kindred bytez").unwrap();
+        let later = std::time::SystemTime::now() + std::time::Duration::from_secs(10);
+        fs::File::options()
+            .write(true)
+            .open(&copy)
+            .unwrap()
+            .set_modified(later)
+            .unwrap();
+        let mut third = HashCache::load(&root);
+        let changed = scan_cached(&destination, &library, &mut third).unwrap();
+        assert_eq!(third.hashed_bytes, 13);
+        assert!(!changed.item_ids().contains(id.as_str()));
+        let staged: Vec<_> = fs::read_dir(&root)
+            .unwrap()
+            .filter_map(|entry| entry.unwrap().file_name().into_string().ok())
+            .filter(|name| name.ends_with(".tmp"))
+            .collect();
+        assert!(staged.is_empty(), "{staged:?}");
+    }
+
+    #[test]
+    fn malformed_cache_is_ignored_and_a_missing_library_is_never_created() {
+        let mut f = fixture();
+        import(&mut f, "Kindred.epub", b"kindred bytes");
+        fs::write(f.kindle.join("documents/Kindred.epub"), b"kindred bytes").unwrap();
+        let destination = destinations::authorize(&f.kindle, &f.volumes).unwrap();
+        let library = f.store.active_fingerprints().unwrap();
+        let root = f.store.paths().root.clone();
+        let path = f
+            .kindle
+            .join("documents/Kindred.epub")
+            .canonicalize()
+            .unwrap();
+        let since = fs::metadata(&path)
+            .unwrap()
+            .modified()
+            .unwrap()
+            .duration_since(UNIX_EPOCH)
+            .unwrap();
+        let forged = |sha256: &str| {
+            serde_json::json!({"version": 1, "entries": [{
+                "path": path, "bytes": 13, "modifiedSecs": since.as_secs(),
+                "modifiedNanos": since.subsec_nanos(), "sha256": sha256}]})
+            .to_string()
+        };
+        for body in [
+            "not json".to_owned(),
+            forged("NOT-HEX"),
+            forged(&"a".repeat(63)),
+            forged(&"a".repeat(64)).replace("\"version\":1", "\"version\":2"),
+        ] {
+            fs::write(root.join(HASH_CACHE_FILE), &body).unwrap();
+            let mut cache = HashCache::load(&root);
+            let shelf = scan_cached(&destination, &library, &mut cache).unwrap();
+            assert_eq!((shelf.in_library, cache.hashed_bytes), (1, 13), "{body}");
+        }
+        // A well-formed entry is believed while size and time match: it only affects marks.
+        fs::write(root.join(HASH_CACHE_FILE), forged(&"a".repeat(64))).unwrap();
+        let mut cache = HashCache::load(&root);
+        let shelf = scan_cached(&destination, &library, &mut cache).unwrap();
+        assert_eq!((shelf.in_library, cache.hashed_bytes), (0, 0));
+
+        let missing = root.join("never-created");
+        cache.remember(
+            &path,
+            13,
+            Some(std::time::SystemTime::now()),
+            (13, "b".repeat(64)),
+        );
+        cache.save(&missing).unwrap();
+        assert!(!missing.exists());
+    }
+
+    #[test]
+    fn import_reads_the_reader_fresh_and_leaves_marks_ready_for_the_next_scan() {
+        let mut f = fixture();
+        let documents = f.kindle.join("documents");
+        fs::write(documents.join("Dawn.epub"), b"dawn bytes").unwrap();
+        fs::write(documents.join("Wild Seed.mobi"), b"wild seed bytes").unwrap();
+        let kindred = import(&mut f, "Kindred.epub", b"kindred bytes");
+        let reader_copy = documents.join("Kindred.epub");
+        fs::write(&reader_copy, b"kindred bytes").unwrap();
+        let destination = destinations::authorize(&f.kindle, &f.volumes).unwrap();
+
+        // A stale entry says the reader copy is the library's Kindred. Import must not
+        // trust it: the file now differs, so it is a different book and is imported.
+        let mut cache = HashCache::default();
+        let library = f.store.active_fingerprints().unwrap();
+        assert_eq!(
+            scan_cached(&destination, &library, &mut cache)
+                .unwrap()
+                .in_library,
+            1
+        );
+        let modified = fs::metadata(&reader_copy).unwrap().modified().unwrap();
+        fs::write(&reader_copy, b"kindred bytez").unwrap();
+        fs::File::options()
+            .write(true)
+            .open(&reader_copy)
+            .unwrap()
+            .set_modified(modified)
+            .unwrap();
+        assert_eq!(
+            scan_cached(&destination, &library, &mut cache)
+                .unwrap()
+                .in_library,
+            1,
+            "the shelf cache is fooled by an edit that keeps size and time"
+        );
+        let before = snapshot(&f.kindle);
+        let read_before = cache.hashed_bytes;
+
+        let imported = import_unmatched(&mut f.store, &destination, &mut cache).unwrap();
+
+        assert_eq!(snapshot(&f.kindle), before, "the reader is not modified");
+        assert_eq!(
+            imported.counts.imported, 3,
+            "Dawn, Wild Seed and the edited copy"
+        );
+        assert_eq!(
+            cache.hashed_bytes - read_before,
+            13,
+            "the size candidate is read fresh despite its cached entry"
+        );
+        let library = f.store.active_fingerprints().unwrap();
+        let read_before = cache.hashed_bytes;
+        let shelf = scan_cached(&destination, &library, &mut cache).unwrap();
+        assert_eq!((shelf.in_library, shelf.not_in_library), (3, 0));
+        assert!(
+            !shelf.item_ids().contains(kindred.as_str()),
+            "the edited copy is its own book"
+        );
+        assert_eq!(
+            cache.hashed_bytes, read_before,
+            "marks are ready without reading again"
+        );
+    }
+
+    #[test]
+    fn cache_forgets_readers_that_are_gone_once_it_is_full() {
+        let mut f = fixture();
+        import(&mut f, "Kindred.epub", b"kindred bytes");
+        fs::write(f.kindle.join("documents/Kindred.epub"), b"kindred bytes").unwrap();
+        let destination = destinations::authorize(&f.kindle, &f.volumes).unwrap();
+        let library = f.store.active_fingerprints().unwrap();
+        let mut cache = HashCache::default();
+        let now = Some(std::time::SystemTime::now());
+        for index in 0..MAX_CACHE_ENTRIES {
+            let other = PathBuf::from(format!("/Volumes/Old Reader/{index}.epub"));
+            cache.remember(&other, 1, now, (1, "c".repeat(64)));
+        }
+        scan_cached(&destination, &library, &mut cache).unwrap();
+        assert_eq!(cache.entries.len(), 1, "only the connected reader is kept");
+        assert!(
+            cache
+                .entries
+                .keys()
+                .all(|path| path.starts_with(&destination.path))
+        );
     }
 
     #[test]

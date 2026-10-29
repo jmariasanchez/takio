@@ -315,8 +315,9 @@ fn worker(
     receiver: Receiver<Request>,
     preparation_backend: Option<BackendDiscovery>,
 ) {
-    // Reader files are re-read only when their size or modification time changed.
-    let mut reader_hashes = takio::reader_shelf::HashCache::default();
+    // Reader files are re-read only when their size or modification time changed, and
+    // the fingerprints survive restarts so a slow reader is read in full only once.
+    let mut reader_hashes = takio::reader_shelf::HashCache::load(&store.paths().root);
     while let Ok(request) = receiver.recv() {
         match request {
             Request::OpenLibrary {
@@ -330,6 +331,7 @@ fn worker(
                             crate::preferences::save(path, &opened.root).is_err()
                         });
                         store = candidate;
+                        reader_hashes = takio::reader_shelf::HashCache::load(&store.paths().root);
                         opened
                     });
                 let _ = reply.send(result);
@@ -428,6 +430,8 @@ fn worker(
                         })
                         .collect()
                 });
+                // Before replying, so quitting right after the marks appear keeps them.
+                let _ = reader_hashes.save(&store.paths().root);
                 let _ = reply.send(result);
             }
             Request::ImportFromReader { destination, reply } => {
@@ -437,8 +441,13 @@ fn worker(
                     .ok_or_else(|| AppError::new("unknown-destination"))
                     .and_then(|root| destinations::authorize(&destination.path, root))
                     .and_then(|destination| {
-                        takio::reader_shelf::import_unmatched(&mut store, &destination)
+                        takio::reader_shelf::import_unmatched(
+                            &mut store,
+                            &destination,
+                            &mut reader_hashes,
+                        )
                     });
+                let _ = reader_hashes.save(&store.paths().root);
                 let _ = reply.send(result);
             }
             Request::PreviewSend {

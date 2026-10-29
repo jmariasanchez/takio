@@ -3713,7 +3713,14 @@ fn destination(command: DestinationCommand, library: Option<&str>) -> AppResult<
         } => {
             let device = destinations::resolve(&dest, &volumes_root)?;
             let paths = LibraryPaths::resolve(library, db.as_deref())?;
-            let shelf = reader_shelf::scan_files(&device, &catalogue_fingerprints(paths)?)?;
+            let mut cache = reader_shelf::HashCache::load(&paths.root);
+            let (root, database) = (paths.root.clone(), paths.database.clone());
+            let shelf =
+                reader_shelf::scan_cached(&device, &catalogue_fingerprints(paths)?, &mut cache)?;
+            // Never leave a cache in a folder that holds no library.
+            if database.is_file() {
+                let _ = cache.save(&root);
+            }
             if !human {
                 return print_success(shelf);
             }
@@ -3764,7 +3771,9 @@ fn destination(command: DestinationCommand, library: Option<&str>) -> AppResult<
             let device = destinations::resolve(&dest, &volumes_root)?;
             let paths = LibraryPaths::resolve(library, db.as_deref())?;
             let mut store = LibraryStore::open(paths, true)?;
-            let scan = reader_shelf::import_unmatched(&mut store, &device)?;
+            let mut cache = reader_shelf::HashCache::load(&store.paths().root);
+            let scan = reader_shelf::import_unmatched(&mut store, &device, &mut cache)?;
+            let _ = cache.save(&store.paths().root);
             if !human {
                 return print_success(scan);
             }
@@ -3941,8 +3950,13 @@ fn reader_relative(device: &destinations::Destination, path: &Path) -> String {
 }
 
 /// Fingerprints from an existing library, opened read-only so a scan never creates one.
+/// A library that was never created has no books, so every reader file is listed as
+/// not in it rather than failing.
 fn catalogue_fingerprints(paths: LibraryPaths) -> AppResult<Vec<crate::store::ActiveFingerprint>> {
-    LibraryStore::open_read_only(paths)?.active_fingerprints()
+    match std::fs::symlink_metadata(&paths.database) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+        _ => LibraryStore::open_read_only(paths)?.active_fingerprints(),
+    }
 }
 
 fn print_human_list(
@@ -3963,8 +3977,9 @@ fn print_human_list(
     };
     let mut on_reader: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut summaries = Vec::new();
+    let mut cache = reader_shelf::HashCache::load(&store.paths().root);
     for reader in &readers {
-        match reader_shelf::scan_files(reader, &library) {
+        match reader_shelf::scan_cached(reader, &library, &mut cache) {
             Ok(shelf) => {
                 for id in shelf.item_ids() {
                     let state = shelf
@@ -4010,6 +4025,8 @@ fn print_human_list(
             )),
         }
     }
+    // Only an optimization: a read-only or full disk just means reading the reader again.
+    let _ = cache.save(&store.paths().root);
     let reader_column = !readers.is_empty();
     let mut header = format!("{:<40} {:<26} {:<10}", "Title", "Author", "Formats");
     if reader_column {

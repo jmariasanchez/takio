@@ -1943,3 +1943,115 @@ sidecars, and confirming that a sent EPUB opens in KOReader.
   snapshot feature, and three consecutive `TMPDIR=/private/tmp/ cargo test
   --workspace` runs (159 engine with 2 ignored, 63 CLI, 2 custom-field, 191
   native).
+
+## The physical KOReader Kindle: October 29, 2026
+
+The user connected the jailbroken Kindle (USB, FAT32, 29.3 GB). The checks below
+use a scratch library under `~/.jcode/scratch/takio-physical-ko.kmDP86` and the
+release CLI and the desktop built from this tree. Titles from the device are not
+recorded here: only counts, and the one unique test book.
+
+Acceptance before checks: the device is detected as a KOReader Kindle; every
+book file is listed and every KOReader sidecar's progress equals what LuaJIT
+reads from the same file; reader-only books import; a unique valid EPUB sends
+byte-for-byte as EPUB; the desktop shows the same; and no device file other than
+the test book, its macOS companion and Takio's own manifest changes.
+
+### Observed on the device
+
+- **Baseline:** 2,838 files hashed into a private 0600 file, 210 of them under
+  `documents/`. There are 14 `metadata.*.lua` sidecars: 13 under `documents/`
+  and one for KOReader's own help file. `settings.reader.lua` sets
+  `document_metadata_folder = "doc"` (next to the book), and there are no
+  `docsettings` or `hashdocsettings` folders. So the unread "hash" location
+  does not affect this device.
+- **Detection:** `destination list` reports `Kindle`, kind `kindle`, features
+  `koreader`. The label is "Kindle (KOReader)".
+- **Shelf and progress:** with an empty library, 160 book files were listed,
+  none truncated or unreadable, and 13 were in progress. LuaJIT `loadfile` of
+  each of the 13 sidecars, in an empty environment, gives the same
+  `percent_finished` and `summary.status` as Takio for all 13, and every one
+  pairs with a listed book. All 13 are `reading`, so none show as finished.
+- **Import:** `destination import` added 160 of 160 (56 EPUB, 55 MOBI, 48 PDF,
+  1 TXT) in 64 s, with 0 failed or skipped. `library verify` passes, and
+  afterwards all 160 are in the library and 0 are not.
+- **Send:** a generated EPUB 3 ("Takio Device Check 2026-10-29", 1,574 bytes,
+  stored `mimetype` first) was sent with `send --dest Kindle`. It arrived as
+  `documents/Takio - Takio Device Check 2026-10-29.epub` in EPUB format, with
+  SHA-256 identical to the source. Afterwards all 2,837 other non-system files
+  are byte-identical (size, mtime and SHA-256). The only changes are the test
+  book, its `._` AppleDouble companion, `.takio/deliveries.json` and its `._`
+  companion. All 146 delivery records from October 22 are preserved exactly.
+  The book then matches by content.
+- **Desktop render:** "Kindle (KOReader)", "161 of your books on this reader",
+  "0 finished, 13 in progress", every row marked ●, and "On reader: Kindle
+  (KOReader)" in the inspector.
+- **Not verified:** whether KOReader opens the test book. That needs someone
+  at the Kindle.
+
+### Problems found only on the device, and fixed
+
+1. **Every rescan re-read 1.4 GB over USB.** Once the books were in the
+   library, each file matched a library size, so every scan hashed it:
+   `destination books` took 54 s each time, `library list --human` 54 s, and the
+   desktop needed 59 s from launch before showing marks. The in-memory cache
+   only helped within one desktop session.
+
+   Fix: `HashCache::load` and `save` persist `(path, size, mtime) → SHA-256` in
+   `reader-hashes.json` inside the library folder. The file is replaced
+   atomically, limited to 8 MiB and 20,000 entries (entries for readers no
+   longer connected are dropped once it is full), and ignored if missing,
+   malformed, the wrong version or holding a non-hex digest. It is written
+   only into an existing library folder. The CLI (`destination books`,
+   `library list --human`, `destination import`) and the desktop engine (at
+   startup, on library switch, after scans and imports) use it.
+
+   The safety property: the cache only decides which marks are shown.
+   `import_unmatched` re-hashes every candidate itself and never trusts a
+   cached entry. It then records what it read and the verified fingerprint
+   of each imported source, but only if the source's size and mtime did not
+   change during the import. So the scan right after an import is instant.
+
+   On the device, with the release CLI: the first scan took 55.0 s and
+   created 161 entries (42 KB). The next two scans, in new processes, took
+   0.04 s and 0.01 s, with output identical to the first and LuaJIT still 13
+   of 13. `library list --human` took 0.04 s instead of 54 s, and the only
+   difference from before is the test book. Desktop launch to rendered marks
+   took 3.2 s instead of 59 s.
+2. **A reader could not be listed before a library existed.**
+   `destination books --db <new path>` failed with `storage-unavailable`.
+   Now a missing catalogue means no library books: on the device it lists 161
+   other files, all importable, and creates neither the library nor a cache.
+   A database path that exists but is not a valid library still fails as
+   before.
+
+New tests:
+
+- engine:
+  - `saved_cache_lets_a_new_process_rescan_without_reading_the_reader`
+  - `malformed_cache_is_ignored_and_a_missing_library_is_never_created`
+  - `import_reads_the_reader_fresh_and_leaves_marks_ready_for_the_next_scan`:
+    a same-size, same-mtime edit fools the shelf cache but is still imported
+    as its own book
+  - `cache_forgets_readers_that_are_gone_once_it_is_full`
+- CLI:
+  - `reader_fingerprints_are_remembered_between_commands_and_never_trusted_for_import`
+  - the missing-library cases in
+    `destination_books_lists_reader_files_and_library_matches_without_writing`
+- native: `reader_marks_after_restart_reuse_saved_fingerprints`
+
+Gates: fmt, `git diff --check`, strict Clippy for the workspace and for
+`--features snapshot`, and three consecutive `TMPDIR=/private/tmp/ cargo test
+--workspace` runs: 163 engine (2 ignored), 64 CLI, 2 custom-field, 192 native.
+
+### Remaining gaps seen on the device
+
+- 95 of the 161 imported books have no author. 77 of those are MOBI or PDF
+  files whose name ends in " - Author" (56 tails look like a name, 19 say
+  "Unknown"). The filename parser only understands the z-library
+  `Title (Author) (z-library.sk)` form, and there is no embedded MOBI or PDF
+  metadata reader without Calibre. Splitting on " - " is ambiguous: 16 tails are
+  subtitles, not names. It is recorded as the next metadata gap, not guessed.
+- The first scan of a newly connected reader still reads every size-matched
+  file once (about 55 s for 1.4 GB here). The sidebar says "Checking books..."
+  meanwhile.
