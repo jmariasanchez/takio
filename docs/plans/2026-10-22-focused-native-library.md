@@ -2138,3 +2138,9 @@ Acceptance before code:
   Info dictionaries sit in compressed object streams and the values can be
   UTF-16 or PDFDocEncoding. This needs its own bounded reader and an oracle,
   not a regex.
+- Mutation check (`takio-mutants-mobi.sh`). The first pass killed 11 of 12.
+  Removing the 64 KiB first-record cap survived, so a test now places an
+  author record past the bound (not read) and one inside it (read). The
+  second pass killed 12 of 12 (`takio-mutants-mobi-2.log`). Gates after that
+  commit: fmt, Clippy (workspace and snapshot), and three consecutive
+  workspace runs at 165, 64, 2 and 192 with no failures.
