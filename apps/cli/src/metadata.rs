@@ -1083,14 +1083,28 @@ mod tests {
         fs::write(&path, &zero).unwrap();
         assert_eq!(embedded_mobi(&path).1.len(), 0);
 
-        // The first record is read up to 64 KiB, never the whole book.
-        let mut padded = good;
-        padded.truncate(padded.len() - b"book text record".len());
-        let second = u32::try_from(padded.len() + 1024 * 1024).unwrap();
-        padded[86..90].copy_from_slice(&second.to_be_bytes());
-        padded.resize(padded.len() + 1024 * 1024 + 16, 0);
-        fs::write(&path, &padded).unwrap();
-        assert_eq!(embedded_mobi(&path).1.len(), 1);
+        // The first record is read up to 64 KiB, never the whole book: an author record
+        // that only fits past that bound is not seen, while one inside it is.
+        let filler = vec![b'x'; 70 * 1024];
+        let beyond = mobi_fixture(
+            65001,
+            b"Capped",
+            &[(999, &filler), (100, b"Past The Bound")],
+        );
+        fs::write(&path, &beyond).unwrap();
+        let (title, authors) = embedded_mobi(&path);
+        assert_eq!(
+            (title, authors.len()),
+            (None, 0),
+            "the author and the full name after the filler are both past the bound"
+        );
+        let within = mobi_fixture(
+            65001,
+            b"Capped",
+            &[(999, &filler[..60 * 1024]), (100, b"Inside The Bound")],
+        );
+        fs::write(&path, &within).unwrap();
+        assert_eq!(embedded_mobi(&path).1[0].name, "Inside The Bound");
     }
 
     #[test]
