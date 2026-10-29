@@ -100,6 +100,34 @@ impl Render for Sidebar {
         }
         for (index, destination) in readers.into_iter().enumerate() {
             let send = destination.clone();
+            let shelf_text = if state.scanning_readers {
+                "Checking books...".to_owned()
+            } else {
+                match state
+                    .reader_shelves
+                    .iter()
+                    .find(|(reader, _)| reader.id == destination.id)
+                {
+                    Some((_, Ok(shelf))) => {
+                        let mut text = match shelf.in_library {
+                            0 => "None of your books are on this reader".to_owned(),
+                            count => format!("{count} of your books on this reader (● in list)"),
+                        };
+                        if shelf.not_in_library > 0 {
+                            text.push_str(&format!(
+                                "\n{} other file(s) not in your library",
+                                shelf.not_in_library
+                            ));
+                        }
+                        if shelf.truncated {
+                            text.push_str("\nScan limit reached. Counts may be incomplete.");
+                        }
+                        text
+                    }
+                    Some((_, Err(error))) => format!("Could not check books. {error}"),
+                    None => "Refresh to check books".to_owned(),
+                }
+            };
             sidebar = sidebar.child(
                 div()
                     .flex()
@@ -113,6 +141,12 @@ impl Render for Sidebar {
                             .text_ellipsis()
                             .overflow_hidden()
                             .child(destination.name.clone()),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(theme.text_secondary)
+                            .child(shelf_text),
                     )
                     .child(
                         div()

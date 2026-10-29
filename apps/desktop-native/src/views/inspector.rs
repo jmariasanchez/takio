@@ -127,6 +127,14 @@ impl Inspector {
             ("Publisher", item.publisher.clone()),
             ("Published", item.published_date.clone()),
             ("Languages", Some(item.languages.join(", "))),
+            (
+                "On reader",
+                self.state
+                    .read(cx)
+                    .on_reader
+                    .get(&item.id)
+                    .map(|names| names.join(", ")),
+            ),
             ("Rating", item.rating.map(|rating| rating.to_string())),
             ("Added", item.added_at.get(..10).map(str::to_owned)),
         ] {

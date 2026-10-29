@@ -172,6 +172,7 @@ impl Render for LibraryList {
                             focused,
                             &theme,
                             columns,
+                            read.on_reader.contains_key(&item.id),
                         )
                         .on_click(cx.listener(
                             move |this, event, _, cx| {
@@ -249,6 +250,7 @@ fn row(
     focused: bool,
     theme: &Theme,
     columns: ColumnLayout,
+    on_reader: bool,
 ) -> gpui::Stateful<Div> {
     let background = if selected {
         if focused {
@@ -261,13 +263,18 @@ fn row(
     } else {
         gpui::transparent_black().into()
     };
-    let formats: SharedString = item
+    let formats = item
         .formats
         .iter()
         .map(|format| format.format.as_str().to_uppercase())
         .collect::<Vec<_>>()
-        .join(" ")
-        .into();
+        .join(" ");
+    let formats: SharedString = if on_reader {
+        format!("● {formats}")
+    } else {
+        formats
+    }
+    .into();
     div()
         .id(index)
         .flex()

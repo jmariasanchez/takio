@@ -5,7 +5,7 @@
 //! stay declarative. Every async reply carries the `generation` it was issued
 //! under; stale replies are dropped.
 
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::mpsc::Receiver;
@@ -91,6 +91,14 @@ pub struct LibraryState {
     pub status: Option<Status>,
     pub recovery_outcome: Option<RecoveryOutcome>,
     pub destinations: Vec<Destination>,
+    pub volumes_root: PathBuf,
+    pub reader_shelves: Vec<(
+        Destination,
+        Result<takio::reader_shelf::ReaderShelf, String>,
+    )>,
+    pub on_reader: HashMap<String, Vec<String>>,
+    pub scanning_readers: bool,
+    reader_scan_generation: u64,
     pub refreshing_devices: bool,
     pub device_error: Option<String>,
     pub busy: bool,
@@ -111,7 +119,14 @@ pub struct LibraryState {
 
 impl LibraryState {
     pub fn new(engine: Engine, cx: &mut Context<Self>) -> Self {
+        // Native tests must never discover or scan the user's mounted devices.
+        let volumes_root = if cfg!(test) {
+            engine.root().join("test-volumes")
+        } else {
+            PathBuf::from("/Volumes")
+        };
         let mut this = Self {
+            volumes_root,
             library_root: engine.root().to_path_buf(),
             library_epoch: 0,
             switching_library: false,
@@ -129,6 +144,10 @@ impl LibraryState {
             status: None,
             recovery_outcome: None,
             destinations: Vec::new(),
+            reader_shelves: Vec::new(),
+            on_reader: HashMap::new(),
+            scanning_readers: false,
+            reader_scan_generation: 0,
             refreshing_devices: false,
             device_error: None,
             busy: false,
@@ -525,6 +544,7 @@ impl LibraryState {
                 Err(error) => this.set_error(error.code(), cx),
             }
             this.reload(cx);
+            this.scan_readers(cx);
         })
         .detach();
     }
@@ -664,8 +684,89 @@ impl LibraryState {
                 Err(error) => this.set_error(error.code(), cx),
             }
             this.reload(cx);
+            this.scan_readers(cx);
         })
         .detach();
+    }
+
+    /// Read-only scans never hold the mutation lock. Each new request invalidates
+    /// the old marks immediately and only its own reply may repopulate them.
+    pub fn scan_readers(&mut self, cx: &mut Context<Self>) {
+        self.clear_reader_shelves();
+        let destinations: Vec<_> = self
+            .destinations
+            .iter()
+            .filter(|destination| {
+                !matches!(
+                    destination.kind,
+                    takio::destinations::DestinationKind::Generic
+                )
+            })
+            .cloned()
+            .collect();
+        if destinations.is_empty() {
+            cx.notify();
+            return;
+        }
+        self.scanning_readers = true;
+        let generation = self.reader_scan_generation;
+        let failed_destinations = destinations.clone();
+        let receiver = self.engine.request(|reply| Request::ReaderShelves {
+            destinations,
+            reply,
+        });
+        self.await_reader_scan(receiver, generation, failed_destinations, cx);
+        cx.notify();
+    }
+
+    fn await_reader_scan(
+        &self,
+        receiver: Receiver<AppResult<crate::engine::ReaderShelves>>,
+        generation: u64,
+        failed_destinations: Vec<Destination>,
+        cx: &mut Context<Self>,
+    ) {
+        self.await_reply(receiver, cx, move |this, result, cx| {
+            if generation != this.reader_scan_generation {
+                return;
+            }
+            this.scanning_readers = false;
+            this.reader_shelves = match result {
+                Ok(shelves) => shelves
+                    .into_iter()
+                    .map(|(destination, shelf)| {
+                        (
+                            destination,
+                            shelf.map_err(|error| humanize_error(error.code())),
+                        )
+                    })
+                    .collect(),
+                Err(error) => failed_destinations
+                    .into_iter()
+                    .map(|destination| (destination, Err(humanize_error(error.code()))))
+                    .collect(),
+            };
+            for (destination, shelf) in &this.reader_shelves {
+                if let Ok(shelf) = shelf {
+                    for id in shelf.item_ids() {
+                        this.on_reader
+                            .entry(id.to_owned())
+                            .or_default()
+                            .push(destination.name.clone());
+                    }
+                }
+            }
+            cx.notify();
+        })
+        .detach();
+        cx.notify();
+    }
+
+    fn clear_reader_shelves(&mut self) {
+        self.reader_scan_generation = self.reader_scan_generation.wrapping_add(1);
+        self.scanning_readers = false;
+        self.reader_shelves.clear();
+        self.on_reader.clear();
     }
 
     pub fn refresh_destinations(&mut self, cx: &mut Context<Self>) {
@@ -673,8 +774,9 @@ impl LibraryState {
             return;
         }
         self.refreshing_devices = true;
+        self.clear_reader_shelves();
         self.device_error = None;
-        let volumes_root = PathBuf::from("/Volumes");
+        let volumes_root = self.volumes_root.clone();
         let receiver = self.engine.request(|reply| Request::ListDestinations {
             volumes_root,
             reply,
@@ -682,7 +784,10 @@ impl LibraryState {
         self.await_reply(receiver, cx, |this, result, cx| {
             this.refreshing_devices = false;
             match result {
-                Ok(destinations) => this.destinations = destinations,
+                Ok(destinations) => {
+                    this.destinations = destinations;
+                    this.scan_readers(cx);
+                }
                 Err(error) => {
                     this.destinations.clear();
                     this.device_error = Some(humanize_error(error.code()));
@@ -828,6 +933,7 @@ impl LibraryState {
                 }
                 Err(error) => this.set_error(error.code(), cx),
             }
+            this.scan_readers(cx);
             cx.notify();
         })
         .detach();
@@ -1145,6 +1251,7 @@ mod tests {
     include!("preparation_state_tests.rs");
     include!("recovery_state_tests.rs");
     include!("library_state_tests.rs");
+    include!("reader_shelf_state_tests.rs");
 
     struct Fixture {
         _temp: tempfile::TempDir,
@@ -1188,7 +1295,9 @@ mod tests {
     fn settle(state: &Entity<LibraryState>, cx: &mut TestAppContext) {
         for _ in 0..200 {
             cx.run_until_parked();
-            if !state.read_with(cx, |state, _| state.loading || state.busy) {
+            if !state.read_with(cx, |state, _| {
+                state.loading || state.busy || state.refreshing_devices || state.scanning_readers
+            }) {
                 return;
             }
             std::thread::sleep(Duration::from_millis(5));

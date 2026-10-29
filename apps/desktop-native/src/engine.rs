@@ -21,6 +21,8 @@ use takio::output::{AppError, AppResult};
 use takio::paths::LibraryPaths;
 use takio::store::{BackupReport, LibraryQueryFilters, LibraryStore, RestoreReport};
 
+pub type ReaderShelves = Vec<(Destination, AppResult<takio::reader_shelf::ReaderShelf>)>;
+
 /// Facet filters applied conjunctively to a query.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Filters {
@@ -204,6 +206,10 @@ pub enum Request {
     ListDestinations {
         volumes_root: PathBuf,
         reply: Sender<AppResult<Vec<Destination>>>,
+    },
+    ReaderShelves {
+        destinations: Vec<Destination>,
+        reply: Sender<AppResult<ReaderShelves>>,
     },
     PreviewSend {
         destination: Destination,
@@ -397,6 +403,23 @@ fn worker(
                 reply,
             } => {
                 let _ = reply.send(destinations::list(&volumes_root));
+            }
+            Request::ReaderShelves {
+                destinations,
+                reply,
+            } => {
+                let result = store.active_fingerprints().map(|fingerprints| {
+                    destinations
+                        .into_iter()
+                        .filter(|destination| !matches!(destination.kind, DestinationKind::Generic))
+                        .map(|destination| {
+                            let shelf =
+                                takio::reader_shelf::scan_files(&destination, &fingerprints);
+                            (destination, shelf)
+                        })
+                        .collect()
+                });
+                let _ = reply.send(result);
             }
             Request::PreviewSend {
                 destination,

@@ -23,7 +23,7 @@ fn settle(state: &LibraryEntity, cx: &mut TestAppContext) {
     for _ in 0..200 {
         cx.run_until_parked();
         if state.read_with(cx, |state, _| {
-            !state.loading && !state.busy && !state.refreshing_devices
+            !state.loading && !state.busy && !state.refreshing_devices && !state.scanning_readers
         }) {
             return;
         }

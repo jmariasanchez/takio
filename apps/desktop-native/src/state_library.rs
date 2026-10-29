@@ -47,6 +47,7 @@ impl LibraryState {
                 match result.take().expect("library reply handled once") {
                     Ok((root, snapshot, remember_failed)) => {
                         this.library_epoch = this.library_epoch.wrapping_add(1);
+                        this.scan_readers(cx);
                         this.generation = this.generation.wrapping_add(1);
                         this.library_root = root;
                         this.section = Section::Library;
