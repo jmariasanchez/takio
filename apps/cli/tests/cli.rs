@@ -3800,6 +3800,10 @@ fn destination_books_lists_reader_files_and_library_matches_without_writing() {
         "{text}"
     );
     assert!(text.contains("(not in library)"), "{text}");
+    assert!(
+        !text.contains("destination import"),
+        "a store .azw cannot be added, so no import is suggested: {text}"
+    );
 
     let mut after: Vec<_> = fs::read_dir(&documents)
         .unwrap()
@@ -3922,6 +3926,20 @@ fn destination_import_adds_reader_only_books_and_leaves_the_reader_unchanged() {
         entries
     };
     let before = snapshot();
+    let hint = cargo_bin_cmd!("takio")
+        .args(["destination", "books", "--human", "--db"])
+        .arg(&database)
+        .args(["--dest", "Kindle", "--volumes-root"])
+        .arg(&volumes)
+        .output()
+        .expect("readable reader books");
+    let hint = String::from_utf8(hint.stdout).unwrap();
+    assert!(
+        hint.contains(
+            "1 can be copied into your library with: takio destination import --dest Kindle"
+        ),
+        "{hint}"
+    );
     let run = |human: bool| {
         let mut command = cargo_bin_cmd!("takio");
         command.args(["destination", "import"]);

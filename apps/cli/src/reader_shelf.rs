@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
+use crate::conversion::detect_format;
 use crate::destinations::{self, Destination, DestinationKind};
 use crate::fingerprint::Fingerprint;
 use crate::import_scan::{ImportScan, scan_imports};
@@ -59,6 +60,8 @@ pub struct ReaderShelf {
     pub in_library: usize,
     /// Book files that match no active library book.
     pub not_in_library: usize,
+    /// Unmatched files in a format the library can store, so `import_unmatched` would add them.
+    pub importable: usize,
     /// The scan stopped at its depth-independent entry or book bound.
     pub truncated: bool,
 }
@@ -177,6 +180,12 @@ pub fn scan(
         destination_id: destination.id.clone(),
         in_library: 0,
         not_in_library: books.iter().filter(|entry| entry.item_id.is_none()).count(),
+        importable: books
+            .iter()
+            .filter(|entry| {
+                entry.item_id.is_none() && detect_format(Path::new(&entry.path)).is_some()
+            })
+            .count(),
         books,
         truncated,
     };
@@ -330,6 +339,7 @@ mod tests {
         );
         assert!(shelf.books[2].item_id.is_none());
         assert_eq!((shelf.in_library, shelf.not_in_library), (1, 2));
+        assert_eq!(shelf.importable, 1, "the .azw store book cannot be stored");
         assert!(!shelf.truncated);
         assert_eq!(snapshot(&f.kindle), before, "the reader is not modified");
     }
@@ -505,6 +515,7 @@ mod tests {
         );
         let after = scan_fixture(&f);
         assert_eq!((after.in_library, after.not_in_library), (3, 1));
+        assert_eq!(after.importable, 0, "nothing left that an import could add");
         assert!(after.item_ids().contains(kindred.as_str()));
 
         let again = import_unmatched(&mut f.store, &destination).unwrap();

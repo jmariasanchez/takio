@@ -3728,6 +3728,12 @@ fn destination(command: DestinationCommand, library: Option<&str>) -> AppResult<
             if shelf.truncated {
                 println!("  Stopped at the scan limit. Some files are not listed.");
             }
+            if shelf.importable > 0 {
+                println!(
+                    "{} can be copied into your library with: takio destination import --dest {}",
+                    shelf.importable, device.id
+                );
+            }
             Ok(())
         }
         DestinationCommand::Import {
