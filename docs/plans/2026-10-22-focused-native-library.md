@@ -2200,3 +2200,42 @@ first look before a library exists, `destination import`, two
   then five consecutive workspace runs passed (165, 64, 2, 192).
 - The Kindle remained byte-identical outside the test book and Takio's
   manifest (checked after the MOBI work).
+
+### MOBI reader against Calibre
+
+The 55-of-55 agreement above came from my own second reader, which shares
+design choices with Takio. Calibre 9.16 `ebook-meta --to-opf` is an
+independent implementation, so it was checked against Takio's
+`examples/mobi_metadata`, read-only, on all 55 MOBI files on the Kindle
+(`calibre_mobi_oracle.py`, counts only):
+
+- Titles: identical for 55 of 55.
+- Authors: identical for 51 of 55, once Calibre's "Unknown" (6 files, also
+  dropped by Takio) is set aside. In the other 4, Takio keeps the name exactly
+  as the file stores it ("Last, First"), and Calibre flips it to "First
+  Last". Swapped, the two agree for all 4. This matches what the EPUB path
+  stores, the file's own text, and it is recorded as a display choice, not a
+  misread.
+- Calibre-made files: `ebook-convert` built a MOBI 6, an AZW3 (KF8), a joint
+  MOBI 6 and KF8 file, and an old-style MOBI, all from one EPUB with a
+  non-ASCII two-author title ("Gabriel García Márquez", "Zoë Ørsted", "Cien
+  años de soledad: Édition spéciale"). Takio and Calibre give identical
+  titles and both authors in order for all four. The AZW3, named with a
+  conflicting z-library filename author and imported with `library add`, was
+  stored with the embedded title and both embedded authors.
+
+### Preparation test fix: an A/B under the same load
+
+The earlier claim that it went from 2 of 40 to 0 of 40 was too weak on its own.
+`takio-flake-ab2.sh` built the native test binary twice, once with the old 2 s
+fixture timeout and once with 30 s. It ran the preparation module, its tests
+in parallel, under 12 busy loops, alternating the two variants in halves:
+
+- 2 s: 1 of 80 and 3 of 80 runs failed. All 4 failures were
+  `conversion-timeout`.
+- 30 s: 0 of 80 and 0 of 80.
+- Pooled with the earlier runs, 6 of 200 against 0 of 200 (one-sided Fisher
+  p ≈ 0.015). Every observed failure was the timeout this change lengthens.
+- Running only that one test (`--exact`, one thread) did not reproduce the
+  failure for either variant (0 of 150 each). The trigger is the module's
+  parallel tests competing with the converter script for the CPU.
