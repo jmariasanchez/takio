@@ -4038,3 +4038,95 @@ fn human_list_says_when_the_desktop_app_uses_another_library() {
         "{text}"
     );
 }
+
+#[test]
+fn koreader_kindle_gets_epub_shows_progress_and_never_gets_an_unreadable_file() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let database = temp.path().join("library/library.sqlite");
+    let epub = temp
+        .path()
+        .join("Kindred (Octavia E. Butler) (z-library.sk).epub");
+    let docx = temp.path().join("Notes.docx");
+    fs::write(&epub, b"kindred epub bytes").unwrap();
+    fs::write(&docx, b"word document").unwrap();
+    let kindred = add_book(&database, &epub);
+    let notes = add_book(&database, &docx);
+    let volumes = temp.path().join("Volumes");
+    let kindle = volumes.join("Kindle");
+    for directory in ["documents", "system", "koreader"] {
+        fs::create_dir_all(kindle.join(directory)).unwrap();
+    }
+    let run = |args: &[&str]| {
+        cargo_bin_cmd!("takio")
+            .args(args)
+            .arg("--db")
+            .arg(&database)
+            .args(["--volumes-root"])
+            .arg(&volumes)
+            .output()
+            .expect("run takio")
+    };
+
+    let sent = run(&["send", "--id", &kindred, "--dest", "Kindle"]);
+    assert!(
+        sent.status.success(),
+        "{}",
+        String::from_utf8_lossy(&sent.stdout)
+    );
+    let path = success_value(&sent.stdout)["path"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(
+        path.ends_with("documents/Octavia E. Butler - Kindred.epub"),
+        "{path}"
+    );
+
+    let refused = run(&["send", "--id", &notes, "--dest", "Kindle"]);
+    assert_eq!(failure_code(&refused.stdout), "no-compatible-format");
+    assert_eq!(fs::read_dir(kindle.join("documents")).unwrap().count(), 1);
+
+    // KOReader writes its reading state next to the book after it is opened.
+    let sdr = kindle.join("documents/Octavia E. Butler - Kindred.sdr");
+    fs::create_dir_all(&sdr).unwrap();
+    fs::write(
+        sdr.join("metadata.epub.lua"),
+        r#"-- we can read Lua syntax here!
+return {
+    ["percent_finished"] = 0.42,
+    ["summary"] = {
+        ["status"] = "reading",
+    },
+}"#,
+    )
+    .unwrap();
+    let books =
+        String::from_utf8(run(&["destination", "books", "--human", "--dest", "Kindle"]).stdout)
+            .unwrap();
+    assert!(
+        books.starts_with("Kindle (KOReader): 1 of your books, 0 other file(s)"),
+        "{books}"
+    );
+    assert!(
+        books.contains("KOReader: 0 finished, 1 in progress"),
+        "{books}"
+    );
+    assert!(books.contains("42%"), "{books}");
+
+    let json = success_value(&run(&["destination", "books", "--dest", "Kindle"]).stdout);
+    assert_eq!(json["koreader"], true);
+    assert_eq!(json["books"][0]["reading"]["status"], "reading");
+
+    let list = String::from_utf8(run(&["library", "list", "--human"]).stdout).unwrap();
+    let row = list
+        .lines()
+        .find(|line| line.starts_with("Kindred"))
+        .unwrap();
+    assert!(row.contains("Kindle 42%"), "{row}");
+    assert!(
+        list.contains(
+            "Kindle (KOReader): 1 of these books, 0 other file(s), 0 finished, 1 in progress"
+        ),
+        "{list}"
+    );
+}

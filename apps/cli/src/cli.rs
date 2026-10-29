@@ -3719,11 +3719,24 @@ fn destination(command: DestinationCommand, library: Option<&str>) -> AppResult<
             }
             println!(
                 "{}: {} of your books, {} other file(s)",
-                device.name, shelf.in_library, shelf.not_in_library
+                device.label(),
+                shelf.in_library,
+                shelf.not_in_library
             );
+            if shelf.koreader && shelf.finished + shelf.in_progress > 0 {
+                println!(
+                    "KOReader: {} finished, {} in progress",
+                    shelf.finished, shelf.in_progress
+                );
+            }
             for entry in &shelf.books {
                 let label = entry.title.as_deref().unwrap_or("(not in library)");
-                println!("  {:<40} {}", truncate(label, 40), entry.path);
+                let state = entry
+                    .reading
+                    .as_ref()
+                    .and_then(crate::koreader::ReadingState::label)
+                    .unwrap_or_default();
+                println!("  {:<40} {:<9} {}", truncate(label, 40), state, entry.path);
             }
             if shelf.truncated {
                 println!("  Stopped at the scan limit. Some files are not listed.");
@@ -3842,16 +3855,22 @@ fn send(
         .get(id)?
         .ok_or_else(|| AppError::new("unknown-item"))?;
     let device = destinations::resolve(dest, volumes_root)?;
-    let selected = format
-        .map_or_else(
-            || preferred(&item.formats, device.kind),
-            |wanted| {
-                item.formats
-                    .iter()
-                    .find(|candidate| candidate.format == wanted)
-            },
-        )
-        .ok_or_else(|| AppError::new("format-not-found"))?;
+    let selected = match format {
+        Some(wanted) => item
+            .formats
+            .iter()
+            .find(|candidate| candidate.format == wanted)
+            .ok_or_else(|| AppError::new("format-not-found"))?,
+        // Unknown volumes keep the old behaviour of sending the first attached format;
+        // a recognized reader only ever gets a format it can open.
+        None if matches!(device.kind, DestinationKind::Generic) && !device.has_koreader() => item
+            .formats
+            .first()
+            .ok_or_else(|| AppError::new("format-not-found"))?,
+        None => device
+            .preferred_format(&item.formats)
+            .ok_or_else(|| AppError::new("no-compatible-format"))?,
+    };
     let author = item
         .authors
         .first()
@@ -3874,26 +3893,6 @@ fn send(
         overwrite,
     )?)
 }
-fn preferred(
-    formats: &[crate::model::BookFormat],
-    kind: DestinationKind,
-) -> Option<&crate::model::BookFormat> {
-    let preference: &[FormatId] = match kind {
-        DestinationKind::Kobo => &[
-            FormatId::Kepub,
-            FormatId::Epub,
-            FormatId::Pdf,
-            FormatId::Cbz,
-        ],
-        DestinationKind::Kindle => &[FormatId::Azw3, FormatId::Mobi, FormatId::Pdf, FormatId::Txt],
-        DestinationKind::Generic => &[],
-    };
-    preference
-        .iter()
-        .find_map(|wanted| formats.iter().find(|format| format.format == *wanted))
-        .or_else(|| formats.first())
-}
-
 fn read_json(input: &str) -> AppResult<Value> {
     let bytes = if input == "-" {
         let mut data = Vec::new();
@@ -3962,20 +3961,34 @@ fn print_human_list(
     } else {
         store.active_fingerprints()?
     };
-    let mut on_reader: BTreeMap<String, Vec<&str>> = BTreeMap::new();
+    let mut on_reader: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut summaries = Vec::new();
     for reader in &readers {
         match reader_shelf::scan_files(reader, &library) {
             Ok(shelf) => {
                 for id in shelf.item_ids() {
+                    let state = shelf
+                        .reading_for(id)
+                        .and_then(crate::koreader::ReadingState::label);
                     on_reader
                         .entry(id.to_owned())
                         .or_default()
-                        .push(reader.name.as_str());
+                        .push(match state {
+                            Some(state) => format!("{} {state}", reader.name),
+                            None => reader.name.clone(),
+                        });
                 }
+                let progress = if shelf.koreader && shelf.finished + shelf.in_progress > 0 {
+                    format!(
+                        ", {} finished, {} in progress",
+                        shelf.finished, shelf.in_progress
+                    )
+                } else {
+                    String::new()
+                };
                 summaries.push(format!(
-                    "{}: {} of these books, {} other file(s){}{}",
-                    reader.name,
+                    "{}: {} of these books, {} other file(s){progress}{}{}",
+                    reader.label(),
                     shelf.in_library,
                     shelf.not_in_library,
                     if shelf.truncated {
@@ -3992,7 +4005,7 @@ fn print_human_list(
             }
             Err(error) => summaries.push(format!(
                 "{}: could not be read ({})",
-                reader.name,
+                reader.label(),
                 error.code()
             )),
         }
@@ -4000,7 +4013,7 @@ fn print_human_list(
     let reader_column = !readers.is_empty();
     let mut header = format!("{:<40} {:<26} {:<10}", "Title", "Author", "Formats");
     if reader_column {
-        header.push_str(&format!(" {:<12}", "On reader"));
+        header.push_str(&format!(" {:<18}", "On reader"));
     }
     println!("{header} ID");
     for item in items {
@@ -4030,7 +4043,7 @@ fn print_human_list(
                 .get(&item.id)
                 .map(|names| names.join(","))
                 .unwrap_or_default();
-            line.push_str(&format!(" {:<12}", truncate(&names, 12)));
+            line.push_str(&format!(" {:<18}", truncate(&names, 18)));
         }
         println!("{line} {}", item.id);
     }

@@ -8,6 +8,7 @@ pub mod fingerprint;
 pub mod import_scan;
 pub mod jobs;
 pub mod kindle_ssh;
+pub mod koreader;
 pub mod maintenance;
 pub mod metadata;
 mod metadata_reconcile;

@@ -7,7 +7,9 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::conversion::FormatId;
 use crate::fingerprint::CopyError;
+use crate::model::BookFormat;
 use crate::output::{AppError, AppResult};
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
@@ -143,6 +145,60 @@ pub fn resolve(dest: &Path, root: &Path) -> AppResult<Destination> {
 /// Delivery records Takio wrote to this reader, without verifying the files.
 pub fn delivery_records(destination: &Destination) -> AppResult<Vec<DeliveryRecord>> {
     Ok(read_manifest(destination)?.deliveries)
+}
+
+impl Destination {
+    /// KOReader was detected on this volume (a jailbroken Kindle or a Kobo with it installed).
+    #[must_use]
+    pub fn has_koreader(&self) -> bool {
+        self.features.iter().any(|feature| feature == "koreader")
+    }
+
+    /// Reader name with its reading software, for example "Kindle (KOReader)".
+    #[must_use]
+    pub fn label(&self) -> String {
+        if self.has_koreader() {
+            format!("{} (KOReader)", self.name)
+        } else {
+            self.name.clone()
+        }
+    }
+
+    /// Formats this reader can open, most preferred first. Empty for unknown volumes,
+    /// which never get an automatic choice.
+    #[must_use]
+    pub fn readable_formats(&self) -> &'static [FormatId] {
+        if self.has_koreader() {
+            return &[
+                FormatId::Epub,
+                FormatId::Pdf,
+                FormatId::Mobi,
+                FormatId::Azw3,
+                FormatId::Txt,
+                FormatId::Cbz,
+            ];
+        }
+        match self.kind {
+            DestinationKind::Kindle => {
+                &[FormatId::Azw3, FormatId::Mobi, FormatId::Pdf, FormatId::Txt]
+            }
+            DestinationKind::Kobo => &[
+                FormatId::Kepub,
+                FormatId::Epub,
+                FormatId::Pdf,
+                FormatId::Cbz,
+            ],
+            DestinationKind::Generic => &[],
+        }
+    }
+
+    /// The attached format to send: the most preferred one this reader can open.
+    #[must_use]
+    pub fn preferred_format<'a>(&self, formats: &'a [BookFormat]) -> Option<&'a BookFormat> {
+        self.readable_formats()
+            .iter()
+            .find_map(|wanted| formats.iter().find(|format| format.format == *wanted))
+    }
 }
 
 pub fn send(

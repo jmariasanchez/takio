@@ -17,6 +17,7 @@ use crate::conversion::detect_format;
 use crate::destinations::{self, Destination, DestinationKind};
 use crate::fingerprint::Fingerprint;
 use crate::import_scan::{ImportScan, scan_imports};
+use crate::koreader::ReadingState;
 use crate::output::AppResult;
 use crate::store::{ActiveFingerprint, LibraryStore};
 
@@ -50,6 +51,9 @@ pub struct ShelfEntry {
     /// `content` or `delivery-record` for a matched book.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub matched_by: Option<&'static str>,
+    /// What KOReader recorded for this file, when its sidecar is readable.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reading: Option<ReadingState>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -67,6 +71,11 @@ pub struct ReaderShelf {
     pub truncated: bool,
     /// Folders or files that could not be read, so the counts may be incomplete.
     pub unreadable: usize,
+    /// KOReader was detected, so reading state comes from its sidecars.
+    pub koreader: bool,
+    /// Files KOReader marks as finished, and books started but not finished.
+    pub finished: usize,
+    pub in_progress: usize,
 }
 
 impl ReaderShelf {
@@ -76,6 +85,20 @@ impl ReaderShelf {
             .iter()
             .filter_map(|entry| entry.item_id.as_deref())
             .collect()
+    }
+
+    /// KOReader's state for a library book on this reader, preferring the most read copy.
+    #[must_use]
+    pub fn reading_for(&self, item_id: &str) -> Option<&ReadingState> {
+        self.books
+            .iter()
+            .filter(|entry| entry.item_id.as_deref() == Some(item_id))
+            .filter_map(|entry| entry.reading.as_ref())
+            .max_by(|left, right| {
+                (left.finished(), left.percent.unwrap_or(0.0))
+                    .partial_cmp(&(right.finished(), right.percent.unwrap_or(0.0)))
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
     }
 }
 
@@ -172,6 +195,7 @@ pub fn scan(
     let mut books = Vec::new();
     let mut truncated = false;
     let mut unreadable = 0;
+    let koreader = destination.has_koreader();
     let is_directory = fs::symlink_metadata(&root).is_ok_and(|metadata| metadata.is_dir());
     if is_directory {
         let walker = walkdir::WalkDir::new(&root)
@@ -224,6 +248,11 @@ pub fn scan(
                     });
             }
             books.push(ShelfEntry {
+                reading: koreader
+                    .then(|| {
+                        crate::koreader::reading_state(&destination.path, Path::new(&relative))
+                    })
+                    .flatten(),
                 path: relative,
                 bytes,
                 item_id: matched.map(|(id, _)| id.to_owned()),
@@ -245,8 +274,26 @@ pub fn scan(
         books,
         truncated,
         unreadable,
+        koreader,
+        finished: 0,
+        in_progress: 0,
     };
     shelf.in_library = shelf.item_ids().len();
+    shelf.finished = shelf
+        .books
+        .iter()
+        .filter(|entry| entry.reading.as_ref().is_some_and(ReadingState::finished))
+        .count();
+    shelf.in_progress = shelf
+        .books
+        .iter()
+        .filter(|entry| {
+            entry
+                .reading
+                .as_ref()
+                .is_some_and(ReadingState::in_progress)
+        })
+        .count();
     Ok(shelf)
 }
 
@@ -653,6 +700,106 @@ mod tests {
         let clean = scan_fixture(&f);
         assert_eq!(clean.unreadable, 0);
         assert_eq!(clean.books.len(), 2);
+    }
+
+    #[test]
+    fn koreader_shelf_reports_reading_state_and_stock_kindle_does_not() {
+        let mut f = fixture();
+        let kindred = import(&mut f, "Kindred.epub", b"kindred bytes");
+        let dawn = import(&mut f, "Dawn.pdf", b"dawn pdf bytes");
+        let documents = f.kindle.join("documents");
+        fs::create_dir_all(documents.join("Butler")).unwrap();
+        fs::write(documents.join("Butler/Kindred.epub"), b"kindred bytes").unwrap();
+        fs::write(documents.join("Dawn.pdf"), b"dawn pdf bytes").unwrap();
+        fs::write(documents.join("Unread.mobi"), b"never opened").unwrap();
+        fs::create_dir_all(documents.join("Butler/Kindred.sdr")).unwrap();
+        fs::write(
+            documents.join("Butler/Kindred.sdr/metadata.epub.lua"),
+            r#"return { ["percent_finished"] = 0.5, ["summary"] = { ["status"] = "reading" } }"#,
+        )
+        .unwrap();
+        fs::create_dir_all(documents.join("Dawn.sdr")).unwrap();
+        fs::write(
+            documents.join("Dawn.sdr/metadata.pdf.lua"),
+            r#"return { ["percent_finished"] = 1, ["summary"] = { ["status"] = "complete" } }"#,
+        )
+        .unwrap();
+
+        let stock = scan_fixture(&f);
+        assert!(!stock.koreader);
+        assert!(stock.books.iter().all(|entry| entry.reading.is_none()));
+        assert_eq!((stock.finished, stock.in_progress), (0, 0));
+
+        fs::create_dir(f.kindle.join("koreader")).unwrap();
+        let before = snapshot(&f.kindle);
+        let shelf = scan_fixture(&f);
+        assert!(shelf.koreader);
+        assert_eq!((shelf.finished, shelf.in_progress), (1, 1));
+        assert_eq!(
+            shelf
+                .reading_for(&kindred)
+                .and_then(ReadingState::label)
+                .as_deref(),
+            Some("50%")
+        );
+        assert!(shelf.reading_for(&dawn).unwrap().finished());
+        let unread = shelf
+            .books
+            .iter()
+            .find(|entry| entry.path.ends_with("Unread.mobi"))
+            .unwrap();
+        assert!(unread.reading.is_none());
+        assert_eq!(snapshot(&f.kindle), before, "reading state is read-only");
+
+        let destination = destinations::authorize(&f.kindle, &f.volumes).unwrap();
+        assert_eq!(destination.label(), "Kindle (KOReader)");
+    }
+
+    #[test]
+    fn koreader_prefers_epub_and_stock_kindle_never_gets_it() {
+        use crate::conversion::FormatId;
+        use crate::model::{BookFormat, Provenance};
+
+        let f = fixture();
+        let attached = |formats: &[FormatId]| -> Vec<BookFormat> {
+            formats
+                .iter()
+                .map(|format| BookFormat {
+                    source_path: PathBuf::from(format!("/library/book.{}", format.extension())),
+                    format: *format,
+                    added_at: String::new(),
+                    provenance: Provenance::Managed,
+                })
+                .collect()
+        };
+        let stock = destinations::authorize(&f.kindle, &f.volumes).unwrap();
+        let epub_and_azw3 = attached(&[FormatId::Epub, FormatId::Azw3]);
+        let epub_only = attached(&[FormatId::Epub]);
+        assert_eq!(
+            stock.preferred_format(&epub_and_azw3).unwrap().format,
+            FormatId::Azw3
+        );
+        assert!(stock.preferred_format(&epub_only).is_none());
+
+        fs::create_dir(f.kindle.join("koreader")).unwrap();
+        let koreader = destinations::authorize(&f.kindle, &f.volumes).unwrap();
+        assert_eq!(
+            koreader.preferred_format(&epub_and_azw3).unwrap().format,
+            FormatId::Epub
+        );
+        assert_eq!(
+            koreader
+                .preferred_format(&attached(&[FormatId::Mobi, FormatId::Pdf]))
+                .unwrap()
+                .format,
+            FormatId::Pdf
+        );
+        assert!(
+            koreader
+                .preferred_format(&attached(&[FormatId::Docx, FormatId::Html]))
+                .is_none(),
+            "never an unreadable fallback"
+        );
     }
 
     #[test]
