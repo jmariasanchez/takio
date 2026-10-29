@@ -575,13 +575,34 @@ impl LibraryStore {
     ) -> AppResult<LibraryItem> {
         let source = canonical_file(source)?;
         let format = detect_format(&source).ok_or_else(|| AppError::new("unsupported-format"))?;
+        let (filename_title, filename_authors) = metadata_from_filename(&source);
+        let (embedded_title, embedded_authors) =
+            if matches!(format, FormatId::Epub | FormatId::Kepub) {
+                crate::metadata::embedded_epub(&source)
+            } else {
+                (None, Vec::new())
+            };
         let title = title
             .map(str::trim)
             .filter(|value| !value.is_empty())
-            .map_or_else(|| title_from_path(&source), str::to_owned);
+            .map(str::to_owned)
+            .or(embedded_title)
+            .unwrap_or(filename_title);
         if title.is_empty() {
             return Err(AppError::new("invalid-title"));
         }
+        let authors = if embedded_authors.is_empty() {
+            filename_authors
+        } else {
+            embedded_authors
+        };
+        let author = (!authors.is_empty()).then(|| {
+            authors
+                .iter()
+                .map(|author| author.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        });
         let fingerprint = hash_file(&source)?;
         if let Some(id) = self
             .connection
@@ -604,9 +625,12 @@ impl LibraryStore {
         publish_copy(&source, &target, &fingerprint)?;
         let transaction = self.connection.transaction()?;
         transaction.execute(
-            "INSERT INTO library_items (id, title, added_at) VALUES (?1, ?2, ?3)",
-            params![id, title, now],
+            "INSERT INTO library_items (id, title, added_at, author) VALUES (?1, ?2, ?3, ?4)",
+            params![id, title, now, author],
         )?;
+        for (position, author) in authors.iter().enumerate() {
+            transaction.execute("INSERT INTO library_item_authors(library_item_id,name,sort_name,position) VALUES(?1,?2,?3,?4)", params![id,author.name,author.sort_name,as_i64(position as u64)?])?;
+        }
         transaction.execute(
             "INSERT INTO library_item_formats
              (library_item_id, format, source_path, added_at, provenance, position, content_bytes, content_sha256)
@@ -3177,19 +3201,46 @@ fn canonical_file(path: &Path) -> AppResult<PathBuf> {
     }
 }
 
-fn title_from_path(path: &Path) -> String {
+/// Title and authors from a filename. Underscore-only stems become spaced, and the
+/// `Title (Author, Author) (z-library.sk, ...)` download convention yields authors.
+fn metadata_from_filename(path: &Path) -> (String, Vec<BookAuthor>) {
     let name = path
         .file_name()
         .and_then(|value| value.to_str())
         .unwrap_or("Untitled");
-    if name.to_ascii_lowercase().ends_with(".kepub.epub") {
-        name[..name.len() - 11].to_owned()
+    let stem = if name.to_ascii_lowercase().ends_with(".kepub.epub") {
+        &name[..name.len() - 11]
     } else {
         path.file_stem()
             .and_then(|value| value.to_str())
             .unwrap_or("Untitled")
-            .to_owned()
-    }
+    };
+    let spaced = stem
+        .split('_')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let title = if stem.contains(' ') || spaced.is_empty() {
+        stem.to_owned()
+    } else {
+        spaced
+    };
+    let zlibrary =
+        regex::Regex::new(r"(?i)^(.+?)\s*\(([^()]+)\)\s*\([^()]*\bz-lib(?:rary)?\b[^()]*\)$")
+            .expect("valid regex");
+    let Some(captures) = zlibrary.captures(&title) else {
+        return (title, Vec::new());
+    };
+    let authors = captures[2]
+        .split(',')
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(|name| BookAuthor {
+            name: name.to_owned(),
+            sort_name: None,
+        })
+        .collect();
+    (captures[1].to_owned(), authors)
 }
 
 fn hash_file(path: &Path) -> AppResult<(u64, String)> {
@@ -3828,6 +3879,68 @@ mod tests {
             assert_eq!(
                 parse_structured_query(invalid).unwrap_err().code(),
                 "invalid-query"
+            );
+        }
+    }
+
+    #[test]
+    fn import_prefers_caller_title_then_epub_metadata_then_filename_conventions() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = LibraryPaths::resolve(None, Some(&temp.path().join("library.sqlite"))).unwrap();
+        let mut store = LibraryStore::open(paths, true).unwrap();
+        let mut import = |name: &str, bytes: &[u8], title: Option<&str>| {
+            let source = temp.path().join(name);
+            fs::write(&source, bytes).unwrap();
+            let item = store.import(&source, title, false).unwrap();
+            let authors = item
+                .authors
+                .iter()
+                .map(|author| author.name.clone())
+                .collect::<Vec<_>>();
+            (item.title, authors, item.author)
+        };
+        let epub = crate::metadata::epub_fixture(
+            "<dc:title>The Quiet Sea</dc:title><dc:creator>Jane Example</dc:creator>",
+        );
+        assert_eq!(
+            import("download (3).epub", &epub, None),
+            (
+                "The Quiet Sea".to_owned(),
+                vec!["Jane Example".to_owned()],
+                Some("Jane Example".to_owned())
+            )
+        );
+        let epub = crate::metadata::epub_fixture(
+            "<dc:title>Ignored</dc:title><dc:creator>Ann Author</dc:creator>",
+        );
+        assert_eq!(
+            import("other.epub", &epub, Some("Chosen")).0,
+            "Chosen".to_owned()
+        );
+        assert_eq!(
+            import(
+                "When Genius Failed (Roger Lowenstein, Ann Other) (z-library.sk, 1lib.sk, z-lib.sk).pdf",
+                b"pdf one",
+                None
+            ),
+            (
+                "When Genius Failed".to_owned(),
+                vec!["Roger Lowenstein".to_owned(), "Ann Other".to_owned()],
+                Some("Roger Lowenstein, Ann Other".to_owned())
+            )
+        );
+        for (name, title) in [
+            (
+                "Real_World_OCaml__Functional.pdf",
+                "Real World OCaml Functional",
+            ),
+            ("Clean Code (2nd Edition).epub", "Clean Code (2nd Edition)"),
+            ("keep_this name.txt", "keep_this name"),
+            ("_.txt", "_"),
+        ] {
+            assert_eq!(
+                import(name, name.as_bytes(), None),
+                (title.to_owned(), Vec::new(), None)
             );
         }
     }

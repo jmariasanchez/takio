@@ -1,12 +1,13 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, OpenOptions};
-use std::io::{Read, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use flate2::read::DeflateDecoder;
 use roxmltree::Document;
 use serde::Serialize;
 use serde_json::{Map, Value, json};
@@ -14,10 +15,12 @@ use sha2::{Digest, Sha256};
 use tempfile::Builder;
 
 use crate::candidate_cover::CapturedCover;
+use crate::model::BookAuthor;
 use crate::output::{AppError, AppResult};
 
 const MAX_OPF_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_COVER_BYTES: u64 = 32 * 1024 * 1024;
+const MAX_ZIP_DIRECTORY_BYTES: u64 = 4 * 1024 * 1024;
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -423,6 +426,107 @@ fn normalize_date(value: String) -> Option<String> {
         .then(|| candidate.to_owned())
 }
 
+/// Title and authors from an EPUB's own OPF, read without an external backend.
+/// Missing, malformed, or placeholder metadata yields `(None, [])`.
+#[must_use]
+pub fn embedded_epub(path: &Path) -> (Option<String>, Vec<BookAuthor>) {
+    let Some(metadata) = read_epub_opf(path).and_then(|opf| parse_opf(&opf).ok()) else {
+        return (None, Vec::new());
+    };
+    let placeholder = |value: &str| matches!(value.to_lowercase().as_str(), "unknown" | "untitled");
+    let title = metadata["title"]
+        .as_str()
+        .filter(|value| !placeholder(value))
+        .map(str::to_owned);
+    let authors = serde_json::from_value::<Vec<BookAuthor>>(metadata["authors"].clone())
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|author| !placeholder(&author.name))
+        .collect();
+    (title, authors)
+}
+
+fn read_epub_opf(path: &Path) -> Option<Vec<u8>> {
+    let mut file = fs::File::open(path).ok()?;
+    let directory = zip_directory(&mut file)?;
+    let container = zip_entry(&mut file, &directory, "META-INF/container.xml")?;
+    let container = Document::parse(std::str::from_utf8(&container).ok()?).ok()?;
+    let opf_path = container
+        .descendants()
+        .find(|node| node.tag_name().name() == "rootfile")?
+        .attribute("full-path")?
+        .to_owned();
+    zip_entry(&mut file, &directory, &opf_path)
+}
+
+// ponytail: minimal zip reader for two small EPUB entries; no zip64, encryption or CRC checks.
+// Swap in the `zip` crate if real EPUBs need more.
+fn zip_directory(file: &mut fs::File) -> Option<Vec<u8>> {
+    let length = file.metadata().ok()?.len();
+    let tail_length = length.min(22 + 65_535);
+    let tail = read_at(file, length - tail_length, tail_length)?;
+    let end = tail
+        .windows(4)
+        .rposition(|window| window == b"PK\x05\x06")?;
+    let size = le_bytes(&tail, end + 12, 4)?;
+    if size > MAX_ZIP_DIRECTORY_BYTES {
+        return None;
+    }
+    read_at(file, le_bytes(&tail, end + 16, 4)?, size)
+}
+
+fn zip_entry(file: &mut fs::File, directory: &[u8], name: &str) -> Option<Vec<u8>> {
+    let mut at = 0;
+    while directory.get(at..at + 4)? == b"PK\x01\x02" {
+        let name_length = usize::try_from(le_bytes(directory, at + 28, 2)?).ok()?;
+        if directory.get(at + 46..at + 46 + name_length)? == name.as_bytes() {
+            let compressed = le_bytes(directory, at + 20, 4)?;
+            if le_bytes(directory, at + 8, 2)? & 1 != 0 || compressed > MAX_OPF_BYTES {
+                return None;
+            }
+            let local = le_bytes(directory, at + 42, 4)?;
+            let header = read_at(file, local, 30)?;
+            if header.get(..4)? != b"PK\x03\x04" {
+                return None;
+            }
+            let data = local + 30 + le_bytes(&header, 26, 2)? + le_bytes(&header, 28, 2)?;
+            let raw = read_at(file, data, compressed)?;
+            return match le_bytes(directory, at + 10, 2)? {
+                0 => Some(raw),
+                8 => {
+                    let mut inflated = Vec::new();
+                    DeflateDecoder::new(raw.as_slice())
+                        .take(MAX_OPF_BYTES)
+                        .read_to_end(&mut inflated)
+                        .ok()?;
+                    Some(inflated)
+                }
+                _ => None,
+            };
+        }
+        let extra = le_bytes(directory, at + 30, 2)? + le_bytes(directory, at + 32, 2)?;
+        at += 46 + name_length + usize::try_from(extra).ok()?;
+    }
+    None
+}
+
+fn le_bytes(bytes: &[u8], at: usize, width: usize) -> Option<u64> {
+    let field = bytes.get(at..at + width)?;
+    Some(
+        field
+            .iter()
+            .rev()
+            .fold(0, |value, byte| value << 8 | u64::from(*byte)),
+    )
+}
+
+fn read_at(file: &mut fs::File, offset: u64, length: u64) -> Option<Vec<u8>> {
+    file.seek(SeekFrom::Start(offset)).ok()?;
+    let mut bytes = Vec::new();
+    file.take(length).read_to_end(&mut bytes).ok()?;
+    (u64::try_from(bytes.len()).ok()? == length).then_some(bytes)
+}
+
 fn optional_cover_data(path: &Path) -> AppResult<Option<(Vec<u8>, &'static str, &'static str)>> {
     if !path.exists() {
         return Ok(None);
@@ -584,9 +688,93 @@ fn executable(path: &Path) -> bool {
     }
 }
 
+/// Builds a zip whose first entry is stored and the rest deflated, like an EPUB.
+#[cfg(test)]
+pub(crate) fn zip_fixture(entries: &[(&str, &[u8])]) -> Vec<u8> {
+    use flate2::{Compression, write::DeflateEncoder};
+
+    let (mut zip, mut directory) = (Vec::new(), Vec::new());
+    for (index, (name, data)) in entries.iter().enumerate() {
+        let (method, body) = if index == 0 {
+            (0_u16, data.to_vec())
+        } else {
+            let mut encoder = DeflateEncoder::new(Vec::new(), Compression::default());
+            encoder.write_all(data).unwrap();
+            (8, encoder.finish().unwrap())
+        };
+        let mut fields = method.to_le_bytes().to_vec();
+        fields.extend([0; 8]);
+        fields.extend(u32::try_from(body.len()).unwrap().to_le_bytes());
+        fields.extend(u32::try_from(data.len()).unwrap().to_le_bytes());
+        fields.extend(u16::try_from(name.len()).unwrap().to_le_bytes());
+        fields.extend([0; 2]);
+        let offset = u32::try_from(zip.len()).unwrap();
+        zip.extend(b"PK\x03\x04\x14\0\0\0");
+        zip.extend(&fields);
+        zip.extend(name.as_bytes());
+        zip.extend(&body);
+        directory.extend(b"PK\x01\x02\x14\0\x14\0\0\0");
+        directory.extend(&fields);
+        directory.extend([0; 10]);
+        directory.extend(offset.to_le_bytes());
+        directory.extend(name.as_bytes());
+    }
+    let count = u16::try_from(entries.len()).unwrap().to_le_bytes();
+    let offset = u32::try_from(zip.len()).unwrap();
+    zip.extend(&directory);
+    zip.extend(b"PK\x05\x06\0\0\0\0");
+    zip.extend(count);
+    zip.extend(count);
+    zip.extend(u32::try_from(directory.len()).unwrap().to_le_bytes());
+    zip.extend(offset.to_le_bytes());
+    zip.extend([0; 2]);
+    zip
+}
+
+#[cfg(test)]
+pub(crate) fn epub_fixture(metadata: &str) -> Vec<u8> {
+    let container = br#"<?xml version="1.0"?><container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles></container>"#;
+    let opf = format!(
+        r#"<?xml version="1.0"?><package xmlns="http://www.idpf.org/2007/opf" version="3.0"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/">{metadata}</metadata></package>"#
+    );
+    zip_fixture(&[
+        ("mimetype", b"application/epub+zip"),
+        ("META-INF/container.xml", container),
+        ("OEBPS/content.opf", opf.as_bytes()),
+    ])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reads_epub_title_and_authors_without_a_backend() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("download (3).epub");
+        fs::write(
+            &path,
+            epub_fixture(
+                r#"<dc:title>The Quiet Sea</dc:title><dc:creator file-as="Example, Jane">Jane Example</dc:creator><dc:creator>Unknown</dc:creator>"#,
+            ),
+        )
+        .unwrap();
+        let (title, authors) = embedded_epub(&path);
+        assert_eq!(title.as_deref(), Some("The Quiet Sea"));
+        assert_eq!(authors.len(), 1);
+        assert_eq!(authors[0].name, "Jane Example");
+        assert_eq!(authors[0].sort_name.as_deref(), Some("Example, Jane"));
+
+        let empty = |bytes: &[u8]| {
+            fs::write(&path, bytes).unwrap();
+            let (title, authors) = embedded_epub(&path);
+            title.is_none() && authors.is_empty()
+        };
+        assert!(empty(&epub_fixture("<dc:title>Untitled</dc:title>")));
+        for broken in [&b"ebook fixture"[..], b"", b"PK\x05\x06"] {
+            assert!(empty(broken));
+        }
+    }
 
     #[test]
     fn parses_normalized_opf_metadata() {

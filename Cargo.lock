@@ -5600,6 +5600,7 @@ dependencies = [
  "clap",
  "crossterm 0.29.0",
  "directories",
+ "flate2",
  "fs2",
  "hex",
  "predicates",
