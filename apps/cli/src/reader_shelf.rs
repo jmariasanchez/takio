@@ -65,6 +65,8 @@ pub struct ReaderShelf {
     pub importable: usize,
     /// The scan stopped at its depth-independent entry or book bound.
     pub truncated: bool,
+    /// Folders or files that could not be read, so the counts may be incomplete.
+    pub unreadable: usize,
 }
 
 impl ReaderShelf {
@@ -169,6 +171,7 @@ pub fn scan(
 
     let mut books = Vec::new();
     let mut truncated = false;
+    let mut unreadable = 0;
     let is_directory = fs::symlink_metadata(&root).is_ok_and(|metadata| metadata.is_dir());
     if is_directory {
         let walker = walkdir::WalkDir::new(&root)
@@ -182,7 +185,10 @@ pub fn scan(
                 truncated = true;
                 break;
             }
-            let Ok(entry) = entry else { continue };
+            let Ok(entry) = entry else {
+                unreadable += 1;
+                continue;
+            };
             if !entry.file_type().is_file() || !is_book(&entry.file_name().to_string_lossy()) {
                 continue;
             }
@@ -238,6 +244,7 @@ pub fn scan(
             .count(),
         books,
         truncated,
+        unreadable,
     };
     shelf.in_library = shelf.item_ids().len();
     Ok(shelf)
@@ -620,6 +627,32 @@ mod tests {
             cache.entries.is_empty(),
             "entries for removed files are dropped"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unreadable_reader_folders_are_counted_not_hidden() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let f = fixture();
+        let locked = f.kindle.join("documents/Locked");
+        fs::create_dir_all(&locked).unwrap();
+        fs::write(locked.join("Hidden.epub"), b"cannot be listed").unwrap();
+        fs::write(f.kindle.join("documents/Open.epub"), b"listed").unwrap();
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+        let shelf = scan_fixture(&f);
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+        let paths: Vec<_> = shelf
+            .books
+            .iter()
+            .map(|entry| entry.path.as_str())
+            .collect();
+        assert_eq!(paths, ["documents/Open.epub"]);
+        assert_eq!(shelf.unreadable, 1, "the locked folder is reported");
+
+        let clean = scan_fixture(&f);
+        assert_eq!(clean.unreadable, 0);
+        assert_eq!(clean.books.len(), 2);
     }
 
     #[test]

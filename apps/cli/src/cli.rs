@@ -3728,6 +3728,12 @@ fn destination(command: DestinationCommand, library: Option<&str>) -> AppResult<
             if shelf.truncated {
                 println!("  Stopped at the scan limit. Some files are not listed.");
             }
+            if shelf.unreadable > 0 {
+                println!(
+                    "  {} folder(s) or file(s) could not be read. Counts may be incomplete.",
+                    shelf.unreadable
+                );
+            }
             if shelf.importable > 0 {
                 println!(
                     "{} can be copied into your library with: takio destination import --dest {}",
@@ -3968,12 +3974,17 @@ fn print_human_list(
                         .push(reader.name.as_str());
                 }
                 summaries.push(format!(
-                    "{}: {} of these books, {} other file(s){}",
+                    "{}: {} of these books, {} other file(s){}{}",
                     reader.name,
                     shelf.in_library,
                     shelf.not_in_library,
                     if shelf.truncated {
                         " (scan limit reached)"
+                    } else {
+                        ""
+                    },
+                    if shelf.unreadable > 0 {
+                        " (some folders could not be read)"
                     } else {
                         ""
                     }

@@ -140,6 +140,11 @@ impl Render for Sidebar {
                         if shelf.truncated {
                             text.push_str("\nScan limit reached. Counts may be incomplete.");
                         }
+                        if shelf.unreadable > 0 {
+                            text.push_str(
+                                "\nSome folders could not be read. Counts may be incomplete.",
+                            );
+                        }
                         text
                     }
                     Some((_, Err(error))) => format!("Could not check books. {error}"),
