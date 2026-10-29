@@ -3817,7 +3817,17 @@ fn destination_books_lists_reader_files_and_library_matches_without_writing() {
     assert_eq!(fs::read(&database).unwrap(), catalogue);
 
     // Before any library exists, the reader's books are listed as not in it, and
-    // nothing is created: no library, and no cache in the unrelated folder.
+    // nothing is created: no library, and no cache in the unrelated folder. A cache
+    // left behind in a folder whose library is gone is not rewritten either.
+    let leftover = temp.path().join("reader-hashes.json");
+    let gone = volumes
+        .canonicalize()
+        .unwrap()
+        .join("Kindle/documents/gone.epub");
+    let body = serde_json::json!({"version": 1, "entries": [{"path": gone, "bytes": 1,
+        "modifiedSecs": 1, "modifiedNanos": 0, "sha256": "a".repeat(64)}]})
+    .to_string();
+    fs::write(&leftover, &body).unwrap();
     for missing in [
         temp.path().join("missing/library.sqlite"),
         temp.path().join("library.sqlite"),
@@ -3836,8 +3846,9 @@ fn destination_books_lists_reader_files_and_library_matches_without_writing() {
         );
         assert_eq!(shelf["importable"], 1, "the .txt copy, not the store .azw");
         assert!(!missing.exists(), "a reader scan never creates a library");
-        assert!(!missing.with_file_name("reader-hashes.json").exists());
     }
+    assert!(!temp.path().join("missing").exists());
+    assert_eq!(fs::read_to_string(&leftover).unwrap(), body);
     let mut after: Vec<_> = fs::read_dir(&documents)
         .unwrap()
         .map(|entry| entry.unwrap().path())
