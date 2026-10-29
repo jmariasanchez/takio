@@ -5,9 +5,14 @@ use std::path::{Path, PathBuf};
 use serde::Serialize;
 
 use crate::conversion::{FormatId, detect_format};
+use crate::metadata::pdf_page_count;
 use crate::model::LibraryItem;
 use crate::output::AppResult;
 use crate::store::{ImportWatchObservation, LibraryStore};
+
+// ponytail: one page threshold, so short papers found in folders are skipped too; choosing a
+// file directly always imports it. Make this a setting if real libraries need another cut.
+const MIN_FOLDER_PDF_PAGES: usize = 50;
 
 #[derive(Debug, Serialize)]
 #[serde(tag = "status", rename_all = "kebab-case")]
@@ -92,7 +97,7 @@ where
         }
         match entry {
             ScanEntry::Outcome(outcome) => outcomes.push(*outcome),
-            ScanEntry::File(source) => {
+            ScanEntry::File(source, in_folder) => {
                 let canonical = match source.canonicalize() {
                     Ok(path) => path,
                     Err(error) => {
@@ -124,7 +129,8 @@ where
                     continue;
                 }
 
-                let (outcome, observed) = if detect_format(&canonical).is_some() {
+                let format = detect_format(&canonical);
+                let (outcome, observed) = if format.is_some() {
                     if let Some((existing, existing_format)) =
                         store.find_managed_duplicate(&canonical)?
                     {
@@ -144,6 +150,18 @@ where
                                 reason,
                             },
                             Some("duplicate"),
+                        )
+                    } else if in_folder
+                        && format == Some(FormatId::Pdf)
+                        && pdf_page_count(&canonical)
+                            .is_some_and(|pages| pages < MIN_FOLDER_PDF_PAGES)
+                    {
+                        (
+                            ImportOutcome::Skipped {
+                                source_path: source,
+                                reason: "likely-document",
+                            },
+                            Some("unsupported"),
                         )
                     } else {
                         match store.import(&canonical, None, move_source) {
@@ -207,14 +225,15 @@ where
 
 #[derive(Debug)]
 enum ScanEntry {
-    File(PathBuf),
+    /// A candidate file, and whether it was found by walking a chosen folder.
+    File(PathBuf, bool),
     Outcome(Box<ImportOutcome>),
 }
 
 impl ScanEntry {
     fn path(&self) -> &Path {
         match self {
-            Self::File(path) => path,
+            Self::File(path, _) => path,
             Self::Outcome(outcome) => match outcome.as_ref() {
                 ImportOutcome::Imported { source_path, .. }
                 | ImportOutcome::Duplicate { source_path, .. }
@@ -252,7 +271,7 @@ where
                             })));
                         }
                         Ok(entry) if entry.file_type().is_file() => {
-                            entries.push(ScanEntry::File(entry.into_path()));
+                            entries.push(ScanEntry::File(entry.into_path(), true));
                         }
                         Ok(entry) => {
                             entries.push(ScanEntry::Outcome(Box::new(ImportOutcome::Skipped {
@@ -277,7 +296,9 @@ where
                     reason: "symbolic-link",
                 })));
             }
-            Ok(metadata) if metadata.is_file() => entries.push(ScanEntry::File(root.clone())),
+            Ok(metadata) if metadata.is_file() => {
+                entries.push(ScanEntry::File(root.clone(), false));
+            }
             Ok(_) => entries.push(ScanEntry::Outcome(Box::new(ImportOutcome::Skipped {
                 source_path: root.clone(),
                 reason: "unsupported-file-type",
@@ -376,6 +397,43 @@ mod tests {
                 assert_eq!(fs::read(&supported).unwrap(), b"ebook fixture");
             }
         }
+    }
+
+    #[test]
+    fn folder_scans_skip_short_pdfs_but_explicit_files_import() {
+        use crate::metadata::pdf_fixture;
+
+        let temp = tempfile::tempdir().unwrap();
+        let mut store = open_store(temp.path());
+        let folder = temp.path().join("Downloads");
+        fs::create_dir(&folder).unwrap();
+        let bill = folder.join("bill.pdf");
+        fs::write(&bill, pdf_fixture(2)).unwrap();
+        fs::write(folder.join("book.pdf"), pdf_fixture(MIN_FOLDER_PDF_PAGES)).unwrap();
+        fs::write(folder.join("unknown.pdf"), b"%PDF-1.7 unreadable").unwrap();
+        let chosen = temp.path().join("paper.pdf");
+        fs::write(&chosen, pdf_fixture(3)).unwrap();
+
+        let scan = scan_imports(&mut store, &[folder, chosen], false, false, || false).unwrap();
+        let outcomes = scan
+            .outcomes
+            .iter()
+            .map(|outcome| match outcome {
+                ImportOutcome::Imported { item, .. } => format!("imported {}", item.title),
+                ImportOutcome::Skipped { reason, .. } => format!("skipped {reason}"),
+                other => format!("{other:?}"),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            outcomes,
+            [
+                "skipped likely-document",
+                "imported book",
+                "imported unknown",
+                "imported paper"
+            ]
+        );
+        assert_eq!(fs::read(&bill).unwrap(), pdf_fixture(2));
     }
 
     #[test]

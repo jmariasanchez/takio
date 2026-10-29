@@ -7,7 +7,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use flate2::read::DeflateDecoder;
+use flate2::read::{DeflateDecoder, ZlibDecoder};
+use regex::bytes::Regex;
 use roxmltree::Document;
 use serde::Serialize;
 use serde_json::{Map, Value, json};
@@ -21,6 +22,9 @@ use crate::output::{AppError, AppResult};
 const MAX_OPF_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_COVER_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_ZIP_DIRECTORY_BYTES: u64 = 4 * 1024 * 1024;
+// ponytail: larger PDFs are not counted, so folder imports keep them as books.
+const MAX_PDF_SCAN_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_PDF_INFLATED_BYTES: u64 = 64 * 1024 * 1024;
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -527,6 +531,45 @@ fn read_at(file: &mut fs::File, offset: u64, length: u64) -> Option<Vec<u8>> {
     (u64::try_from(bytes.len()).ok()? == length).then_some(bytes)
 }
 
+/// Page count read from raw PDF bytes, or `None` when it cannot be seen.
+// ponytail: byte heuristics instead of a PDF parser: the linearization `/N`, then plain
+// `/Type /Page` objects plus those inside bounded FlateDecode object streams. Incremental
+// updates can overcount; other filters or encryption hide pages. Use a parser if this misleads.
+#[must_use]
+pub fn pdf_page_count(path: &Path) -> Option<usize> {
+    let file = fs::File::open(path).ok()?;
+    if file.metadata().ok()?.len() > MAX_PDF_SCAN_BYTES {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    file.take(MAX_PDF_SCAN_BYTES).read_to_end(&mut bytes).ok()?;
+    let linearized = Regex::new(r"(?s-u)/Linearized\b.{0,300}?/N\s+(\d+)").expect("valid regex");
+    if let Some(captures) = linearized.captures(&bytes[..bytes.len().min(2048)]) {
+        return std::str::from_utf8(&captures[1]).ok()?.parse().ok();
+    }
+    let page = Regex::new(r"(?-u)/Type\s*/Page\b").expect("valid regex");
+    let object_stream = Regex::new(r"(?s-u)/Type\s*/ObjStm\b.*?stream\r?\n").expect("valid regex");
+    let mut pages = page.find_iter(&bytes).count();
+    let mut budget = MAX_PDF_INFLATED_BYTES;
+    for stream in object_stream.find_iter(&bytes) {
+        let rest = &bytes[stream.end()..];
+        let Some(end) = rest.windows(9).position(|window| window == b"endstream") else {
+            continue;
+        };
+        let mut inflated = Vec::new();
+        // A truncated or non-Flate stream still contributes whatever inflated cleanly.
+        let _ = ZlibDecoder::new(&rest[..end])
+            .take(budget)
+            .read_to_end(&mut inflated);
+        pages += page.find_iter(&inflated).count();
+        budget -= u64::try_from(inflated.len()).ok()?;
+        if budget == 0 {
+            break;
+        }
+    }
+    (pages > 0).then_some(pages)
+}
+
 fn optional_cover_data(path: &Path) -> AppResult<Option<(Vec<u8>, &'static str, &'static str)>> {
     if !path.exists() {
         return Ok(None);
@@ -745,6 +788,16 @@ pub(crate) fn epub_fixture(metadata: &str) -> Vec<u8> {
 }
 
 #[cfg(test)]
+pub(crate) fn pdf_fixture(pages: usize) -> Vec<u8> {
+    let mut pdf = b"%PDF-1.4\n2 0 obj<</Type /Pages/Count 0>>endobj\n".to_vec();
+    for _ in 0..pages {
+        pdf.extend(b"3 0 obj<</Type /Page/Parent 2 0 R>>endobj\n");
+    }
+    pdf.extend(b"%%EOF\n");
+    pdf
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -774,6 +827,38 @@ mod tests {
         for broken in [&b"ebook fixture"[..], b"", b"PK\x05\x06"] {
             assert!(empty(broken));
         }
+    }
+
+    #[test]
+    fn counts_pdf_pages_from_raw_bytes() {
+        use flate2::{Compression, write::ZlibEncoder};
+
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("book.pdf");
+        let count = |bytes: &[u8]| {
+            fs::write(&path, bytes).unwrap();
+            pdf_page_count(&path)
+        };
+        assert_eq!(count(&pdf_fixture(3)), Some(3));
+        assert_eq!(count(b"%PDF-1.7\n<</Type /Pages/Count 9>>\n"), None);
+        assert_eq!(count(b"not a pdf"), None);
+
+        let mut linearized =
+            b"%PDF-1.5\n1 0 obj<</Linearized 1/L 9/H [1 2]/O 3/E 4/N 417/T 5>>endobj\n".to_vec();
+        linearized.extend(&pdf_fixture(1));
+        assert_eq!(count(&linearized), Some(417));
+
+        let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
+        encoder
+            .write_all(&b"<</Type/Page/Parent 2 0 R>> ".repeat(60))
+            .unwrap();
+        let mut compressed =
+            b"%PDF-1.5\n5 0 obj<</Type /ObjStm/N 60/First 0/Filter /FlateDecode>>stream\r\n"
+                .to_vec();
+        compressed.extend(encoder.finish().unwrap());
+        compressed.extend(b"\r\nendstream endobj\n");
+        compressed.extend(&pdf_fixture(2));
+        assert_eq!(count(&compressed), Some(62));
     }
 
     #[test]
