@@ -509,6 +509,30 @@ impl LibraryState {
         let receiver = self
             .engine
             .request(|reply| Request::Import { roots, mode, reply });
+        self.finish_import(receiver, cx);
+    }
+
+    pub fn import_from_reader(&mut self, destination: Destination, cx: &mut Context<Self>) {
+        if self.section != Section::Library || !self.can_mutate() {
+            return;
+        }
+        self.busy = true;
+        self.set_status(
+            format!("Adding books from {}...", destination.name),
+            false,
+            cx,
+        );
+        let receiver = self
+            .engine
+            .request(|reply| Request::ImportFromReader { destination, reply });
+        self.finish_import(receiver, cx);
+    }
+
+    fn finish_import(
+        &mut self,
+        receiver: Receiver<AppResult<takio::import_scan::ImportScan>>,
+        cx: &mut Context<Self>,
+    ) {
         self.await_reply(receiver, cx, |this, result, cx| {
             this.busy = false;
             match result {
@@ -527,11 +551,29 @@ impl LibraryState {
                             )
                         })
                         .count();
-                    let skipped = match documents {
+                    let mut skipped = match documents {
                         0 => counts.skipped.to_string(),
                         1 => format!("{} (1 short PDF looked like a document)", counts.skipped),
                         n => format!("{} ({n} short PDFs looked like documents)", counts.skipped),
                     };
+                    let unsupported = scan
+                        .outcomes
+                        .iter()
+                        .filter(|outcome| {
+                            matches!(
+                                outcome,
+                                ImportOutcome::Skipped {
+                                    reason: "unsupported-format",
+                                    ..
+                                }
+                            )
+                        })
+                        .count();
+                    if unsupported > 0 {
+                        skipped.push_str(&format!(
+                            " ({unsupported} in a format Takio cannot store, such as Kindle store books)"
+                        ));
+                    }
                     this.set_status(
                         format!(
                             "Imported {}, skipped {skipped}, failed {}",

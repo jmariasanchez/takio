@@ -655,6 +655,59 @@ fn click_control(f: &Fixture, selector: &'static str, cx: &mut TestAppContext) {
 
 #[cfg(debug_assertions)]
 #[gpui::test]
+fn sidebar_pointer_imports_reader_only_book(cx: &mut TestAppContext) {
+    let f = fixture(false, cx);
+    let reader = reader(&f, cx);
+    let source = reader.path.join("documents/ReaderOnly.epub");
+    let bytes = b"unique sidebar reader-only book";
+    std::fs::write(&source, bytes).unwrap();
+    std::fs::write(reader.path.join("documents/store.azw"), b"store format").unwrap();
+    f.state.update(cx, |state, cx| {
+        state.volumes_root = f._temp.path().join("Volumes");
+        state.refresh_destinations(cx);
+    });
+    settle(&f.state, cx);
+    assert_eq!(
+        f.state.read_with(cx, |state, _| state.reader_shelves[0]
+            .1
+            .as_ref()
+            .unwrap()
+            .importable),
+        1
+    );
+    click_control(&f, "import-reader", cx);
+    f.state.read_with(cx, |state, _| {
+        assert_eq!(state.items.len(), 3);
+        let imported = state
+            .items
+            .iter()
+            .find(|book| book.title == "ReaderOnly")
+            .unwrap();
+        assert!(state.on_reader.contains_key(&imported.id));
+        assert_eq!(state.reader_shelves[0].1.as_ref().unwrap().importable, 0);
+        assert!(
+            state
+                .status
+                .as_ref()
+                .unwrap()
+                .text
+                .contains("Imported 1, skipped 1")
+        );
+        assert_eq!(
+            state.reader_shelves[0].1.as_ref().unwrap().not_in_library,
+            1
+        );
+    });
+    cx.update_window(f.window.into(), |_, window, cx| window.draw(cx).clear(cx))
+        .unwrap();
+    let mut visual = gpui::VisualTestContext::from_window(f.window.into(), cx);
+    assert!(visual.debug_bounds("import-reader").is_none());
+    assert_eq!(std::fs::read(source).unwrap(), bytes);
+    assert_files_unchanged(&f);
+}
+
+#[cfg(debug_assertions)]
+#[gpui::test]
 fn sidebar_pointer_review_cancel_writes_nothing(cx: &mut TestAppContext) {
     let f = fixture(false, cx);
     let reader = reader(&f, cx);

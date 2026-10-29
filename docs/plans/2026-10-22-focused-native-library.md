@@ -1606,3 +1606,26 @@ Acceptance before code:
 
 Limitation: store-bought `.azw`/`.kfx` books stay on the reader as "other
 files". Takio has no format for them and does not remove DRM.
+
+### Observed reader import results: native desktop
+
+- `ReaderShelf.importable` counts unmatched files the library can store.
+  `destination books --human` suggests `destination import` only when it is
+  above zero. The sidebar shows "Add N to library" only for importable files and
+  explains files in formats Takio cannot add, so a store `.azw` never leaves a
+  button that always skips.
+- Engine request `ImportFromReader` re-authorizes the reader on the worker,
+  then calls `import_unmatched`. `import_from_reader` requires the Library
+  section and `can_mutate`, shares the import status and reload path, names
+  skips in formats Takio cannot store, then reloads and rescans.
+- Four new native tests: mixed matched, unmatched and store-format reader with
+  a recursive byte snapshot unchanged and the mark applied after rescan; send
+  review, busy, editing and Trash guards; unplugged reader shows reconnect
+  guidance with no import; and a pointer click on `import-reader` that imports an
+  EPUB and hides the control while the `.azw` remains.
+- Workspace gates: `cargo fmt --all --check`, `git diff --check`, strict
+  workspace Clippy and `TMPDIR=/private/tmp/ cargo test --workspace` pass with
+  150 engine (2 ignored), 61 CLI, 2 custom-field and 181 native tests.
+
+Not verified: the rendered sidebar control was not seen in the packaged app
+(Screen Recording not granted). A physical Kindle was not connected.

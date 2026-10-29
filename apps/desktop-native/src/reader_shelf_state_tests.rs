@@ -1,4 +1,147 @@
 // Included in state::tests. Every reader and library is disposable.
+fn reader_tree_snapshot(root: &std::path::Path) -> Vec<(PathBuf, Option<Vec<u8>>)> {
+    fn visit(
+        root: &std::path::Path,
+        path: &std::path::Path,
+        entries: &mut Vec<(PathBuf, Option<Vec<u8>>)>,
+    ) {
+        for entry in fs::read_dir(path).unwrap() {
+            let path = entry.unwrap().path();
+            let directory = path.is_dir();
+            entries.push((
+                path.strip_prefix(root).unwrap().to_path_buf(),
+                if directory {
+                    None
+                } else {
+                    Some(fs::read(&path).unwrap())
+                },
+            ));
+            if directory {
+                visit(root, &path, entries);
+            }
+        }
+    }
+    let mut entries = Vec::new();
+    visit(root, root, &mut entries);
+    entries.sort();
+    entries
+}
+
+#[gpui::test]
+fn reader_import_copies_unmatched_and_rescans_without_reader_writes(cx: &mut TestAppContext) {
+    let f = fixture(cx);
+    let reader = shelf_reader(&f, cx);
+    let existing = f.state.read_with(cx, |state, _| state.items[0].clone());
+    let before_count = f.state.read_with(cx, |state, _| state.items.len());
+    fs::copy(
+        &existing.source_path,
+        reader.path.join("documents/existing.epub"),
+    )
+    .unwrap();
+    fs::write(
+        reader.path.join("documents/ReaderOnly.epub"),
+        b"unique reader-only EPUB bytes",
+    )
+    .unwrap();
+    fs::write(
+        reader.path.join("documents/store.azw"),
+        b"store-only format",
+    )
+    .unwrap();
+    fs::create_dir(reader.path.join("documents/store.sdr")).unwrap();
+    fs::write(
+        reader.path.join("documents/store.sdr/notes"),
+        b"reader notes",
+    )
+    .unwrap();
+    let before = reader_tree_snapshot(&reader.path);
+    f.state.update(cx, |state, cx| {
+        state.import_from_reader(reader.clone(), cx);
+        assert!(state.busy);
+        assert_eq!(
+            state.status.as_ref().unwrap().text,
+            "Adding books from Kindle..."
+        );
+    });
+    settle(&f.state, cx);
+    f.state.read_with(cx, |state, _| {
+        assert_eq!(state.items.len(), before_count + 1);
+        let status = &state.status.as_ref().unwrap().text;
+        assert!(status.contains("Imported 1, skipped 1"), "{status}");
+        assert!(status.contains("1 in a format Takio cannot store"));
+        assert!(status.contains("failed 0"));
+        let imported = state
+            .items
+            .iter()
+            .find(|book| book.title == "ReaderOnly")
+            .unwrap();
+        assert!(state.on_reader.contains_key(&imported.id));
+        let shelf = state.reader_shelves[0].1.as_ref().unwrap();
+        assert_eq!((shelf.in_library, shelf.not_in_library), (2, 1));
+    });
+    assert_eq!(reader_tree_snapshot(&reader.path), before);
+}
+
+#[gpui::test]
+fn reader_import_respects_mutation_and_section_guards(cx: &mut TestAppContext) {
+    let f = fixture(cx);
+    let reader = shelf_reader(&f, cx);
+    fs::write(
+        reader.path.join("documents/only.epub"),
+        b"unmatched reader book",
+    )
+    .unwrap();
+    let count = f.state.read_with(cx, |state, _| state.items.len());
+    f.state.update(cx, |state, cx| {
+        state.select_only(0, cx);
+        state.send_selected_to(reader.clone(), cx);
+    });
+    settle(&f.state, cx);
+    f.state.update(cx, |state, cx| {
+        assert!(state.send_preview.is_some());
+        let status = state.status.clone();
+        state.import_from_reader(reader.clone(), cx);
+        assert_eq!(state.status, status);
+        assert!(!state.busy);
+        state.send_preview = None;
+        for guard in 0..3 {
+            state.busy = guard == 0;
+            state.metadata_editing = guard == 1;
+            state.section = if guard == 2 {
+                Section::Trash
+            } else {
+                Section::Library
+            };
+            state.import_from_reader(reader.clone(), cx);
+            assert_eq!(state.status, status);
+        }
+        state.busy = false;
+        state.metadata_editing = false;
+        state.section = Section::Library;
+        state.reload(cx);
+    });
+    settle(&f.state, cx);
+    assert_eq!(f.state.read_with(cx, |state, _| state.items.len()), count);
+}
+
+#[gpui::test]
+fn reader_import_unplugged_reader_reports_reconnect_without_import(cx: &mut TestAppContext) {
+    let f = fixture(cx);
+    let reader = shelf_reader(&f, cx);
+    let count = f.state.read_with(cx, |state, _| state.items.len());
+    fs::remove_dir_all(&reader.path).unwrap();
+    f.state
+        .update(cx, |state, cx| state.import_from_reader(reader, cx));
+    settle(&f.state, cx);
+    f.state.read_with(cx, |state, _| {
+        assert_eq!(state.items.len(), count);
+        let status = state.status.as_ref().unwrap();
+        assert!(status.text.contains("Reconnect"));
+        assert!(status.text.contains("Refresh readers"));
+        assert!(!state.busy);
+    });
+}
+
 fn shelf_reader(f: &Fixture, cx: &mut TestAppContext) -> Destination {
     let volumes = f._temp.path().join("volumes");
     let mount = volumes.join("Kindle");

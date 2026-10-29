@@ -100,6 +100,18 @@ impl Render for Sidebar {
         }
         for (index, destination) in readers.into_iter().enumerate() {
             let send = destination.clone();
+            let import = destination.clone();
+            let can_import = available && section == Section::Library;
+            let unmatched = if state.scanning_readers {
+                0
+            } else {
+                state
+                    .reader_shelves
+                    .iter()
+                    .find(|(reader, _)| reader.id == destination.id)
+                    .and_then(|(_, shelf)| shelf.as_ref().ok())
+                    .map_or(0, |shelf| shelf.importable)
+            };
             let shelf_text = if state.scanning_readers {
                 "Checking books...".to_owned()
             } else {
@@ -117,6 +129,12 @@ impl Render for Sidebar {
                             text.push_str(&format!(
                                 "\n{} other file(s) not in your library",
                                 shelf.not_in_library
+                            ));
+                        }
+                        if shelf.not_in_library > shelf.importable {
+                            text.push_str(&format!(
+                                "\n{} use formats Takio cannot add",
+                                shelf.not_in_library - shelf.importable
                             ));
                         }
                         if shelf.truncated {
@@ -148,6 +166,30 @@ impl Render for Sidebar {
                             .text_color(theme.text_secondary)
                             .child(shelf_text),
                     )
+                    .when(unmatched > 0, |row| {
+                        row.child(
+                            div()
+                                .id(("import-reader", index))
+                                .debug_selector(|| "import-reader".to_owned())
+                                .text_xs()
+                                .px_2()
+                                .py_1()
+                                .rounded(px(metrics::RADIUS))
+                                .bg(theme.row_selected_inactive)
+                                .text_color(if can_import {
+                                    theme.accent
+                                } else {
+                                    theme.text_tertiary
+                                })
+                                .when(can_import, |button| button.cursor_pointer())
+                                .child(format!("Add {unmatched} to library"))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.state.update(cx, |state, cx| {
+                                        state.import_from_reader(import.clone(), cx)
+                                    });
+                                })),
+                        )
+                    })
                     .child(
                         div()
                             .flex()

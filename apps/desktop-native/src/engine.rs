@@ -211,6 +211,10 @@ pub enum Request {
         destinations: Vec<Destination>,
         reply: Sender<AppResult<ReaderShelves>>,
     },
+    ImportFromReader {
+        destination: Destination,
+        reply: Sender<AppResult<ImportScan>>,
+    },
     PreviewSend {
         destination: Destination,
         item_ids: Vec<String>,
@@ -419,6 +423,17 @@ fn worker(
                         })
                         .collect()
                 });
+                let _ = reply.send(result);
+            }
+            Request::ImportFromReader { destination, reply } => {
+                let result = destination
+                    .path
+                    .parent()
+                    .ok_or_else(|| AppError::new("unknown-destination"))
+                    .and_then(|root| destinations::authorize(&destination.path, root))
+                    .and_then(|destination| {
+                        takio::reader_shelf::import_unmatched(&mut store, &destination)
+                    });
                 let _ = reply.send(result);
             }
             Request::PreviewSend {
