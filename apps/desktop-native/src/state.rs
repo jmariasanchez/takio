@@ -99,6 +99,9 @@ pub struct LibraryState {
     pub on_reader: HashMap<String, Vec<String>>,
     pub scanning_readers: bool,
     reader_scan_generation: u64,
+    /// Volume names seen at the last refresh, so polling only acts on a change.
+    seen_volumes: Option<BTreeSet<String>>,
+    volume_watch: Option<Task<()>>,
     pub refreshing_devices: bool,
     pub device_error: Option<String>,
     pub busy: bool,
@@ -148,6 +151,8 @@ impl LibraryState {
             on_reader: HashMap::new(),
             scanning_readers: false,
             reader_scan_generation: 0,
+            seen_volumes: None,
+            volume_watch: None,
             refreshing_devices: false,
             device_error: None,
             busy: false,
@@ -167,6 +172,7 @@ impl LibraryState {
         };
         this.reload(cx);
         this.refresh_destinations(cx);
+        this.watch_volumes(cx);
         this
     }
 
@@ -819,6 +825,7 @@ impl LibraryState {
         self.clear_reader_shelves();
         self.device_error = None;
         let volumes_root = self.volumes_root.clone();
+        self.seen_volumes = Some(mounted_volume_names(&volumes_root));
         let receiver = self.engine.request(|reply| Request::ListDestinations {
             volumes_root,
             reply,
@@ -843,6 +850,43 @@ impl LibraryState {
 
     pub fn send_selected_to(&mut self, destination: Destination, cx: &mut Context<Self>) {
         self.send_ids_to(destination, self.selected_ids(), cx);
+    }
+
+    /// Notice readers being connected or unplugged while the app is open. Only the
+    /// names under the volumes root are listed each tick; a refresh (and reader scan)
+    /// runs only when that set changed, and waits while an operation or review is open.
+    fn watch_volumes(&mut self, cx: &mut Context<Self>) {
+        self.volume_watch = Some(cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(VOLUME_POLL).await;
+                let Ok(root) = this.read_with(cx, |this, _| this.volumes_root.clone()) else {
+                    return;
+                };
+                let names = cx
+                    .background_executor()
+                    .spawn(async move { mounted_volume_names(&root) })
+                    .await;
+                let updated = this.update(cx, |this, cx| {
+                    let changed = this.seen_volumes.as_ref() != Some(&names);
+                    if changed && this.can_auto_refresh() {
+                        this.refresh_destinations(cx);
+                    }
+                });
+                if updated.is_err() {
+                    return;
+                }
+            }
+        }));
+    }
+
+    /// A detected change is applied only between operations so it never cancels a
+    /// review or races a send, import or library switch. The next tick retries.
+    fn can_auto_refresh(&self) -> bool {
+        !self.refreshing_devices
+            && !self.busy
+            && !self.switching_library
+            && self.send_preview.is_none()
+            && self.preparation_preview.is_none()
     }
 
     pub fn send_ids_to(
@@ -1206,6 +1250,21 @@ pub enum FilterDimension {
     Series,
     Language,
     Format,
+}
+
+/// How often the app checks whether a reader was connected or unplugged.
+const VOLUME_POLL: Duration = Duration::from_secs(2);
+
+/// Names directly under the volumes root. Unreadable roots yield an empty set.
+fn mounted_volume_names(root: &std::path::Path) -> BTreeSet<String> {
+    std::fs::read_dir(root)
+        .map(|entries| {
+            entries
+                .flatten()
+                .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 pub fn author_label(item: &LibraryItem) -> String {

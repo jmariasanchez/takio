@@ -322,3 +322,87 @@ fn reader_shelf_import_matches_preexisting_reader_file(cx: &mut TestAppContext) 
         assert!(state.on_reader.contains_key(&book.id));
     });
 }
+
+fn kindle_at(volumes: &Path, name: &str) -> PathBuf {
+    let mount = volumes.join(name);
+    for directory in ["documents", "system"] {
+        fs::create_dir_all(mount.join(directory)).unwrap();
+    }
+    mount
+}
+
+/// Let the volume poll run once, then wait for any refresh and scan it started.
+fn poll_volumes(f: &Fixture, cx: &mut TestAppContext) {
+    cx.executor().advance_clock(VOLUME_POLL + Duration::from_millis(50));
+    settle(&f.state, cx);
+}
+
+#[gpui::test]
+fn plugging_in_a_reader_is_noticed_without_refresh(cx: &mut TestAppContext) {
+    let f = fixture(cx);
+    let volumes = f._temp.path().join("auto-volumes");
+    fs::create_dir_all(&volumes).unwrap();
+    f.state.update(cx, |state, cx| {
+        state.volumes_root = volumes.clone();
+        state.refresh_destinations(cx);
+    });
+    settle(&f.state, cx);
+    assert!(f.state.read_with(cx, |state, _| state.destinations.is_empty()));
+
+    let book = f.state.read_with(cx, |state, _| state.items[0].clone());
+    let mount = kindle_at(&volumes, "Kindle");
+    fs::copy(&book.source_path, mount.join("documents/book.epub")).unwrap();
+    poll_volumes(&f, cx);
+    f.state.read_with(cx, |state, _| {
+        assert_eq!(state.destinations.len(), 1, "reader noticed without Refresh");
+        assert_eq!(state.on_reader[&book.id], vec!["Kindle".to_owned()]);
+    });
+
+    fs::remove_dir_all(&mount).unwrap();
+    poll_volumes(&f, cx);
+    f.state.read_with(cx, |state, _| {
+        assert!(state.destinations.is_empty(), "unplugged reader removed");
+        assert!(state.on_reader.is_empty(), "stale markers cleared");
+        assert!(state.reader_shelves.is_empty());
+    });
+}
+
+#[gpui::test]
+fn unchanged_volumes_do_not_rescan_and_changes_wait_for_open_reviews(cx: &mut TestAppContext) {
+    let f = fixture(cx);
+    let volumes = f._temp.path().join("auto-volumes");
+    let first = kindle_at(&volumes, "Kindle");
+    let first = takio::destinations::authorize(&first, &volumes).unwrap();
+    f.state.update(cx, |state, cx| {
+        state.volumes_root = volumes.clone();
+        state.refresh_destinations(cx);
+    });
+    settle(&f.state, cx);
+    let generation = f.state.read_with(cx, |state, _| state.reader_scan_generation);
+    for _ in 0..3 {
+        poll_volumes(&f, cx);
+    }
+    assert_eq!(
+        f.state.read_with(cx, |state, _| state.reader_scan_generation),
+        generation,
+        "an unchanged volume list does not rescan the reader"
+    );
+
+    // A send review is open: a newly connected reader must not cancel or race it.
+    f.state.update(cx, |state, cx| {
+        state.select_only(0, cx);
+        state.send_selected_to(first, cx);
+    });
+    settle(&f.state, cx);
+    kindle_at(&volumes, "Second");
+    poll_volumes(&f, cx);
+    f.state.read_with(cx, |state, _| {
+        assert!(state.send_preview.is_some(), "review left intact");
+        assert_eq!(state.destinations.len(), 1, "refresh deferred during review");
+    });
+    f.state.update(cx, |state, cx| state.cancel_send_preview(cx));
+    poll_volumes(&f, cx);
+    f.state.read_with(cx, |state, _| {
+        assert_eq!(state.destinations.len(), 2, "deferred change applied next tick");
+    });
+}

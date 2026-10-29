@@ -4001,3 +4001,40 @@ fn destination_import_adds_reader_only_books_and_leaves_the_reader_unchanged() {
     assert!(again.contains("The reader was not changed."), "{again}");
     assert_eq!(snapshot(), before);
 }
+
+#[test]
+fn human_list_says_when_the_desktop_app_uses_another_library() {
+    let (temp, database, volumes, _item_id) = reader_fixture();
+    let profile = temp.path().join("desktop-profile");
+    fs::create_dir_all(&profile).unwrap();
+    let list = || {
+        let output = cargo_bin_cmd!("takio")
+            .env("TAKIO_DESKTOP_PROFILE_DIR", &profile)
+            .args(["library", "list", "--human", "--db"])
+            .arg(&database)
+            .args(["--volumes-root"])
+            .arg(&volumes)
+            .output()
+            .expect("readable list");
+        String::from_utf8(output.stdout).unwrap()
+    };
+    assert!(!list().contains("desktop app"), "no preference, no note");
+
+    fs::write(
+        profile.join("last-library"),
+        database.parent().unwrap().to_str().unwrap(),
+    )
+    .unwrap();
+    assert!(!list().contains("desktop app"), "same library, no note");
+
+    let other = temp.path().join("Other Library");
+    fs::write(profile.join("last-library"), other.to_str().unwrap()).unwrap();
+    let text = list();
+    assert!(
+        text.contains(&format!(
+            "The desktop app is using a different library: {}",
+            other.display()
+        )),
+        "{text}"
+    );
+}

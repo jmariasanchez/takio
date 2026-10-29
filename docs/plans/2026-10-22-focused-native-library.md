@@ -1681,3 +1681,64 @@ has not used the window). The render evidence comes from
 session scratch folder. Rendering found and fixed one layout issue: the "(●
 in list)" legend wrapped mid-phrase, and it now reads "● marks them in the
 list" on its own line.
+
+## Notice readers without Refresh: October 29, 2026
+
+Re-reading the request ("without the interaction of a human being") against
+the result: the reader shelf only updated at launch, after a mutation or when
+the user pressed Refresh. Plugging in or unplugging the Kindle while Takio is
+open left the sidebar and row markers stale.
+
+Acceptance before code:
+
+- While the app runs, it notices a mounted volume appearing or disappearing
+  under the volumes root within about two seconds and runs the existing
+  refresh, so the sidebar, ● markers and inspector update. The Refresh button
+  stays.
+- Checking is a cheap, read-only listing of volume names on the background
+  executor. Reader contents are only scanned when the set of names changes, and
+  the hash cache keeps repeated scans cheap. Nothing is written to any volume.
+- A change that arrives during an operation, review or edit is not lost: the
+  refresh is deferred to the next check, never interrupting a send or import
+  and never applied to a library that was switched in between.
+- Unplugging clears the shelf and markers rather than showing stale counts.
+- Checks: native state tests with the test clock against a real temporary
+  volumes root (appear, disappear, deferred while busy, unchanged set does not
+  rescan); a live run that mounts a FAT image after the app has started and
+  renders the real workspace once the reader appears; full gates and bench.
+
+### Observed reader auto-detect results
+
+- `LibraryState` lists the names under the volumes root every 2 s on the
+  background executor. It calls the existing refresh only when the set differs
+  from the last refresh and no operation, review, preparation or library switch
+  is open. A deferred change is applied on the next tick. One listing of
+  `/Volumes` costs about 10 µs.
+- Native state tests: `plugging_in_a_reader_is_noticed_without_refresh` (a
+  reader appearing marks the book, unplugging clears destinations, shelves
+  and markers) and
+  `unchanged_volumes_do_not_rescan_and_changes_wait_for_open_reviews` (three
+  unchanged ticks leave the scan generation unchanged; a second reader appearing
+  during an open send review leaves the review intact and is added on the tick
+  after cancel). The native suite passed 183/183 on 13 consecutive full runs.
+- Live: the real `LibraryState` and `Workspace` started with no reader mounted.
+  `hdiutil attach` then mounted a FAT `KINDLE` image while it ran, and the app
+  noticed it 2.1 s later without Refresh. The rendered workspace showed KINDLE
+  in the sidebar with "1 of your books on this reader", `● TXT` on Kindred and
+  "On reader KINDLE" in the inspector (`takio-autodetect-acceptance.sh`,
+  `takio-snapshots/autodetect.png`).
+- Shared library: the CLI default and the desktop default resolve to the same
+  `~/Library/Application Support/com.takio.Takio` (observed with `library path`
+  and no saved desktop preference). If the desktop app was switched to another
+  library, `library list --human` now says so and gives the `--db` path. CLI
+  test `human_list_says_when_the_desktop_app_uses_another_library` covers no
+  preference, the same library and a different library.
+- Gates: fmt, `git diff --check`, strict workspace Clippy plus the snapshot
+  feature, `TMPDIR=/private/tmp/ cargo test --workspace` (152 engine with 2
+  ignored, 62 CLI, 2 custom-field, 183 native). Bench medians: paint 109.6 ms,
+  query 165.8 ms, select-all/reload p95 49.8 ms, sort p95 0.63 ms, and all
+  budgets pass. Packaged bundle is 11,595,041 bytes, strict signature valid.
+
+Remaining, blocked on the user: a physical Kindle (detection on a real USB
+reader, then reading a pulled-in or sent book on the device) and a person using
+the visible window.

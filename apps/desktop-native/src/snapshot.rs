@@ -34,6 +34,38 @@ pub fn run() {
         state
     });
     settle(&mut cx, &state);
+    // Wait for a reader to be connected while running, through the real volume poll.
+    if let Some(name) = std::env::var_os("TAKIO_SNAPSHOT_WAIT_FOR_READER") {
+        let name = name.to_string_lossy().into_owned();
+        let ready = std::path::Path::new(&output).with_extension("waiting");
+        std::fs::write(&ready, b"").unwrap_or_else(|_| crate::fatal("could not signal waiting"));
+        let started = std::time::Instant::now();
+        loop {
+            cx.run_until_parked();
+            cx.advance_clock(Duration::from_millis(100));
+            std::thread::sleep(Duration::from_millis(100));
+            let found = cx.read(|cx| {
+                let state = state.read(cx);
+                !state.scanning_readers
+                    && !state.refreshing_devices
+                    && state
+                        .reader_shelves
+                        .iter()
+                        .any(|(reader, _)| reader.name == name)
+            });
+            if found {
+                println!(
+                    "reader {name} noticed {:.1} s after mount wait began, without Refresh",
+                    started.elapsed().as_secs_f64()
+                );
+                break;
+            }
+            if started.elapsed() > Duration::from_secs(30) {
+                crate::fatal("reader was not noticed within 30 s");
+            }
+        }
+        let _ = std::fs::remove_file(&ready);
+    }
     // Same state method the sidebar "Add N to library" control calls.
     if std::env::var_os("TAKIO_SNAPSHOT_IMPORT_FROM_READER").is_some() {
         cx.update(|cx| {

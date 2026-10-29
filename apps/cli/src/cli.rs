@@ -4036,6 +4036,9 @@ fn print_human_list(
     }
     println!();
     println!("{} book(s) in the library", items.len());
+    if let Some(note) = desktop_library_note(store.paths()) {
+        println!("{note}");
+    }
     if readers.is_empty() {
         println!("No Kindle or Kobo reader is mounted.");
     }
@@ -4043,6 +4046,33 @@ fn print_human_list(
         println!("{summary}");
     }
     Ok(())
+}
+
+/// When the desktop app was switched to another library, say so: otherwise the CLI
+/// and the app would silently list different books.
+fn desktop_library_note(paths: &LibraryPaths) -> Option<String> {
+    // Same location the desktop uses, including its isolated test profile override.
+    let preference = match std::env::var_os("TAKIO_DESKTOP_PROFILE_DIR") {
+        Some(profile) => PathBuf::from(profile).join("last-library"),
+        None => LibraryPaths::resolve(None, None)
+            .ok()?
+            .root
+            .join("desktop")
+            .join("last-library"),
+    };
+    let remembered = std::fs::read_to_string(preference).ok()?;
+    let remembered = Path::new(remembered.trim());
+    let same = |a: &Path, b: &Path| match (a.canonicalize(), b.canonicalize()) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => a == b,
+    };
+    (!remembered.as_os_str().is_empty() && !same(remembered, &paths.root)).then(|| {
+        format!(
+            "The desktop app is using a different library: {}. Add --db {}/library.sqlite to list it.",
+            remembered.display(),
+            remembered.display()
+        )
+    })
 }
 
 fn truncate(value: &str, max: usize) -> String {
