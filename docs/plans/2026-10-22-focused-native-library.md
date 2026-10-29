@@ -1908,3 +1908,38 @@ sidecars, reading progress after the user opens a sent EPUB.
 
 Still blocked on the user: the physical KOReader Kindle with its real
 sidecars, and confirming that a sent EPUB opens in KOReader.
+
+### Desktop KOReader slice: independent re-validation
+
+- **Tests read.** The worker's three state tests share
+  `check_reader_progress`, which asserts the label, `on_reader`, the progress
+  label, finished/in-progress counts and an unchanged reader tree, and checks
+  that marks clear after the reader leaves. The Amazon window test covers no
+  reader, KOReader, Kobo, stock and mixed. Each asserts what its name claims.
+- **Mutation testing** (`takio-mutants-koreader*.sh`). The first pass killed
+  7 of 11 mutants. Four survived because only state was tested: the sidebar
+  label reverting to the plain name, the sidebar finished/in-progress line
+  being dropped, the inspector Progress row being dropped, and the old Amazon
+  wording in the no-format message. The fix exposes the rendered label,
+  summary and inspector rows as debug selectors carrying their values,
+  extracts the sidebar text into a pure `shelf_summary`, and adds three tests:
+  `rendered_koreader_reader_shows_label_progress_summary_and_inspector_row`
+  (a real rendered window, then the same sidecar on a stock Kindle shows no
+  label or progress), `koreader_summary_reports_reading_progress_and_stock_kindle_does_not`,
+  and `no_compatible_format_names_what_koreader_and_stock_kindle_read`.
+  Second pass: 11 of 11 killed.
+- **Edge renders** on two real FAT images mounted together
+  (`takio-edge-render.sh`): KO (KOReader) and STOCK, with the same Kindred EPUB
+  on both. A KOReader-serialized "complete" sidecar on STOCK was correctly
+  ignored, and a book on KO was never opened. Rendered results: "KO
+  (KOReader) … 0 finished, 1 in progress" and "STOCK" without progress; the
+  Amazon hint is present because a stock Kindle is connected; for Kindred
+  (EPUB), "On reader: KO (KOReader), STOCK" and "Progress 67%"; for the
+  never-opened Dawn, "On reader: KO (KOReader)" and no Progress row. A
+  same-titled PDF copy correctly shows no ●. Both readers were byte-identical
+  afterwards. `library list --human` agreed: "KO 67%,STOCK", and "STOCK: 1 of
+  these books" with no progress.
+- Gates: fmt, `git diff --check`, strict Clippy for the workspace and the
+  snapshot feature, and three consecutive `TMPDIR=/private/tmp/ cargo test
+  --workspace` runs (159 engine with 2 ignored, 63 CLI, 2 custom-field, 191
+  native).

@@ -103,7 +103,18 @@ pub fn run() {
     if let Some(title) = select {
         cx.update(|cx| {
             state.update(cx, |state, cx| {
-                if let Some(index) = state.items.iter().position(|item| item.title == title) {
+                // "Title" or "Title|epub" to pick one of several same-titled books.
+                let (title, format) = title
+                    .split_once('|')
+                    .map_or((title.as_str(), None), |(t, f)| (t, Some(f)));
+                if let Some(index) = state.items.iter().position(|item| {
+                    item.title == title
+                        && format.is_none_or(|format| {
+                            item.formats
+                                .iter()
+                                .any(|attached| attached.format.as_str() == format)
+                        })
+                }) {
                     state.select_only(index, cx);
                 }
             });
