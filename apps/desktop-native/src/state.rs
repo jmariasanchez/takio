@@ -1303,7 +1303,7 @@ pub fn humanize_error(code: &str) -> String {
         "storage-unavailable" => "The library could not be read".into(),
         "unsupported-format" => "That file format is not supported".into(),
         "not-found" | "item-not-found" => "That book is no longer in the library".into(),
-        "destination-unavailable" | "unknown-destination" => "The reader is no longer available. Reconnect it with a data-capable USB cable, then choose Refresh readers and try again.".into(),
+        "destination-unavailable" | "unknown-destination" => "The reader is no longer available. Reconnect it with a data-capable USB cable. It reappears in a moment, or choose Refresh readers, then try again.".into(),
         "source-unavailable" => "The book's file is unavailable. Check that its drive is connected and the file still exists, then try again.".into(),
         "copy-failed" => "The copy could not be completed. Check the reader connection, available space, and write permissions before retrying.".into(),
         "verification-failed" => "The copied book could not be verified. Do not rely on this transfer. Check the reader connection and try again.".into(),

@@ -78,7 +78,22 @@ pub fn run() {
                         .map(|_| reader.clone())
                 });
                 match reader {
-                    Some(reader) => state.import_from_reader(reader, cx),
+                    Some(reader) => {
+                        // Real race: the reader disappears after it was listed and
+                        // offered, but before the engine runs the import.
+                        if let Some(mount) = std::env::var_os("TAKIO_SNAPSHOT_UNPLUG_BEFORE_IMPORT")
+                        {
+                            let detached = std::process::Command::new("hdiutil")
+                                .arg("detach")
+                                .arg(&mount)
+                                .status()
+                                .is_ok_and(|status| status.success());
+                            if !detached {
+                                crate::fatal("could not detach reader for unplug check");
+                            }
+                        }
+                        state.import_from_reader(reader, cx);
+                    }
                     None => crate::fatal("no reader has books to add"),
                 }
             });

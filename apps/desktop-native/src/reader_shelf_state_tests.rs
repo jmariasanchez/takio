@@ -406,3 +406,28 @@ fn unchanged_volumes_do_not_rescan_and_changes_wait_for_open_reviews(cx: &mut Te
         assert_eq!(state.destinations.len(), 2, "deferred change applied next tick");
     });
 }
+
+#[gpui::test]
+fn failed_volume_listing_clears_stale_reader_marks(cx: &mut TestAppContext) {
+    let f = fixture(cx);
+    let reader = shelf_reader(&f, cx);
+    let book = f.state.read_with(cx, |state, _| state.items[0].clone());
+    fs::copy(&book.source_path, reader.path.join("documents/book.epub")).unwrap();
+    f.state.update(cx, |state, cx| state.refresh_destinations(cx));
+    settle(&f.state, cx);
+    assert!(f.state.read_with(cx, |state, _| state.on_reader.contains_key(&book.id)));
+
+    // The volumes root itself becomes unreadable: listing fails, so nothing can be
+    // claimed about which books are on a reader any more.
+    f.state.update(cx, |state, cx| {
+        state.volumes_root = f._temp.path().join("no-such-volumes-root");
+        state.refresh_destinations(cx);
+    });
+    settle(&f.state, cx);
+    f.state.read_with(cx, |state, _| {
+        assert!(state.device_error.is_some());
+        assert!(state.destinations.is_empty());
+        assert!(state.on_reader.is_empty(), "no stale markers after a failed listing");
+        assert!(state.reader_shelves.is_empty());
+    });
+}
