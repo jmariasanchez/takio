@@ -2055,3 +2055,15 @@ Gates: fmt, `git diff --check`, strict Clippy for the workspace and for
 - The first scan of a newly connected reader still reads every size-matched
   file once (about 55 s for 1.4 GB here). The sidebar says "Checking books..."
   meanwhile.
+
+Mutation check of the cache (`takio-mutants-cache.sh`). The first pass killed
+9 of 14 mutants. Survivors: an unchanged cache being rewritten, a 64-character
+non-hex digest being accepted, a missing library failing again, a cache being
+written next to no library, CLI import not saving, and the desktop ignoring
+the saved cache. These were closed by checking file identity (inode and mtime)
+across a no-op save and a restarted desktop, adding uppercase and non-hex
+digests, comparing the digest saved after a CLI import with the managed copy,
+and checking that a cache left in a library-less folder is not rewritten. The
+third pass killed 14 of 14 (`takio-mutants-cache-3.log`). Gates after the
+final commit: fmt, Clippy (workspace and snapshot), and three consecutive
+workspace test runs at 163, 64, 2 and 192.
