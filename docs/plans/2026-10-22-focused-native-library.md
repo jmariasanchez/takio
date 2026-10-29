@@ -1629,3 +1629,50 @@ files". Takio has no format for them and does not remove DRM.
 
 Not verified: the rendered sidebar control was not seen in the packaged app
 (Screen Recording not granted). A physical Kindle was not connected.
+
+### Whole-result recheck and requirement matrix: October 29, 13:15 UTC
+
+Weak points found and fixed in the recheck:
+
+- **Rescan cost.** The desktop rescans after every import, trash, restore,
+  purge and send. On a mounted FAT image with 300 same-size library books
+  (150 MiB), the uncached release scan took 279–310 ms and read 150 MiB every
+  time. An engine-worker `HashCache` keyed by path, size and modification time
+  brought repeat scans to 3.0–3.6 ms with 0 bytes read
+  (`examples/reader_rescan.rs`, `takio-rescan-perf.sh`). `destination import`
+  still hashes fresh, because FAT timestamps are coarse.
+- **Silent undercount.** An unlistable reader folder was skipped and the shelf
+  reported complete counts. Shelves now carry `unreadable`, and all three
+  surfaces say counts may be incomplete (observed with a `chmod 000`
+  `documents` folder: "Kindle: 0 of these books, 0 other file(s) (some folders
+  could not be read)").
+
+| Requirement or changed output | Check | Observed |
+| --- | --- | --- |
+| `--dest` takes the listed id or mount path; unknown and `../Kindle` refused | `resolve_accepts_listed_ids_and_paths_only`; CLI `reader_id_from_destination_list_works_for_send_and_inventory`; release `send --dest Kindle` | Pass. Exact and case-folded ids resolve, unknowns give `unknown-destination`, release send delivered "Parable of the Sower.txt" |
+| Case-folded id that matches two readers | Release CLI with `Kindle` and `kindle` dirs | Not reproducible on macOS: the case-insensitive filesystem holds one entry, so the unambiguous rule is untested on case-sensitive volumes |
+| Shelf matches by exact size and SHA-256; same-size different bytes unmatched | `matches_library_books_by_content_...`, `only_size_candidates_are_hashed` | Pass. Only same-size files hashed |
+| Delivery-record fallback, rejected after change | `delivery_record_identifies_a_sent_copy_...` | Pass |
+| Trashed books unmatched until restored | engine `trashed_books_...`; native `reader_shelf_matches_bytes_..._trash_removes_mark` | Pass |
+| `.sdr`, `._*`, `system`, `dictionaries`, `My Clippings.txt`, non-books excluded | engine test; release FAT run with Finder `._` files | Pass. `._` files on real FAT were ignored |
+| Bounds, missing `documents`, unreadable folders reported | `missing_documents_folder_and_bounds_...`, `unreadable_reader_folders_are_counted_not_hidden`; release `chmod 000` run | Pass |
+| Listing never writes reader or library; never creates a library | CLI `destination_books_..._without_writing` (`storage-unavailable`, no db created); acceptance hashes | Pass. Reader and catalogue bytes identical |
+| `library list --human`: authors, On reader, no-reader message; JSON unchanged | CLI `human_list_shows_authors_...`; both acceptance runs | Pass. No repo script parses the human table |
+| `destination books --human` and import hint only when importable | CLI tests (hint present for TXT, absent for store `.azw`) | Pass |
+| `destination import` copies only unmatched, storable files; reader untouched; repeat no-op | `import_unmatched_...`; CLI `destination_import_...`; release FAT run | Pass. Added Dawn (Octavia E. Butler) and On Writing, skipped `.azw`, reader tree hash-identical, no `.takio` written, repeat imported 0 |
+| Desktop marks rows, inspector names reader, sidebar counts | 5 native `reader_shelf_*` state tests | State pass. **Rendering unobserved** |
+| Desktop rescans after refresh, send, import, trash, restore, purge, switch; stale replies dropped | native send, import, trash/restore, stale-reply tests | Pass |
+| Desktop "Add N to library" only for importable files, guarded, unplugged reader guidance | 3 native `reader_import_*` tests and pointer `sidebar_pointer_imports_reader_only_book` | Pass. Pointer click imports EPUB, control hides while `.azw` remains |
+| Scans do not block mutations or startup | `reader_shelf_*` (never `busy`); `bench-desktop-native.sh --interactions` | Pass. Paint 104.5 ms, query 170.9 ms median, sort p95 0.04 ms, select-all/reload p95 46.2 ms, all budgets met |
+| Packaging | `scripts/package-desktop-native.sh` | Pass. Strict signature valid, 11,578,577-byte bundle, bundle launch smoke 144.7 ms paint |
+| Workspace gates | fmt, `git diff --check`, strict Clippy, `TMPDIR=/private/tmp/ cargo test --workspace` | Pass. 152 engine (2 ignored), 61 CLI, 2 custom-field, 181 native |
+
+Known, unchanged, not caused by this work: `cargo test --release -p
+takio-desktop` does not compile because `click_control` is
+`debug_assertions`-only (already true at `acbc1c0`). The 7 recovery tests still
+fail under the `/var` TMPDIR alias.
+
+Blocked on the user, not complete: seeing the rendered marker, inspector row,
+sidebar counts and "Add N to library" in the packaged app (needs Screen
+Recording permission), and the physical Kindle run (connect the device, check
+the shelf counts, import, then open a pulled-in or sent book on the device).
