@@ -1776,3 +1776,41 @@ its four tests) was rechecked without relying on its own report.
   the workspace and for the snapshot feature, and 5 consecutive
   `TMPDIR=/private/tmp/ cargo test --workspace` runs, each 152 engine, 62 CLI,
   2 custom-field and 184 native passing.
+
+## KOReader on a jailbroken Kindle as the primary reader: October 29, 2026
+
+The user clarified that the reader is a jailbroken Kindle running KOReader, not
+a stock Kindle. The October 22 baseline of that device shows KOReader
+installed, 55 EPUB, 55 MOBI and 52 PDF files in `documents` and author
+folders, and 14 `.sdr` sidecar folders, of which 12 hold KOReader's
+`metadata.<ext>.lua`. Today the desktop prefers EPUB when KOReader is detected,
+but the CLI `send` still uses stock-Kindle preferences and falls back to any
+first format. The UI still offers Amazon Send to Kindle and AZW3 advice. Reading
+state that KOReader already writes next to each book is ignored.
+
+Acceptance before code:
+
+- One engine function decides which formats a reader can read, shared by CLI
+  `send` and the desktop. A detected `koreader` folder means EPUB, PDF, MOBI,
+  AZW3, TXT, CBZ, in that order. The CLI never falls back to a format that
+  reader cannot read: it reports `no-compatible-format`.
+- The shelf reads each matched book's KOReader sidecar
+  (`<book>.sdr/metadata.<ext>.lua`, or a `metadata.*.lua` in that folder)
+  without executing it. It extracts only `percent_finished` and
+  `summary.status` (reading, complete, abandoned), bounded at 256 KiB per file,
+  and malformed files produce no progress. Nothing on the reader is written.
+- `destination books --human` and `library list --human` show the reader as
+  "Kindle (KOReader)" and each book's state ("finished", "42%"). The desktop
+  sidebar names KOReader and counts finished and in-progress books. The
+  inspector shows that book's progress. The Amazon Send to Kindle hint and
+  AZW3/Prepare advice are shown only when a stock Kindle is connected, and the
+  KOReader no-format message names the formats it reads.
+- No KOReader settings, history or highlights are changed or imported. MTP,
+  wireless sync and the KOReader Calibre wireless protocol are not part of
+  this slice.
+- Checks: engine tests for sidecar parsing (real-shaped Lua, nested `summary`,
+  `.old` ignored, oversize, garbage, code that must not run), preference order
+  and CLI no-fallback; CLI tests for labels and progress; native state and
+  render checks; a real FAT image shaped like the device (`koreader/`, author
+  folders, `.sdr` sidecars) through the release CLI and the rendered desktop.
+  A simulated image does not prove behavior on the physical device.
