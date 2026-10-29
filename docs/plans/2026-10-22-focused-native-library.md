@@ -1385,3 +1385,60 @@ acceptance was attempted, and none is claimed.
   the EPUB metadata, and `send --dest Kindle` returns `unknown-destination` even
   though `destination list` reports id `Kindle` (only the mount path works).
 - Pending: user opens `check.epub` in KOReader and sees `TAKIO-EPUB-20261024-OK`.
+
+## Automatic book recognition on import: October 29, 2026
+
+A real-folder trial (88 PDF/EPUB copies of a user's Downloads, isolated scratch
+library, originals hash-verified unchanged) imported 78 entries: 25 books and 53
+personal documents (bills, scans, forms, CVs). Every EPUB carried correct
+title/author metadata that import ignored, and 17 books used the
+`Title (Author) (z-library.sk, ...)` filename convention. The user asked for
+"add everything and forget it" without a PDF-reader dependency.
+
+Acceptance before code:
+
+- Import derives title and authors with no external backend: caller title, then
+  EPUB OPF metadata (native zip read, existing `parse_opf`), then filename.
+  Recognized `(z-library...)` suffixes are removed and the preceding
+  parenthesized names become authors. Underscore-only stems become spaced.
+  Unreadable or non-zip EPUBs fall back to the filename; import never fails
+  because metadata is missing or malformed.
+- Folder scans skip PDFs whose byte-level page count is below 50 pages, with
+  skipped reason `likely-document`. Explicitly chosen files are always imported.
+  Unknown page counts and PDFs above the read cap are imported, never dropped.
+- Page counting uses the linearization `/N`, plain `/Type /Page` objects and
+  bounded inflation of FlateDecode object streams. Inflation is size-capped.
+- Native import status names the skipped-document count. Copy/move ownership,
+  duplicate detection and per-file outcomes are otherwise unchanged.
+- Checks: engine tests for EPUB/zip metadata, filename parsing, page counting
+  (linearized, plain, object stream, `/Pages` exclusion, garbage) and folder vs
+  explicit scans; native status test; fmt, workspace tests, strict Clippy; repeat
+  the real-folder trial on fresh copies and compare against Spotlight page counts.
+
+### Observed recognition results
+
+- Repeated the real-folder trial with the release CLI on fresh APFS clone copies
+  of the same 88 files: `import-many` imported 25, skipped 63 as
+  `likely-document`, failed 0, in 3.4 s. `library verify` passed. All 25 books
+  were imported. Authors were filled for 17, from EPUB OPF metadata or the
+  z-library filename convention. Every PDF decision matched Spotlight's
+  `kMDItemNumberOfPages` against the 50-page cut. Original SHA-256, size and
+  mtime were unchanged. Scratch copies and libraries were deleted afterwards.
+- The byte page counter exactly matched Spotlight for 72 of 77 PDFs: 48 via plain
+  page objects, 25 via linearization and 4 needing object-stream inflation. The 5
+  overcounts were 1–6 page signed forms with incremental updates, still well
+  below the cut.
+- `cargo fmt --all --check`, strict workspace Clippy and `git diff --check` pass.
+  Workspace tests: 142 engine (2 ignored), 57 CLI, 2 custom-field, and 165 of 172
+  native pass. The 7 failures are the native backup/restore tests. They fail
+  identically on a clean HEAD worktree and all 172 pass with a canonical
+  `TMPDIR`. The default macOS `/var` -> `/private/var` alias makes recovery
+  verification report `integrity-failed`. This existing path-alias bug is
+  separate from recognition and remains open.
+
+Limitations: the packaged app was not exercised live. The native status text is
+covered by a state test. Embedded PDF metadata is deliberately unused: the trial
+showed mostly producer names and placeholder titles. Eight PDFs keep cleaned
+filename titles without authors. If a folder and a file inside it are both
+chosen, the folder entry wins, so that file is classified. Encrypted or
+non-Flate object streams yield unknown page counts and import as books.
