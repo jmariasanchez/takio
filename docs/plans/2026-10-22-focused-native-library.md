@@ -1519,3 +1519,33 @@ Limitations: matching is exact bytes only. A copy that a reader, Calibre or
 Amazon converted or re-wrapped is listed as "not in library". Files in
 `documents` subfolders are found up to six levels deep. The physical Kindle was
 not connected for this run.
+
+### Observed reader-shelf results: native desktop
+
+- Engine request `ReaderShelves` computes fingerprints once on the engine worker
+  and skips generic drives. State rescans after reader refresh, reviewed send,
+  import, trash, restore, purge and library switch. Scans never set `busy`, so
+  they do not block mutations. Each scan invalidates old marks at once. A scan
+  generation plus the existing library epoch drop stale replies. The list shows
+  `●` before formats for books on a reader, the inspector adds "On reader", and
+  the sidebar shows in-library and other-file counts, checking, error and
+  truncation text. Native tests use a library-relative volumes root, never
+  `/Volumes`.
+- Five native state tests: byte matching with an unknown file and trash/restore
+  marks; send review then rescan; missing `documents` and generic drives (state
+  and worker); stale reply after a newer scan and after a library switch;
+  importing a book already on the reader marks it.
+- Workspace gates: `cargo fmt --all --check`, `git diff --check`, strict
+  workspace Clippy, and `TMPDIR=/private/tmp/ cargo test --workspace` pass with
+  149 engine (2 ignored), 60 CLI, 2 custom-field and 177 native tests. Under
+  the default `/var/folders` TMPDIR the same 7 pre-existing recovery tests fail.
+  The release desktop binary builds.
+- A real FAT disk image mounted at `/Volumes/KINDLE` (`documents`, `system`)
+  with the release CLI and default volumes root: `library list --human` showed
+  Kindred on KINDLE and counted the store `.azw`. The macOS `._` files that
+  Finder creates on FAT were ignored. The image was detached afterwards and
+  `library verify` passed.
+
+Not verified: the packaged window was launched on the scratch library, but
+Screen Recording permission is not granted, so the rendered marker, inspector
+row and sidebar text were not seen. The physical Kindle remains unconnected.
