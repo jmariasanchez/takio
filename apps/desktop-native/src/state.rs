@@ -13,6 +13,7 @@ use std::time::Duration;
 
 use gpui::{Context, Entity, Task};
 use takio::destinations::Destination;
+use takio::import_scan::ImportOutcome;
 use takio::model::{LibraryItem, LibraryPatch};
 use takio::output::{AppError, AppResult};
 
@@ -494,10 +495,28 @@ impl LibraryState {
             match result {
                 Ok(scan) => {
                     let counts = scan.counts;
+                    let documents = scan
+                        .outcomes
+                        .iter()
+                        .filter(|outcome| {
+                            matches!(
+                                outcome,
+                                ImportOutcome::Skipped {
+                                    reason: "likely-document",
+                                    ..
+                                }
+                            )
+                        })
+                        .count();
+                    let skipped = match documents {
+                        0 => counts.skipped.to_string(),
+                        1 => format!("{} (1 short PDF looked like a document)", counts.skipped),
+                        n => format!("{} ({n} short PDFs looked like documents)", counts.skipped),
+                    };
                     this.set_status(
                         format!(
-                            "Imported {}, skipped {}, failed {}",
-                            counts.imported, counts.skipped, counts.failed
+                            "Imported {}, skipped {skipped}, failed {}",
+                            counts.imported, counts.failed
                         ),
                         counts.failed > 0,
                         cx,
@@ -1562,6 +1581,27 @@ mod tests {
         let status = f.state.read_with(cx, |s, _| s.status.clone().unwrap());
         assert!(status.text.starts_with("Imported 1"), "{}", status.text);
         assert!(!status.is_error);
+    }
+
+    #[gpui::test]
+    fn folder_import_names_skipped_documents(cx: &mut TestAppContext) {
+        let f = fixture(cx);
+        let folder = f._temp.path().join("Downloads");
+        std::fs::create_dir(&folder).unwrap();
+        epub(&folder, "Delta");
+        let bill = b"%PDF-1.4\n1 0 obj<</Type /Page>>endobj\n%%EOF\n";
+        std::fs::write(folder.join("bill.pdf"), bill).unwrap();
+        f.state.update(cx, |s, cx| {
+            s.import(vec![folder.clone()], ImportMode::Copy, cx)
+        });
+        settle(&f.state, cx);
+        assert_eq!(titles(&f.state, cx), ["Alpha", "Beta", "Delta", "Gamma"]);
+        let status = f.state.read_with(cx, |s, _| s.status.clone().unwrap());
+        assert_eq!(
+            status.text,
+            "Imported 1, skipped 1 (1 short PDF looked like a document), failed 0"
+        );
+        assert_eq!(std::fs::read(folder.join("bill.pdf")).unwrap(), bill);
     }
 
     #[gpui::test]
