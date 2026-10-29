@@ -14,7 +14,7 @@ use crate::conversion::{
     CALIBRE_CAPABILITIES, FormatId, convert, detect_format, discover_ebook_convert,
 };
 use crate::destinations::{self, DestinationKind};
-use crate::import_scan::{ImportCounts, scan_imports};
+use crate::import_scan::{ImportCounts, ImportOutcome, scan_imports};
 use crate::jobs::{JobStatus, JobStore};
 use crate::kindle_ssh::{self, KindleSshDestination};
 use crate::maintenance::{self, discover_ebook_polish};
@@ -766,6 +766,22 @@ enum DestinationCommand {
         dest: PathBuf,
         #[arg(long, default_value = "/Volumes")]
         volumes_root: PathBuf,
+    },
+    #[command(
+        about = "Copy the reader's books that are not yet in the library into it, without changing the reader"
+    )]
+    Import {
+        #[arg(long)]
+        db: Option<PathBuf>,
+        #[arg(
+            long,
+            help = "Reader id from `destination list` (for example Kindle) or its mount path"
+        )]
+        dest: PathBuf,
+        #[arg(long, default_value = "/Volumes")]
+        volumes_root: PathBuf,
+        #[arg(long, help = "Print a readable summary instead of the JSON envelope")]
+        human: bool,
     },
     #[command(about = "Remove a delivered file after verifying it is unchanged")]
     Remove {
@@ -3714,6 +3730,49 @@ fn destination(command: DestinationCommand, library: Option<&str>) -> AppResult<
             }
             Ok(())
         }
+        DestinationCommand::Import {
+            db,
+            dest,
+            volumes_root,
+            human,
+        } => {
+            let device = destinations::resolve(&dest, &volumes_root)?;
+            let paths = LibraryPaths::resolve(library, db.as_deref())?;
+            let mut store = LibraryStore::open(paths, true)?;
+            let scan = reader_shelf::import_unmatched(&mut store, &device)?;
+            if !human {
+                return print_success(scan);
+            }
+            let counts = scan.counts;
+            println!(
+                "{}: imported {}, already in library {}, skipped {}, failed {}",
+                device.name, counts.imported, counts.duplicates, counts.skipped, counts.failed
+            );
+            for outcome in &scan.outcomes {
+                let line = match outcome {
+                    ImportOutcome::Imported { item, .. } => format!("  added    {}", item.title),
+                    ImportOutcome::Skipped {
+                        source_path,
+                        reason,
+                    } => {
+                        format!(
+                            "  skipped  {} ({reason})",
+                            reader_relative(&device, source_path)
+                        )
+                    }
+                    ImportOutcome::Failed { source_path, code } => {
+                        format!(
+                            "  failed   {} ({code})",
+                            reader_relative(&device, source_path)
+                        )
+                    }
+                    ImportOutcome::Duplicate { .. } => continue,
+                };
+                println!("{line}");
+            }
+            println!("The reader was not changed.");
+            Ok(())
+        }
         DestinationCommand::Remove {
             dest,
             id,
@@ -3863,6 +3922,13 @@ fn job_path(library: Option<&str>, db: Option<&Path>) -> AppResult<PathBuf> {
         .map(Path::to_path_buf)
         .unwrap_or(LibraryPaths::resolve(library, None)?.jobs))
 }
+fn reader_relative(device: &destinations::Destination, path: &Path) -> String {
+    path.strip_prefix(&device.path)
+        .unwrap_or(path)
+        .display()
+        .to_string()
+}
+
 /// Fingerprints from an existing library, opened read-only so a scan never creates one.
 fn catalogue_fingerprints(paths: LibraryPaths) -> AppResult<Vec<crate::store::ActiveFingerprint>> {
     LibraryStore::open_read_only(paths)?.active_fingerprints()

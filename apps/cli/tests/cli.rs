@@ -3893,3 +3893,93 @@ fn human_list_shows_authors_and_which_reader_holds_each_book() {
         "JSON output is unchanged"
     );
 }
+
+#[test]
+fn destination_import_adds_reader_only_books_and_leaves_the_reader_unchanged() {
+    let (_temp, database, volumes, item_id) = reader_fixture();
+    let documents = volumes.join("Kindle/documents");
+    fs::write(
+        documents.join("kindred.txt"),
+        b"kindred bytes for the reader",
+    )
+    .unwrap();
+    fs::write(
+        documents.join("Dawn (Octavia E. Butler) (z-library.sk).txt"),
+        b"dawn only lives on the reader",
+    )
+    .unwrap();
+    fs::write(documents.join("Store Book.azw"), b"bought on device").unwrap();
+    let snapshot = || {
+        let mut entries: Vec<_> = fs::read_dir(&documents)
+            .unwrap()
+            .map(|entry| {
+                let path = entry.unwrap().path();
+                let bytes = fs::read(&path).unwrap();
+                (path, bytes)
+            })
+            .collect();
+        entries.sort();
+        entries
+    };
+    let before = snapshot();
+    let run = |human: bool| {
+        let mut command = cargo_bin_cmd!("takio");
+        command.args(["destination", "import"]);
+        if human {
+            command.arg("--human");
+        }
+        command
+            .args(["--db"])
+            .arg(&database)
+            .args(["--dest", "Kindle", "--volumes-root"])
+            .arg(&volumes)
+            .output()
+            .expect("import from reader")
+    };
+
+    let output = run(false);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let scan = success_value(&output.stdout);
+    assert_eq!(scan["counts"]["imported"], 1);
+    assert_eq!(scan["counts"]["skipped"], 1);
+    assert_eq!(scan["counts"]["failed"], 0);
+    assert_eq!(snapshot(), before, "the reader is not modified");
+    assert!(!volumes.join("Kindle/.takio").exists());
+
+    let list = cargo_bin_cmd!("takio")
+        .args(["library", "list", "--db"])
+        .arg(&database)
+        .output()
+        .expect("list");
+    let items = success_value(&list.stdout)["items"].clone();
+    let titles: Vec<_> = items
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| item["title"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(titles, ["Dawn", "Kindred"]);
+    assert!(
+        items
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["id"] == item_id)
+    );
+
+    let again = String::from_utf8(run(true).stdout).unwrap();
+    assert!(
+        again.starts_with("Kindle: imported 0, already in library 0, skipped 1, failed 0"),
+        "{again}"
+    );
+    assert!(
+        again.contains("skipped  documents/Store Book.azw (unsupported-format)"),
+        "{again}"
+    );
+    assert!(again.contains("The reader was not changed."), "{again}");
+    assert_eq!(snapshot(), before);
+}

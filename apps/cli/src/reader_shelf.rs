@@ -8,14 +8,15 @@
 
 use std::collections::{BTreeSet, HashMap};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
 use crate::destinations::{self, Destination, DestinationKind};
 use crate::fingerprint::Fingerprint;
+use crate::import_scan::{ImportScan, scan_imports};
 use crate::output::AppResult;
-use crate::store::ActiveFingerprint;
+use crate::store::{ActiveFingerprint, LibraryStore};
 
 const MAX_DEPTH: usize = 6;
 const MAX_ENTRIES: usize = 20_000;
@@ -181,6 +182,23 @@ pub fn scan(
     };
     shelf.in_library = shelf.item_ids().len();
     Ok(shelf)
+}
+
+/// Copy every book file on the reader that matches no active library book into the
+/// library. The reader is only read. Files are explicit sources, so short PDFs are
+/// kept and formats the library cannot store are reported as skipped.
+pub fn import_unmatched(
+    store: &mut LibraryStore,
+    destination: &Destination,
+) -> AppResult<ImportScan> {
+    let shelf = scan_files(destination, &store.active_fingerprints()?)?;
+    let sources: Vec<PathBuf> = shelf
+        .books
+        .iter()
+        .filter(|entry| entry.item_id.is_none())
+        .map(|entry| destination.path.join(&entry.path))
+        .collect();
+    scan_imports(store, &sources, false, false, || false)
 }
 
 fn skipped(entry: &walkdir::DirEntry) -> bool {
@@ -428,6 +446,70 @@ mod tests {
         )
         .unwrap();
         assert_eq!(hashed, ["Same Size.epub"]);
+    }
+
+    #[test]
+    fn import_unmatched_copies_reader_only_books_and_leaves_the_reader_untouched() {
+        use crate::import_scan::ImportOutcome;
+        use crate::metadata::pdf_fixture;
+
+        let mut f = fixture();
+        let kindred = import(&mut f, "Kindred.epub", b"kindred bytes");
+        let documents = f.kindle.join("documents");
+        fs::write(documents.join("Kindred copy.epub"), b"kindred bytes").unwrap();
+        fs::create_dir_all(documents.join("Essays")).unwrap();
+        fs::write(documents.join("Essays/Short Paper.pdf"), pdf_fixture(3)).unwrap();
+        fs::write(
+            documents.join("Dawn (Octavia E. Butler) (z-library.sk).txt"),
+            b"dawn bytes",
+        )
+        .unwrap();
+        fs::write(documents.join("Store Book.azw"), b"bought on the device").unwrap();
+        fs::create_dir_all(documents.join("Dawn.sdr")).unwrap();
+        fs::write(documents.join("Dawn.sdr/Dawn.txt"), b"reading position").unwrap();
+        let before = snapshot(&f.kindle);
+        let destination = destinations::authorize(&f.kindle, &f.volumes).unwrap();
+
+        let scan = import_unmatched(&mut f.store, &destination).unwrap();
+
+        assert_eq!(snapshot(&f.kindle), before, "the reader is not modified");
+        assert_eq!(
+            (
+                scan.counts.imported,
+                scan.counts.skipped,
+                scan.counts.failed
+            ),
+            (2, 1, 0)
+        );
+        assert!(scan.outcomes.iter().any(|outcome| matches!(
+            outcome,
+            ImportOutcome::Skipped { source_path, reason: "unsupported-format" }
+                if source_path.ends_with("Store Book.azw")
+        )));
+        let titles: Vec<_> = f
+            .store
+            .list(false)
+            .unwrap()
+            .into_iter()
+            .map(|item| (item.title, item.authors.first().map(|a| a.name.clone())))
+            .collect();
+        assert!(titles.contains(&("Dawn".to_owned(), Some("Octavia E. Butler".to_owned()))));
+        assert!(
+            titles.contains(&("Short Paper".to_owned(), None)),
+            "{titles:?}"
+        );
+        assert_eq!(
+            titles.len(),
+            3,
+            "the matching Kindred copy was not re-imported"
+        );
+        let after = scan_fixture(&f);
+        assert_eq!((after.in_library, after.not_in_library), (3, 1));
+        assert!(after.item_ids().contains(kindred.as_str()));
+
+        let again = import_unmatched(&mut f.store, &destination).unwrap();
+        assert_eq!((again.counts.imported, again.counts.skipped), (0, 1));
+        assert_eq!(snapshot(&f.kindle), before);
     }
 
     #[test]

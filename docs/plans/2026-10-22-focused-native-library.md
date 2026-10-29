@@ -1549,3 +1549,60 @@ not connected for this run.
 Not verified: the packaged window was launched on the scratch library, but
 Screen Recording permission is not granted, so the rendered marker, inspector
 row and sidebar text were not seen. The physical Kindle remains unconnected.
+
+## Bring reader-only books into the library: October 29, 2026
+
+The reader shelf reports books that live only on the Kindle as "not in
+library", but offers no way to add them. For "all my books in one place" a
+person who has loaded a Kindle over years must otherwise find and drag each file
+out of `documents` by hand.
+
+Acceptance before code:
+
+- One explicit action, `takio destination import --dest <id|path>` and a
+  desktop sidebar control "Add N to library" shown only when N > 0, imports
+  every unmatched book file from a fresh shelf scan. Nothing runs automatically
+  on connect.
+- Copy mode only. The reader is never modified: no file, `.sdr` folder or
+  delivery manifest is written, moved or deleted. Files are passed as explicit
+  sources, so short PDFs on the reader are imported, symlinks are skipped, and
+  formats the library cannot store (for example store `.azw`, `.kfx`) are
+  reported as skipped `unsupported-format`, not failed or silently dropped.
+  Duplicates keep the existing duplicate outcome. Recognition (EPUB metadata,
+  filenames) is the existing import path.
+- After the import, the imported books match the reader by content, so the
+  shelf counts move from "other files" to "your books" with no further action.
+- The desktop runs the import as a normal busy mutation on the engine thread,
+  reports imported/skipped/failed counts and then reloads and rescans. Busy,
+  review and edit guards apply. A stale reader (unplugged) fails with the
+  existing reconnect guidance.
+- Checks: engine test (unmatched import, reader bytes and tree unchanged,
+  unsupported skipped, already-matching not re-imported, counts flip after
+  rescan); CLI test (JSON counts, human summary, reader unchanged); native
+  state and pointer test for the sidebar control; full workspace gates; and
+  the release CLI against a mounted FAT image.
+
+### Observed reader import results: CLI and shared engine
+
+- `reader_shelf::import_unmatched` rescans, then passes each unmatched book file
+  as an explicit copy source to the existing `scan_imports`. `takio destination
+  import --dest <id|path> [--human]` exposes it.
+- Engine test: a matching copy is not re-imported, a reader-only z-library TXT
+  becomes "Dawn" by Octavia E. Butler, a 3-page PDF in a subfolder is imported
+  (explicit source, not a folder scan), store `.azw` is skipped
+  `unsupported-format`, `.sdr` is ignored, the reader tree is byte-identical,
+  shelf counts flip to 3 in library and 1 other, and a repeat imports nothing.
+  CLI test: JSON counts, unchanged reader bytes, no `.takio` manifest, human
+  summary on repeat. `cargo fmt`, strict Clippy and `TMPDIR=/private/tmp/ cargo
+  test -p takio` pass (150 engine with 2 ignored, 61 CLI, 2 custom-field).
+- Release CLI with a real FAT image mounted at `/Volumes/KINDLE` and the
+  default volumes root (`takio-reader-import-acceptance.sh`): before, "KINDLE:
+  1 of your books, 3 other file(s)"; `destination import --dest kindle` added
+  Dawn and On Writing and skipped the store `.azw`; afterwards `library list
+  --human` showed all three books on KINDLE with "1 other file(s)". The reader
+  tree, including Finder's `._` files and `.sdr`, hashed identical, no manifest
+  was written, a repeat imported 0, `library verify` passed, and the image was
+  detached.
+
+Limitation: store-bought `.azw`/`.kfx` books stay on the reader as "other
+files". Takio has no format for them and does not remove DRM.
