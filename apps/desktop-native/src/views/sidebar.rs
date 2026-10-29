@@ -96,7 +96,7 @@ impl Render for Sidebar {
         );
         if readers.is_empty() {
             sidebar = sidebar.child(div().px_2().py_2().text_xs().text_color(theme.text_secondary)
-                .child(device_error.unwrap_or_else(|| "Connect your reader with a data-capable USB cable, then Refresh. Only mounted USB readers appear here. MTP is not supported yet.".into())));
+                .child(device_error.unwrap_or_else(|| "Connect your reader with a data-capable USB cable. It appears here a moment after it mounts. Only mounted USB readers appear here. MTP is not supported yet.".into())));
         }
         for (index, destination) in readers.into_iter().enumerate() {
             let send = destination.clone();

@@ -54,7 +54,10 @@ reference to a caller-owned file.
    title, authors, series, and tags. Separate multiple authors/tags with `;`.
    Save with Cmd-S or cancel with Escape. Edits change catalogue metadata, not
    the original ebook's embedded metadata.
-3. Connect a mounted USB reader and choose **Refresh**. Use its explicit
+3. Connect a mounted USB reader. It appears in the sidebar a moment after it
+   mounts, showing how many of your books it holds. Books on it are marked ● in
+   the list, and the inspector names the reader. **Add N to library** copies
+   reader-only books into Takio without changing the reader. Use its explicit
    **Send selected** button, or **Reader > Send Selected Books** (Cmd-Shift-S).
    Takio chooses an attached compatible format and reports each result. Stock
    Kindle EPUB-only books are not copied as if they were readable.
