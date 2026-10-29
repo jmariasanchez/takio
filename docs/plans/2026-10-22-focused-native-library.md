@@ -2144,3 +2144,59 @@ Acceptance before code:
   second pass killed 12 of 12 (`takio-mutants-mobi-2.log`). Gates after that
   commit: fmt, Clippy (workspace and snapshot), and three consecutive
   workspace runs at 165, 64, 2 and 192 with no failures.
+
+### Whole journey on the Kindle: session start against now
+
+Both release CLIs ran the same script (`journey.sh`): the binary from `2d2fb0b`
+(before this device session) and `3189c9c`. Each used its own new scratch
+library against the real Kindle, read-only on the device. The steps were:
+first look before a library exists, `destination import`, two
+`destination books`, then `library list --human`.
+
+| Step | Before (2d2fb0b) | Now |
+| --- | --- | --- |
+| First look, no library yet | fails `storage-unavailable` | 161 listed, 161 importable, 13 in progress, 0.05 s |
+| Import | 161/161, 53.5 s and 63.7 s | 161/161, 32.9 s |
+| First look after import | 18.7 s and 19.4 s | 0.09 s |
+| Second look | 2.7 s (OS page cache) | 0.03 s |
+| `library list --human` | 2.4 s | 0.04 s |
+| Books without an author | 95 (55 MOBI, 39 PDF, 1 TXT) | 46 (39 PDF, 6 MOBI, 1 TXT) |
+| Reader fingerprint cache | none | 161 entries |
+
+- The shelf is identical for all 161 books between the two versions: path,
+  matched or not, and KOReader progress. The 0.09 s first look after import
+  shows that the import itself leaves the marks ready.
+- `examples/reader_rescan` on the same library: each uncached scan reads
+  1.37 GB from the Kindle (18.6 s cold, then 2.4 s from the page cache). After
+  the first cached scan, cached scans read 0 KiB (30 ms, 12 ms). The earlier
+  "54 s per rescan" figure was a cold USB read. With a warm OS cache the old
+  binary takes about 2.5 s, but it re-reads every time and pays about 19 s
+  whenever the cache is cold.
+- Title and author quality, counts only, pairing books by their reader file:
+  - All 106 EPUB, PDF and TXT books have identical titles and authors in
+    both versions.
+  - All 55 MOBI titles changed. 54 lost their " - Author" filename suffix and
+    52 keep every word of the filename title. The other 3 are recognisably
+    the same book, with the author found in the filename.
+  - 49 MOBI books gained authors.
+  - No title is empty.
+- Desktop, with a new library and its own "Add to library" path
+  (`import_from_reader`) on the Kindle: "Imported 161, skipped 0, failed 0",
+  all 161 marked, and 46 without an author, matching the CLI. A second launch
+  rendered marks 1.63 s after start. The cache file was untouched by that
+  launch (same inode, mtime and size), so nothing was re-read. The render
+  shows MOBI authors in the Author column and "Kindle (KOReader) … 0
+  finished, 13 in progress".
+- Every import path goes through `LibraryStore::import`: desktop Add books and
+  Add from reader, CLI `add`, `import-many`, `import-watch`, `destination
+  import` and Calibre import. `library add` and `import-many` were each run on a
+  copy of a real device MOBI, and each recorded its author and embedded
+  title.
+- Flaky native test fixed. Under 12 busy-loop processes,
+  `successful_preparation_attaches_managed_copy_preserving_originals_and_never_sends`
+  failed 2 of 40 runs with `conversion-timeout`: the fixture gave a
+  shell-script converter 2 s. It now gets 30 s, and the timeout behaviour stays
+  covered by its own 30 ms test. Under the same load it failed 0 of 40, and
+  then five consecutive workspace runs passed (165, 64, 2, 192).
+- The Kindle remained byte-identical outside the test book and Takio's
+  manifest (checked after the MOBI work).

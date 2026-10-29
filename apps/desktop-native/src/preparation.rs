@@ -195,11 +195,13 @@ mod tests {
         }
 
         fn prepare(&mut self, preview: &PreparationPreview) -> AppResult<LibraryItem> {
+            // Generous: a loaded machine took over 2 s to start this shell-script
+            // converter. The timeout itself is tested separately with 30 ms.
             prepare_with_backend(
                 &mut self.store,
                 preview,
                 self.backend.clone(),
-                Duration::from_secs(2),
+                Duration::from_secs(30),
             )
         }
 
