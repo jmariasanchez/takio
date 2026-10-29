@@ -1860,3 +1860,51 @@ Highlights, history and statistics are not read. The toolbar still offers
 remains for stock Kindle owners. Wireless sync, KOReader's Calibre wireless
 protocol and MTP are not supported. Not yet seen on the physical device: real
 sidecars, reading progress after the user opens a sent EPUB.
+
+### KOReader re-validation against KOReader's own code and the real device layout
+
+- **Real serializer.** `frontend/dump.lua` and `frontend/docsettings.lua` were
+  fetched from KOReader master. `DocSettings:flush` writes
+  `-- we can read Lua syntax here!\nreturn ` plus `dump(data, nil, true)`,
+  with keys sorted. `tests/fixtures/koreader/generate.lua` runs that exact
+  `dump.lua` under LuaJIT 2.1 to write the committed fixtures. Inputs include
+  highlights with quotes, `\`-newlines, `\9` tabs, braces, Unicode and decoy
+  `percent_finished` and `status` keys. A 3,000-highlight book produced an
+  815 KB file. For all five files, Takio's reader returned exactly what LuaJIT
+  `dofile` read back: reading 0.67307692307692, complete 1, abandoned 0.12,
+  opened 0.0222222222 with no status, and large 0.5. The large file parsed in
+  2.4 ms. Test `matches_luajit_on_files_written_by_koreaders_serializer` pins
+  this.
+- **Sidecar locations, from `docsettings.lua`.** The default "doc" location is
+  `<book>.sdr/metadata.<ext>.lua`, which Takio reads. "dir" is
+  `<data>/docsettings/<full device path>.sdr`, which Takio reads at
+  `koreader/docsettings/mnt/us/...`. "hash" is
+  `<data>/hashdocsettings/<md5 prefix>/<partial md5>.sdr`, which Takio does not
+  read (documented limitation). Applying Takio's naming rule to the device's
+  October 22 listing, all 12 real sidecars (9 MOBI, 2 EPUB, 1 PDF) pair with
+  their book file.
+- **Real device layout replay** (`takio-layout-replay.sh`). All 204 paths from
+  the device baseline were recreated on a FAT image with synthetic bytes and
+  KOReader-serialized sidecars, and 82 of the books were imported into a
+  library under different names. The release CLI detected KOReader and
+  listed 158 book files (55 MOBI, 55 EPUB, 48 PDF), with 0 `.sdr` files
+  counted as books. It matched 80 library books and found 12 files with
+  reading state (3 finished, 6 in progress), 7 of them on library books.
+  Nothing was unreadable or truncated. The scan took 63 ms and the reader
+  stayed byte-identical. The other 4 baseline PDFs are 4096-byte `._` macOS
+  companion files, correctly ignored. The 2 books imported but not matched
+  are the same content under two device paths, merged as duplicates at import.
+- **Before and after on the same KOReader reader** (`takio-before-after.sh`,
+  pre-change binary built from `6520e7d` in a throwaway worktree). Before:
+  a book with EPUB and AZW3 was sent as AZW3, a DOCX-only book was copied to
+  the reader as `Meeting Notes.docx` (unreadable there), the reader showed as
+  plain "Kindle" and had no progress. After: the EPUB was sent, the DOCX was
+  refused with `no-compatible-format` and nothing was written, the reader shows
+  as "Kindle (KOReader)", and the progress line reads "KOReader: 0 finished, 1
+  in progress".
+- Gates: fmt, `git diff --check`, strict workspace Clippy, and
+  `TMPDIR=/private/tmp/ cargo test --workspace` (159 engine with 2 ignored, 63
+  CLI, 2 custom-field, 188 native).
+
+Still blocked on the user: the physical KOReader Kindle with its real
+sidecars, and confirming that a sent EPUB opens in KOReader.

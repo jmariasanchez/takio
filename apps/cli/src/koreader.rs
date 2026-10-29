@@ -374,6 +374,53 @@ return {
         );
     }
 
+    /// Files written by KOReader's own `frontend/dump.lua` (see
+    /// `tests/fixtures/koreader/generate.lua`). The expected values are what LuaJIT
+    /// read back from each file with `dofile`.
+    #[test]
+    fn matches_luajit_on_files_written_by_koreaders_serializer() {
+        let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/koreader");
+        let read = |name: &str| parse(&fs::read_to_string(fixtures.join(name)).unwrap());
+        let reading = read("metadata.reading.lua").unwrap();
+        assert_eq!(reading.percent, Some(0.67307692307692));
+        assert_eq!(reading.status.as_deref(), Some("reading"));
+        assert_eq!(reading.label().as_deref(), Some("67%"));
+        let complete = read("metadata.complete.lua").unwrap();
+        assert_eq!(
+            (complete.percent, complete.status.as_deref()),
+            (Some(1.0), Some("complete"))
+        );
+        let abandoned = read("metadata.abandoned.lua").unwrap();
+        assert_eq!(
+            (abandoned.percent, abandoned.status.as_deref()),
+            (Some(0.12), Some("abandoned"))
+        );
+        let opened = read("metadata.opened.lua").unwrap();
+        assert_eq!(
+            (opened.percent, opened.status.as_deref()),
+            (Some(0.0222222222), None)
+        );
+        assert_eq!(opened.label().as_deref(), Some("2%"));
+
+        // The same serializer's escaping for a 3,000-highlight book, built in memory.
+        let mut large =
+            String::from("-- we can read Lua syntax here!\nreturn {\n    [\"annotations\"] = {\n");
+        for index in 1..=3000 {
+            large.push_str(&format!(
+                "        [{index}] = {{\n            [\"chapter\"] = \"Part {index}\",\n            [\"page\"] = {index},\n            [\"text\"] = \"long \\\"quoted\\\" passage\\\nsecond line {index}\",\n        }},\n"
+            ));
+        }
+        large.push_str("    },\n    [\"percent_finished\"] = 0.5,\n    [\"summary\"] = {\n        [\"status\"] = \"reading\",\n    },\n}\n");
+        assert!(large.len() > 300_000);
+        let started = std::time::Instant::now();
+        let state = parse(&large).unwrap();
+        assert_eq!(
+            (state.percent, state.status.as_deref()),
+            (Some(0.5), Some("reading"))
+        );
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+    }
+
     #[test]
     fn finds_book_folder_and_koreader_folder_sidecars_and_ignores_old_files() {
         let temp = tempfile::tempdir().unwrap();
