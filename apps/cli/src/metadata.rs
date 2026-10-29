@@ -450,6 +450,133 @@ pub fn embedded_epub(path: &Path) -> (Option<String>, Vec<BookAuthor>) {
     (title, authors)
 }
 
+/// Largest first record read from a MOBI-family file. Real headers with EXTH are a
+/// few KiB; on the user's Kindle the furthest EXTH end was under 5 KiB.
+const MAX_MOBI_RECORD_BYTES: u64 = 64 * 1024;
+const MOBI_EXTH_AUTHOR: u32 = 100;
+const MOBI_EXTH_UPDATED_TITLE: u32 = 503;
+
+/// Title and authors from a MOBI, AZW or AZW3 file's own header, read without an
+/// external backend. Only the first record is read, at most 64 KiB, and every offset is
+/// checked. Anything malformed, encrypted or not a `BOOKMOBI` file yields `(None, [])`.
+#[must_use]
+pub fn embedded_mobi(path: &Path) -> (Option<String>, Vec<BookAuthor>) {
+    read_mobi_header(path).unwrap_or_default()
+}
+
+fn read_mobi_header(path: &Path) -> Option<(Option<String>, Vec<BookAuthor>)> {
+    let mut file = fs::File::open(path).ok()?;
+    let length = file.metadata().ok()?.len();
+    // PalmDB header (78 bytes), then 8-byte entries whose first 4 bytes are offsets.
+    let palm = read_at(&mut file, 0, 78)?;
+    let records = be_bytes(&palm, 76, 2)?;
+    if palm.get(60..68)? != b"BOOKMOBI" || records == 0 {
+        return None;
+    }
+    let list = read_at(&mut file, 78, 8 * records.min(2))?;
+    let start = be_bytes(&list, 0, 4)?;
+    let next = if records > 1 {
+        be_bytes(&list, 8, 4)?
+    } else {
+        length
+    };
+    let end = next
+        .min(length)
+        .min(start.checked_add(MAX_MOBI_RECORD_BYTES)?);
+    if start >= end {
+        return None;
+    }
+    let record = read_at(&mut file, start, end - start)?;
+    // PalmDOC header, then the MOBI header. Encrypted books are left to the filename.
+    if record.get(16..20)? != b"MOBI" || be_bytes(&record, 12, 2)? != 0 {
+        return None;
+    }
+    let decode = |bytes: &[u8]| -> Option<String> {
+        let text = match be_bytes(&record, 28, 4)? {
+            65001 => String::from_utf8(bytes.to_vec()).ok()?,
+            1252 => bytes.iter().map(|&byte| cp1252(byte)).collect(),
+            _ => return None,
+        };
+        let text = text.trim_matches(char::from(0)).trim();
+        (!text.is_empty()).then(|| text.to_owned())
+    };
+    let placeholder = |value: &str| {
+        matches!(
+            value.to_lowercase().as_str(),
+            "unknown" | "untitled" | "anonymous" | "unknown author"
+        )
+    };
+    let header_length = usize::try_from(be_bytes(&record, 20, 4)?).ok()?;
+    let mut title = None;
+    let mut authors = Vec::new();
+    let has_exth = be_bytes(&record, 128, 4).is_some_and(|flags| flags & 0x40 != 0);
+    let exth = 16_usize.checked_add(header_length)?;
+    if has_exth && record.get(exth..exth.checked_add(4)?) == Some(b"EXTH") {
+        let count = be_bytes(&record, exth + 8, 4)?;
+        let mut at = exth + 12;
+        for _ in 0..count {
+            let (Some(kind), Some(size)) = (be_bytes(&record, at, 4), be_bytes(&record, at + 4, 4))
+            else {
+                break;
+            };
+            let size = usize::try_from(size).ok()?;
+            let Some(value) = size
+                .checked_sub(8)
+                .and_then(|data| record.get(at + 8..at.checked_add(8 + data)?))
+            else {
+                break;
+            };
+            match u32::try_from(kind).ok()? {
+                MOBI_EXTH_AUTHOR => {
+                    if let Some(name) = decode(value).filter(|name| !placeholder(name))
+                        && !authors.iter().any(|known: &BookAuthor| known.name == name)
+                    {
+                        authors.push(BookAuthor {
+                            name,
+                            sort_name: None,
+                        });
+                    }
+                }
+                MOBI_EXTH_UPDATED_TITLE if title.is_none() => title = decode(value),
+                _ => {}
+            }
+            at += size;
+        }
+    }
+    if title.is_none() {
+        let offset = usize::try_from(be_bytes(&record, 84, 4)?).ok()?;
+        let length = usize::try_from(be_bytes(&record, 88, 4)?).ok()?;
+        title = record
+            .get(offset..offset.checked_add(length)?)
+            .and_then(decode);
+    }
+    Some((title.filter(|title| !placeholder(title)), authors))
+}
+
+fn be_bytes(bytes: &[u8], at: usize, width: usize) -> Option<u64> {
+    let field = bytes.get(at..at.checked_add(width)?)?;
+    Some(
+        field
+            .iter()
+            .fold(0_u64, |value, &byte| (value << 8) | u64::from(byte)),
+    )
+}
+
+/// Windows-1252, the other text encoding MOBI headers declare.
+fn cp1252(byte: u8) -> char {
+    const HIGH: [char; 32] = [
+        '\u{20ac}', '\u{fffd}', '\u{201a}', '\u{0192}', '\u{201e}', '\u{2026}', '\u{2020}',
+        '\u{2021}', '\u{02c6}', '\u{2030}', '\u{0160}', '\u{2039}', '\u{0152}', '\u{fffd}',
+        '\u{017d}', '\u{fffd}', '\u{fffd}', '\u{2018}', '\u{2019}', '\u{201c}', '\u{201d}',
+        '\u{2022}', '\u{2013}', '\u{2014}', '\u{02dc}', '\u{2122}', '\u{0161}', '\u{203a}',
+        '\u{0153}', '\u{fffd}', '\u{017e}', '\u{0178}',
+    ];
+    match byte {
+        0x80..=0x9f => HIGH[usize::from(byte - 0x80)],
+        _ => char::from(byte),
+    }
+}
+
 fn read_epub_opf(path: &Path) -> Option<Vec<u8>> {
     let mut file = fs::File::open(path).ok()?;
     let directory = zip_directory(&mut file)?;
@@ -787,6 +914,55 @@ pub(crate) fn epub_fixture(metadata: &str) -> Vec<u8> {
     ])
 }
 
+/// A minimal `BOOKMOBI` file: PalmDB header, two records, and a MOBI header with
+/// optional EXTH records `(type, bytes)` in the declared text encoding.
+#[cfg(test)]
+pub(crate) fn mobi_fixture(encoding: u32, full_name: &[u8], exth: &[(u32, &[u8])]) -> Vec<u8> {
+    let mut header = vec![0_u8; 16 + 232];
+    header[0..2].copy_from_slice(&2_u16.to_be_bytes());
+    header[16..20].copy_from_slice(b"MOBI");
+    header[20..24].copy_from_slice(&232_u32.to_be_bytes());
+    header[28..32].copy_from_slice(&encoding.to_be_bytes());
+    header[36..40].copy_from_slice(&6_u32.to_be_bytes());
+    let flags: u32 = if exth.is_empty() { 0 } else { 0x40 };
+    header[128..132].copy_from_slice(&flags.to_be_bytes());
+    let mut body = Vec::new();
+    if !exth.is_empty() {
+        let mut records = Vec::new();
+        for (kind, value) in exth {
+            records.extend(kind.to_be_bytes());
+            records.extend(u32::try_from(value.len() + 8).unwrap().to_be_bytes());
+            records.extend(*value);
+        }
+        body.extend(b"EXTH");
+        body.extend(u32::try_from(records.len() + 12).unwrap().to_be_bytes());
+        body.extend(u32::try_from(exth.len()).unwrap().to_be_bytes());
+        body.extend(records);
+    }
+    let name_offset = u32::try_from(header.len() + body.len()).unwrap();
+    header[84..88].copy_from_slice(&name_offset.to_be_bytes());
+    header[88..92].copy_from_slice(&u32::try_from(full_name.len()).unwrap().to_be_bytes());
+    let mut record0 = header;
+    record0.extend(body);
+    record0.extend(full_name);
+    record0.extend([0, 0]);
+    let text = b"book text record".to_vec();
+    let first = 78 + 2 * 8 + 2;
+    let second = first + record0.len();
+    let mut file = vec![0_u8; 78];
+    file[0..8].copy_from_slice(b"fixture\0");
+    file[60..68].copy_from_slice(b"BOOKMOBI");
+    file[76..78].copy_from_slice(&2_u16.to_be_bytes());
+    for (index, offset) in [first, second].into_iter().enumerate() {
+        file.extend(u32::try_from(offset).unwrap().to_be_bytes());
+        file.extend(u32::try_from(index * 2).unwrap().to_be_bytes());
+    }
+    file.extend([0, 0]);
+    file.extend(record0);
+    file.extend(text);
+    file
+}
+
 #[cfg(test)]
 pub(crate) fn pdf_fixture(pages: usize) -> Vec<u8> {
     let mut pdf = b"%PDF-1.4\n2 0 obj<</Type /Pages/Count 0>>endobj\n".to_vec();
@@ -800,6 +976,122 @@ pub(crate) fn pdf_fixture(pages: usize) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reads_mobi_exth_authors_and_title_without_a_backend() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("Some Download - Mangled Name.mobi");
+        let read = |bytes: &[u8]| {
+            fs::write(&path, bytes).unwrap();
+            embedded_mobi(&path)
+        };
+        let names = |authors: &[BookAuthor]| {
+            authors
+                .iter()
+                .map(|author| author.name.clone())
+                .collect::<Vec<_>>()
+        };
+
+        // UTF-8: several authors in order, duplicates and placeholders dropped, and the
+        // EXTH 503 title preferred over the truncated full name.
+        let (title, authors) = read(&mobi_fixture(
+            65001,
+            b"The Quiet S",
+            &[
+                (100, "Jane Ex\u{e1}mple".as_bytes()),
+                (101, b"A Publisher"),
+                (100, b"Unknown"),
+                (100, b"Ann Other"),
+                (100, "Jane Ex\u{e1}mple".as_bytes()),
+                (503, "The Quiet Sea \u{2014} Notes".as_bytes()),
+                (503, b"Second Title Ignored"),
+            ],
+        ));
+        assert_eq!(title.as_deref(), Some("The Quiet Sea \u{2014} Notes"));
+        assert_eq!(names(&authors), ["Jane Ex\u{e1}mple", "Ann Other"]);
+
+        // CP1252: 0xE9 is e-acute and 0x92 a right quote, not invalid UTF-8.
+        let (title, authors) = read(&mobi_fixture(
+            1252,
+            b"Caf\xe9 Book",
+            &[(100, b"O\x92Brien")],
+        ));
+        assert_eq!(
+            title.as_deref(),
+            Some("Caf\u{e9} Book"),
+            "full name used without 503"
+        );
+        assert_eq!(names(&authors), ["O\u{2019}Brien"]);
+
+        // No EXTH: the full name is the title and there are no authors.
+        let (title, authors) = read(&mobi_fixture(65001, b"Plain Title", &[]));
+        assert_eq!((title.as_deref(), authors.len()), (Some("Plain Title"), 0));
+
+        // Placeholder only.
+        let (title, authors) = read(&mobi_fixture(65001, b"Unknown", &[(100, b"anonymous")]));
+        assert_eq!((title, authors.len()), (None, 0));
+    }
+
+    #[test]
+    fn malformed_mobi_headers_yield_nothing_and_never_read_out_of_bounds() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("broken.mobi");
+        let good = mobi_fixture(65001, b"Fine", &[(100, b"Jane Example")]);
+        let empty = |bytes: &[u8]| {
+            fs::write(&path, bytes).unwrap();
+            let (title, authors) = embedded_mobi(&path);
+            title.is_none() && authors.is_empty()
+        };
+        let mut not_mobi = good.clone();
+        not_mobi[60..68].copy_from_slice(b"TEXtREAd");
+        let mut encrypted = good.clone();
+        encrypted[96 + 12..96 + 14].copy_from_slice(&2_u16.to_be_bytes());
+        let mut unknown_encoding = good.clone();
+        unknown_encoding[96 + 28..96 + 32].copy_from_slice(&932_u32.to_be_bytes());
+        let mut past_end = good.clone();
+        past_end[78..82].copy_from_slice(&u32::MAX.to_be_bytes());
+        let mut no_records = good.clone();
+        no_records[76..78].copy_from_slice(&0_u16.to_be_bytes());
+        for broken in [
+            &b""[..],
+            b"ebook fixture",
+            &good[..60],
+            &good[..90],
+            &not_mobi,
+            &encrypted,
+            &unknown_encoding,
+            &past_end,
+            &no_records,
+        ] {
+            assert!(empty(broken), "{} bytes", broken.len());
+        }
+
+        // A huge EXTH count or a record running past the header stops at what is
+        // present instead of failing, and a zero-size record cannot loop forever.
+        let mut huge_count = good.clone();
+        let exth = 96 + 16 + 232;
+        huge_count[exth + 8..exth + 12].copy_from_slice(&u32::MAX.to_be_bytes());
+        fs::write(&path, &huge_count).unwrap();
+        assert_eq!(embedded_mobi(&path).1.len(), 1);
+        let mut overlong = good.clone();
+        overlong[exth + 16..exth + 20].copy_from_slice(&0x00ff_ffff_u32.to_be_bytes());
+        fs::write(&path, &overlong).unwrap();
+        let (title, authors) = embedded_mobi(&path);
+        assert_eq!((title.as_deref(), authors.len()), (Some("Fine"), 0));
+        let mut zero = good.clone();
+        zero[exth + 16..exth + 20].copy_from_slice(&0_u32.to_be_bytes());
+        fs::write(&path, &zero).unwrap();
+        assert_eq!(embedded_mobi(&path).1.len(), 0);
+
+        // The first record is read up to 64 KiB, never the whole book.
+        let mut padded = good;
+        padded.truncate(padded.len() - b"book text record".len());
+        let second = u32::try_from(padded.len() + 1024 * 1024).unwrap();
+        padded[86..90].copy_from_slice(&second.to_be_bytes());
+        padded.resize(padded.len() + 1024 * 1024 + 16, 0);
+        fs::write(&path, &padded).unwrap();
+        assert_eq!(embedded_mobi(&path).1.len(), 1);
+    }
 
     #[test]
     fn reads_epub_title_and_authors_without_a_backend() {

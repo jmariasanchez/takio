@@ -584,12 +584,11 @@ impl LibraryStore {
         let source = canonical_file(source)?;
         let format = detect_format(&source).ok_or_else(|| AppError::new("unsupported-format"))?;
         let (filename_title, filename_authors) = metadata_from_filename(&source);
-        let (embedded_title, embedded_authors) =
-            if matches!(format, FormatId::Epub | FormatId::Kepub) {
-                crate::metadata::embedded_epub(&source)
-            } else {
-                (None, Vec::new())
-            };
+        let (embedded_title, embedded_authors) = match format {
+            FormatId::Epub | FormatId::Kepub => crate::metadata::embedded_epub(&source),
+            FormatId::Mobi | FormatId::Azw3 => crate::metadata::embedded_mobi(&source),
+            _ => (None, Vec::new()),
+        };
         let title = title
             .map(str::trim)
             .filter(|value| !value.is_empty())
@@ -3987,6 +3986,52 @@ mod tests {
                 (title.to_owned(), Vec::new(), None)
             );
         }
+
+        // MOBI and AZW3 carry their own title and authors, which beat the filename.
+        let mobi = crate::metadata::mobi_fixture(
+            65001,
+            b"Atomic Hab",
+            &[(100, b"James Clear"), (503, b"Atomic Habits")],
+        );
+        assert_eq!(
+            import("Atomic Habits - Unknown.mobi", &mobi, None),
+            (
+                "Atomic Habits".to_owned(),
+                vec!["James Clear".to_owned()],
+                Some("James Clear".to_owned())
+            )
+        );
+        let azw3 = crate::metadata::mobi_fixture(
+            65001,
+            b"Kindred",
+            &[(100, b"Octavia E. Butler"), (100, b"Unknown")],
+        );
+        assert_eq!(
+            import("Kindred (Someone Else) (z-library.sk).azw3", &azw3, None),
+            (
+                "Kindred".to_owned(),
+                vec!["Octavia E. Butler".to_owned()],
+                Some("Octavia E. Butler".to_owned())
+            )
+        );
+        // An unreadable header falls back to the filename and still imports.
+        let placeholder = crate::metadata::mobi_fixture(65001, b"Unknown", &[(100, b"Unknown")]);
+        assert_eq!(
+            import(
+                "Dawn (Octavia E. Butler) (z-library.sk).mobi",
+                &placeholder,
+                None
+            ),
+            (
+                "Dawn".to_owned(),
+                vec!["Octavia E. Butler".to_owned()],
+                Some("Octavia E. Butler".to_owned())
+            )
+        );
+        assert_eq!(
+            import("Not Really - A Mobi.mobi", b"not a palm database", None),
+            ("Not Really - A Mobi".to_owned(), Vec::new(), None)
+        );
     }
 
     #[test]

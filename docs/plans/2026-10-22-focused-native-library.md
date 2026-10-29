@@ -2067,3 +2067,74 @@ and checking that a cache left in a library-less folder is not rewritten. The
 third pass killed 14 of 14 (`takio-mutants-cache-3.log`). Gates after the
 final commit: fmt, Clippy (workspace and snapshot), and three consecutive
 workspace test runs at 163, 64, 2 and 192.
+
+## Authors from MOBI and AZW3 files: October 29, 2026
+
+95 of the 161 books imported from the Kindle have no author. A read-only probe
+of the device's files, counting without printing names, shows the authors are
+usually already inside the files. 49 of the 55 MOBI files have an EXTH author
+(record 100), and all 55 have a title. 35 of the 48 PDFs have a plain Info
+`/Author`. The rest have none, keep it only in XMP, or hide it in object
+streams.
+
+Acceptance before code:
+
+- Import of a `.mobi`, `.azw3` or `.azw` (PalmDB `BOOKMOBI`) reads EXTH 100
+  authors (several records mean several authors) and the EXTH 503 title, else
+  the MOBI full name. This uses a bounded native reader with no Calibre: the
+  first record only, at most 64 KiB, and every offset checked. The header's
+  text encoding (UTF-8 or CP1252) is honoured, and placeholders ("Unknown",
+  "Anonymous", empty) are ignored. A malformed, truncated, encrypted or
+  non-MOBI file falls back to today's filename behaviour and never fails the
+  import.
+- Precedence is the same as for EPUB: an explicit title, then embedded, then
+  the filename. Embedded authors win over z-library filename authors.
+- PDFs keep today's behaviour in this slice. Only 35 of 48 carry a plain
+  `/Author`, and a byte-level Info reader is a separate decision.
+- Checks: engine tests with generated MOBI files (UTF-8 and CP1252, several
+  authors, placeholder, no EXTH, truncated, a record offset pointing past the
+  end, a huge EXTH count), import precedence tests, and a scratch re-import
+  from the real Kindle counting books without an author before and after.
+
+### Observed MOBI and AZW3 results
+
+- `metadata::embedded_mobi` reads the PalmDB record list and only the first
+  record, at most 64 KiB, with checked offsets. It reads EXTH 100 authors
+  (deduplicated, placeholders dropped) and the first EXTH 503 title, falling
+  back to the full name. The text is decoded as UTF-8 or CP1252 as the header
+  declares. Encrypted, unknown-encoding, non-`BOOKMOBI`, truncated and
+  out-of-range files yield nothing. EXTH parsing stops at the first record that
+  does not fit, so a forged count or size cannot loop or overread. `import` uses
+  it for `.mobi` and `.azw3` with the same precedence as EPUB.
+- Tests:
+  - `reads_mobi_exth_authors_and_title_without_a_backend`: UTF-8 with
+    several authors, a duplicate, a placeholder and a second 503; CP1252
+    `é` and a curly apostrophe; no EXTH; placeholders only.
+  - `malformed_mobi_headers_yield_nothing_and_never_read_out_of_bounds`:
+    empty, garbage, header cut at 60 and 90 bytes, `TEXtREAd`, encrypted,
+    code page 932, a first record past EOF, zero records, an EXTH count of
+    `u32::MAX`, an overlong record, a zero-size record, and a 1 MiB first record
+    capped at 64 KiB.
+  - The `import_prefers_*` test now covers MOBI and AZW3: embedded beats
+    a `- Unknown` filename and z-library filename authors, and a placeholder
+    header or non-MOBI bytes fall back to the filename and still import.
+- **Independent check on the device:** a separate Python reading of all 55
+  MOBI files on the Kindle (`mobi_oracle.py`) equals Takio's
+  `examples/mobi_metadata` output for 55 of 55. 49 have authors and 55 have
+  titles. Writing the oracle exposed that non-text EXTH records are binary.
+  Takio never decodes record types it does not use.
+- **Re-import from the real Kindle** into a new scratch library with the release
+  CLI: 161 of 161 imported, 0 failed, `library verify` passes. Books without an
+  author went from 95 to 46: 39 PDF, 6 MOBI whose only EXTH author is
+  "Unknown", and 1 TXT. Titles still carrying a " - " suffix went from 77 to 39,
+  38 of them PDFs.
+- Gates: fmt, Clippy (workspace and snapshot), and three consecutive workspace
+  runs at 165, 64, 2 and 192. An earlier run had one failure in
+  `preparation::tests::successful_preparation_attaches_managed_copy_preserving_originals_and_never_sends`.
+  That test is untouched by this slice. It passed 21 targeted runs and 6 full
+  native runs with this change stashed. It gives a shell-script backend 2 s,
+  which parallel load can exceed.
+- Remaining: PDF authors. 35 of 48 have a plain Info `/Author`, but some
+  Info dictionaries sit in compressed object streams and the values can be
+  UTF-16 or PDFDocEncoding. This needs its own bounded reader and an oracle,
+  not a regex.
