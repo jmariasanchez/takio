@@ -147,7 +147,13 @@ impl Inspector {
             ("Added", item.added_at.get(..10).map(str::to_owned)),
         ] {
             if let Some(value) = value.and_then(nonempty) {
-                details = details.child(metadata_row(label, div().child(value), theme));
+                let selector = format!("inspector-{label}:{value}");
+                details =
+                    details.child(div().debug_selector(move || selector).child(metadata_row(
+                        label,
+                        div().child(value),
+                        theme,
+                    )));
             }
         }
         let tags = item

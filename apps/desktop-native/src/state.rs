@@ -1953,6 +1953,23 @@ mod tests {
     }
 
     #[test]
+    fn no_compatible_format_names_what_koreader_and_stock_kindle_read() {
+        let message = humanize_error("no-compatible-format");
+        assert!(
+            message.contains("KOReader reads EPUB, PDF, MOBI, AZW3, TXT and CBZ"),
+            "{message}"
+        );
+        assert!(
+            message.contains("stock Kindle needs AZW3, MOBI, PDF or TXT"),
+            "{message}"
+        );
+        assert!(
+            !message.contains("Amazon"),
+            "no Amazon advice for KOReader users: {message}"
+        );
+    }
+
+    #[test]
     fn transfer_errors_include_actionable_recovery_without_raw_codes() {
         for (code, guidance) in [
             ("unknown-destination", "Refresh readers"),

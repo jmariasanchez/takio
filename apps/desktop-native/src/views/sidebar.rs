@@ -119,51 +119,13 @@ impl Render for Sidebar {
             let shelf_text = if state.scanning_readers {
                 "Checking books...".to_owned()
             } else {
-                match state
-                    .reader_shelves
-                    .iter()
-                    .find(|(reader, _)| reader.id == destination.id)
-                {
-                    Some((_, Ok(shelf))) => {
-                        let mut text = match shelf.in_library {
-                            0 => "None of your books are on this reader".to_owned(),
-                            count => {
-                                format!(
-                                    "{count} of your books on this reader\n● marks them in the list"
-                                )
-                            }
-                        };
-                        if shelf.not_in_library > 0 {
-                            text.push_str(&format!(
-                                "\n{} other file(s) not in your library",
-                                shelf.not_in_library
-                            ));
-                        }
-                        if shelf.not_in_library > shelf.importable {
-                            text.push_str(&format!(
-                                "\n{} use formats Takio cannot add",
-                                shelf.not_in_library - shelf.importable
-                            ));
-                        }
-                        if shelf.koreader && shelf.finished + shelf.in_progress > 0 {
-                            text.push_str(&format!(
-                                "\n{} finished, {} in progress",
-                                shelf.finished, shelf.in_progress
-                            ));
-                        }
-                        if shelf.truncated {
-                            text.push_str("\nScan limit reached. Counts may be incomplete.");
-                        }
-                        if shelf.unreadable > 0 {
-                            text.push_str(
-                                "\nSome folders could not be read. Counts may be incomplete.",
-                            );
-                        }
-                        text
-                    }
-                    Some((_, Err(error))) => format!("Could not check books. {error}"),
-                    None => "Refresh to check books".to_owned(),
-                }
+                shelf_summary(
+                    state
+                        .reader_shelves
+                        .iter()
+                        .find(|(reader, _)| reader.id == destination.id)
+                        .map(|(_, shelf)| shelf),
+                )
             };
             sidebar = sidebar.child(
                 div()
@@ -172,17 +134,23 @@ impl Render for Sidebar {
                     .gap_1()
                     .px_2()
                     .py_2()
-                    .child(
+                    .child({
+                        let label = destination.label();
                         div()
                             .min_w_0()
                             .text_ellipsis()
                             .overflow_hidden()
-                            .child(destination.label()),
-                    )
+                            .debug_selector(|| format!("reader-label:{label}"))
+                            .child(label)
+                    })
                     .child(
                         div()
                             .text_xs()
                             .text_color(theme.text_secondary)
+                            .debug_selector({
+                                let text = shelf_text.clone();
+                                move || format!("reader-summary:{text}")
+                            })
                             .child(shelf_text),
                     )
                     .when(unmatched > 0, |row| {
@@ -384,5 +352,82 @@ impl Render for Sidebar {
             }
         }
         sidebar.child(groups)
+    }
+}
+
+/// The text under a reader in the sidebar, from its last scan.
+pub(crate) fn shelf_summary(
+    shelf: Option<&Result<takio::reader_shelf::ReaderShelf, String>>,
+) -> String {
+    let shelf = match shelf {
+        Some(Ok(shelf)) => shelf,
+        Some(Err(error)) => return format!("Could not check books. {error}"),
+        None => return "Refresh to check books".to_owned(),
+    };
+    let mut text = match shelf.in_library {
+        0 => "None of your books are on this reader".to_owned(),
+        count => format!("{count} of your books on this reader\n● marks them in the list"),
+    };
+    if shelf.not_in_library > 0 {
+        text.push_str(&format!(
+            "\n{} other file(s) not in your library",
+            shelf.not_in_library
+        ));
+    }
+    if shelf.not_in_library > shelf.importable {
+        text.push_str(&format!(
+            "\n{} use formats Takio cannot add",
+            shelf.not_in_library - shelf.importable
+        ));
+    }
+    if shelf.koreader && shelf.finished + shelf.in_progress > 0 {
+        text.push_str(&format!(
+            "\n{} finished, {} in progress",
+            shelf.finished, shelf.in_progress
+        ));
+    }
+    if shelf.truncated {
+        text.push_str("\nScan limit reached. Counts may be incomplete.");
+    }
+    if shelf.unreadable > 0 {
+        text.push_str("\nSome folders could not be read. Counts may be incomplete.");
+    }
+    text
+}
+
+#[cfg(test)]
+mod tests {
+    use super::shelf_summary;
+    use takio::reader_shelf::ReaderShelf;
+
+    fn shelf(koreader: bool, finished: usize, in_progress: usize) -> ReaderShelf {
+        ReaderShelf {
+            destination_id: "Kindle".into(),
+            books: Vec::new(),
+            in_library: 3,
+            not_in_library: 2,
+            importable: 1,
+            truncated: false,
+            unreadable: 0,
+            koreader,
+            finished,
+            in_progress,
+        }
+    }
+
+    #[test]
+    fn koreader_summary_reports_reading_progress_and_stock_kindle_does_not() {
+        let text = shelf_summary(Some(&Ok(shelf(true, 1, 2))));
+        assert_eq!(
+            text,
+            "3 of your books on this reader\n● marks them in the list\n2 other file(s) not in your library\n1 use formats Takio cannot add\n1 finished, 2 in progress"
+        );
+        assert!(!shelf_summary(Some(&Ok(shelf(true, 0, 0)))).contains("finished"));
+        assert!(!shelf_summary(Some(&Ok(shelf(false, 1, 2)))).contains("finished"));
+        assert_eq!(
+            shelf_summary(Some(&Err("The reader is gone".into()))),
+            "Could not check books. The reader is gone"
+        );
+        assert_eq!(shelf_summary(None), "Refresh to check books");
     }
 }

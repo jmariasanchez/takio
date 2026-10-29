@@ -655,6 +655,71 @@ fn click_control(f: &Fixture, selector: &'static str, cx: &mut TestAppContext) {
 
 #[cfg(debug_assertions)]
 #[gpui::test]
+fn rendered_koreader_reader_shows_label_progress_summary_and_inspector_row(
+    cx: &mut TestAppContext,
+) {
+    let f = fixture(false, cx);
+    let reader = reader(&f, cx);
+    let book = f.state.read_with(cx, |state, _| state.items[0].clone());
+    std::fs::copy(&book.source_path, reader.path.join("documents/book.epub")).unwrap();
+    std::fs::create_dir(reader.path.join("documents/book.sdr")).unwrap();
+    std::fs::write(
+        reader.path.join("documents/book.sdr/metadata.epub.lua"),
+        "-- we can read Lua syntax here!\nreturn {\n    [\"percent_finished\"] = 0.42,\n    [\"summary\"] = {\n        [\"status\"] = \"reading\",\n    },\n}\n",
+    )
+    .unwrap();
+    f.state.update(cx, |state, cx| {
+        state.volumes_root = f._temp.path().join("Volumes");
+        state.refresh_destinations(cx);
+    });
+    settle(&f.state, cx);
+    let index = f.state.read_with(cx, |state, _| {
+        state
+            .items
+            .iter()
+            .position(|item| item.id == book.id)
+            .unwrap()
+    });
+    f.state.update(cx, |state, cx| state.select_only(index, cx));
+    cx.run_until_parked();
+    cx.update_window(f.window.into(), |_, window, cx| window.draw(cx).clear(cx))
+        .unwrap();
+    let mut visual = gpui::VisualTestContext::from_window(f.window.into(), cx);
+    assert!(
+        visual
+            .debug_bounds("reader-label:Kindle (KOReader)")
+            .is_some()
+    );
+    assert!(visual.debug_bounds("reader-label:Kindle").is_none());
+    assert!(
+        visual
+            .debug_bounds("reader-summary:1 of your books on this reader\n● marks them in the list\n0 finished, 1 in progress")
+            .is_some(),
+        "sidebar shows the KOReader progress line"
+    );
+    assert!(
+        visual
+            .debug_bounds("inspector-On reader:Kindle (KOReader)")
+            .is_some()
+    );
+    assert!(visual.debug_bounds("inspector-Progress:42%").is_some());
+
+    // A stock Kindle with the same sidecar shows no KOReader label or progress.
+    std::fs::remove_dir(reader.path.join("koreader")).unwrap();
+    f.state
+        .update(cx, |state, cx| state.refresh_destinations(cx));
+    settle(&f.state, cx);
+    cx.update_window(f.window.into(), |_, window, cx| window.draw(cx).clear(cx))
+        .unwrap();
+    let mut visual = gpui::VisualTestContext::from_window(f.window.into(), cx);
+    assert!(visual.debug_bounds("reader-label:Kindle").is_some());
+    assert!(visual.debug_bounds("inspector-On reader:Kindle").is_some());
+    assert!(visual.debug_bounds("inspector-Progress:42%").is_none());
+    assert_files_unchanged(&f);
+}
+
+#[cfg(debug_assertions)]
+#[gpui::test]
 fn amazon_guidance_only_appears_for_connected_stock_kindle(cx: &mut TestAppContext) {
     let f = fixture(false, cx);
     let koreader = reader(&f, cx);
