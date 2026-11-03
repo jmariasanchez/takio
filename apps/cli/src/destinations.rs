@@ -431,7 +431,7 @@ fn copy_and_hash(source: &Path, target: &Path) -> AppResult<(u64, String)> {
         output
             .sync_all()
             .map_err(|_| AppError::new("copy-failed"))?;
-        Ok(fingerprint)
+        Ok(fingerprint.into())
     })();
     drop(output);
     if result.is_err() {
@@ -481,7 +481,9 @@ fn publish_exclusive_copy(
 }
 
 fn hash_file(path: &Path) -> AppResult<(u64, String)> {
-    crate::fingerprint::hash_file(path).map_err(|_| AppError::new("source-unavailable"))
+    crate::fingerprint::hash_file(path)
+        .map(Into::into)
+        .map_err(|_| AppError::new("source-unavailable"))
 }
 
 fn manifest_path(destination: &Destination) -> PathBuf {

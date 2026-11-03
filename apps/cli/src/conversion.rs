@@ -5,111 +5,13 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use chrono::Utc;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use uuid::Uuid;
 
 use crate::output::{AppError, AppResult};
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum FormatId {
-    Kepub,
-    Epub,
-    Pdf,
-    Mobi,
-    Azw3,
-    Docx,
-    Html,
-    Txt,
-    Cbz,
-}
-
-impl FormatId {
-    pub const ALL: [Self; 9] = [
-        Self::Kepub,
-        Self::Epub,
-        Self::Pdf,
-        Self::Mobi,
-        Self::Azw3,
-        Self::Docx,
-        Self::Html,
-        Self::Txt,
-        Self::Cbz,
-    ];
-
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Kepub => "kepub",
-            Self::Epub => "epub",
-            Self::Pdf => "pdf",
-            Self::Mobi => "mobi",
-            Self::Azw3 => "azw3",
-            Self::Docx => "docx",
-            Self::Html => "html",
-            Self::Txt => "txt",
-            Self::Cbz => "cbz",
-        }
-    }
-
-    #[must_use]
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::Kepub => "Kobo EPUB",
-            Self::Epub => "EPUB",
-            Self::Pdf => "PDF",
-            Self::Mobi => "MOBI",
-            Self::Azw3 => "AZW3",
-            Self::Docx => "DOCX",
-            Self::Html => "HTML",
-            Self::Txt => "Plain text",
-            Self::Cbz => "Comic book archive",
-        }
-    }
-
-    #[must_use]
-    pub const fn extension(self) -> &'static str {
-        match self {
-            Self::Kepub => "kepub.epub",
-            Self::Epub => "epub",
-            Self::Pdf => "pdf",
-            Self::Mobi => "mobi",
-            Self::Azw3 => "azw3",
-            Self::Docx => "docx",
-            Self::Html => "html",
-            Self::Txt => "txt",
-            Self::Cbz => "cbz",
-        }
-    }
-}
-
-impl std::fmt::Display for FormatId {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(self.as_str())
-    }
-}
-
-impl std::str::FromStr for FormatId {
-    type Err = &'static str;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        Self::ALL
-            .into_iter()
-            .find(|format| format.as_str() == value.to_ascii_lowercase())
-            .ok_or("unsupported-format")
-    }
-}
-
-#[must_use]
-pub fn detect_format(path: &Path) -> Option<FormatId> {
-    let name = path.file_name()?.to_str()?.to_ascii_lowercase();
-    if name.ends_with(".kepub.epub") || name.ends_with(".kepub") {
-        return Some(FormatId::Kepub);
-    }
-    FormatId::ALL.into_iter().find(|format| {
-        format != &FormatId::Kepub && name.ends_with(&format!(".{}", format.extension()))
-    })
-}
+// Compatibility for embedders. New engine code imports the format module directly.
+pub use crate::format::{FormatId, detect_format};
 
 #[derive(Clone, Copy, Debug, Serialize)]
 pub struct ConversionCapability {
@@ -330,7 +232,9 @@ fn convert_inner(
 }
 
 pub fn fingerprint(path: &Path) -> AppResult<(u64, String)> {
-    crate::fingerprint::hash_file(path).map_err(|_| AppError::new("artifact-invalid"))
+    crate::fingerprint::hash_file(path)
+        .map(Into::into)
+        .map_err(|_| AppError::new("artifact-invalid"))
 }
 
 #[cfg(all(test, unix))]

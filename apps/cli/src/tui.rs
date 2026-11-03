@@ -1021,12 +1021,7 @@ fn draw_library(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
         .items
         .iter()
         .map(|item| {
-            let author = item
-                .authors
-                .first()
-                .map(|value| value.name.as_str())
-                .or(item.author.as_deref())
-                .unwrap_or("Unknown author");
+            let author = item.primary_author().unwrap_or("Unknown author");
             let format = item.format.as_str().to_ascii_uppercase();
             ListItem::new(vec![
                 Line::styled(&item.title, Style::default().add_modifier(Modifier::BOLD)),
@@ -1094,12 +1089,7 @@ fn draw_book_detail(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
             ]
         },
         |item| {
-            let author = item
-                .authors
-                .first()
-                .map(|value| value.name.as_str())
-                .or(item.author.as_deref())
-                .unwrap_or("Unknown author");
+            let author = item.primary_author().unwrap_or("Unknown author");
             let formats = item
                 .formats
                 .iter()

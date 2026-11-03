@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use serde::Serialize;
 use serde_json::{Value, json};
 
-use crate::conversion::FormatId;
+use crate::format::FormatId;
 use crate::model::LibraryItem;
 use crate::store::user_custom_metadata;
 
@@ -45,14 +45,7 @@ pub(crate) fn catalog_record(item: &LibraryItem) -> Value {
     json!(CatalogRecord {
         id: &item.id,
         title: &item.title,
-        authors: if item.authors.is_empty() {
-            item.author.as_deref().into_iter().collect()
-        } else {
-            item.authors
-                .iter()
-                .map(|author| author.name.as_str())
-                .collect()
-        },
+        authors: item.author_names().collect(),
         tags: &item.tags,
         formats: item.formats.iter().map(|format| format.format).collect(),
         has_cover: item.cover_path.is_some(),

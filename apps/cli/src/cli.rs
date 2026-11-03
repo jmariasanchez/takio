@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{BufRead, IsTerminal, Read, Write};
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
@@ -16,7 +16,7 @@ use crate::conversion::{
     CALIBRE_CAPABILITIES, FormatId, convert, detect_format, discover_ebook_convert,
 };
 use crate::destinations::{self, DestinationKind};
-use crate::import_scan::{ImportCounts, ImportOutcome, scan_imports};
+use crate::import_scan::{ImportCounts, ImportOutcome, scan_imports, validate_import_sources};
 use crate::jobs::{JobStatus, JobStore};
 use crate::kindle_ssh::{self, KindleSshDestination};
 use crate::maintenance::{self, discover_ebook_polish};
@@ -28,9 +28,9 @@ use crate::paths::{LibraryPaths, absolute};
 use crate::portable_library;
 use crate::reader_shelf;
 use crate::store::{
-    DuplicatePairReviewRequest, LIBRARY_SCHEMA_VERSION, LibraryQueryFilters, LibraryQueryScope,
-    LibraryQuerySyntax, LibraryStore, ListDuplicateCandidatesRequest, METADATA_AUDIT_KEY,
-    MergeDuplicatePairRequest, VerifyReport, user_custom_metadata, validate_candidate_patch,
+    DuplicatePairReviewRequest, LIBRARY_SCHEMA_VERSION, LibraryQueryScope, LibraryQuerySyntax,
+    LibraryStore, ListDuplicateCandidatesRequest, METADATA_AUDIT_KEY, MergeDuplicatePairRequest,
+    VerifyReport, user_custom_metadata, validate_candidate_patch,
 };
 
 #[derive(Parser)]
@@ -1021,9 +1021,7 @@ fn metadata_candidates(command: MetadataCandidatesCommand, library: Option<&str>
             }
             let paths = LibraryPaths::resolve(library, db.as_deref())?;
             let store = LibraryStore::open(paths, true)?;
-            let item = store
-                .get(&id)?
-                .ok_or_else(|| AppError::new("item-not-found"))?;
+            let item = store.get(&id)?.ok_or_else(|| AppError::new("not-found"))?;
             let candidates = metadata_candidates_for_item_at(
                 &item,
                 include_online,
@@ -1326,14 +1324,7 @@ fn metadata_candidates_for_item_with_policy(
         return Err(AppError::new("operation-canceled"));
     }
     if include_online && discover_fetch_ebook_metadata().is_some() {
-        let authors = if item.authors.is_empty() {
-            item.author.clone().into_iter().collect::<Vec<_>>()
-        } else {
-            item.authors
-                .iter()
-                .map(|author| author.name.clone())
-                .collect()
-        };
+        let authors = item.author_names().map(str::to_owned).collect::<Vec<_>>();
         let fetched = metadata::fetch_candidate_cancellable(
             Some(&item.title),
             &authors,
@@ -1468,7 +1459,7 @@ pub(crate) fn apply_prepared_metadata_candidate(
 ) -> AppResult<crate::model::LibraryItem> {
     let current = store
         .get(item_id)?
-        .ok_or_else(|| AppError::new("item-not-found"))?;
+        .ok_or_else(|| AppError::new("not-found"))?;
     let mut patch = prepared.patch.clone();
     patch.custom_metadata = Patch::Set(merge_metadata_audit(
         &current.custom_metadata,
@@ -2066,7 +2057,8 @@ fn library_saved_views(command: SavedViewsCommand, library: Option<&str>) -> App
             print_success(json!({"views":LibraryStore::open(paths, true)?.list_saved_views()?}))
         }
         SavedViewsCommand::Save { db, request_json } => {
-            let request = read_json(&request_json)?;
+            let request: crate::store::SaveViewRequest =
+                decode_request(&read_json(&request_json)?)?;
             let paths = LibraryPaths::resolve(library, db.as_deref())?;
             print_success(json!({"view":LibraryStore::open(paths, true)?.save_view(&request)?}))
         }
@@ -2486,7 +2478,7 @@ struct AttachFormatRequest {
 struct ReplaceFormatRequest {
     id: String,
     format: FormatId,
-    expected_current: serde_json::Map<String, Value>,
+    expected_current: crate::store::ExpectedFormatSnapshot,
     source: FormatSource,
 }
 
@@ -2504,7 +2496,7 @@ fn replace_format_request(
     let result = store.replace_format(
         &request.id,
         request.format,
-        &Value::Object(request.expected_current),
+        &request.expected_current,
         &request.source.path,
         request.source.managed(),
     )?;
@@ -2846,76 +2838,6 @@ fn import_watch(
     print_success(json!({"cycles":cycles,"stopped":stopped,"counts":counts}))
 }
 
-fn validate_import_sources(paths: &LibraryPaths, sources: &[PathBuf]) -> AppResult<()> {
-    let protected = [&paths.database, &paths.jobs, &paths.items, &paths.covers]
-        .into_iter()
-        .map(|path| path_for_overlap(path))
-        .collect::<AppResult<Vec<_>>>()?;
-    for source in sources {
-        let source = path_for_overlap(source)?;
-        if protected
-            .iter()
-            .any(|path| import_paths_overlap(&source, path))
-        {
-            return Err(AppError::new("invalid-arguments"));
-        }
-    }
-    Ok(())
-}
-
-fn path_for_overlap(path: &Path) -> AppResult<PathBuf> {
-    let absolute = if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        std::env::current_dir()?.join(path)
-    };
-    let mut normalized = PathBuf::new();
-    for component in absolute.components() {
-        match component {
-            Component::Prefix(_) | Component::RootDir | Component::Normal(_) => {
-                normalized.push(component.as_os_str());
-            }
-            Component::CurDir => {}
-            Component::ParentDir => {
-                if !normalized.pop() {
-                    return Err(AppError::new("invalid-arguments"));
-                }
-            }
-        }
-    }
-
-    let mut ancestor = normalized.as_path();
-    let mut missing = Vec::new();
-    while std::fs::symlink_metadata(ancestor).is_err() {
-        let leaf = ancestor
-            .file_name()
-            .ok_or_else(|| AppError::new("invalid-arguments"))?;
-        missing.push(leaf.to_os_string());
-        ancestor = ancestor
-            .parent()
-            .ok_or_else(|| AppError::new("invalid-arguments"))?;
-    }
-    let mut resolved = ancestor
-        .canonicalize()
-        .map_err(|_| AppError::new("invalid-arguments"))?;
-    for component in missing.into_iter().rev() {
-        resolved.push(component);
-    }
-    Ok(resolved)
-}
-
-fn import_paths_overlap(source: &Path, protected: &Path) -> bool {
-    if source.starts_with(protected) || protected.starts_with(source) {
-        return true;
-    }
-    source
-        .ancestors()
-        .any(|ancestor| same_file::is_same_file(ancestor, protected).unwrap_or(false))
-        || protected
-            .ancestors()
-            .any(|ancestor| same_file::is_same_file(ancestor, source).unwrap_or(false))
-}
-
 fn export_many(store: &LibraryStore, request: &Value) -> AppResult<Value> {
     let object = request
         .as_object()
@@ -2976,7 +2898,7 @@ fn export_many(store: &LibraryStore, request: &Value) -> AppResult<Value> {
     for id in ids {
         let Some(item) = store.get(id)? else {
             failed += 1;
-            outcomes.push(json!({"status":"failed","itemId":id,"code":"item-not-found"}));
+            outcomes.push(json!({"status":"failed","itemId":id,"code":"not-found"}));
             continue;
         };
         if item.formats.is_empty() {
@@ -2985,10 +2907,7 @@ fn export_many(store: &LibraryStore, request: &Value) -> AppResult<Value> {
             continue;
         }
         let author = if template == "author-title" {
-            item.authors
-                .first()
-                .map(|author| author.name.as_str())
-                .or(item.author.as_deref())
+            item.primary_author()
         } else {
             None
         };
@@ -3052,11 +2971,7 @@ enum ExportCopy {
 fn export_relative_directory(template: &str, item: &crate::model::LibraryItem) -> Option<String> {
     match template {
         "author" => Some(export_path_segment(
-            item.authors
-                .first()
-                .map(|author| author.name.as_str())
-                .or(item.author.as_deref())
-                .unwrap_or("Unknown author"),
+            item.primary_author().unwrap_or("Unknown author"),
             "Unknown author",
         )),
         "series" => Some(export_path_segment(
@@ -3168,12 +3083,13 @@ fn copy_export_file(source: &Path, target: &Path) -> ExportCopy {
         Err(_) => return ExportCopy::Failed("destination-unavailable"),
     };
     let result = (|| -> Result<(u64, String), &'static str> {
-        let (bytes, sha256) = crate::fingerprint::copy_and_hash(&mut input, &mut output).map_err(
-            |error| match error {
-                crate::fingerprint::CopyError::Read(_) => "source-unavailable",
-                crate::fingerprint::CopyError::Write(_) => "destination-unavailable",
-            },
-        )?;
+        let crate::fingerprint::Fingerprint { bytes, sha256 } =
+            crate::fingerprint::copy_and_hash(&mut input, &mut output).map_err(
+                |error| match error {
+                    crate::fingerprint::CopyError::Read(_) => "source-unavailable",
+                    crate::fingerprint::CopyError::Write(_) => "destination-unavailable",
+                },
+            )?;
         let after = input.metadata().map_err(|_| "source-changed")?;
         if bytes != before.len()
             || after.len() != before.len()
@@ -3215,7 +3131,7 @@ fn merge_json(mut base: Value, extra: Value) -> Value {
 }
 
 fn sha256_file(path: &Path) -> std::io::Result<String> {
-    crate::fingerprint::hash_file(path).map(|(_, digest)| digest)
+    crate::fingerprint::hash_file(path).map(|fingerprint| fingerprint.sha256)
 }
 
 #[derive(Default, Deserialize)]
@@ -3235,45 +3151,7 @@ impl QuerySyntax {
     }
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct QueryFilters {
-    authors: Vec<String>,
-    tags: Vec<String>,
-    series: Vec<String>,
-    languages: Vec<String>,
-    formats: Vec<String>,
-}
-
-impl QueryFilters {
-    fn normalize(&mut self) -> AppResult<()> {
-        for values in [
-            &mut self.authors,
-            &mut self.tags,
-            &mut self.series,
-            &mut self.languages,
-            &mut self.formats,
-        ] {
-            for value in values {
-                if value.trim().is_empty() {
-                    return Err(AppError::new("invalid-arguments"));
-                }
-                *value = value.to_lowercase();
-            }
-        }
-        Ok(())
-    }
-
-    fn engine(&self) -> LibraryQueryFilters<'_> {
-        LibraryQueryFilters {
-            authors: &self.authors,
-            tags: &self.tags,
-            series: &self.series,
-            languages: &self.languages,
-            formats: &self.formats,
-        }
-    }
-}
+use crate::library_query::Filters as QueryFilters;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -3342,8 +3220,29 @@ fn library_query_value(store: &LibraryStore, request: &Value) -> AppResult<Value
             let view = store
                 .saved_view(id)?
                 .ok_or_else(|| AppError::new("not-found"))?;
-            let mut scope: SavedQueryScope = decode_request(&view.definition)
-                .map_err(|_| AppError::new("invalid-stored-data"))?;
+            let definition = view.definition;
+            let mut scope = SavedQueryScope {
+                query: definition.query,
+                query_syntax: match definition
+                    .query_syntax
+                    .unwrap_or(LibraryQuerySyntax::Literal)
+                {
+                    LibraryQuerySyntax::Literal => QuerySyntax::Literal,
+                    LibraryQuerySyntax::StructuredV1 => QuerySyntax::StructuredV1,
+                },
+                filters: QueryFilters {
+                    authors: definition.filters.authors,
+                    tags: definition.filters.tags,
+                    series: definition.filters.series,
+                    languages: definition.filters.languages,
+                    formats: definition
+                        .filters
+                        .formats
+                        .into_iter()
+                        .map(|format| format.as_str().to_owned())
+                        .collect(),
+                },
+            };
             scope
                 .filters
                 .normalize()
@@ -3364,29 +3263,7 @@ fn library_query_value(store: &LibraryStore, request: &Value) -> AppResult<Value
         syntax: request.query_syntax.engine(),
         filters: request.filters.engine(),
     });
-    let QueryFilters {
-        authors,
-        tags,
-        series,
-        languages,
-        formats,
-    } = &request.filters;
     let mut items = store.query_items_scoped(&scopes)?;
-    items.retain(|item| {
-        matches_filter(
-            authors,
-            item.authors
-                .iter()
-                .map(|author| author.name.as_str())
-                .chain(item.author.iter().map(String::as_str)),
-        ) && matches_filter(tags, item.tags.iter().map(String::as_str))
-            && matches_filter(series, item.series.iter().map(String::as_str))
-            && matches_filter(languages, item.languages.iter().map(String::as_str))
-            && matches_filter(
-                formats,
-                item.formats.iter().map(|format| format.format.as_str()),
-            )
-    });
     let facets = facet_value(&items);
     let sort_field = &request.sort.field;
     let descending = matches!(request.sort.direction, SortDirection::Descending);
@@ -3408,21 +3285,12 @@ fn library_query_value(store: &LibraryStore, request: &Value) -> AppResult<Value
     Ok(json!({"items":items,"total":total,"page":{"offset":offset,"limit":limit},"facets":facets}))
 }
 
-fn matches_filter<'a>(wanted: &[String], values: impl Iterator<Item = &'a str>) -> bool {
-    wanted.is_empty()
-        || values
-            .map(str::to_lowercase)
-            .any(|value| wanted.iter().any(|wanted| wanted == &value))
-}
-
 fn query_sort_value(item: &crate::model::LibraryItem, field: &str) -> String {
     match field {
         "title" => item.title.to_lowercase(),
         "author" => item
-            .authors
-            .first()
-            .map(|author| author.name.to_lowercase())
-            .or_else(|| item.author.as_ref().map(|author| author.to_lowercase()))
+            .primary_author()
+            .map(str::to_lowercase)
             .unwrap_or_default(),
         "series" => item.series.as_deref().unwrap_or_default().to_lowercase(),
         "publishedDate" => item.published_date.clone().unwrap_or_default(),
@@ -3434,47 +3302,7 @@ fn query_sort_value(item: &crate::model::LibraryItem, field: &str) -> String {
 }
 
 fn facet_value(items: &[crate::model::LibraryItem]) -> Value {
-    let mut authors = std::collections::BTreeMap::<String, u64>::new();
-    let mut tags = std::collections::BTreeMap::<String, u64>::new();
-    let mut series = std::collections::BTreeMap::<String, u64>::new();
-    let mut languages = std::collections::BTreeMap::<String, u64>::new();
-    let mut formats = std::collections::BTreeMap::<String, u64>::new();
-    for item in items {
-        for value in item
-            .authors
-            .iter()
-            .map(|author| author.name.as_str())
-            .chain(item.author.iter().map(String::as_str))
-        {
-            *authors.entry(value.to_owned()).or_default() += 1;
-        }
-        for value in &item.tags {
-            *tags.entry(value.clone()).or_default() += 1;
-        }
-        if let Some(value) = &item.series {
-            *series.entry(value.clone()).or_default() += 1;
-        }
-        for value in &item.languages {
-            *languages.entry(value.clone()).or_default() += 1;
-        }
-        for value in &item.formats {
-            *formats.entry(value.format.as_str().to_owned()).or_default() += 1;
-        }
-    }
-    json!({
-        "authors":facet_entries(authors),
-        "tags":facet_entries(tags),
-        "series":facet_entries(series),
-        "languages":facet_entries(languages),
-        "formats":facet_entries(formats)
-    })
-}
-
-fn facet_entries(values: std::collections::BTreeMap<String, u64>) -> Vec<Value> {
-    values
-        .into_iter()
-        .map(|(value, count)| json!({"value":value,"count":count}))
-        .collect()
+    json!(crate::library_query::Facets::from_items(items))
 }
 
 fn jobs(command: JobsCommand, library: Option<&str>) -> AppResult<()> {
@@ -3770,7 +3598,7 @@ fn send(
 ) -> AppResult<()> {
     let item = LibraryStore::open(paths, true)?
         .get(id)?
-        .ok_or_else(|| AppError::new("unknown-item"))?;
+        .ok_or_else(|| AppError::new("not-found"))?;
     let device = destinations::resolve(dest, volumes_root)?;
     let selected = match format {
         Some(wanted) => item
@@ -3788,11 +3616,7 @@ fn send(
             .preferred_format(&item.formats)
             .ok_or_else(|| AppError::new("no-compatible-format"))?,
     };
-    let author = item
-        .authors
-        .first()
-        .map(|value| value.name.as_str())
-        .or(item.author.as_deref());
+    let author = item.primary_author();
     let extension =
         if selected.format == FormatId::Kepub && matches!(device.kind, DestinationKind::Kobo) {
             "kepub.epub"
@@ -3935,15 +3759,7 @@ fn print_human_list(
     }
     println!("{header} ID");
     for item in items {
-        let author = if item.authors.is_empty() {
-            item.author.clone().unwrap_or_default()
-        } else {
-            item.authors
-                .iter()
-                .map(|author| author.name.as_str())
-                .collect::<Vec<_>>()
-                .join(", ")
-        };
+        let author = item.author_names().collect::<Vec<_>>().join(", ");
         let formats = item
             .formats
             .iter()
@@ -4037,6 +3853,18 @@ fn open_path(path: &Path) -> AppResult<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn mixed_legacy_and_structured_authors_count_once() {
+        let mut legacy = crate::catalog::tests::sparse_book();
+        legacy.author = Some("Public author".into());
+        let structured = crate::catalog::tests::rich_book();
+        assert_eq!(structured.primary_author(), Some("Public author"));
+        assert_eq!(legacy.primary_author(), Some("Public author"));
+        assert_eq!(
+            super::facet_value(&[legacy, structured])["authors"],
+            serde_json::json!([{"value":"Public author","count":2}])
+        );
+    }
     use super::*;
 
     #[test]

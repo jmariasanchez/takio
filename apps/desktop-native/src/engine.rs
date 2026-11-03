@@ -5,7 +5,7 @@
 //! order, which serializes mutations. Read-only reader scans use a separate
 //! bounded worker so uncached USB hashing cannot monopolize catalogue queries.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -21,7 +21,7 @@ use takio::import_scan::{ImportScan, scan_imports};
 use takio::model::{BookFormat, LibraryItem, LibraryPatch};
 use takio::output::{AppError, AppResult};
 use takio::paths::LibraryPaths;
-use takio::store::{BackupReport, LibraryQueryFilters, LibraryStore, RestoreReport};
+use takio::store::{BackupReport, LibraryStore, RestoreReport};
 
 pub type ReaderShelves = Vec<(Destination, AppResult<takio::reader_shelf::ReaderShelf>)>;
 
@@ -144,71 +144,7 @@ impl Drop for ReaderScanWorker {
     }
 }
 
-/// Facet filters applied conjunctively to a query.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Filters {
-    pub authors: Vec<String>,
-    pub tags: Vec<String>,
-    pub series: Vec<String>,
-    pub languages: Vec<String>,
-    pub formats: Vec<String>,
-}
-
-impl Filters {
-    pub fn is_empty(&self) -> bool {
-        self.authors.is_empty()
-            && self.tags.is_empty()
-            && self.series.is_empty()
-            && self.languages.is_empty()
-            && self.formats.is_empty()
-    }
-}
-
-/// Counts of every distinct facet value across a result set.
-#[derive(Clone, Debug, Default)]
-pub struct Facets {
-    pub authors: BTreeMap<String, u64>,
-    pub tags: BTreeMap<String, u64>,
-    pub series: BTreeMap<String, u64>,
-    pub languages: BTreeMap<String, u64>,
-    pub formats: BTreeMap<String, u64>,
-}
-
-impl Facets {
-    pub fn from_items(items: &[LibraryItem]) -> Self {
-        Self::from_item_refs(items.iter())
-    }
-
-    pub fn from_item_refs<'a>(items: impl IntoIterator<Item = &'a LibraryItem>) -> Self {
-        let mut facets = Self::default();
-        for item in items {
-            for author in &item.authors {
-                *facets.authors.entry(author.name.clone()).or_default() += 1;
-            }
-            if item.authors.is_empty()
-                && let Some(author) = &item.author
-            {
-                *facets.authors.entry(author.clone()).or_default() += 1;
-            }
-            for tag in &item.tags {
-                *facets.tags.entry(tag.clone()).or_default() += 1;
-            }
-            if let Some(series) = &item.series {
-                *facets.series.entry(series.clone()).or_default() += 1;
-            }
-            for language in &item.languages {
-                *facets.languages.entry(language.clone()).or_default() += 1;
-            }
-            for format in &item.formats {
-                *facets
-                    .formats
-                    .entry(format.format.as_str().to_owned())
-                    .or_default() += 1;
-            }
-        }
-        facets
-    }
-}
+pub use takio::library_query::{Facets, Filters};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ImportMode {
@@ -533,16 +469,7 @@ fn worker_with_reader_scans(
                 filters,
                 reply,
             } => {
-                let result = store.query_items_shared(
-                    &query,
-                    LibraryQueryFilters {
-                        authors: &filters.authors,
-                        tags: &filters.tags,
-                        series: &filters.series,
-                        languages: &filters.languages,
-                        formats: &filters.formats,
-                    },
-                );
+                let result = store.query_items_shared(&query, filters.engine());
                 let _ = reply.send(result);
             }
             Request::ListTrash { reply } => {
@@ -782,11 +709,7 @@ fn deliver_item(
     if reviewed.format != format.format || reviewed.source_path != format.source_path {
         return Err(AppError::new("send-review-changed"));
     }
-    let author = item
-        .authors
-        .first()
-        .map(|author| author.name.as_str())
-        .or(item.author.as_deref());
+    let author = item.primary_author();
     let extension = format.format.extension();
     let file_name = destinations::destination_file_name(&item.title, author, extension);
     destinations::send(

@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Deserializer, Serialize};
 
-use crate::conversion::FormatId;
+use crate::format::FormatId;
 
 /// A patch field that distinguishes "absent" from "explicitly null".
 ///
@@ -25,7 +25,7 @@ impl<T> Patch<T> {
 
     /// Returns the explicit value when the field is present and non-null.
     #[must_use]
-    pub const fn set(&self) -> Option<&T> {
+    pub const fn as_set(&self) -> Option<&T> {
         match self {
             Self::Set(value) => Some(value),
             _ => None,
@@ -140,6 +140,20 @@ pub struct LibraryItem {
     pub tags: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub updated_at: Option<String>,
+}
+
+impl LibraryItem {
+    /// Structured names take precedence over the legacy display scalar.
+    pub fn author_names(&self) -> impl Iterator<Item = &str> {
+        self.authors
+            .iter()
+            .map(|author| author.name.as_str())
+            .chain(self.author.as_deref().filter(|_| self.authors.is_empty()))
+    }
+
+    pub fn primary_author(&self) -> Option<&str> {
+        self.author_names().next()
+    }
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]

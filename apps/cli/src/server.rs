@@ -7,7 +7,7 @@ use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 use uuid::Uuid;
 
 use crate::catalog::catalog_record;
-use crate::conversion::{FormatId, detect_format};
+use crate::format::{FormatId, detect_format};
 use crate::output::{AppError, AppResult, print_success};
 use crate::store::LibraryStore;
 

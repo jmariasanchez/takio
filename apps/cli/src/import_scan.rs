@@ -1,18 +1,93 @@
 use std::collections::HashSet;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use serde::Serialize;
 
-use crate::conversion::{FormatId, detect_format};
+use crate::format::{FormatId, detect_format};
 use crate::metadata::pdf_page_count;
 use crate::model::LibraryItem;
-use crate::output::AppResult;
-use crate::store::{ImportWatchObservation, LibraryStore};
+use crate::output::{AppError, AppResult};
+use crate::paths::LibraryPaths;
+use crate::store::{ImportWatchObservation, ImportWatchOutcome, LibraryStore};
 
 // ponytail: one page threshold, so short papers found in folders are skipped too; choosing a
 // file directly always imports it. Make this a setting if real libraries need another cut.
 const MIN_FOLDER_PDF_PAGES: usize = 50;
+
+/// Reject imports that could consume or recursively scan this library's owned files.
+pub fn validate_import_sources(paths: &LibraryPaths, sources: &[PathBuf]) -> AppResult<()> {
+    let protected = [&paths.database, &paths.jobs, &paths.items, &paths.covers]
+        .into_iter()
+        .map(|path| path_for_overlap(path))
+        .collect::<AppResult<Vec<_>>>()?;
+    for source in sources {
+        let source = path_for_overlap(source)?;
+        if protected
+            .iter()
+            .any(|path| import_paths_overlap(&source, path))
+        {
+            return Err(AppError::new("invalid-arguments"));
+        }
+    }
+    Ok(())
+}
+
+fn path_for_overlap(path: &Path) -> AppResult<PathBuf> {
+    // `link/..` follows the link's real parent, not its lexical parent.
+    if let Ok(resolved) = path.canonicalize() {
+        return Ok(resolved);
+    }
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()?.join(path)
+    };
+    let mut normalized = PathBuf::new();
+    for component in absolute.components() {
+        match component {
+            Component::Prefix(_) | Component::RootDir | Component::Normal(_) => {
+                normalized.push(component.as_os_str());
+            }
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !normalized.pop() {
+                    return Err(AppError::new("invalid-arguments"));
+                }
+            }
+        }
+    }
+    let mut ancestor = normalized.as_path();
+    let mut missing = Vec::new();
+    while std::fs::symlink_metadata(ancestor).is_err() {
+        let leaf = ancestor
+            .file_name()
+            .ok_or_else(|| AppError::new("invalid-arguments"))?;
+        missing.push(leaf.to_os_string());
+        ancestor = ancestor
+            .parent()
+            .ok_or_else(|| AppError::new("invalid-arguments"))?;
+    }
+    let mut resolved = ancestor
+        .canonicalize()
+        .map_err(|_| AppError::new("invalid-arguments"))?;
+    for component in missing.into_iter().rev() {
+        resolved.push(component);
+    }
+    Ok(resolved)
+}
+
+fn import_paths_overlap(source: &Path, protected: &Path) -> bool {
+    if source.starts_with(protected) || protected.starts_with(source) {
+        return true;
+    }
+    source
+        .ancestors()
+        .any(|ancestor| same_file::is_same_file(ancestor, protected).unwrap_or(false))
+        || protected
+            .ancestors()
+            .any(|ancestor| same_file::is_same_file(ancestor, source).unwrap_or(false))
+}
 
 #[derive(Debug, Serialize)]
 #[serde(tag = "status", rename_all = "kebab-case")]
@@ -84,6 +159,7 @@ pub fn scan_imports<F>(
 where
     F: FnMut() -> bool,
 {
+    validate_import_sources(store.paths(), roots)?;
     let mut encountered = HashSet::new();
     let (mut entries, mut stopped) = collect_entries(roots, &mut should_stop);
     let mut seen = HashSet::new();
@@ -149,7 +225,7 @@ where
                                 },
                                 reason,
                             },
-                            Some("duplicate"),
+                            Some(ImportWatchOutcome::Duplicate),
                         )
                     } else if in_folder
                         && format == Some(FormatId::Pdf)
@@ -161,7 +237,7 @@ where
                                 source_path: source,
                                 reason: "likely-document",
                             },
-                            Some("unsupported"),
+                            Some(ImportWatchOutcome::Unsupported),
                         )
                     } else {
                         match store.import(&canonical, None, move_source) {
@@ -172,7 +248,7 @@ where
                                         source_path: source,
                                         item: Box::new(item),
                                     },
-                                    Some("imported"),
+                                    Some(ImportWatchOutcome::Imported),
                                 )
                             }
                             Err(error) => (
@@ -190,14 +266,13 @@ where
                             source_path: source,
                             reason: "unsupported-format",
                         },
-                        Some("unsupported"),
+                        Some(ImportWatchOutcome::Unsupported),
                     )
                 };
                 if observe && let Some(kind) = observed {
                     store.record_import_watch_observation(ImportWatchObservation {
                         canonical_source_path: canonical,
-                        content_bytes: fingerprint.0,
-                        content_sha256: fingerprint.1,
+                        fingerprint,
                         outcome: kind,
                     })?;
                 }
@@ -312,14 +387,14 @@ where
     (entries, false)
 }
 
-fn fingerprint(path: &Path) -> Result<(u64, String), &'static str> {
+fn fingerprint(path: &Path) -> Result<crate::fingerprint::Fingerprint, &'static str> {
     let before = fs::metadata(path).map_err(|error| io_code(&error))?;
-    let (bytes, digest) = crate::fingerprint::hash_file(path).map_err(|error| io_code(&error))?;
+    let fingerprint = crate::fingerprint::hash_file(path).map_err(|error| io_code(&error))?;
     let after = fs::metadata(path).map_err(|error| io_code(&error))?;
     if before.len() != after.len() || before.modified().ok() != after.modified().ok() {
         return Err("source-changed");
     }
-    Ok((bytes, digest))
+    Ok(fingerprint)
 }
 
 fn io_code(error: &std::io::Error) -> &'static str {
@@ -346,6 +421,65 @@ mod tests {
     fn open_store(root: &Path) -> LibraryStore {
         let paths = LibraryPaths::resolve(None, Some(&root.join("library.sqlite"))).unwrap();
         LibraryStore::open(paths, true).unwrap()
+    }
+
+    #[test]
+    fn engine_scan_rejects_owned_paths_in_copy_and_move_modes() {
+        for move_source in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let mut store = open_store(temp.path());
+            let owned = store.paths().items.join("uncatalogued.epub");
+            fs::create_dir_all(owned.parent().unwrap()).unwrap();
+            fs::write(&owned, b"preserve owned bytes").unwrap();
+            for root in [owned.clone(), store.paths().root.clone()] {
+                let error =
+                    scan_imports(&mut store, &[root], move_source, false, || false).unwrap_err();
+                assert_eq!(error.code(), "invalid-arguments");
+                assert_eq!(fs::read(&owned).unwrap(), b"preserve owned bytes");
+                assert!(store.list(false).unwrap().is_empty());
+            }
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn engine_scan_rejects_symlink_to_owned_path() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut store = open_store(temp.path());
+        fs::create_dir_all(&store.paths().items).unwrap();
+        let alias = temp.path().join("alias");
+        std::os::unix::fs::symlink(&store.paths().items, &alias).unwrap();
+        assert_eq!(
+            scan_imports(&mut store, &[alias], true, false, || false)
+                .unwrap_err()
+                .code(),
+            "invalid-arguments"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn engine_scan_rejects_symlink_parent_traversal_into_owned_path() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut store = open_store(&temp.path().join("library"));
+        let nested = store.paths().root.join("nested");
+        fs::create_dir_all(&nested).unwrap();
+        fs::create_dir_all(&store.paths().items).unwrap();
+        let owned = store.paths().items.join("keep.txt");
+        fs::write(&owned, b"keep").unwrap();
+        let alias = temp.path().join("alias");
+        std::os::unix::fs::symlink(nested, &alias).unwrap();
+        let source = alias
+            .join("..")
+            .join(store.paths().items.file_name().unwrap())
+            .join("keep.txt");
+        assert_eq!(
+            scan_imports(&mut store, &[source], true, false, || false)
+                .unwrap_err()
+                .code(),
+            "invalid-arguments"
+        );
+        assert_eq!(fs::read(owned).unwrap(), b"keep");
     }
 
     #[test]
