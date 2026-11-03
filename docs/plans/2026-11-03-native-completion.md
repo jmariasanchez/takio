@@ -141,7 +141,7 @@ reading, distribution signing and clean-Mac acceptance remain separate gates.
   wheel-event, GPU-completion, 120 Hz scrolling or display-scanout latency.
   Harness startup bypasses remembered-library lookup and the recovery wrapper.
 
-### Measured responsiveness and remaining size gate
+### Initial responsiveness and size failures (before follow-up)
 
 Five processes with five cycles each, 25 samples per operation, on the generated
 10,000-book library. Runs refused concurrent Cargo/rustc activity. The original
@@ -327,3 +327,31 @@ Raw evidence: `takio-native-check-delivery-20261103.log`,
 in the scratch root, and `background-final-render.log` / `background-repeat-render.log`
 under `takio-latency-20261103`. Failed cache/deadline runs and temporary phase traces
 are retained alongside them rather than discarded.
+
+### Final local artifact (18:55 UTC)
+
+Built from implementation commit `bc4f5007f7b9db45d159a5de71bfb4ac884ff2f5`.
+`bash scripts/package-macos-release.sh` passed native launch metrics, strict
+ad-hoc signing, DMG checksum and read-only mount, mounted-bundle verification,
+ejection and final SHA-256 sidecar checks. No Apple signing accounts, notarization,
+publication or personal library was accessed.
+
+- Cargo executable: `target/release/takio-desktop`, 11,927,760 bytes.
+- Cargo executable SHA-256:
+  `448eab1a70b2171ad01f198975a1da84a539f99727289483a69fd7d4989e285c`.
+- Ad-hoc signed bundle executable: `dist/Takio.app/Contents/MacOS/takio-desktop`.
+- Signed executable SHA-256:
+  `5eca553c583ca43eaa00d64c11626356e0ff1b04b614713879ce45ad44a0f539`.
+- Local DMG: `dist/releases/Takio-0.1.0-macos-arm64-local.dmg`.
+- DMG SHA-256:
+  `9b32b11471751dcf4d7c44dc18049ff37e0d881c25b9c8ceb9f8dd6fdedce34e`.
+- Log: `$JCODE_SCRATCH_DIR/takio-native-package-delivery-20261103.log`.
+
+The actual signed app was also launched through its production startup entry,
+without benchmark flags, against a separate corrupt fixture. Its dark-mode recovery
+window visibly labels the operation as failed and shows Open Existing Library,
+Restore Backup to New Folder and Quit. The fixture's original catalogue bytes and
+directory entries were unchanged. This is a startup/recovery-screen smoke check,
+not live system-picker or VoiceOver acceptance. The bounded smoke script and log
+are `takio-final-recovery-smoke.py` and `takio-final-recovery-smoke-20261103.log`
+in the scratch root. Only that test process is terminated afterward.

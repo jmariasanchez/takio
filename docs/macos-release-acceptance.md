@@ -117,6 +117,11 @@ Use disposable fixtures and a separate profile, not personal books:
   input-handler to next-frame-after-paint measurements, not physical keystrokes,
   GPU completion, 120 Hz scrolling or display scanout. See the completion plan for
   adverse intermediate results, first-query outliers and final artifact identity.
+- The final local app/DMG at implementation commit `bc4f500` also passes actual
+  launch, strict ad-hoc signatures, checksum/read-only mounting, mounted-bundle
+  verification, ejection and sidecar checks. A separate production-entry startup
+  smoke visibly presents recovery controls for a corrupt temporary catalogue
+  without changing its bytes or creating additional library entries.
 
 Still external gates: real Developer ID/notarization/stapler/Gatekeeper approval,
 clean-Mac quarantined install, a completed GitHub workflow on the exact release
