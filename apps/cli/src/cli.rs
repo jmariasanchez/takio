@@ -12,10 +12,9 @@ use unicode_normalization::UnicodeNormalization;
 
 use crate::calibre_import::import_calibre_library;
 use crate::catalog::catalog_record;
-use crate::conversion::{
-    CALIBRE_CAPABILITIES, FormatId, convert, detect_format, discover_ebook_convert,
-};
+use crate::conversion::{CALIBRE_CAPABILITIES, convert, discover_ebook_convert};
 use crate::destinations::{self, DestinationKind};
+use crate::format::{FormatId, detect_format};
 use crate::import_scan::{ImportCounts, ImportOutcome, scan_imports, validate_import_sources};
 use crate::jobs::{JobStatus, JobStore};
 use crate::kindle_ssh::{self, KindleSshDestination};
@@ -28,9 +27,9 @@ use crate::paths::{LibraryPaths, absolute};
 use crate::portable_library;
 use crate::reader_shelf;
 use crate::store::{
-    DuplicatePairReviewRequest, LIBRARY_SCHEMA_VERSION, LibraryQueryScope, LibraryQuerySyntax,
-    LibraryStore, ListDuplicateCandidatesRequest, METADATA_AUDIT_KEY, MergeDuplicatePairRequest,
-    VerifyReport, user_custom_metadata, validate_candidate_patch,
+    DuplicatePairReviewRequest, LIBRARY_SCHEMA_VERSION, LibraryStore,
+    ListDuplicateCandidatesRequest, METADATA_AUDIT_KEY, MergeDuplicatePairRequest, VerifyReport,
+    user_custom_metadata, validate_candidate_patch,
 };
 
 #[derive(Parser)]
@@ -3134,175 +3133,9 @@ fn sha256_file(path: &Path) -> std::io::Result<String> {
     crate::fingerprint::hash_file(path).map(|fingerprint| fingerprint.sha256)
 }
 
-#[derive(Default, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-enum QuerySyntax {
-    #[default]
-    Literal,
-    StructuredV1,
-}
-
-impl QuerySyntax {
-    fn engine(&self) -> LibraryQuerySyntax {
-        match self {
-            Self::Literal => LibraryQuerySyntax::Literal,
-            Self::StructuredV1 => LibraryQuerySyntax::StructuredV1,
-        }
-    }
-}
-
-use crate::library_query::Filters as QueryFilters;
-
-#[derive(Deserialize)]
-#[serde(rename_all = "lowercase")]
-enum SortDirection {
-    Ascending,
-    Descending,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct QuerySort {
-    field: String,
-    direction: SortDirection,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct QueryPage {
-    offset: usize,
-    limit: usize,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct QueryRequest {
-    query: String,
-    #[serde(default)]
-    query_syntax: QuerySyntax,
-    filters: QueryFilters,
-    sort: QuerySort,
-    page: QueryPage,
-    #[serde(default, deserialize_with = "present_string")]
-    virtual_library_id: Option<String>,
-}
-
-fn present_string<'de, D: serde::Deserializer<'de>>(
-    deserializer: D,
-) -> Result<Option<String>, D::Error> {
-    String::deserialize(deserializer).map(Some)
-}
-
-// Saved definitions also contain identity and presentation fields owned by the store.
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct SavedQueryScope {
-    query: String,
-    #[serde(default)]
-    query_syntax: QuerySyntax,
-    filters: QueryFilters,
-}
-
 fn library_query_value(store: &LibraryStore, request: &Value) -> AppResult<Value> {
-    let mut request: QueryRequest = decode_request(request)?;
-    if request.query.encode_utf16().count() > 1024 || !(1..=100).contains(&request.page.limit) {
-        return Err(AppError::new("invalid-arguments"));
-    }
-    request.filters.normalize()?;
-    let virtual_scope = request
-        .virtual_library_id
-        .as_deref()
-        .map(|id| {
-            let id = id.trim();
-            if id.is_empty() || id.encode_utf16().count() > 256 {
-                return Err(AppError::new("invalid-arguments"));
-            }
-            let view = store
-                .saved_view(id)?
-                .ok_or_else(|| AppError::new("not-found"))?;
-            let definition = view.definition;
-            let mut scope = SavedQueryScope {
-                query: definition.query,
-                query_syntax: match definition
-                    .query_syntax
-                    .unwrap_or(LibraryQuerySyntax::Literal)
-                {
-                    LibraryQuerySyntax::Literal => QuerySyntax::Literal,
-                    LibraryQuerySyntax::StructuredV1 => QuerySyntax::StructuredV1,
-                },
-                filters: QueryFilters {
-                    authors: definition.filters.authors,
-                    tags: definition.filters.tags,
-                    series: definition.filters.series,
-                    languages: definition.filters.languages,
-                    formats: definition
-                        .filters
-                        .formats
-                        .into_iter()
-                        .map(|format| format.as_str().to_owned())
-                        .collect(),
-                },
-            };
-            scope
-                .filters
-                .normalize()
-                .map_err(|_| AppError::new("invalid-stored-data"))?;
-            Ok(scope)
-        })
-        .transpose()?;
-    let mut scopes = Vec::with_capacity(2);
-    if let Some(scope) = &virtual_scope {
-        scopes.push(LibraryQueryScope {
-            query: &scope.query,
-            syntax: scope.query_syntax.engine(),
-            filters: scope.filters.engine(),
-        });
-    }
-    scopes.push(LibraryQueryScope {
-        query: &request.query,
-        syntax: request.query_syntax.engine(),
-        filters: request.filters.engine(),
-    });
-    let mut items = store.query_items_scoped(&scopes)?;
-    let facets = facet_value(&items);
-    let sort_field = &request.sort.field;
-    let descending = matches!(request.sort.direction, SortDirection::Descending);
-    items.sort_by(|left, right| {
-        let ordering = query_sort_value(left, sort_field).cmp(&query_sort_value(right, sort_field));
-        if descending {
-            ordering.reverse()
-        } else {
-            ordering
-        }
-    });
-    let QueryPage { offset, limit } = request.page;
-    let total = items.len();
-    let items = items
-        .into_iter()
-        .skip(offset)
-        .take(limit)
-        .collect::<Vec<_>>();
-    Ok(json!({"items":items,"total":total,"page":{"offset":offset,"limit":limit},"facets":facets}))
-}
-
-fn query_sort_value(item: &crate::model::LibraryItem, field: &str) -> String {
-    match field {
-        "title" => item.title.to_lowercase(),
-        "author" => item
-            .primary_author()
-            .map(str::to_lowercase)
-            .unwrap_or_default(),
-        "series" => item.series.as_deref().unwrap_or_default().to_lowercase(),
-        "publishedDate" => item.published_date.clone().unwrap_or_default(),
-        "rating" => format!("{:020.6}", item.rating.unwrap_or(-1.0)),
-        "addedAt" => item.added_at.clone(),
-        "updatedAt" => item.updated_at.clone().unwrap_or_default(),
-        _ => String::new(),
-    }
-}
-
-fn facet_value(items: &[crate::model::LibraryItem]) -> Value {
-    json!(crate::library_query::Facets::from_items(items))
+    let result = crate::library_query::query(store, decode_request(request)?)?;
+    serde_json::to_value(result).map_err(|_| AppError::new("storage-unavailable"))
 }
 
 fn jobs(command: JobsCommand, library: Option<&str>) -> AppResult<()> {
@@ -3564,9 +3397,7 @@ fn destination(command: DestinationCommand, library: Option<&str>) -> AppResult<
             timeout_ms,
         } => {
             let paths = LibraryPaths::resolve(library, None)?;
-            let item = LibraryStore::open(paths, true)?
-                .get(&id)?
-                .ok_or_else(|| AppError::new("not-found"))?;
+            let item = LibraryStore::open(paths, true)?.get_active(&id)?;
             let source = item
                 .formats
                 .iter()
@@ -3596,42 +3427,18 @@ fn send(
     overwrite: bool,
     volumes_root: &Path,
 ) -> AppResult<()> {
-    let item = LibraryStore::open(paths, true)?
-        .get(id)?
-        .ok_or_else(|| AppError::new("not-found"))?;
+    let store = LibraryStore::open(paths, true)?;
     let device = destinations::resolve(dest, volumes_root)?;
-    let selected = match format {
-        Some(wanted) => item
-            .formats
-            .iter()
-            .find(|candidate| candidate.format == wanted)
-            .ok_or_else(|| AppError::new("format-not-found"))?,
-        // Unknown volumes keep the old behaviour of sending the first attached format;
-        // a recognized reader only ever gets a format it can open.
-        None if matches!(device.kind, DestinationKind::Generic) && !device.has_koreader() => item
-            .formats
-            .first()
-            .ok_or_else(|| AppError::new("format-not-found"))?,
-        None => device
-            .preferred_format(&item.formats)
-            .ok_or_else(|| AppError::new("no-compatible-format"))?,
-    };
-    let author = item.primary_author();
-    let extension =
-        if selected.format == FormatId::Kepub && matches!(device.kind, DestinationKind::Kobo) {
-            "kepub.epub"
-        } else {
-            selected.format.extension()
-        };
-    let name = destinations::destination_file_name(&item.title, author, extension);
-    print_success(destinations::send(
+    print_success(crate::delivery::send_library_item(
+        &store,
         &device,
         id,
-        &selected.source_path,
-        &name,
-        selected.format.as_str(),
-        subdir,
-        overwrite,
+        crate::delivery::DeliveryOptions {
+            format,
+            subdir,
+            overwrite,
+            reviewed: None,
+        },
     )?)
 }
 fn read_json(input: &str) -> AppResult<Value> {
@@ -3861,7 +3668,9 @@ mod tests {
         assert_eq!(structured.primary_author(), Some("Public author"));
         assert_eq!(legacy.primary_author(), Some("Public author"));
         assert_eq!(
-            super::facet_value(&[legacy, structured])["authors"],
+            json!(crate::library_query::Facets::from_items(&[
+                legacy, structured
+            ]))["authors"],
             serde_json::json!([{"value":"Public author","count":2}])
         );
     }

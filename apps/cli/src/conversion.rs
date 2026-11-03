@@ -217,7 +217,8 @@ fn convert_inner(
         let _ = fs::remove_file(&temporary);
         return Err(AppError::new("conversion-failed"));
     }
-    let (bytes, sha256) = fingerprint(&temporary)?;
+    let crate::fingerprint::Fingerprint { bytes, sha256 } =
+        crate::fingerprint::hash_file(&temporary).map_err(|_| AppError::new("artifact-invalid"))?;
     if output.exists() {
         let _ = fs::remove_file(&temporary);
         return Err(AppError::new("output-file-exists"));
@@ -229,12 +230,6 @@ fn convert_inner(
         sha256,
         created_at: Utc::now().to_rfc3339(),
     })
-}
-
-pub fn fingerprint(path: &Path) -> AppResult<(u64, String)> {
-    crate::fingerprint::hash_file(path)
-        .map(Into::into)
-        .map_err(|_| AppError::new("artifact-invalid"))
 }
 
 #[cfg(all(test, unix))]

@@ -5,8 +5,6 @@
 //! order, which serializes mutations. Read-only reader scans use a separate
 //! bounded worker so uncached USB hashing cannot monopolize catalogue queries.
 
-use std::collections::BTreeSet;
-use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -15,10 +13,12 @@ use std::thread;
 
 pub use crate::library_location::OpenedLibrary;
 use crate::preparation::{self, PreparationPreview};
-use takio::conversion::{BackendDiscovery, FormatId};
+use takio::conversion::BackendDiscovery;
 use takio::destinations::{self, DeliveryResult, Destination, DestinationKind};
+#[cfg(test)]
+use takio::format::FormatId;
 use takio::import_scan::{ImportScan, scan_imports};
-use takio::model::{BookFormat, LibraryItem, LibraryPatch};
+use takio::model::{LibraryItem, LibraryPatch};
 use takio::output::{AppError, AppResult};
 use takio::paths::LibraryPaths;
 use takio::store::{BackupReport, LibraryStore, RestoreReport};
@@ -170,12 +170,7 @@ pub struct SendPreviewEntry {
     pub result: AppResult<ReadyFile>,
 }
 
-/// Reviewed selection, not an immutable snapshot of the file's bytes.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ReadyFile {
-    pub format: FormatId,
-    pub source_path: PathBuf,
-}
+pub use takio::delivery::ReadyFile;
 
 impl SendPreview {
     #[cfg(test)]
@@ -469,7 +464,9 @@ fn worker_with_reader_scans(
                 filters,
                 reply,
             } => {
-                let result = store.query_items_shared(&query, filters.engine());
+                let result = filters
+                    .validate()
+                    .and_then(|()| store.query_items_shared(&query, filters.engine()));
                 let _ = reply.send(result);
             }
             Request::ListTrash { reply } => {
@@ -574,14 +571,6 @@ fn each(
     ids.iter().map(|id| (id.clone(), op(id))).collect()
 }
 
-pub(crate) fn trashed_ids(store: &LibraryStore) -> AppResult<BTreeSet<String>> {
-    Ok(store
-        .list_trash()?
-        .into_iter()
-        .map(|item| item.id)
-        .collect())
-}
-
 fn preview_send(
     store: &LibraryStore,
     destination: &Destination,
@@ -590,39 +579,16 @@ fn preview_send(
     if item_ids.len() > MAX_SEND_ITEMS {
         return Err(AppError::new("invalid-arguments"));
     }
-    let root = destination
-        .path
-        .parent()
-        .ok_or_else(|| AppError::new("unknown-destination"))?;
-    let destination = destinations::authorize(&destination.path, root)?;
-    let trashed = trashed_ids(store)?;
+    let destination = takio::delivery::reauthorize(destination)?;
     let entries = item_ids
         .iter()
         .map(|id| {
             let mut title = id.clone();
             let result = store.get(id).and_then(|item| {
-                let item = item.ok_or_else(|| AppError::new("not-found"))?;
-                title.clone_from(&item.title);
-                if trashed.contains(id) {
-                    return Err(AppError::new("item-trashed"));
+                if let Some(item) = item {
+                    title.clone_from(&item.title);
                 }
-                let format = preferred_format(&item, &destination)
-                    .ok_or_else(|| AppError::new("no-compatible-format"))?;
-                let unavailable = || AppError::new("source-unavailable");
-                // Reject directories and special files before opening, then check the handle.
-                if !format.source_path.is_file() {
-                    return Err(unavailable());
-                }
-                let mut source =
-                    std::fs::File::open(&format.source_path).map_err(|_| unavailable())?;
-                if !source.metadata().map_err(|_| unavailable())?.is_file() {
-                    return Err(unavailable());
-                }
-                source.read(&mut [0u8; 1]).map_err(|_| unavailable())?;
-                Ok(ReadyFile {
-                    format: format.format,
-                    source_path: format.source_path.clone(),
-                })
+                takio::delivery::plan_send(store, &destination, id, None).map(|plan| plan.ready)
             });
             SendPreviewEntry {
                 item_id: id.clone(),
@@ -645,12 +611,11 @@ fn send_reviewed(
     if entries.len() > MAX_SEND_ITEMS {
         return Err(AppError::new("invalid-arguments"));
     }
-    let trashed = trashed_ids(store)?;
     Ok(SendReport {
         entries: entries
             .iter()
             .map(|entry| match &entry.result {
-                Ok(ready) => send_entry(store, destination, &trashed, &entry.item_id, ready),
+                Ok(ready) => send_entry(store, destination, &entry.item_id, ready),
                 Err(error) => SendEntry {
                     item_id: entry.item_id.clone(),
                     title: entry.title.clone(),
@@ -664,63 +629,29 @@ fn send_reviewed(
 fn send_entry(
     store: &LibraryStore,
     destination: &Destination,
-    trashed: &BTreeSet<String>,
     id: &str,
     reviewed: &ReadyFile,
 ) -> SendEntry {
     let mut title = id.to_owned();
     let result = store.get(id).and_then(|item| {
-        let item = item.ok_or_else(|| AppError::new("not-found"))?;
-        title.clone_from(&item.title);
-        if trashed.contains(id) {
-            return Err(AppError::new("item-trashed"));
+        if let Some(item) = item {
+            title.clone_from(&item.title);
         }
-        deliver_item(destination, &item, reviewed)
+        takio::delivery::send_library_item(
+            store,
+            destination,
+            id,
+            takio::delivery::DeliveryOptions {
+                reviewed: Some(reviewed),
+                ..Default::default()
+            },
+        )
     });
     SendEntry {
         item_id: id.to_owned(),
         title,
         result,
     }
-}
-
-fn preferred_format<'a>(
-    item: &'a LibraryItem,
-    destination: &Destination,
-) -> Option<&'a BookFormat> {
-    // Shared with the CLI. A detected KOReader reads EPUB directly; stock Kindle cannot.
-    destination.preferred_format(&item.formats)
-}
-
-fn deliver_item(
-    destination: &Destination,
-    item: &LibraryItem,
-    reviewed: &ReadyFile,
-) -> AppResult<DeliveryResult> {
-    // Refresh mount detection so a disconnected reader is not recreated as a local folder,
-    // and stale caller-provided capabilities cannot permit an incompatible format.
-    let root = destination
-        .path
-        .parent()
-        .ok_or_else(|| AppError::new("unknown-destination"))?;
-    let destination = destinations::authorize(&destination.path, root)?;
-    let format = preferred_format(item, &destination)
-        .ok_or_else(|| AppError::new("no-compatible-format"))?;
-    if reviewed.format != format.format || reviewed.source_path != format.source_path {
-        return Err(AppError::new("send-review-changed"));
-    }
-    let author = item.primary_author();
-    let extension = format.format.extension();
-    let file_name = destinations::destination_file_name(&item.title, author, extension);
-    destinations::send(
-        &destination,
-        &item.id,
-        &format.source_path,
-        &file_name,
-        format.format.as_str(),
-        None,
-        false,
-    )
 }
 
 /// Resolve the library location the desktop should open.

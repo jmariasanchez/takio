@@ -5,7 +5,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::model::LibraryItem;
 use crate::output::{AppError, AppResult};
-use crate::store::LibraryQueryFilters;
+pub use crate::store::SavedViewSortField as SortField;
+use crate::store::{
+    LibraryQueryFilters, LibraryQueryScope, LibraryQuerySyntax, LibraryStore, SavedViewSort,
+    SavedViewSortDirection,
+};
 
 /// Facet groups are conjunctive, values within one group are alternatives.
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -27,19 +31,18 @@ impl Filters {
             && self.formats.is_empty()
     }
 
-    pub fn normalize(&mut self) -> AppResult<()> {
+    pub fn validate(&self) -> AppResult<()> {
         for values in [
-            &mut self.authors,
-            &mut self.tags,
-            &mut self.series,
-            &mut self.languages,
-            &mut self.formats,
+            &self.authors,
+            &self.tags,
+            &self.series,
+            &self.languages,
+            &self.formats,
         ] {
             for value in values {
                 if value.trim().is_empty() {
                     return Err(AppError::new("invalid-arguments"));
                 }
-                *value = value.to_lowercase();
             }
         }
         Ok(())
@@ -103,6 +106,138 @@ fn count_values<'a>(counts: &mut BTreeMap<String, u64>, values: impl IntoIterato
 struct FacetEntry<'a> {
     value: &'a str,
     count: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct QueryPage {
+    pub offset: usize,
+    pub limit: usize,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct QueryRequest {
+    pub query: String,
+    #[serde(default = "literal_syntax")]
+    pub query_syntax: LibraryQuerySyntax,
+    pub filters: Filters,
+    pub sort: SavedViewSort,
+    pub page: QueryPage,
+    #[serde(default, deserialize_with = "present_string")]
+    pub virtual_library_id: Option<String>,
+}
+
+fn literal_syntax() -> LibraryQuerySyntax {
+    LibraryQuerySyntax::Literal
+}
+
+fn present_string<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error> {
+    String::deserialize(deserializer).map(Some)
+}
+
+#[derive(Serialize)]
+pub struct QueryResult {
+    pub items: Vec<LibraryItem>,
+    pub total: usize,
+    pub page: QueryPage,
+    pub facets: Facets,
+}
+
+pub fn query(store: &LibraryStore, request: QueryRequest) -> AppResult<QueryResult> {
+    if request.query.encode_utf16().count() > 1024 || !(1..=100).contains(&request.page.limit) {
+        return Err(AppError::new("invalid-arguments"));
+    }
+    request.filters.validate()?;
+    let virtual_scope = request
+        .virtual_library_id
+        .as_deref()
+        .map(|id| {
+            let id = id.trim();
+            if id.is_empty() || id.encode_utf16().count() > 256 {
+                return Err(AppError::new("invalid-arguments"));
+            }
+            let definition = store
+                .saved_view(id)?
+                .ok_or_else(|| AppError::new("not-found"))?
+                .definition;
+            let filters = Filters {
+                authors: definition.filters.authors,
+                tags: definition.filters.tags,
+                series: definition.filters.series,
+                languages: definition.filters.languages,
+                formats: definition
+                    .filters
+                    .formats
+                    .into_iter()
+                    .map(|format| format.as_str().to_owned())
+                    .collect(),
+            };
+            filters
+                .validate()
+                .map_err(|_| AppError::new("invalid-stored-data"))?;
+            Ok((
+                definition.query,
+                definition
+                    .query_syntax
+                    .unwrap_or(LibraryQuerySyntax::Literal),
+                filters,
+            ))
+        })
+        .transpose()?;
+    let mut scopes = Vec::with_capacity(2);
+    if let Some((query, syntax, filters)) = &virtual_scope {
+        scopes.push(LibraryQueryScope {
+            query,
+            syntax: *syntax,
+            filters: filters.engine(),
+        });
+    }
+    scopes.push(LibraryQueryScope {
+        query: &request.query,
+        syntax: request.query_syntax,
+        filters: request.filters.engine(),
+    });
+    let mut items = store.query_items_scoped(&scopes)?;
+    let facets = Facets::from_items(&items);
+    let descending = request.sort.direction == SavedViewSortDirection::Descending;
+    items.sort_by(|left, right| {
+        let ordering = sort_key(left, request.sort.field).cmp(&sort_key(right, request.sort.field));
+        if descending {
+            ordering.reverse()
+        } else {
+            ordering
+        }
+    });
+    let total = items.len();
+    let items = items
+        .into_iter()
+        .skip(request.page.offset)
+        .take(request.page.limit)
+        .collect();
+    Ok(QueryResult {
+        items,
+        total,
+        page: request.page,
+        facets,
+    })
+}
+
+pub fn sort_key(item: &LibraryItem, field: SortField) -> String {
+    match field {
+        SortField::Title => item.title.to_lowercase(),
+        SortField::Author => item
+            .primary_author()
+            .map(str::to_lowercase)
+            .unwrap_or_default(),
+        SortField::Series => item.series.as_deref().unwrap_or_default().to_lowercase(),
+        SortField::PublishedDate => item.published_date.clone().unwrap_or_default(),
+        SortField::Rating => format!("{:020.6}", item.rating.unwrap_or(-1.0)),
+        SortField::AddedAt => item.added_at.clone(),
+        SortField::UpdatedAt => item.updated_at.clone().unwrap_or_default(),
+    }
 }
 
 impl Serialize for Facets {

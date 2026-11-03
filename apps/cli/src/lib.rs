@@ -15,6 +15,7 @@ pub(crate) mod candidate_cover;
 mod catalog;
 pub mod cli;
 pub mod conversion;
+pub mod delivery;
 pub mod destinations;
 pub mod diagnostics;
 pub mod error;

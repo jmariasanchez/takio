@@ -4,7 +4,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use takio::conversion::{self, BackendDiscovery, FormatId};
+use takio::conversion::{self, BackendDiscovery};
+use takio::format::FormatId;
 use takio::model::LibraryItem;
 use takio::output::{AppError, AppResult};
 use takio::store::LibraryStore;
@@ -117,10 +118,7 @@ fn validate_review(store: &LibraryStore, reviewed: &PreparationPreview) -> AppRe
 }
 
 fn eligible_item(store: &LibraryStore, id: &str) -> AppResult<LibraryItem> {
-    let item = store.get(id)?.ok_or_else(|| AppError::new("not-found"))?;
-    if crate::engine::trashed_ids(store)?.contains(id) {
-        return Err(AppError::new("item-trashed"));
-    }
+    let item = store.get_active(id)?;
     if item
         .formats
         .iter()
@@ -143,7 +141,9 @@ fn source_fingerprint(path: &Path) -> AppResult<(u64, String)> {
     if !path.is_file() {
         return Err(AppError::new("prepare-source-unavailable"));
     }
-    conversion::fingerprint(path).map_err(|_| AppError::new("prepare-source-unavailable"))
+    takio::fingerprint::hash_file(path)
+        .map(Into::into)
+        .map_err(|_| AppError::new("prepare-source-unavailable"))
 }
 
 #[cfg(all(test, unix))]

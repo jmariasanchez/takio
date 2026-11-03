@@ -7,8 +7,8 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::conversion::FormatId;
 use crate::fingerprint::CopyError;
+use crate::format::FormatId;
 use crate::model::BookFormat;
 use crate::output::{AppError, AppResult};
 
