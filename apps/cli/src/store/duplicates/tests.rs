@@ -38,7 +38,7 @@ fn duplicate_reviews_are_stable_idempotent_and_reject_stale_evidence() {
             limit: 1,
             offset: 0,
         },
-        disposition: "unreviewed".to_owned(),
+        disposition: DuplicateDisposition::Unreviewed,
     };
     let first = store.list_duplicate_candidates(&request).unwrap();
     let second = store.list_duplicate_candidates(&request).unwrap();
@@ -123,7 +123,7 @@ fn duplicate_merge_rolls_back_and_purge_preserves_transferred_owned_files() {
                 limit: 100,
                 offset: 0,
             },
-            disposition: "unreviewed".to_owned(),
+            disposition: DuplicateDisposition::Unreviewed,
         })
         .unwrap();
     let token = page.candidates[0].review_token.clone();
@@ -131,7 +131,8 @@ fn duplicate_merge_rolls_back_and_purge_preserves_transferred_owned_files() {
         target_id: target.id.clone(),
         source_id: source.id.clone(),
         review_token: token.clone(),
-        metadata: serde_json::json!({"title":"Merged","tags":["reviewed"]}),
+        metadata: serde_json::from_value(serde_json::json!({"title":"Merged","tags":["reviewed"]}))
+            .unwrap(),
         add_source_formats: vec![FormatId::Pdf],
         cover: "source".to_owned(),
     };
@@ -192,7 +193,7 @@ fn duplicate_merge_rolls_back_when_result_hydration_fails() {
                 limit: 100,
                 offset: 0,
             },
-            disposition: "unreviewed".to_owned(),
+            disposition: DuplicateDisposition::Unreviewed,
         })
         .unwrap()
         .candidates
@@ -210,7 +211,7 @@ fn duplicate_merge_rolls_back_when_result_hydration_fails() {
             target_id: target.id.clone(),
             source_id: source.id.clone(),
             review_token: candidate.review_token,
-            metadata: serde_json::json!({"title":"Merged"}),
+            metadata: serde_json::from_value(serde_json::json!({"title":"Merged"})).unwrap(),
             add_source_formats: vec![FormatId::Pdf],
             cover: "none".to_owned(),
         })
@@ -262,7 +263,7 @@ fn shared_merged_formats_survive_target_remove_and_replace() {
             limit: 100,
             offset: 0,
         },
-        disposition: "unreviewed".to_owned(),
+        disposition: DuplicateDisposition::Unreviewed,
     };
     let merge = |store: &mut LibraryStore| {
         let token = store
@@ -276,7 +277,7 @@ fn shared_merged_formats_survive_target_remove_and_replace() {
                 target_id: target.id.clone(),
                 source_id: source.id.clone(),
                 review_token: token,
-                metadata: serde_json::json!({"title":"Merged"}),
+                metadata: serde_json::from_value(serde_json::json!({"title":"Merged"})).unwrap(),
                 add_source_formats: vec![FormatId::Pdf],
                 cover: "none".to_owned(),
             })
@@ -342,7 +343,7 @@ fn duplicate_signals_use_javascript_string_order_and_safe_numbers() {
                 limit: 100,
                 offset: 0,
             },
-            disposition: "unreviewed".to_owned(),
+            disposition: DuplicateDisposition::Unreviewed,
         })
         .unwrap();
     assert!(matches!(
@@ -363,7 +364,7 @@ fn duplicate_signals_use_javascript_string_order_and_safe_numbers() {
                     limit: 100,
                     offset: 0,
                 },
-                disposition: "unreviewed".to_owned(),
+                disposition: DuplicateDisposition::Unreviewed,
             })
             .unwrap_err()
             .code(),
@@ -402,7 +403,7 @@ fn duplicate_merge_rejects_empty_contract_arrays() {
                 limit: 100,
                 offset: 0,
             },
-            disposition: "unreviewed".to_owned(),
+            disposition: DuplicateDisposition::Unreviewed,
         })
         .unwrap()
         .candidates
@@ -418,7 +419,7 @@ fn duplicate_merge_rejects_empty_contract_arrays() {
                     target_id: left.id.clone(),
                     source_id: right.id.clone(),
                     review_token: token.clone(),
-                    metadata,
+                    metadata: serde_json::from_value(metadata).unwrap(),
                     add_source_formats: vec![FormatId::Pdf],
                     cover: "none".to_owned(),
                 })

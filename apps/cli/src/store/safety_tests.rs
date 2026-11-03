@@ -1,5 +1,104 @@
 use super::*;
 
+#[test]
+fn watch_outcome_wire_values_match_persisted_labels() {
+    let (_temp, mut store, item) = fixture();
+    let source = &item.formats[0].source_path;
+    let fingerprint = hash_file(source).unwrap();
+    for (outcome, label) in [
+        (ImportWatchOutcome::Imported, "imported"),
+        (ImportWatchOutcome::Duplicate, "duplicate"),
+        (ImportWatchOutcome::Unsupported, "unsupported"),
+        (ImportWatchOutcome::Failed, "failed"),
+    ] {
+        let wire = serde_json::json!(label);
+        assert_eq!(serde_json::to_value(outcome).unwrap(), wire);
+        assert_eq!(
+            serde_json::from_value::<ImportWatchOutcome>(wire).unwrap(),
+            outcome
+        );
+        store
+            .record_import_watch_observation(ImportWatchObservation {
+                canonical_source_path: source.clone(),
+                fingerprint: fingerprint.clone(),
+                outcome,
+            })
+            .unwrap();
+        let stored: String = store
+            .connection
+            .query_row(
+                "SELECT outcome FROM import_watch_observations WHERE canonical_source_path=?1",
+                [source.to_string_lossy()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(stored, label);
+    }
+    assert!(serde_json::from_value::<ImportWatchOutcome>(serde_json::json!("typo")).is_err());
+}
+
+#[test]
+fn duplicate_disposition_keeps_wire_values_and_rejects_unknowns() {
+    for (disposition, label) in [
+        (DuplicateDisposition::Unreviewed, "unreviewed"),
+        (DuplicateDisposition::KeptBoth, "kept-both"),
+    ] {
+        let wire = serde_json::json!(label);
+        assert_eq!(serde_json::to_value(disposition).unwrap(), wire);
+        assert_eq!(
+            serde_json::from_value::<DuplicateDisposition>(wire).unwrap(),
+            disposition
+        );
+    }
+    assert!(
+        serde_json::from_value::<ListDuplicateCandidatesRequest>(
+            serde_json::json!({"page":{"limit":10,"offset":0},"disposition":"typo"})
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn merge_request_deserializes_typed_metadata_and_rejects_unknown_fields() {
+    let base = serde_json::json!({
+        "targetId":"target", "sourceId":"source", "reviewToken":"a".repeat(64),
+        "metadata":{"title":"Merged"}, "addSourceFormats":[], "cover":"none"
+    });
+    let parsed: MergeDuplicatePairRequest = serde_json::from_value(base.clone()).unwrap();
+    assert_eq!(
+        parsed.metadata.title.as_set().map(String::as_str),
+        Some("Merged")
+    );
+    for metadata in [
+        serde_json::json!({"unknown":true}),
+        serde_json::json!({"title":3}),
+        serde_json::json!(null),
+    ] {
+        let mut invalid = base.clone();
+        invalid["metadata"] = metadata;
+        assert!(serde_json::from_value::<MergeDuplicatePairRequest>(invalid).is_err());
+    }
+}
+
+#[test]
+fn active_item_lookup_distinguishes_absent_and_trashed_books() {
+    let (_temp, mut store, item) = fixture();
+    assert_eq!(store.get_active(&item.id).unwrap().id, item.id);
+    assert_eq!(store.get_active("missing").unwrap_err().code(), "not-found");
+    assert_eq!(
+        store.get_active("").unwrap_err().code(),
+        "invalid-arguments"
+    );
+    store.trash(&item.id).unwrap();
+    assert_eq!(
+        store.get_active(&item.id).unwrap_err().code(),
+        "item-trashed"
+    );
+    assert!(store.get(&item.id).unwrap().is_some());
+    store.restore(&item.id).unwrap();
+    assert_eq!(store.get_active(&item.id).unwrap().id, item.id);
+}
+
 fn fixture() -> (tempfile::TempDir, LibraryStore, LibraryItem) {
     let temp = tempfile::tempdir().unwrap();
     let paths = LibraryPaths::resolve(None, Some(&temp.path().join("library.sqlite"))).unwrap();

@@ -141,11 +141,30 @@ pub struct LibraryQueryScope<'a> {
     pub filters: LibraryQueryFilters<'a>,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, Eq, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum ImportWatchOutcome {
+    Imported,
+    Duplicate,
+    Unsupported,
+    Failed,
+}
+
+impl ImportWatchOutcome {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Imported => "imported",
+            Self::Duplicate => "duplicate",
+            Self::Unsupported => "unsupported",
+            Self::Failed => "failed",
+        }
+    }
+}
+
 pub struct ImportWatchObservation {
     pub canonical_source_path: PathBuf,
-    pub content_bytes: u64,
-    pub content_sha256: String,
-    pub outcome: &'static str,
+    pub fingerprint: Fingerprint,
+    pub outcome: ImportWatchOutcome,
 }
 
 /// One active book, and one managed format's recorded fingerprint when it has one.
@@ -195,9 +214,9 @@ pub struct SavedView {
 }
 
 pub use duplicates::{
-    DuplicateCandidate, DuplicateCandidatePage, DuplicatePageRequest, DuplicatePairReviewRequest,
-    DuplicateScanSummary, DuplicateSignal, ListDuplicateCandidatesRequest,
-    MergeDuplicatePairRequest, MergeDuplicatePairResult,
+    DuplicateCandidate, DuplicateCandidatePage, DuplicateDisposition, DuplicatePageRequest,
+    DuplicatePairReviewRequest, DuplicateScanSummary, DuplicateSignal,
+    ListDuplicateCandidatesRequest, MergeDuplicatePairRequest, MergeDuplicatePairResult,
 };
 
 impl LibraryStore {
@@ -612,9 +631,9 @@ impl LibraryStore {
                accounted_at=excluded.accounted_at",
             params![
                 observation.canonical_source_path.to_string_lossy(),
-                as_i64(observation.content_bytes)?,
-                observation.content_sha256,
-                observation.outcome,
+                as_i64(observation.fingerprint.bytes)?,
+                observation.fingerprint.sha256,
+                observation.outcome.as_str(),
                 Utc::now().to_rfc3339()
             ],
         )?;

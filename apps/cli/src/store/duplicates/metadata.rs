@@ -1,15 +1,15 @@
 //! Duplicate-merge metadata contract and persistence within the caller's transaction.
 use rusqlite::{Transaction, params};
-use serde_json::Value;
 
-use crate::error::{AppError, AppResult};
+use crate::error::AppResult;
 use crate::model::{LibraryItem, LibraryPatch};
 use crate::store::{LibraryStore, metadata::replace_metadata};
 
-pub(super) fn apply_duplicate_metadata(item: &mut LibraryItem, metadata: &Value) -> AppResult<()> {
-    let patch: LibraryPatch =
-        serde_json::from_value(metadata.clone()).map_err(|_| AppError::new("invalid-arguments"))?;
-    LibraryStore::apply_patch_to_item(item, patch, false)
+pub(super) fn apply_duplicate_metadata(
+    item: &mut LibraryItem,
+    patch: &LibraryPatch,
+) -> AppResult<()> {
+    LibraryStore::apply_patch_to_item(item, patch.clone(), false)
 }
 
 pub(super) fn write_duplicate_metadata(
@@ -51,12 +51,17 @@ mod tests {
         let mut item = store.import(&source, None, false).unwrap();
         for metadata in [
             serde_json::json!({"unknown":true}),
-            serde_json::json!({"tags":null}),
-            serde_json::json!({"authors":[]}),
             serde_json::json!({"title":4}),
         ] {
+            assert!(serde_json::from_value::<LibraryPatch>(metadata).is_err());
+        }
+        for invalid in [
+            serde_json::json!({"authors":[]}),
+            serde_json::json!({"tags":null}),
+        ] {
+            let patch = serde_json::from_value(invalid).unwrap();
             assert_eq!(
-                apply_duplicate_metadata(&mut item, &metadata)
+                apply_duplicate_metadata(&mut item, &patch)
                     .unwrap_err()
                     .code(),
                 "invalid-arguments"
@@ -64,11 +69,16 @@ mod tests {
         }
         apply_duplicate_metadata(
             &mut item,
-            &serde_json::json!({"authors":[{"name":" Alice "}],"tags":[]}),
+            &serde_json::from_value(serde_json::json!({"authors":[{"name":" Alice "}],"tags":[]}))
+                .unwrap(),
         )
         .unwrap();
         assert_eq!(item.author.as_deref(), Some("Alice"));
-        apply_duplicate_metadata(&mut item, &serde_json::json!({"authors":null})).unwrap();
+        apply_duplicate_metadata(
+            &mut item,
+            &serde_json::from_value(serde_json::json!({"authors":null})).unwrap(),
+        )
+        .unwrap();
         assert!(item.author.is_none());
     }
 }

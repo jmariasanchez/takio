@@ -3,7 +3,7 @@
 //! Selection preserves each API's ordering and missing-record policy. Record
 //! reconstruction belongs to hydration, while snapshot reuse belongs to query_cache.
 use rusqlite::types::Value as SqlValue;
-use rusqlite::{Connection, params, params_from_iter};
+use rusqlite::{Connection, OptionalExtension, params, params_from_iter};
 
 use super::hydration::{read_items_bulk, read_items_required};
 use super::metadata::valid_custom_metadata_key;
@@ -45,6 +45,28 @@ impl LibraryStore {
             return Err(AppError::new("invalid-arguments"));
         }
         self.read_item(id)
+    }
+
+    /// Resolve an existing, non-trashed item for delivery or preparation.
+    ///
+    /// # Errors
+    /// Returns `not-found` for a missing identifier and `item-trashed` when the
+    /// item must first be explicitly restored. Empty identifiers are invalid.
+    pub fn get_active(&self, id: &str) -> AppResult<LibraryItem> {
+        let item = self.get(id)?.ok_or_else(|| AppError::new("not-found"))?;
+        let trashed: bool = self
+            .connection
+            .query_row(
+                "SELECT trashed_at IS NOT NULL FROM library_items WHERE id=?1",
+                [id],
+                |row| row.get(0),
+            )
+            .optional()?
+            .ok_or_else(|| AppError::new("not-found"))?;
+        if trashed {
+            return Err(AppError::new("item-trashed"));
+        }
+        Ok(item)
     }
 
     pub fn search(&self, query: &str) -> AppResult<Vec<LibraryItem>> {

@@ -7,13 +7,12 @@ use std::path::Path;
 use chrono::Utc;
 use rusqlite::{OptionalExtension, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value};
 
 use super::LibraryStore;
 use super::hydration::read_item_from;
 use crate::conversion::FormatId;
 use crate::error::{AppError, AppResult};
-use crate::model::LibraryItem;
+use crate::model::{LibraryItem, LibraryPatch};
 
 mod metadata;
 mod scan;
@@ -79,7 +78,14 @@ pub struct DuplicatePageRequest {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ListDuplicateCandidatesRequest {
     pub page: DuplicatePageRequest,
-    pub disposition: String,
+    pub disposition: DuplicateDisposition,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, Eq, PartialEq)]
+#[serde(rename_all = "kebab-case")]
+pub enum DuplicateDisposition {
+    Unreviewed,
+    KeptBoth,
 }
 
 #[derive(Debug, Deserialize)]
@@ -96,7 +102,7 @@ pub struct MergeDuplicatePairRequest {
     pub target_id: String,
     pub source_id: String,
     pub review_token: String,
-    pub metadata: Value,
+    pub metadata: LibraryPatch,
     pub add_source_formats: Vec<FormatId>,
     pub cover: String,
 }
@@ -139,7 +145,7 @@ impl LibraryStore {
                 let reviewed = reviews
                     .get(&(candidate.left.id.clone(), candidate.right.id.clone()))
                     == Some(&candidate.review_token);
-                (request.disposition == "kept-both") == reviewed
+                (request.disposition == DuplicateDisposition::KeptBoth) == reviewed
             })
             .collect::<Vec<_>>();
         let total = matching.len();
@@ -352,10 +358,7 @@ impl LibraryStore {
 }
 
 fn validate_duplicate_page(request: &ListDuplicateCandidatesRequest) -> AppResult<()> {
-    if request.page.limit == 0
-        || request.page.limit > 100
-        || !matches!(request.disposition.as_str(), "unreviewed" | "kept-both")
-    {
+    if request.page.limit == 0 || request.page.limit > 100 {
         return Err(AppError::new("invalid-arguments"));
     }
     Ok(())
@@ -375,8 +378,7 @@ fn validate_merge_request(request: &MergeDuplicatePairRequest) -> AppResult<()> 
         || request.source_id.is_empty()
         || request.target_id == request.source_id
         || !valid_review_token(&request.review_token)
-        || !request.metadata.is_object()
-        || request.metadata.as_object().is_some_and(Map::is_empty)
+        || request.metadata.is_empty()
         || !matches!(request.cover.as_str(), "target" | "source" | "none")
     {
         return Err(AppError::new("invalid-arguments"));
