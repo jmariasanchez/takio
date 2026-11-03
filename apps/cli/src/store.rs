@@ -68,6 +68,12 @@ pub struct MutationResult {
     pub cleanup_pending_paths: Vec<PathBuf>,
 }
 
+impl From<LibraryItem> for MutationResult {
+    fn from(item: LibraryItem) -> Self {
+        Self::new(item)
+    }
+}
+
 impl MutationResult {
     fn new(item: LibraryItem) -> Self {
         Self {
@@ -835,17 +841,8 @@ impl LibraryStore {
         }
     }
 
-    /// Compatibility API. Use `remove_format_with_cleanup` to display cleanup warnings.
-    pub fn remove_format(&mut self, id: &str, format: FormatId) -> AppResult<LibraryItem> {
-        self.remove_format_with_cleanup(id, format)
-            .map(|result| result.item)
-    }
-
-    pub fn remove_format_with_cleanup(
-        &mut self,
-        id: &str,
-        format: FormatId,
-    ) -> AppResult<MutationResult> {
+    /// Returns the committed item and any managed paths that could not be cleaned up.
+    pub fn remove_format(&mut self, id: &str, format: FormatId) -> AppResult<MutationResult> {
         let item = self
             .read_item(id)?
             .ok_or_else(|| AppError::new("not-found"))?;
@@ -873,20 +870,16 @@ impl LibraryStore {
         Ok(updated)
     }
 
-    /// Compatibility API. Use `replace_format_with_cleanup` to display cleanup warnings.
-    pub fn replace_format(
+    pub fn remove_format_with_cleanup(
         &mut self,
         id: &str,
         format: FormatId,
-        expected: &Value,
-        source: &Path,
-        managed: bool,
-    ) -> AppResult<LibraryItem> {
-        self.replace_format_with_cleanup(id, format, expected, source, managed)
-            .map(|result| result.item)
+    ) -> AppResult<MutationResult> {
+        self.remove_format(id, format)
     }
 
-    pub fn replace_format_with_cleanup(
+    /// Returns the committed item and any managed paths that could not be cleaned up.
+    pub fn replace_format(
         &mut self,
         id: &str,
         format: FormatId,
@@ -967,12 +960,22 @@ impl LibraryStore {
         Ok(updated)
     }
 
+    pub fn replace_format_with_cleanup(
+        &mut self,
+        id: &str,
+        format: FormatId,
+        expected: &Value,
+        source: &Path,
+        managed: bool,
+    ) -> AppResult<MutationResult> {
+        self.replace_format(id, format, expected, source, managed)
+    }
+
     /// Compatibility entry point for `library remove`: moves the item to trash.
     /// Permanent deletion is only available through `purge` after trashing.
-    /// Like sibling mutators, unknown IDs return `not-found`. The optional
-    /// result type is retained for existing callers.
-    pub fn remove(&mut self, id: &str) -> AppResult<Option<LibraryItem>> {
-        self.trash(id).map(Some)
+    /// Like sibling mutators, unknown IDs return `not-found`.
+    pub fn remove(&mut self, id: &str) -> AppResult<MutationResult> {
+        self.trash(id).map(MutationResult::new)
     }
 
     pub fn update(&mut self, id: &str, patch: LibraryPatch) -> AppResult<LibraryItem> {
@@ -1287,13 +1290,14 @@ impl LibraryStore {
         self.set_trash(id, None)
     }
 
-    /// Compatibility API. Use `purge_with_cleanup` to display cleanup warnings.
-    pub fn purge(&mut self, id: &str) -> AppResult<LibraryItem> {
-        self.purge_with_cleanup(id).map(|result| result.item)
+    /// Permanently deletes a trashed item and reports any preserved orphan paths.
+    /// Unknown IDs return `not-found`; active items return `not-trashed`.
+    pub fn purge(&mut self, id: &str) -> AppResult<MutationResult> {
+        self.purge_trashed(id)
     }
 
     pub fn purge_with_cleanup(&mut self, id: &str) -> AppResult<MutationResult> {
-        self.purge_trashed(id)
+        self.purge(id)
     }
 
     fn purge_trashed(&mut self, id: &str) -> AppResult<MutationResult> {

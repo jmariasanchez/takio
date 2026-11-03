@@ -42,7 +42,7 @@ fn purge_reports_changed_file_and_continues_other_cleanup() {
     let unchanged = item.formats[1].source_path.clone();
     fs::write(&changed, b"user changed bytes").unwrap();
     store.trash(&item.id).unwrap();
-    let result = store.purge_with_cleanup(&item.id).unwrap();
+    let result = store.purge(&item.id).unwrap();
     assert!(result.cleanup_pending);
     assert_eq!(result.cleanup_pending_paths, vec![changed.clone()]);
     assert!(store.get(&item.id).unwrap().is_none());
@@ -62,9 +62,7 @@ fn remove_format_reports_cleanup_failure_after_committed_change() {
     store.attach_format(&item.id, &pdf, true).unwrap();
     let changed = item.formats[0].source_path.clone();
     fs::write(&changed, b"user changed bytes").unwrap();
-    let result = store
-        .remove_format_with_cleanup(&item.id, FormatId::Epub)
-        .unwrap();
+    let result = store.remove_format(&item.id, FormatId::Epub).unwrap();
     assert!(result.cleanup_pending);
     assert_eq!(result.cleanup_pending_paths, vec![changed.clone()]);
     assert_eq!(result.item.formats.len(), 1);
@@ -82,7 +80,7 @@ fn replace_format_reports_cleanup_failure_after_committed_change() {
     fs::write(&changed, b"user changed bytes").unwrap();
     let expected = serde_json::to_value(&item.formats[0]).unwrap();
     let result = store
-        .replace_format_with_cleanup(&item.id, FormatId::Epub, &expected, &replacement, true)
+        .replace_format(&item.id, FormatId::Epub, &expected, &replacement, true)
         .unwrap();
     assert!(result.cleanup_pending);
     assert_eq!(result.cleanup_pending_paths, vec![changed.clone()]);
@@ -116,7 +114,7 @@ fn format_mutations_roll_back_if_result_hydration_fails() {
             let replacement = temp.path().join("replacement.epub");
             fs::write(&replacement, b"replacement").unwrap();
             store
-                .replace_format_with_cleanup(
+                .replace_format(
                     &item.id,
                     FormatId::Epub,
                     &serde_json::to_value(&item.formats[0]).unwrap(),
@@ -125,9 +123,7 @@ fn format_mutations_roll_back_if_result_hydration_fails() {
                 )
                 .unwrap_err()
         } else {
-            store
-                .remove_format_with_cleanup(&item.id, FormatId::Epub)
-                .unwrap_err()
+            store.remove_format(&item.id, FormatId::Epub).unwrap_err()
         };
         assert_eq!(error.code(), "invalid-stored-data");
         assert_eq!(
@@ -148,7 +144,7 @@ fn remove_trashes_without_deleting_and_purge_requires_trash() {
     let (_temp, mut store, item) = fixture();
     assert_eq!(store.purge(&item.id).unwrap_err().code(), "not-trashed");
     assert!(item.formats[0].source_path.exists());
-    assert_eq!(store.remove(&item.id).unwrap().unwrap().id, item.id);
+    assert_eq!(store.remove(&item.id).unwrap().item.id, item.id);
     assert!(item.formats[0].source_path.exists());
     assert_eq!(store.list_trash().unwrap()[0].id, item.id);
     store.remove(&item.id).unwrap();
