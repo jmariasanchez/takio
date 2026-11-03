@@ -86,6 +86,14 @@ fn backup(f: &Fixture) -> PathBuf {
 #[gpui::test]
 fn corrupt_default_has_recovery_choices_and_every_cancel_is_read_only(cx: &mut TestAppContext) {
     let f = fixture(cx);
+    f.view.read_with(cx, |view, _| {
+        assert!(!view.busy);
+        assert!(
+            view.message
+                .starts_with("Operation failed: Opening your library...")
+        );
+        assert!(view.message.contains("The library could not be read"));
+    });
     assert!(f.view.update(cx, |view, cx| view.can_close(cx)));
     assert!(!f.preference.exists());
     original_unchanged(&f);
@@ -137,6 +145,10 @@ fn startup_open_existing_activates_only_valid_choice_and_remembers_it(cx: &mut T
     assert!(!missing.exists());
     assert!(!f.preference.exists());
     assert!(f.view.read_with(cx, |view, _| view.workspace.is_none()));
+    assert!(f.view.read_with(cx, |view, _| {
+        view.message
+            .starts_with(&format!("Operation failed: Opening {}", missing.display()))
+    }));
     backup(&f);
     let good = f._temp.path().join("good");
     begin(&f, false, cx);

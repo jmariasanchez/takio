@@ -89,7 +89,7 @@ impl StartupWindow {
                     }
                     Err(error) => {
                         this.message = format!(
-                            "{}\n{}\nChoose another existing library, or restore a backup into a separate new folder. No original library is replaced.",
+                            "Operation failed: {}\n{}\nChoose another existing library, or restore a backup into a separate new folder. No original library is replaced.",
                             this.operation,
                             humanize_error(error.code()),
                         );
