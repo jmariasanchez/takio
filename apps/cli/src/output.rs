@@ -55,9 +55,6 @@ pub fn print_success<T: Serialize>(value: T) -> AppResult<()> {
 }
 
 /// Write a JSON value as one newline-terminated record without an envelope.
-///
-/// # Errors
-/// Returns `storage-unavailable` if stdout cannot accept the complete record.
 pub fn print_json(value: &Value) -> AppResult<()> {
     write_line(&mut io::stdout().lock(), &value.to_string())
 }

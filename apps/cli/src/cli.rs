@@ -5,6 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use clap::{CommandFactory, Parser, Subcommand};
+use serde::{Deserialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use unicode_normalization::UnicodeNormalization;
@@ -23,7 +24,7 @@ use crate::metadata::{self, discover_ebook_meta, discover_fetch_ebook_metadata};
 use crate::metadata_reconcile::{CancellationSignals, ReconcileRequest, reconcile};
 use crate::model::{LibraryPatch, Patch};
 use crate::output::{AppError, AppResult, print_success};
-use crate::paths::LibraryPaths;
+use crate::paths::{LibraryPaths, absolute};
 use crate::portable_library;
 use crate::reader_shelf;
 use crate::store::{
@@ -167,7 +168,7 @@ enum LibraryCommand {
         #[command(subcommand)]
         command: CustomColumnsCommand,
     },
-    #[command(about = "Run the newline-delimited request loop used by the desktop sidecar")]
+    #[command(about = "Run the newline-delimited JSON request loop for automation clients")]
     Service {
         #[arg(long)]
         db: Option<PathBuf>,
@@ -310,7 +311,7 @@ enum LibraryCommand {
         #[arg(long = "request-json")]
         request_json: String,
     },
-    #[command(about = "Remove a book and delete only its Takio-managed files")]
+    #[command(about = "Move a book to recoverable trash without deleting its files")]
     Remove {
         #[arg(long)]
         db: Option<PathBuf>,
@@ -1150,13 +1151,13 @@ pub(crate) struct PreparedMetadataCandidate {
 }
 
 struct CandidateCoverStages<'a> {
-    library_root: Option<&'a Path>,
+    library_root: &'a Path,
     artifact_ids: Vec<String>,
     retain: bool,
 }
 
 impl<'a> CandidateCoverStages<'a> {
-    fn new(library_root: Option<&'a Path>) -> Self {
+    fn new(library_root: &'a Path) -> Self {
         Self {
             library_root,
             artifact_ids: Vec::new(),
@@ -1175,6 +1176,38 @@ impl<'a> CandidateCoverStages<'a> {
     fn retain(&mut self) {
         self.retain = true;
     }
+
+    fn candidate(
+        &mut self,
+        item_id: &str,
+        origin: (&str, &str, &str),
+        data: (Value, Option<crate::candidate_cover::CapturedCover>),
+        provenance: Value,
+        canceled: &AtomicBool,
+    ) -> AppResult<Option<Value>> {
+        if canceled.load(Ordering::Acquire) {
+            return Err(AppError::new("operation-canceled"));
+        }
+        let (id, source, confidence) = origin;
+        let (metadata, cover_data) = data;
+        let cover = cover_data
+            .as_ref()
+            .map(|cover| {
+                crate::candidate_cover::stage(
+                    self.library_root,
+                    item_id,
+                    id,
+                    source,
+                    &canonical_candidate_provenance(&provenance)?,
+                    cover,
+                )
+                .map(|cover| self.track(cover))
+            })
+            .transpose()?;
+        Ok(metadata_candidate(
+            id, source, confidence, metadata, provenance, cover,
+        ))
+    }
 }
 
 impl Drop for CandidateCoverStages<'_> {
@@ -1182,10 +1215,8 @@ impl Drop for CandidateCoverStages<'_> {
         if self.retain {
             return;
         }
-        if let Some(root) = self.library_root {
-            for artifact_id in &self.artifact_ids {
-                crate::candidate_cover::consume(root, artifact_id);
-            }
+        for artifact_id in &self.artifact_ids {
+            crate::candidate_cover::consume(self.library_root, artifact_id);
         }
     }
 }
@@ -1203,8 +1234,7 @@ pub(crate) fn metadata_candidates_for_item_at(
         timeout_seconds,
         &canceled,
         false,
-        false,
-        Some(library_root),
+        library_root,
     )
 }
 
@@ -1221,8 +1251,7 @@ pub(crate) fn metadata_candidates_for_item_at_cancellable(
         timeout_seconds,
         canceled,
         false,
-        true,
-        Some(library_root),
+        library_root,
     )
 }
 
@@ -1249,8 +1278,7 @@ fn metadata_candidates_for_reconcile(
         timeout_seconds,
         canceled,
         true,
-        true,
-        Some(library_root),
+        library_root,
     )
 }
 
@@ -1260,8 +1288,7 @@ fn metadata_candidates_for_item_with_policy(
     timeout_seconds: u64,
     canceled: &AtomicBool,
     require_requested_sources: bool,
-    cooperative_cancellation: bool,
-    library_root: Option<&Path>,
+    library_root: &Path,
 ) -> AppResult<Vec<Value>> {
     if timeout_seconds == 0 {
         return Err(AppError::new("invalid-arguments"));
@@ -1273,42 +1300,21 @@ fn metadata_candidates_for_item_with_policy(
         return Err(AppError::new("operation-canceled"));
     }
     if discover_ebook_meta().is_some() {
-        let extracted = if cooperative_cancellation {
-            metadata::extract_cancellable(
-                &item.source_path,
-                Duration::from_secs(timeout_seconds),
-                canceled,
-            )
-        } else {
-            metadata::extract(&item.source_path, Duration::from_secs(timeout_seconds))
-        };
+        let extracted = metadata::extract_cancellable(
+            &item.source_path,
+            Duration::from_secs(timeout_seconds),
+            canceled,
+        );
         match extracted {
             Ok(extracted) => {
                 let provenance = json!({"generatedAt":"1970-01-01T00:00:00.000Z","itemId":item.id,"sourcePath":extracted.source_path,"backend":"ebook-meta"});
-                let cover = if canceled.load(Ordering::Acquire) {
-                    None
-                } else if let (Some(cover), Some(library_root)) =
-                    (extracted.cover_data.as_ref(), library_root)
-                {
-                    Some(cover_stages.track(crate::candidate_cover::stage(
-                        library_root,
-                        &item.id,
-                        "embedded:1",
-                        "embedded",
-                        &canonical_candidate_provenance(&provenance)?,
-                        cover,
-                    )?))
-                } else {
-                    None
-                };
-                if let Some(candidate) = metadata_candidate(
-                    "embedded:1",
-                    "embedded",
-                    "high",
-                    extracted.metadata,
+                if let Some(candidate) = cover_stages.candidate(
+                    &item.id,
+                    ("embedded:1", "embedded", "high"),
+                    (extracted.metadata, extracted.cover_data),
                     provenance,
-                    cover,
-                ) {
+                    canceled,
+                )? {
                     candidates.push(candidate);
                 }
             }
@@ -1338,30 +1344,13 @@ fn metadata_candidates_for_item_with_policy(
         match fetched {
             Ok(fetched) => {
                 let provenance = json!({"generatedAt":"1970-01-01T00:00:00.000Z","itemId":item.id,"backend":"fetch-ebook-metadata"});
-                let cover = if canceled.load(Ordering::Acquire) {
-                    None
-                } else if let (Some(cover), Some(library_root)) =
-                    (fetched.cover_data.as_ref(), library_root)
-                {
-                    Some(cover_stages.track(crate::candidate_cover::stage(
-                        library_root,
-                        &item.id,
-                        "online:1",
-                        "online",
-                        &canonical_candidate_provenance(&provenance)?,
-                        cover,
-                    )?))
-                } else {
-                    None
-                };
-                if let Some(candidate) = metadata_candidate(
-                    "online:1",
-                    "online",
-                    "medium",
-                    fetched.metadata,
+                if let Some(candidate) = cover_stages.candidate(
+                    &item.id,
+                    ("online:1", "online", "medium"),
+                    (fetched.metadata, fetched.cover_data),
                     provenance,
-                    cover,
-                ) {
+                    canceled,
+                )? {
                     candidates.push(candidate);
                 }
             }
@@ -1802,7 +1791,7 @@ fn library(command: LibraryCommand, library: Option<&str>) -> AppResult<()> {
         } => {
             let paths = LibraryPaths::resolve(library, db.as_deref())?;
             let mut store = LibraryStore::open(paths, true)?;
-            print_success(json!({"item":store.import(&source_path, title.as_deref(), false)?}))
+            print_success(store.import_with_outcome(&source_path, title.as_deref(), false)?)
         }
         LibraryCommand::Import {
             db,
@@ -1817,9 +1806,7 @@ fn library(command: LibraryCommand, library: Option<&str>) -> AppResult<()> {
             };
             let paths = LibraryPaths::resolve(library, db.as_deref())?;
             let mut store = LibraryStore::open(paths, true)?;
-            print_success(
-                json!({"item":store.import(&source_path, title.as_deref(), move_source)?}),
-            )
+            print_success(store.import_with_outcome(&source_path, title.as_deref(), move_source)?)
         }
         LibraryCommand::List {
             db,
@@ -2454,6 +2441,76 @@ fn validate_library_formats(
     )
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ColumnLabelRequest {
+    key: String,
+    label: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ColumnKeyRequest {
+    key: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum SourceKind {
+    Copy,
+    Reference,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FormatSource {
+    path: PathBuf,
+    kind: SourceKind,
+}
+
+impl FormatSource {
+    fn managed(&self) -> bool {
+        matches!(self.kind, SourceKind::Copy)
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AttachFormatRequest {
+    id: String,
+    source: FormatSource,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ReplaceFormatRequest {
+    id: String,
+    format: FormatId,
+    expected_current: serde_json::Map<String, Value>,
+    source: FormatSource,
+}
+
+fn decode_request<T: DeserializeOwned>(value: &Value) -> AppResult<T> {
+    serde_json::from_value(value.clone()).map_err(|_| AppError::new("invalid-arguments"))
+}
+
+fn replace_format_request(
+    store: &mut LibraryStore,
+    request: ReplaceFormatRequest,
+) -> AppResult<Value> {
+    if request.id.is_empty() {
+        return Err(AppError::new("invalid-arguments"));
+    }
+    let result = store.replace_format_with_cleanup(
+        &request.id,
+        request.format,
+        &Value::Object(request.expected_current),
+        &request.source.path,
+        request.source.managed(),
+    )?;
+    serde_json::to_value(result).map_err(|_| AppError::new("storage-unavailable"))
+}
+
 fn library_format(command: FormatCommand, library: Option<&str>) -> AppResult<()> {
     match command {
         FormatCommand::Import {
@@ -2477,37 +2534,16 @@ fn library_format(command: FormatCommand, library: Option<&str>) -> AppResult<()
         FormatCommand::Remove { db, id, format } => {
             let paths = LibraryPaths::resolve(library, db.as_deref())?;
             let mut store = LibraryStore::open(paths, true)?;
-            print_success(json!({"item":store.remove_format(&id, format)?,"cleanupPending":false}))
+            print_success(store.remove_format_with_cleanup(&id, format)?)
         }
         FormatCommand::Replace { db, request_json } => {
-            let request = read_json(&request_json)?;
-            let id = request_id(&request)?;
-            let format = serde_json::from_value::<FormatId>(
-                request
-                    .get("format")
-                    .cloned()
-                    .ok_or_else(|| AppError::new("invalid-arguments"))?,
-            )
-            .map_err(|_| AppError::new("invalid-arguments"))?;
-            let expected = request
-                .get("expectedCurrent")
-                .ok_or_else(|| AppError::new("invalid-arguments"))?;
-            let source = request
-                .get("source")
-                .ok_or_else(|| AppError::new("invalid-arguments"))?;
-            let path = source
-                .get("path")
-                .and_then(Value::as_str)
-                .ok_or_else(|| AppError::new("invalid-arguments"))?;
-            let managed = match source.get("kind").and_then(Value::as_str) {
-                Some("copy") => true,
-                Some("reference") => false,
-                _ => return Err(AppError::new("invalid-arguments")),
-            };
+            let request: ReplaceFormatRequest = decode_request(&read_json(&request_json)?)?;
+            if request.id.is_empty() {
+                return Err(AppError::new("invalid-arguments"));
+            }
             let paths = LibraryPaths::resolve(library, db.as_deref())?;
             let mut store = LibraryStore::open(paths, true)?;
-            let item = store.replace_format(id, format, expected, Path::new(path), managed)?;
-            print_success(json!({"item":item,"cleanupPending":false}))
+            print_success(replace_format_request(&mut store, request)?)
         }
     }
 }
@@ -2575,7 +2611,7 @@ fn library_trash(command: TrashCommand, library: Option<&str>) -> AppResult<()> 
             let id = request_id(&request)?;
             let paths = LibraryPaths::resolve(library, db.as_deref())?;
             let mut store = LibraryStore::open(paths, true)?;
-            print_success(json!({"item":store.purge(id)?,"cleanupPending":false}))
+            print_success(store.purge_with_cleanup(id)?)
         }
     }
 }
@@ -2637,44 +2673,22 @@ fn service_request(store: &mut LibraryStore, request: &Value) -> AppResult<Value
                 .map_err(|_| AppError::new("storage-unavailable"))
         }
         "library_custom_columns_create" => {
-            if args.as_object().is_none_or(|args| args.len() != 2) {
-                return Err(AppError::new("invalid-arguments"));
-            }
-            let key = args
-                .get("key")
-                .and_then(Value::as_str)
-                .ok_or_else(|| AppError::new("invalid-arguments"))?;
-            let label = args
-                .get("label")
-                .and_then(Value::as_str)
-                .ok_or_else(|| AppError::new("invalid-arguments"))?;
-            serde_json::to_value(store.create_custom_column_definition(key, label)?)
-                .map_err(|_| AppError::new("storage-unavailable"))
+            let request: ColumnLabelRequest = decode_request(args)?;
+            serde_json::to_value(
+                store.create_custom_column_definition(&request.key, &request.label)?,
+            )
+            .map_err(|_| AppError::new("storage-unavailable"))
         }
         "library_custom_columns_rename" => {
-            if args.as_object().is_none_or(|args| args.len() != 2) {
-                return Err(AppError::new("invalid-arguments"));
-            }
-            let key = args
-                .get("key")
-                .and_then(Value::as_str)
-                .ok_or_else(|| AppError::new("invalid-arguments"))?;
-            let label = args
-                .get("label")
-                .and_then(Value::as_str)
-                .ok_or_else(|| AppError::new("invalid-arguments"))?;
-            serde_json::to_value(store.rename_custom_column_definition(key, label)?)
-                .map_err(|_| AppError::new("storage-unavailable"))
+            let request: ColumnLabelRequest = decode_request(args)?;
+            serde_json::to_value(
+                store.rename_custom_column_definition(&request.key, &request.label)?,
+            )
+            .map_err(|_| AppError::new("storage-unavailable"))
         }
         "library_custom_columns_remove" => {
-            if args.as_object().is_none_or(|args| args.len() != 1) {
-                return Err(AppError::new("invalid-arguments"));
-            }
-            let key = args
-                .get("key")
-                .and_then(Value::as_str)
-                .ok_or_else(|| AppError::new("invalid-arguments"))?;
-            serde_json::to_value(store.remove_custom_column_definition(key)?)
+            let request: ColumnKeyRequest = decode_request(args)?;
+            serde_json::to_value(store.remove_custom_column_definition(&request.key)?)
                 .map_err(|_| AppError::new("storage-unavailable"))
         }
         "library_duplicates_list" => {
@@ -2712,20 +2726,13 @@ fn service_request(store: &mut LibraryStore, request: &Value) -> AppResult<Value
             Ok(json!({"item":store.update(id, patch)?}))
         }
         "library_attach_format" => {
-            let id = request_id(args)?;
-            let source = args
-                .get("source")
-                .ok_or_else(|| AppError::new("invalid-arguments"))?;
-            let path = source
-                .get("path")
-                .and_then(Value::as_str)
-                .ok_or_else(|| AppError::new("invalid-arguments"))?;
-            let managed = match source.get("kind").and_then(Value::as_str) {
-                Some("copy") => true,
-                Some("reference") => false,
-                _ => return Err(AppError::new("invalid-arguments")),
-            };
-            Ok(json!({"item":store.attach_format(id, Path::new(path), managed)?}))
+            let request: AttachFormatRequest = decode_request(args)?;
+            if request.id.is_empty() {
+                return Err(AppError::new("invalid-arguments"));
+            }
+            Ok(
+                json!({"item":store.attach_format(&request.id, &request.source.path, request.source.managed())?}),
+            )
         }
         "library_remove_format" => {
             let id = request_id(args)?;
@@ -2735,7 +2742,8 @@ fn service_request(store: &mut LibraryStore, request: &Value) -> AppResult<Value
                     .ok_or_else(|| AppError::new("invalid-arguments"))?,
             )
             .map_err(|_| AppError::new("invalid-arguments"))?;
-            Ok(json!({"item":store.remove_format(id, format)?,"cleanupPending":false}))
+            serde_json::to_value(store.remove_format_with_cleanup(id, format)?)
+                .map_err(|_| AppError::new("storage-unavailable"))
         }
         "library_cover_set" => {
             let id = request_id(args)?;
@@ -2759,35 +2767,10 @@ fn service_request(store: &mut LibraryStore, request: &Value) -> AppResult<Value
         }
         "library_purge" => {
             let id = request_id(args)?;
-            Ok(json!({"item":store.purge(id)?,"cleanupPending":false}))
+            serde_json::to_value(store.purge_with_cleanup(id)?)
+                .map_err(|_| AppError::new("storage-unavailable"))
         }
-        "library_replace_format" => {
-            let id = request_id(args)?;
-            let format = serde_json::from_value::<FormatId>(
-                args.get("format")
-                    .cloned()
-                    .ok_or_else(|| AppError::new("invalid-arguments"))?,
-            )
-            .map_err(|_| AppError::new("invalid-arguments"))?;
-            let expected = args
-                .get("expectedCurrent")
-                .ok_or_else(|| AppError::new("invalid-arguments"))?;
-            let source = args
-                .get("source")
-                .ok_or_else(|| AppError::new("invalid-arguments"))?;
-            let path = source
-                .get("path")
-                .and_then(Value::as_str)
-                .ok_or_else(|| AppError::new("invalid-arguments"))?;
-            let managed = match source.get("kind").and_then(Value::as_str) {
-                Some("copy") => true,
-                Some("reference") => false,
-                _ => return Err(AppError::new("invalid-arguments")),
-            };
-            Ok(
-                json!({"item":store.replace_format(id, format, expected, Path::new(path), managed)?,"cleanupPending":false}),
-            )
-        }
+        "library_replace_format" => replace_format_request(store, decode_request(args)?),
         _ => Err(AppError::new("invalid-arguments")),
     }
 }
@@ -2990,12 +2973,15 @@ fn export_many(store: &LibraryStore, request: &Value) -> AppResult<Value> {
         return Err(AppError::new("destination-unavailable"));
     }
     let mut outcomes = Vec::new();
+    let (mut exported, mut skipped, mut failed) = (0, 0, 0);
     for id in ids {
         let Some(item) = store.get(id)? else {
+            failed += 1;
             outcomes.push(json!({"status":"failed","itemId":id,"code":"item-not-found"}));
             continue;
         };
         if item.formats.is_empty() {
+            failed += 1;
             outcomes.push(json!({"status":"failed","itemId":id,"code":"source-unavailable"}));
             continue;
         }
@@ -3015,7 +3001,7 @@ fn export_many(store: &LibraryStore, request: &Value) -> AppResult<Value> {
                 .as_ref()
                 .map_or_else(|| destination.clone(), |segment| destination.join(segment));
             let target = requested_directory.join(&file_name);
-            let target_shape = json!({
+            let mut target_shape = json!({
                 "itemId":id,
                 "format":format.format,
                 "provenance":format.provenance,
@@ -3026,6 +3012,7 @@ fn export_many(store: &LibraryStore, request: &Value) -> AppResult<Value> {
             {
                 directory
             } else {
+                failed += 1;
                 outcomes.push(merge_json(
                     target_shape,
                     json!({"status":"failed","code":"destination-unavailable"}),
@@ -3033,49 +3020,24 @@ fn export_many(store: &LibraryStore, request: &Value) -> AppResult<Value> {
                 continue;
             };
             let target = directory.join(file_name);
-            match copy_export_file(&format.source_path, &target) {
-                ExportCopy::Exported { bytes, sha256 } => outcomes.push(merge_json(
-                    json!({
-                        "itemId":id,
-                        "format":format.format,
-                        "provenance":format.provenance,
-                        "destinationPath":target
-                    }),
-                    json!({"status":"exported","bytes":bytes,"sha256":sha256,"metadata":"unsupported"}),
-                )),
-                ExportCopy::Skipped => outcomes.push(merge_json(
-                    json!({
-                        "itemId":id,
-                        "format":format.format,
-                        "provenance":format.provenance,
-                        "destinationPath":target
-                    }),
-                    json!({"status":"skipped","reason":"destination-exists"}),
-                )),
-                ExportCopy::Failed(code) => outcomes.push(merge_json(
-                    json!({
-                        "itemId":id,
-                        "format":format.format,
-                        "provenance":format.provenance,
-                        "destinationPath":target
-                    }),
-                    json!({"status":"failed","code":code}),
-                )),
-            }
+            target_shape["destinationPath"] = json!(target);
+            let status = match copy_export_file(&format.source_path, &target) {
+                ExportCopy::Exported { bytes, sha256 } => {
+                    exported += 1;
+                    json!({"status":"exported","bytes":bytes,"sha256":sha256,"metadata":"unsupported"})
+                }
+                ExportCopy::Skipped => {
+                    skipped += 1;
+                    json!({"status":"skipped","reason":"destination-exists"})
+                }
+                ExportCopy::Failed(code) => {
+                    failed += 1;
+                    json!({"status":"failed","code":code})
+                }
+            };
+            outcomes.push(merge_json(target_shape, status));
         }
     }
-    let exported = outcomes
-        .iter()
-        .filter(|value| value["status"] == "exported")
-        .count();
-    let skipped = outcomes
-        .iter()
-        .filter(|value| value["status"] == "skipped")
-        .count();
-    let failed = outcomes
-        .iter()
-        .filter(|value| value["status"] == "failed")
-        .count();
     Ok(json!({
         "outcomes":outcomes,
         "counts":{"total":outcomes.len(),"exported":exported,"skipped":skipped,"failed":failed}
@@ -3257,145 +3219,178 @@ fn sha256_file(path: &Path) -> std::io::Result<String> {
     crate::fingerprint::hash_file(path).map(|(_, digest)| digest)
 }
 
+#[derive(Default, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+enum QuerySyntax {
+    #[default]
+    Literal,
+    StructuredV1,
+}
+
+impl QuerySyntax {
+    fn engine(&self) -> LibraryQuerySyntax {
+        match self {
+            Self::Literal => LibraryQuerySyntax::Literal,
+            Self::StructuredV1 => LibraryQuerySyntax::StructuredV1,
+        }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct QueryFilters {
+    authors: Vec<String>,
+    tags: Vec<String>,
+    series: Vec<String>,
+    languages: Vec<String>,
+    formats: Vec<String>,
+}
+
+impl QueryFilters {
+    fn normalize(&mut self) -> AppResult<()> {
+        for values in [
+            &mut self.authors,
+            &mut self.tags,
+            &mut self.series,
+            &mut self.languages,
+            &mut self.formats,
+        ] {
+            for value in values {
+                if value.trim().is_empty() {
+                    return Err(AppError::new("invalid-arguments"));
+                }
+                *value = value.to_lowercase();
+            }
+        }
+        Ok(())
+    }
+
+    fn engine(&self) -> LibraryQueryFilters<'_> {
+        LibraryQueryFilters {
+            authors: &self.authors,
+            tags: &self.tags,
+            series: &self.series,
+            languages: &self.languages,
+            formats: &self.formats,
+        }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum SortDirection {
+    Ascending,
+    Descending,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct QuerySort {
+    field: String,
+    direction: SortDirection,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct QueryPage {
+    offset: usize,
+    limit: usize,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct QueryRequest {
+    query: String,
+    #[serde(default)]
+    query_syntax: QuerySyntax,
+    filters: QueryFilters,
+    sort: QuerySort,
+    page: QueryPage,
+    #[serde(default, deserialize_with = "present_string")]
+    virtual_library_id: Option<String>,
+}
+
+fn present_string<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error> {
+    String::deserialize(deserializer).map(Some)
+}
+
+// Saved definitions also contain identity and presentation fields owned by the store.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SavedQueryScope {
+    query: String,
+    #[serde(default)]
+    query_syntax: QuerySyntax,
+    filters: QueryFilters,
+}
+
 fn library_query_value(store: &LibraryStore, request: &Value) -> AppResult<Value> {
-    let request_object = request
-        .as_object()
-        .filter(|object| {
-            object.len() >= 4
-                && object.len() <= 6
-                && object.contains_key("query")
-                && object.contains_key("filters")
-                && object.contains_key("sort")
-                && object.contains_key("page")
-                && object.keys().all(|key| {
-                    matches!(
-                        key.as_str(),
-                        "virtualLibraryId" | "querySyntax" | "query" | "filters" | "sort" | "page"
-                    )
-                })
-        })
-        .ok_or_else(|| AppError::new("invalid-arguments"))?;
-    let query = request
-        .get("query")
-        .and_then(Value::as_str)
-        .filter(|query| query.encode_utf16().count() <= 1024)
-        .ok_or_else(|| AppError::new("invalid-arguments"))?;
-    let session_query_syntax = query_syntax(request_object.get("querySyntax"))?;
-    let filters = request
-        .get("filters")
-        .ok_or_else(|| AppError::new("invalid-arguments"))?;
-    let authors = string_filter(filters, "authors")?;
-    let tags = string_filter(filters, "tags")?;
-    let series = string_filter(filters, "series")?;
-    let languages = string_filter(filters, "languages")?;
-    let formats = string_filter(filters, "formats")?;
-    let virtual_definition = request_object
-        .get("virtualLibraryId")
-        .map(|value| {
-            let id = value
-                .as_str()
-                .map(str::trim)
-                .filter(|id| !id.is_empty() && id.encode_utf16().count() <= 256)
-                .ok_or_else(|| AppError::new("invalid-arguments"))?;
-            store
+    let mut request: QueryRequest = decode_request(request)?;
+    if request.query.encode_utf16().count() > 1024 || !(1..=100).contains(&request.page.limit) {
+        return Err(AppError::new("invalid-arguments"));
+    }
+    request.filters.normalize()?;
+    let virtual_scope = request
+        .virtual_library_id
+        .as_deref()
+        .map(|id| {
+            let id = id.trim();
+            if id.is_empty() || id.encode_utf16().count() > 256 {
+                return Err(AppError::new("invalid-arguments"));
+            }
+            let view = store
                 .saved_view(id)?
-                .map(|view| view.definition)
-                .ok_or_else(|| AppError::new("not-found"))
+                .ok_or_else(|| AppError::new("not-found"))?;
+            let mut scope: SavedQueryScope = decode_request(&view.definition)
+                .map_err(|_| AppError::new("invalid-stored-data"))?;
+            scope
+                .filters
+                .normalize()
+                .map_err(|_| AppError::new("invalid-stored-data"))?;
+            Ok(scope)
         })
         .transpose()?;
-    let virtual_query = virtual_definition
-        .as_ref()
-        .map(|definition| {
-            definition
-                .get("query")
-                .and_then(Value::as_str)
-                .ok_or_else(|| AppError::new("invalid-stored-data"))
-        })
-        .transpose()?;
-    let virtual_query_syntax = virtual_definition
-        .as_ref()
-        .map(|definition| query_syntax(definition.get("querySyntax")))
-        .transpose()?
-        .unwrap_or(LibraryQuerySyntax::Literal);
-    let virtual_filters = virtual_definition
-        .as_ref()
-        .map(|definition| {
-            definition
-                .get("filters")
-                .ok_or_else(|| AppError::new("invalid-stored-data"))
-        })
-        .transpose()?;
-    let virtual_authors = virtual_filters
-        .map(|filters| string_filter(filters, "authors"))
-        .transpose()?
-        .unwrap_or_default();
-    let virtual_tags = virtual_filters
-        .map(|filters| string_filter(filters, "tags"))
-        .transpose()?
-        .unwrap_or_default();
-    let virtual_series = virtual_filters
-        .map(|filters| string_filter(filters, "series"))
-        .transpose()?
-        .unwrap_or_default();
-    let virtual_languages = virtual_filters
-        .map(|filters| string_filter(filters, "languages"))
-        .transpose()?
-        .unwrap_or_default();
-    let virtual_formats = virtual_filters
-        .map(|filters| string_filter(filters, "formats"))
-        .transpose()?
-        .unwrap_or_default();
     let mut scopes = Vec::with_capacity(2);
-    if let Some(virtual_query) = virtual_query {
+    if let Some(scope) = &virtual_scope {
         scopes.push(LibraryQueryScope {
-            query: virtual_query,
-            syntax: virtual_query_syntax,
-            filters: LibraryQueryFilters {
-                authors: &virtual_authors,
-                tags: &virtual_tags,
-                series: &virtual_series,
-                languages: &virtual_languages,
-                formats: &virtual_formats,
-            },
+            query: &scope.query,
+            syntax: scope.query_syntax.engine(),
+            filters: scope.filters.engine(),
         });
     }
     scopes.push(LibraryQueryScope {
-        query,
-        syntax: session_query_syntax,
-        filters: LibraryQueryFilters {
-            authors: &authors,
-            tags: &tags,
-            series: &series,
-            languages: &languages,
-            formats: &formats,
-        },
+        query: &request.query,
+        syntax: request.query_syntax.engine(),
+        filters: request.filters.engine(),
     });
+    let QueryFilters {
+        authors,
+        tags,
+        series,
+        languages,
+        formats,
+    } = &request.filters;
     let mut items = store.query_items_scoped(&scopes)?;
     items.retain(|item| {
         matches_filter(
-            &authors,
+            authors,
             item.authors
                 .iter()
                 .map(|author| author.name.as_str())
                 .chain(item.author.iter().map(String::as_str)),
-        ) && matches_filter(&tags, item.tags.iter().map(String::as_str))
-            && matches_filter(&series, item.series.iter().map(String::as_str))
-            && matches_filter(&languages, item.languages.iter().map(String::as_str))
+        ) && matches_filter(tags, item.tags.iter().map(String::as_str))
+            && matches_filter(series, item.series.iter().map(String::as_str))
+            && matches_filter(languages, item.languages.iter().map(String::as_str))
             && matches_filter(
-                &formats,
+                formats,
                 item.formats.iter().map(|format| format.format.as_str()),
             )
     });
     let facets = facet_value(&items);
-    let sort_field = request
-        .pointer("/sort/field")
-        .and_then(Value::as_str)
-        .ok_or_else(|| AppError::new("invalid-arguments"))?;
-    let descending = match request.pointer("/sort/direction").and_then(Value::as_str) {
-        Some("ascending") => false,
-        Some("descending") => true,
-        _ => return Err(AppError::new("invalid-arguments")),
-    };
+    let sort_field = &request.sort.field;
+    let descending = matches!(request.sort.direction, SortDirection::Descending);
     items.sort_by(|left, right| {
         let ordering = query_sort_value(left, sort_field).cmp(&query_sort_value(right, sort_field));
         if descending {
@@ -3404,15 +3399,7 @@ fn library_query_value(store: &LibraryStore, request: &Value) -> AppResult<Value
             ordering
         }
     });
-    let offset = request
-        .pointer("/page/offset")
-        .and_then(Value::as_u64)
-        .ok_or_else(|| AppError::new("invalid-arguments"))? as usize;
-    let limit = request
-        .pointer("/page/limit")
-        .and_then(Value::as_u64)
-        .filter(|limit| (1..=100).contains(limit))
-        .ok_or_else(|| AppError::new("invalid-arguments"))? as usize;
+    let QueryPage { offset, limit } = request.page;
     let total = items.len();
     let items = items
         .into_iter()
@@ -3420,33 +3407,6 @@ fn library_query_value(store: &LibraryStore, request: &Value) -> AppResult<Value
         .take(limit)
         .collect::<Vec<_>>();
     Ok(json!({"items":items,"total":total,"page":{"offset":offset,"limit":limit},"facets":facets}))
-}
-
-fn query_syntax(value: Option<&Value>) -> AppResult<LibraryQuerySyntax> {
-    match value {
-        None => Ok(LibraryQuerySyntax::Literal),
-        Some(Value::String(value)) if value == "literal" => Ok(LibraryQuerySyntax::Literal),
-        Some(Value::String(value)) if value == "structured-v1" => {
-            Ok(LibraryQuerySyntax::StructuredV1)
-        }
-        Some(_) => Err(AppError::new("invalid-arguments")),
-    }
-}
-
-fn string_filter(filters: &Value, name: &str) -> AppResult<Vec<String>> {
-    filters
-        .get(name)
-        .and_then(Value::as_array)
-        .ok_or_else(|| AppError::new("invalid-arguments"))?
-        .iter()
-        .map(|value| {
-            value
-                .as_str()
-                .filter(|value| !value.trim().is_empty())
-                .map(str::to_lowercase)
-                .ok_or_else(|| AppError::new("invalid-arguments"))
-        })
-        .collect()
 }
 
 fn matches_filter<'a>(wanted: &[String], values: impl Iterator<Item = &'a str>) -> bool {
@@ -3876,13 +3836,6 @@ fn request_id(value: &Value) -> AppResult<&str> {
         .filter(|id| !id.is_empty())
         .ok_or_else(|| AppError::new("invalid-arguments"))
 }
-fn absolute(path: &Path) -> AppResult<PathBuf> {
-    if path.is_absolute() {
-        Ok(path.to_path_buf())
-    } else {
-        Ok(std::env::current_dir()?.join(path))
-    }
-}
 fn job_path(library: Option<&str>, db: Option<&Path>) -> AppResult<PathBuf> {
     if db.is_some() && library.is_some() {
         return Err(AppError::new("invalid-arguments"));
@@ -4030,15 +3983,12 @@ fn print_human_list(
 /// When the desktop app was switched to another library, say so: otherwise the CLI
 /// and the app would silently list different books.
 fn desktop_library_note(paths: &LibraryPaths) -> Option<String> {
-    // Same location the desktop uses, including its isolated test profile override.
-    let preference = match std::env::var_os("TAKIO_DESKTOP_PROFILE_DIR") {
-        Some(profile) => PathBuf::from(profile).join("last-library"),
-        None => LibraryPaths::resolve(None, None)
-            .ok()?
-            .root
-            .join("desktop")
-            .join("last-library"),
-    };
+    let profile = std::env::var_os("TAKIO_DESKTOP_PROFILE_DIR");
+    let preference = crate::paths::desktop_preference_location(
+        &LibraryPaths::resolve(None, None).ok()?.root,
+        std::env::var_os("TAKIO_DATA_DIR").is_some(),
+        profile.as_deref().map(Path::new),
+    )?;
     let remembered = std::fs::read_to_string(preference).ok()?;
     let remembered = Path::new(remembered.trim());
     let same = |a: &Path, b: &Path| match (a.canonicalize(), b.canonicalize()) {
@@ -4089,6 +4039,114 @@ fn open_path(path: &Path) -> AppResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn typed_query_rejects_unknown_missing_null_and_out_of_range_fields() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = LibraryPaths::resolve(None, Some(&temp.path().join("library.sqlite"))).unwrap();
+        let store = LibraryStore::open(paths, true).unwrap();
+        let valid = json!({
+            "query":"", "filters":{"authors":[],"tags":[],"series":[],"languages":[],"formats":[]},
+            "sort":{"field":"title","direction":"ascending"}, "page":{"offset":0,"limit":100}
+        });
+        assert_eq!(library_query_value(&store, &valid).unwrap()["total"], 0);
+        for (pointer, value) in [
+            ("/querySyntax", Value::Null),
+            ("/virtualLibraryId", Value::Null),
+            ("/extra", json!(true)),
+            ("/filters/extra", json!([])),
+            ("/filters/authors", json!([" "])),
+            ("/filters/tags", json!([3])),
+            ("/sort/extra", json!(true)),
+            ("/sort/direction", json!("backward")),
+            ("/page/limit", json!(0)),
+            ("/page/limit", json!(101)),
+            ("/page/offset", json!(-1)),
+            ("/page/extra", json!(true)),
+        ] {
+            let mut invalid = valid.clone();
+            let (parent, key) = pointer.rsplit_once('/').unwrap();
+            invalid.pointer_mut(parent).unwrap()[key] = value;
+            assert_eq!(
+                library_query_value(&store, &invalid).unwrap_err().code(),
+                "invalid-arguments",
+                "{pointer}"
+            );
+        }
+        for field in ["query", "filters", "sort", "page"] {
+            let mut invalid = valid.clone();
+            invalid.as_object_mut().unwrap().remove(field);
+            assert_eq!(
+                library_query_value(&store, &invalid).unwrap_err().code(),
+                "invalid-arguments"
+            );
+        }
+    }
+
+    #[test]
+    fn typed_service_arguments_reject_unknown_fields_without_mutation() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = LibraryPaths::resolve(None, Some(&temp.path().join("library.sqlite"))).unwrap();
+        let mut store = LibraryStore::open(paths, true).unwrap();
+        for (command, args) in [
+            (
+                "library_custom_columns_create",
+                json!({"key":"shelf","label":"Shelf","extra":true}),
+            ),
+            (
+                "library_custom_columns_rename",
+                json!({"key":"shelf","label":null}),
+            ),
+            (
+                "library_custom_columns_remove",
+                json!({"key":"shelf","extra":true}),
+            ),
+            (
+                "library_attach_format",
+                json!({"id":"book","source":{"path":"book.epub","kind":"move"}}),
+            ),
+            (
+                "library_attach_format",
+                json!({"id":"book","source":{"path":"book.epub","kind":"copy","extra":true}}),
+            ),
+            (
+                "library_replace_format",
+                json!({"id":"book","format":"epub","expectedCurrent":{},"source":{"path":"book.epub","kind":"copy"},"extra":true}),
+            ),
+        ] {
+            assert_eq!(
+                service_request(&mut store, &json!({"command":command,"args":args}))
+                    .unwrap_err()
+                    .code(),
+                "invalid-arguments",
+                "{command}"
+            );
+        }
+        assert!(store.list_custom_column_definitions().unwrap().is_empty());
+    }
+
+    #[test]
+    fn empty_catalog_output_is_rejected_without_writing() {
+        assert_eq!(
+            write_catalog(&[], "json", Path::new(""))
+                .unwrap_err()
+                .code(),
+            "invalid-arguments"
+        );
+    }
+
+    #[test]
+    fn service_help_describes_automation_not_desktop() {
+        let root = Cli::command();
+        let service = root
+            .find_subcommand("library")
+            .unwrap()
+            .find_subcommand("service")
+            .unwrap();
+        let about = service.get_about().unwrap().to_string();
+        assert!(about.contains("automation clients"));
+        assert!(!about.contains("desktop"));
+    }
 
     #[test]
     fn catalog_exports_preserve_json_and_csv_schemas() {

@@ -11,8 +11,7 @@ use std::path::Path;
 
 use sha2::{Digest, Sha256};
 
-/// Chunk size used for streaming reads. Allocated on the heap so large frames
-/// are not placed on the stack of deeply nested callers.
+/// Chunk size used for streaming reads.
 const CHUNK_BYTES: usize = 64 * 1024;
 
 /// A byte count paired with the lowercase hexadecimal SHA-256 digest of those
@@ -40,10 +39,6 @@ pub fn hash_reader<R: Read + ?Sized>(reader: &mut R) -> io::Result<Fingerprint> 
 }
 
 /// Open `path` and hash its complete contents.
-///
-/// # Errors
-///
-/// Returns the underlying I/O error when the file cannot be opened or read.
 pub fn hash_file(path: &Path) -> io::Result<Fingerprint> {
     hash_reader(&mut File::open(path)?)
 }

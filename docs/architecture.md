@@ -33,7 +33,7 @@ The `takio` crate is split by responsibility:
 
 | Module | Responsibility |
 | --- | --- |
-| `cli` | Clap command tree, stable envelopes, structured request mapping, and persistent service mode |
+| `cli` | Clap commands and automation service, request mapping, metadata candidate review, bulk export, catalogue rendering, and query presentation |
 | `store` | Schema-v12 SQLite catalogue and owned-file transactions |
 | `fingerprint` | Shared streaming SHA-256 byte-count and digest helpers used by every owned-file operation |
 | `jobs` | Independent schema-v4 foreground conversion ledger |
@@ -46,6 +46,17 @@ The `takio` crate is split by responsibility:
 | `tui` | Ratatui application state, keyboard handling, responsive rendering, and terminal restoration |
 | `paths` | Default, named, and explicit library path resolution |
 | `model` | Library item, author, format, provenance, and metadata patch wire models |
+| `calibre_import` | Read-only Calibre catalogue import with per-book outcomes |
+| `candidate_cover` | Bounded staged cover artifacts, ownership checks, and lifecycle locking |
+| `catalog` | Shared catalogue record projection |
+| `diagnostics` | Bounded, redacted library diagnostics bundles |
+| `executable_discovery` | Shared external backend precedence and canonical executable resolution |
+| `import_scan` | Recursive import discovery, source validation, and per-file outcomes |
+| `koreader` | Read-only KOReader recognition and reading-progress parsing |
+| `metadata_reconcile` | Bounded multi-item candidate reconciliation and cancellation |
+| `output` | Stable application errors and JSON output envelopes |
+| `portable_library` | Portable OPF catalogue export and verified rebuild |
+| `reader_shelf` | Read-only reader inventory, fingerprint cache, library matching, and explicit import |
 
 The crate forbids unsafe Rust. SQLite is bundled through `rusqlite`, so the
 standalone executable does not depend on a system SQLite installation.
@@ -115,7 +126,8 @@ restored on every exit path.
 ## Conversion and jobs
 
 Calibre discovery checks `TAKIO_EBOOK_CONVERT`, `PATH`, and the standard macOS
-Calibre application path. Capabilities advertise conversion pairs only when the
+Calibre application path. An explicit invalid override reports an unavailable
+backend rather than silently selecting another executable. Capabilities advertise conversion pairs only when the
 backend is actually available.
 
 This Rust release supports five Calibre pairs:
@@ -160,7 +172,7 @@ deleted Bun CLI.
 
 ## Security and release rules
 
-- Treat paths, filenames, metadata, and sidecar messages as untrusted.
+- Treat paths, filenames, metadata, and automation requests as untrusted.
 - Spawn tools with argument arrays, never interpolated shell commands.
 - Bound structured inputs, process output, converter duration, and batch sizes.
 - Refuse unintended overwrites.

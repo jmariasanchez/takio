@@ -23,9 +23,10 @@ personal library data, or copyrighted books you cannot share.
 
 ## Security boundaries and scope
 
-- The Electron desktop uses `contextIsolation`, renderer sandboxing, and a
-  Content-Security-Policy. Browser permission requests are denied and webview
-  attachment is blocked. Renderer-to-native requests must remain validated.
+- The GPUI desktop links the Rust engine in one process. Its worker thread is
+  an ownership and responsiveness boundary, not a security sandbox. Selected
+  and dropped paths are untrusted. Reader writes must use the verified
+  destination code and explicit user-selected workflows.
 - The optional content server is read-only, loopback-only, and protected by a
   bearer token. It is not a public, multi-user, or remote TLS service. Do not
   expose it through a public proxy or share its token.

@@ -44,9 +44,11 @@ Stable failures use existing `invalid-arguments`, `not-found`, `storage-unavaila
 - Portable library v2 carries ordered definitions. Rebuild accepts v1 with no definitions and v2 with definitions. Invalid or duplicate definitions fail before destination publication.
 - The Bun reference store mirrors definition CRUD and preservation semantics, but Rust remains migration authority.
 
-## Desktop slice
+## Historical Electron desktop slice
 
-- Load definitions through a fixed Electron bridge command.
+This slice described the removed Electron application, not implemented native
+acceptance. A future native implementation must load definitions through a typed
+engine request rather than an Electron bridge.
 - Show defined fields by label plus `#key` in the metadata editor and inspector. Undeclared legacy fields remain under a separate custom-fields presentation.
 - Add a session-only chooser for at most one visible custom table column. Selecting another replaces it. The column is non-sortable in this slice, appears before Added, and renders `Not set` for missing values.
 - Do not persist the visible-column choice, add facets, add custom sorting, or add a definition manager in this first desktop slice. Definition CRUD remains available through the CLI/service public interface.

@@ -58,14 +58,25 @@ impl LibraryPaths {
     }
 }
 
-fn absolute(path: &Path) -> AppResult<PathBuf> {
+pub(crate) fn absolute(path: &Path) -> AppResult<PathBuf> {
     if path.as_os_str().is_empty() {
         return Err(AppError::new("invalid-arguments"));
     }
-    if path.is_absolute() {
-        Ok(path.to_path_buf())
+    std::path::absolute(path).map_err(AppError::from)
+}
+
+/// Explicit profiles isolate preferences, even when a data override is set.
+pub fn desktop_preference_location(
+    default_root: &Path,
+    data_override: bool,
+    profile_override: Option<&Path>,
+) -> Option<PathBuf> {
+    if let Some(profile) = profile_override {
+        Some(profile.join("last-library"))
+    } else if data_override {
+        None
     } else {
-        Ok(std::env::current_dir()?.join(path))
+        Some(default_root.join("desktop").join("last-library"))
     }
 }
 
@@ -121,6 +132,23 @@ mod tests {
             assert_eq!(
                 result.expect_err("invalid selector").code(),
                 "invalid-arguments"
+            );
+        }
+    }
+
+    #[test]
+    fn desktop_preference_respects_data_and_profile_overrides() {
+        let root = Path::new("/default");
+        let profile = Path::new("/profile");
+        assert_eq!(
+            super::desktop_preference_location(root, false, None),
+            Some(root.join("desktop/last-library"))
+        );
+        assert_eq!(super::desktop_preference_location(root, true, None), None);
+        for data_override in [false, true] {
+            assert_eq!(
+                super::desktop_preference_location(root, data_override, Some(profile)),
+                Some(profile.join("last-library"))
             );
         }
     }

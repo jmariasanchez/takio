@@ -398,9 +398,27 @@ pub fn scan(
             });
         }
     }
-    let mut shelf = ReaderShelf {
+    let in_library = books
+        .iter()
+        .filter_map(|entry| entry.item_id.as_deref())
+        .collect::<BTreeSet<_>>()
+        .len();
+    let finished = books
+        .iter()
+        .filter(|entry| entry.reading.as_ref().is_some_and(ReadingState::finished))
+        .count();
+    let in_progress = books
+        .iter()
+        .filter(|entry| {
+            entry
+                .reading
+                .as_ref()
+                .is_some_and(ReadingState::in_progress)
+        })
+        .count();
+    Ok(ReaderShelf {
         destination_id: destination.id.clone(),
-        in_library: 0,
+        in_library,
         not_in_library: books.iter().filter(|entry| entry.item_id.is_none()).count(),
         importable: books
             .iter()
@@ -412,26 +430,9 @@ pub fn scan(
         truncated,
         unreadable,
         koreader,
-        finished: 0,
-        in_progress: 0,
-    };
-    shelf.in_library = shelf.item_ids().len();
-    shelf.finished = shelf
-        .books
-        .iter()
-        .filter(|entry| entry.reading.as_ref().is_some_and(ReadingState::finished))
-        .count();
-    shelf.in_progress = shelf
-        .books
-        .iter()
-        .filter(|entry| {
-            entry
-                .reading
-                .as_ref()
-                .is_some_and(ReadingState::in_progress)
-        })
-        .count();
-    Ok(shelf)
+        finished,
+        in_progress,
+    })
 }
 
 /// Copy every book file on the reader that matches no active library book into the

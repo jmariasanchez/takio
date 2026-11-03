@@ -27,13 +27,9 @@ bun run test
 bun run build
 ```
 
-These are the exact `package.json` script bodies, in the same order:
-
-```bash
-cargo fmt --all --check && cargo clippy -p takio --all-targets -- -D warnings && bun run --filter '@takio/core' check && bun run --filter '@takio/epub-transform' check && bun run --filter '@takio/library-contract' check && bun run --filter '@takio/library-store-bun' check && bun run --filter '@takio/desktop' check
-cargo test -p takio && bun run --filter '@takio/core' test && bun run --filter '@takio/epub-transform' test && bun run --filter '@takio/library-contract' test && bun run --filter '@takio/library-store-bun' test && bun run --filter '@takio/desktop' test
-cargo build --release -p takio && bun run --filter '@takio/core' build && bun run --filter '@takio/epub-transform' build && bun run --filter '@takio/library-contract' build && bun run --filter '@takio/library-store-bun' build && bun run --filter '@takio/desktop' build
-```
+These scripts run the Rust workspace gates, including the native desktop where
+supported, and the maintained TypeScript packages. See `package.json` and
+`scripts/check-rust-workspace.sh` for the current commands.
 
 Run the library performance gates, not just the functional tests:
 

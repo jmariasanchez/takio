@@ -2205,7 +2205,7 @@ fn update_many_accounts_for_updated_and_missing_items() {
 }
 
 #[test]
-fn remove_is_idempotent_and_deletes_managed_files() {
+fn remove_is_idempotent_recoverable_trash_and_preserves_managed_files() {
     let temp = tempfile::tempdir().expect("temporary directory");
     let database = temp.path().join("library.sqlite");
     let source = temp.path().join("remove.epub");
@@ -2232,7 +2232,7 @@ fn remove_is_idempotent_and_deletes_managed_files() {
         success_value(&removed.stdout),
         serde_json::json!({"item":item,"cleanupPending":false})
     );
-    assert!(!std::path::Path::new(managed_path).exists());
+    assert!(std::path::Path::new(managed_path).exists());
 
     let repeated = cargo_bin_cmd!("takio")
         .args(["library", "remove", "--db"])
@@ -2242,8 +2242,21 @@ fn remove_is_idempotent_and_deletes_managed_files() {
         .expect("repeat removal");
     assert_eq!(
         success_value(&repeated.stdout),
-        serde_json::json!({"item":null,"cleanupPending":false})
+        serde_json::json!({"item":item,"cleanupPending":false})
     );
+    assert!(std::path::Path::new(managed_path).exists());
+    let restored = cargo_bin_cmd!("takio")
+        .args(["library", "trash", "restore", "--db"])
+        .arg(&database)
+        .args(["--request-json", &serde_json::json!({"id":id}).to_string()])
+        .output()
+        .expect("restore removed ebook");
+    assert!(
+        restored.status.success(),
+        "{}",
+        String::from_utf8_lossy(&restored.stdout)
+    );
+    assert_eq!(success_value(&restored.stdout)["item"]["id"], id);
 }
 
 #[test]
@@ -2300,6 +2313,68 @@ fn format_replace_honors_the_expected_snapshot() {
     assert!(!stale.status.success());
     let envelope: Value = serde_json::from_slice(&stale.stdout).expect("failure envelope");
     assert_eq!(envelope["error"]["code"], "format-changed");
+}
+
+#[test]
+fn purge_reports_preserved_changed_file_as_cleanup_pending() {
+    let temp = tempfile::tempdir().unwrap();
+    let database = temp.path().join("library.sqlite");
+    let source = temp.path().join("book.epub");
+    fs::write(&source, b"original").unwrap();
+    let imported = cargo_bin_cmd!("takio")
+        .args(["library", "import", "--db"])
+        .arg(&database)
+        .arg("--source-path")
+        .arg(&source)
+        .output()
+        .unwrap();
+    let item = success_value(&imported.stdout)["item"].clone();
+    let id = item["id"].as_str().unwrap();
+    let managed = item["sourcePath"].as_str().unwrap();
+    fs::write(managed, b"changed bytes must survive").unwrap();
+    let removed = cargo_bin_cmd!("takio")
+        .args(["library", "remove", "--db"])
+        .arg(&database)
+        .args(["--id", id])
+        .output()
+        .unwrap();
+    assert!(removed.status.success());
+    let purged = cargo_bin_cmd!("takio")
+        .args(["library", "trash", "purge", "--db"])
+        .arg(&database)
+        .args(["--request-json", &serde_json::json!({"id":id}).to_string()])
+        .output()
+        .unwrap();
+    assert!(purged.status.success());
+    let result = success_value(&purged.stdout);
+    assert_eq!(result["cleanupPending"], true);
+    assert_eq!(result["cleanupPendingPaths"], serde_json::json!([managed]));
+    assert_eq!(fs::read(managed).unwrap(), b"changed bytes must survive");
+}
+
+#[test]
+fn duplicate_move_import_reports_source_preservation() {
+    let temp = tempfile::tempdir().unwrap();
+    let database = temp.path().join("library.sqlite");
+    let source = temp.path().join("book.epub");
+    fs::write(&source, b"book").unwrap();
+    let import = |mode: &str| {
+        cargo_bin_cmd!("takio")
+            .args(["library", "import", "--db"])
+            .arg(&database)
+            .arg("--source-path")
+            .arg(&source)
+            .args(["--mode", mode])
+            .output()
+            .unwrap()
+    };
+    let first = success_value(&import("copy").stdout);
+    assert_eq!(first["status"], "imported");
+    let repeated = success_value(&import("move").stdout);
+    assert_eq!(repeated["status"], "duplicate");
+    assert_eq!(repeated["sourcePreserved"], true);
+    assert_eq!(repeated["item"]["id"], first["item"]["id"]);
+    assert_eq!(fs::read(source).unwrap(), b"book");
 }
 
 #[test]

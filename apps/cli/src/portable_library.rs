@@ -13,7 +13,7 @@ use uuid::Uuid;
 use crate::conversion::FormatId;
 use crate::model::{BookAuthor, CustomColumnDefinition, LibraryItem, Provenance};
 use crate::output::{AppError, AppResult};
-use crate::paths::LibraryPaths;
+use crate::paths::{LibraryPaths, absolute as absolute_nonempty};
 use crate::store::{LibraryStore, METADATA_AUDIT_KEY, VerifyReport, normalize_custom_metadata};
 
 const PORTABLE_FORMAT: &str = "takio-portable-library";
@@ -832,16 +832,6 @@ fn valid_sha256(value: &str) -> bool {
         && value
             .bytes()
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-}
-fn absolute_nonempty(path: &Path) -> AppResult<PathBuf> {
-    if path.as_os_str().is_empty() {
-        return Err(AppError::new("invalid-arguments"));
-    }
-    if path.is_absolute() {
-        Ok(path.to_path_buf())
-    } else {
-        Ok(std::env::current_dir()?.join(path))
-    }
 }
 fn owned_staging_path(destination: &Path) -> AppResult<PathBuf> {
     let parent = destination
