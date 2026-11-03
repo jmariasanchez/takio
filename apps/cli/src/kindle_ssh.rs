@@ -36,6 +36,16 @@ pub fn send(
     source: &Path,
     destination: &KindleSshDestination,
 ) -> AppResult<KindleSshResult> {
+    send_with_programs(item_id, source, destination, "ssh", "scp")
+}
+
+fn send_with_programs(
+    item_id: &str,
+    source: &Path,
+    destination: &KindleSshDestination,
+    ssh_program: &str,
+    scp_program: &str,
+) -> AppResult<KindleSshResult> {
     validate_destination(destination)?;
     if item_id.trim().is_empty() {
         return Err(AppError::new("invalid-arguments"));
@@ -59,7 +69,7 @@ pub fn send(
     );
     let target = format!("{}@{}", destination.user, destination.host);
     let expected = fingerprint(&source)?;
-    let ssh = ssh_base(destination, "ssh");
+    let ssh = ssh_base(destination, ssh_program);
 
     let cleanup = || {
         let mut command = command_from(&ssh);
@@ -73,9 +83,14 @@ pub fn send(
 
         let mut absent = command_from(&ssh);
         absent.args([&target, "test", "!", "-e", &remote_final]);
-        checked(&mut absent, destination.timeout, "destination-file-exists")?;
+        let output = run(&mut absent, destination.timeout)?;
+        match output.status {
+            0 => {}
+            1 => return Err(AppError::new("destination-file-exists")),
+            _ => return Err(AppError::new("copy-failed")),
+        }
 
-        let scp = scp_base(destination);
+        let scp = scp_base(destination, scp_program);
         let mut copy = command_from(&scp);
         copy.arg(&source).arg(format!("{target}:{remote_partial}"));
         checked(&mut copy, destination.timeout, "copy-failed")?;
@@ -83,11 +98,15 @@ pub fn send(
         let mut hash = command_from(&ssh);
         hash.args([&target, "sha256sum", &remote_partial]);
         let hash_output = run(&mut hash, destination.timeout)?;
-        let verification = if hash_output.status == 0
-            && hash_output.stdout.trim_start().starts_with(&expected.1)
-        {
+        let verification = if hash_output.status == 0 {
+            if hash_output.stdout.split_whitespace().next() != Some(expected.1.as_str()) {
+                return Err(AppError::new("verification-failed"));
+            }
             "sha256"
         } else {
+            if hash_output.status == 255 {
+                return Err(AppError::new("copy-failed"));
+            }
             let mut size = command_from(&ssh);
             size.args([&target, "wc", "-c", &remote_partial]);
             let output = checked(&mut size, destination.timeout, "verification-failed")?;
@@ -100,7 +119,20 @@ pub fn send(
 
         let mut publish = command_from(&ssh);
         publish.args([&target, "ln", &remote_partial, &remote_final]);
-        checked(&mut publish, destination.timeout, "destination-file-exists")?;
+        let output = run(&mut publish, destination.timeout)?;
+        if output.status != 0 {
+            if output.status == 255 {
+                return Err(AppError::new("copy-failed"));
+            }
+            let mut exists = command_from(&ssh);
+            exists.args([&target, "test", "-e", &remote_final]);
+            let output = run(&mut exists, destination.timeout)?;
+            return Err(AppError::new(if output.status == 0 {
+                "destination-file-exists"
+            } else {
+                "copy-failed"
+            }));
+        }
         cleanup();
         Ok(verification)
     })();
@@ -177,8 +209,8 @@ fn ssh_base(destination: &KindleSshDestination, binary: &str) -> Vec<String> {
     ]
 }
 
-fn scp_base(destination: &KindleSshDestination) -> Vec<String> {
-    let mut values = ssh_base(destination, "scp");
+fn scp_base(destination: &KindleSshDestination, binary: &str) -> Vec<String> {
+    let mut values = ssh_base(destination, binary);
     values[1] = "-P".to_owned();
     values
 }
@@ -261,6 +293,161 @@ fn sanitize_file_name(value: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    fn fake_publish(mode: &str) -> (AppResult<KindleSshResult>, tempfile::TempDir) {
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let source = root.join("A book.epub");
+        fs::write(&source, b"book bytes").unwrap();
+        let identity = root.join("identity");
+        fs::write(&identity, b"fake identity").unwrap();
+        let hash = fingerprint(&source).unwrap().1;
+        if mode == "exists" {
+            fs::write(root.join("final"), b"original").unwrap();
+        }
+        let ssh = root.join("ssh");
+        let scp = root.join("scp");
+        fs::write(
+            &ssh,
+            format!(
+                r#"#!/bin/sh
+set -eu
+cd '{}'
+[ "$1" = -p ] && [ "$2" = 22 ]
+[ "$4" = StrictHostKeyChecking=yes ] && [ "$6" = BatchMode=yes ]
+[ "$8" = PasswordAuthentication=no ] && [ "$9" = -i ]
+shift 11
+printf '%s\n' "$*" >> calls
+case "$1 $2" in
+  'test -d') if [ '{mode}' = root_transport ]; then exit 255; fi; exit 0 ;;
+  'test !')
+    case '{mode}' in
+      transport) exit 255 ;;
+      exists) exit 1 ;;
+      timeout) exec sleep 2 ;;
+    esac
+    exit 0 ;;
+  'test -e') test -e final ;;
+  'sha256sum '*)
+    case '{mode}' in
+      fallback|size_mismatch) exit 127 ;;
+      hash_transport) exit 255 ;;
+      hash_mismatch) echo wrong ;;
+      *) echo '{hash}  partial' ;;
+    esac ;;
+  'wc -c')
+    if [ '{mode}' = size_mismatch ]; then echo 1; else wc -c partial; fi ;;
+  'ln '*)
+    case '{mode}' in
+      publish_transport) exit 255 ;;
+      publish_timeout) exec sleep 2 ;;
+      publish_failure) exit 1 ;;
+      race) printf original > final ;;
+    esac
+    ln partial final ;;
+  'rm -f') rm -f partial ;;
+  *) exit 2 ;;
+esac
+"#,
+                root.display()
+            ),
+        )
+        .unwrap();
+        fs::write(
+            &scp,
+            format!(
+                r#"#!/bin/sh
+set -eu
+[ "$1" = -P ] && [ "$2" = 22 ]
+[ "$4" = StrictHostKeyChecking=yes ] && [ "$6" = BatchMode=yes ]
+[ "$8" = PasswordAuthentication=no ] && [ "$9" = -i ]
+shift 10
+printf 'scp\n' >> '{0}/calls'
+cp "$1" '{0}/partial'
+if [ '{mode}' = copy_failure ]; then exit 1; fi
+"#,
+                root.display()
+            ),
+        )
+        .unwrap();
+        for script in [&ssh, &scp] {
+            fs::set_permissions(script, fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let destination = KindleSshDestination {
+            host: "kindle.invalid".into(),
+            user: "root".into(),
+            port: 22,
+            remote_root: "/mnt/us/documents".into(),
+            identity_file: identity,
+            timeout: Duration::from_secs(if mode.contains("timeout") { 1 } else { 10 }),
+        };
+        let result = send_with_programs(
+            "item",
+            &source,
+            &destination,
+            ssh.to_str().unwrap(),
+            scp.to_str().unwrap(),
+        );
+        (result, temp)
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn fake_ssh_publishes_verified_bytes_and_cleans_partial() {
+        for (mode, verification) in [("success", "sha256"), ("fallback", "size")] {
+            let (result, temp) = fake_publish(mode);
+            let result = result.unwrap_or_else(|error| {
+                panic!(
+                    "{mode}: {error}; calls: {:?}",
+                    std::fs::read_to_string(temp.path().join("calls"))
+                )
+            });
+            assert_eq!(result.verification, verification);
+            assert_eq!(result.path, "/mnt/us/documents/A_book.epub");
+            assert_eq!(
+                std::fs::read(temp.path().join("final")).unwrap(),
+                b"book bytes"
+            );
+            assert!(!temp.path().join("partial").exists());
+            let calls = std::fs::read_to_string(temp.path().join("calls")).unwrap();
+            assert!(calls.find("scp").unwrap() < calls.find("sha256sum").unwrap());
+            assert!(calls.find("sha256sum").unwrap() < calls.find("ln ").unwrap());
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn fake_ssh_failures_preserve_existing_files_and_clean_partial() {
+        for (mode, code) in [
+            ("root_transport", "copy-failed"),
+            ("transport", "copy-failed"),
+            ("hash_transport", "copy-failed"),
+            ("publish_transport", "copy-failed"),
+            ("publish_timeout", "copy-failed"),
+            ("publish_failure", "copy-failed"),
+            ("timeout", "copy-failed"),
+            ("copy_failure", "copy-failed"),
+            ("exists", "destination-file-exists"),
+            ("race", "destination-file-exists"),
+            ("hash_mismatch", "verification-failed"),
+            ("size_mismatch", "verification-failed"),
+        ] {
+            let (result, temp) = fake_publish(mode);
+            assert_eq!(result.unwrap_err().code(), code, "{mode}");
+            assert!(!temp.path().join("partial").exists(), "{mode}");
+            if matches!(mode, "race" | "exists") {
+                assert_eq!(
+                    std::fs::read(temp.path().join("final")).unwrap(),
+                    b"original"
+                );
+            } else {
+                assert!(!temp.path().join("final").exists(), "{mode}");
+            }
+        }
+    }
 
     #[test]
     fn rejects_unsafe_remote_roots() {
