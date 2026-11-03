@@ -231,7 +231,7 @@ pub struct SendPreviewEntry {
     pub item_id: String,
     /// Stored title, or the requested ID when the item could not be loaded.
     pub title: String,
-    pub result: Result<ReadyFile, String>,
+    pub result: AppResult<ReadyFile>,
 }
 
 /// Reviewed selection, not an immutable snapshot of the file's bytes.
@@ -270,8 +270,8 @@ pub struct SendEntry {
     pub item_id: String,
     /// Stored title, or the requested ID when the item could not be loaded.
     pub title: String,
-    /// Verified delivery, or the stable application error code.
-    pub result: Result<DeliveryResult, String>,
+    /// Verified delivery, or the typed application error including its exit status.
+    pub result: AppResult<DeliveryResult>,
 }
 
 /// Everything the UI can ask the engine to do.
@@ -722,7 +722,7 @@ fn preview_send(
             SendPreviewEntry {
                 item_id: id.clone(),
                 title,
-                result: result.map_err(|error| error.code().to_owned()),
+                result,
             }
         })
         .collect();
@@ -781,7 +781,7 @@ fn send_entry(
     SendEntry {
         item_id: id.to_owned(),
         title,
-        result: result.map_err(|error| error.code().to_owned()),
+        result,
     }
 }
 
@@ -1068,7 +1068,11 @@ mod tests {
             ids.iter().collect::<Vec<_>>()
         );
         assert_eq!(
-            preview.entries[0].result.as_ref().map(|ready| ready.format),
+            preview.entries[0]
+                .result
+                .as_ref()
+                .map(|ready| ready.format)
+                .map_err(AppError::code),
             Ok(FormatId::Azw3)
         );
         for (entry, code) in preview.entries[1..].iter().zip([
@@ -1078,7 +1082,8 @@ mod tests {
             "not-found",
             "source-unavailable",
         ]) {
-            assert_eq!(entry.result.as_ref().unwrap_err(), code);
+            assert_eq!(entry.result.as_ref().unwrap_err().code(), code);
+            assert_eq!(entry.result.as_ref().unwrap_err().exit_code(), 1);
         }
         assert_eq!(preview.entries[0].title, "Ready");
         assert_eq!(preview.entries[3].title, "Trash");
@@ -1097,6 +1102,32 @@ mod tests {
     }
 
     #[test]
+    fn cloned_send_results_preserve_typed_error_status() {
+        let preview_entry = SendPreviewEntry {
+            item_id: "reviewed-item".into(),
+            title: "Reviewed".into(),
+            result: Err(AppError::with_exit_code("interrupted", 130)),
+        };
+        let delivery_entry = SendEntry {
+            item_id: preview_entry.item_id.clone(),
+            title: preview_entry.title.clone(),
+            result: Err(AppError::with_exit_code("destination-unavailable", 74)),
+        };
+        let preview_clone = preview_entry.clone();
+        let report_clone = SendReport {
+            entries: vec![delivery_entry],
+        }
+        .clone();
+        drop(preview_entry);
+        let error = preview_clone.result.unwrap_err();
+        assert_eq!(error.code(), "interrupted");
+        assert_eq!(error.exit_code(), 130);
+        let error = report_clone.entries[0].result.as_ref().unwrap_err();
+        assert_eq!(error.code(), "destination-unavailable");
+        assert_eq!(error.exit_code(), 74);
+    }
+
+    #[test]
     fn preview_refreshes_capabilities_and_prefers_attached_formats() {
         let (temp, mut store, mut destination) = delivery_fixture();
         let item = add_book(&mut store, temp.path(), "Preferred preview", "epub");
@@ -1105,7 +1136,7 @@ mod tests {
         let preview = preview_send(&store, &destination, &ids).unwrap();
         assert!(preview.destination.features.is_empty());
         assert_eq!(
-            preview.entries[0].result.as_ref().unwrap_err(),
+            preview.entries[0].result.as_ref().unwrap_err().code(),
             "no-compatible-format"
         );
         for extension in ["mobi", "azw3"] {
@@ -1117,7 +1148,8 @@ mod tests {
             preview_send(&store, &destination, &ids).unwrap().entries[0]
                 .result
                 .as_ref()
-                .map(|ready| ready.format),
+                .map(|ready| ready.format)
+                .map_err(AppError::code),
             Ok(FormatId::Azw3)
         );
         let stored = store.get(&item.id).unwrap().unwrap();
@@ -1131,7 +1163,8 @@ mod tests {
             preview_send(&store, &destination, &ids).unwrap().entries[0]
                 .result
                 .as_ref()
-                .unwrap_err(),
+                .unwrap_err()
+                .code(),
             "source-unavailable"
         );
         destination.features.clear();
@@ -1139,7 +1172,11 @@ mod tests {
         let preview = preview_send(&store, &destination, &ids).unwrap();
         assert_eq!(preview.destination.features, vec!["koreader"]);
         assert_eq!(
-            preview.entries[0].result.as_ref().map(|ready| ready.format),
+            preview.entries[0]
+                .result
+                .as_ref()
+                .map(|ready| ready.format)
+                .map_err(AppError::code),
             Ok(FormatId::Epub)
         );
         fs::remove_dir(destination.path.join("koreader")).unwrap();
@@ -1148,7 +1185,11 @@ mod tests {
         let preview = preview_send(&store, &destination, &ids).unwrap();
         assert!(matches!(preview.destination.kind, DestinationKind::Kobo));
         assert_eq!(
-            preview.entries[0].result.as_ref().map(|ready| ready.format),
+            preview.entries[0]
+                .result
+                .as_ref()
+                .map(|ready| ready.format)
+                .map_err(AppError::code),
             Ok(FormatId::Epub)
         );
     }
@@ -1167,12 +1208,16 @@ mod tests {
         // Privileged test processes can still read mode-000 files.
         if unreadable {
             assert_eq!(
-                preview.entries[0].result.as_ref().unwrap_err(),
+                preview.entries[0].result.as_ref().unwrap_err().code(),
                 "source-unavailable"
             );
         } else {
             assert_eq!(
-                preview.entries[0].result.as_ref().map(|ready| ready.format),
+                preview.entries[0]
+                    .result
+                    .as_ref()
+                    .map(|ready| ready.format)
+                    .map_err(AppError::code),
                 Ok(FormatId::Azw3)
             );
         }
@@ -1231,7 +1276,11 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(
-            preview.entries[0].result.as_ref().map(|ready| ready.format),
+            preview.entries[0]
+                .result
+                .as_ref()
+                .map(|ready| ready.format)
+                .map_err(AppError::code),
             Ok(FormatId::Azw3)
         );
         assert_eq!(fs::read(&target).unwrap(), b"keep existing");
@@ -1252,7 +1301,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(
-            report.entries[0].result.as_ref().unwrap_err(),
+            report.entries[0].result.as_ref().unwrap_err().code(),
             "destination-file-exists"
         );
         assert_eq!(fs::read(target).unwrap(), b"keep existing");
@@ -1294,7 +1343,7 @@ mod tests {
             let report = send_reviewed(&store, &preview.destination, &preview.entries).unwrap();
             assert_eq!(report.entries.len(), 1);
             assert_eq!(
-                report.entries[0].result.as_ref().unwrap_err(),
+                report.entries[0].result.as_ref().unwrap_err().code(),
                 "send-review-changed",
                 "{change}"
             );
@@ -1318,7 +1367,7 @@ mod tests {
         fs::remove_dir(destination.path.join("koreader")).unwrap();
         let report = send_reviewed(&store, &preview.destination, &preview.entries).unwrap();
         assert_eq!(
-            report.entries[0].result.as_ref().unwrap_err(),
+            report.entries[0].result.as_ref().unwrap_err().code(),
             "no-compatible-format"
         );
         assert!(!destination.path.join(".takio").exists());
@@ -1427,13 +1476,16 @@ mod tests {
         );
         assert_eq!(report.entries[0].title, "EPUB only");
         assert_eq!(
-            report.entries[0].result.as_ref().unwrap_err(),
+            report.entries[0].result.as_ref().unwrap_err().code(),
             "no-compatible-format"
         );
         assert_eq!(report.entries[1].title, "absent");
-        assert_eq!(report.entries[1].result.as_ref().unwrap_err(), "not-found");
         assert_eq!(
-            report.entries[2].result.as_ref().unwrap_err(),
+            report.entries[1].result.as_ref().unwrap_err().code(),
+            "not-found"
+        );
+        assert_eq!(
+            report.entries[2].result.as_ref().unwrap_err().code(),
             "source-unavailable"
         );
         assert!(report.entries[3].result.as_ref().unwrap().path.exists());
@@ -1453,7 +1505,7 @@ mod tests {
         fs::write(&target, b"keep me").unwrap();
         let report = send_many(&store, &destination, &[first.id, second.id]).unwrap();
         assert_eq!(
-            report.entries[0].result.as_ref().unwrap_err(),
+            report.entries[0].result.as_ref().unwrap_err().code(),
             "destination-file-exists"
         );
         assert!(report.entries[1].result.is_ok());
@@ -1547,7 +1599,7 @@ mod tests {
         let report = send_many(&store, &destination, &[item.id]).unwrap();
         assert_eq!(report.entries[0].title, "Trash");
         assert_eq!(
-            report.entries[0].result.as_ref().unwrap_err(),
+            report.entries[0].result.as_ref().unwrap_err().code(),
             "item-trashed"
         );
         assert_eq!(

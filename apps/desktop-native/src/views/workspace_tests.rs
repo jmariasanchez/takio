@@ -980,7 +980,7 @@ fn mixed_send_review_confirms_only_ready_ids_and_retains_exclusions(cx: &mut Tes
         assert_eq!(preview.entries.len(), 2);
         assert_eq!(preview.ready_ids(), vec![ready.id.clone()]);
         assert_eq!(
-            preview.entries[1].result.as_ref().unwrap_err(),
+            preview.entries[1].result.as_ref().unwrap_err().code(),
             "source-unavailable"
         );
     });
@@ -994,7 +994,11 @@ fn mixed_send_review_confirms_only_ready_ids_and_retains_exclusions(cx: &mut Tes
         assert_eq!(state.delivery_exclusions.len(), 1);
         assert_eq!(state.delivery_exclusions[0].item_id, blocked.id);
         assert_eq!(
-            state.delivery_exclusions[0].result.as_ref().unwrap_err(),
+            state.delivery_exclusions[0]
+                .result
+                .as_ref()
+                .unwrap_err()
+                .code(),
             "source-unavailable"
         );
     });
@@ -1022,7 +1026,7 @@ fn all_blocked_send_review_cannot_confirm(cx: &mut TestAppContext) {
             preview
                 .entries
                 .iter()
-                .all(|entry| entry.result.as_ref().unwrap_err() == "no-compatible-format")
+                .all(|entry| entry.result.as_ref().unwrap_err().code() == "no-compatible-format")
         );
         assert!(state.delivery_report.is_none());
     });
@@ -1110,7 +1114,10 @@ fn confirm_send_rechecks_source_reader_capabilities_disconnect_and_collision(
             let report = state.delivery_report.as_ref().unwrap();
             assert_eq!(report.entries.len(), 1);
             assert_eq!(report.entries[0].item_id, chosen.id);
-            assert_eq!(report.entries[0].result.as_ref().unwrap_err(), expected);
+            assert_eq!(
+                report.entries[0].result.as_ref().unwrap_err().code(),
+                expected
+            );
         });
         assert!(!reader.path.join(".takio").exists());
         if change == "disconnect" {

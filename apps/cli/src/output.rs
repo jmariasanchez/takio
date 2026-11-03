@@ -4,7 +4,7 @@ use serde::Serialize;
 use serde_json::{Value, json};
 use thiserror::Error;
 
-#[derive(Debug, Error)]
+#[derive(Clone, Debug, Error)]
 #[error("{code}")]
 pub struct AppError {
     code: &'static str,
@@ -138,6 +138,33 @@ mod tests {
             assert_eq!(error.code(), "storage-unavailable");
             assert_eq!(error.to_string(), "storage-unavailable");
             assert_eq!(error.exit_code(), 1);
+        }
+    }
+
+    #[test]
+    fn cloned_app_errors_preserve_status_and_redacted_details() {
+        let explicit = AppError::with_exit_code("interrupted", 130).clone();
+        assert_eq!(explicit.code(), "interrupted");
+        assert_eq!(explicit.exit_code(), 130);
+        assert_eq!(explicit.to_string(), "interrupted");
+        for original in [
+            AppError::from(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "private path",
+            )),
+            AppError::from(rusqlite::Error::InvalidParameterName(
+                "private query".into(),
+            )),
+        ] {
+            let cloned = original.clone();
+            assert_eq!(cloned.code(), "storage-unavailable");
+            assert_eq!(cloned.exit_code(), 1);
+            assert_eq!(cloned.to_string(), "storage-unavailable");
+            assert!(!format!("{cloned:?}").contains("private"));
+            assert_eq!(
+                failure_line(cloned.code()),
+                failure_line("storage-unavailable")
+            );
         }
     }
 

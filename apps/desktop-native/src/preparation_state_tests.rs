@@ -100,7 +100,7 @@ fn preparation_confirmation_captures_id_and_success_reloads_without_sending(
         s.delivery_exclusions.push(SendPreviewEntry {
             item_id: item.id.clone(),
             title: item.title.clone(),
-            result: Err("no-compatible-format".into()),
+            result: Err(AppError::new("no-compatible-format")),
         });
         s.select_only(0, cx);
         s.prepare_selected(cx);

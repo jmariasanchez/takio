@@ -315,7 +315,7 @@ impl Workspace {
                 .children(preview.entries.into_iter().map(|entry| {
                     let (message, blocked) = match entry.result {
                         Ok(file) => (format!("Ready as {}", file.format.as_str().to_uppercase()), false),
-                        Err(code) => (format!("Not ready: {}", humanize_error(&code)), true),
+                        Err(error) => (format!("Not ready: {}", humanize_error(error.code())), true),
                     };
                     div().id(gpui::SharedString::from(entry.item_id)).role(gpui::Role::Label)
                         .aria_label(format!("{}: {message}", entry.title)).py_1().text_xs()
@@ -805,7 +805,9 @@ impl Render for Workspace {
                                                     Ok(_) => {
                                                         ("Sent and verified".to_owned(), false)
                                                     }
-                                                    Err(code) => (humanize_error(&code), true),
+                                                    Err(error) => {
+                                                        (humanize_error(error.code()), true)
+                                                    }
                                                 };
                                                 div()
                                                     .id(gpui::SharedString::from(entry.item_id))
@@ -832,7 +834,11 @@ impl Render for Workspace {
                                                         "{}: Not sent (blocked in review). {}",
                                                         entry.title,
                                                         humanize_error(
-                                                            entry.result.as_ref().unwrap_err()
+                                                            entry
+                                                                .result
+                                                                .as_ref()
+                                                                .unwrap_err()
+                                                                .code()
                                                         )
                                                     ))
                                             })),
