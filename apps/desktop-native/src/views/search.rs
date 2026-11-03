@@ -20,6 +20,7 @@ actions!(
 pub struct Search {
     state: Option<LibraryEntity>,
     placeholder: &'static str,
+    label: &'static str,
     read_only: bool,
     focus: FocusHandle,
     text: String,
@@ -59,9 +60,15 @@ impl Search {
             ]);
         }
         let end = text.len();
+        let label = if state.is_some() {
+            "Search library"
+        } else {
+            "Text"
+        };
         Self {
             state,
             placeholder,
+            label,
             read_only: false,
             focus: cx.focus_handle(),
             text,
@@ -75,6 +82,10 @@ impl Search {
 
     pub fn text(&self) -> &str {
         &self.text
+    }
+
+    pub fn set_label(&mut self, label: &'static str) {
+        self.label = label;
     }
 
     pub fn set_read_only(&mut self, read_only: bool, cx: &mut Context<Self>) {
@@ -278,7 +289,34 @@ impl Render for Search {
         let end = cursor - self.scroll;
         self.line = Some(line);
         let entity = cx.entity();
+        let accessible_input = entity.clone();
+        let read_only = self.read_only
+            || self
+                .state
+                .as_ref()
+                .is_some_and(|state| state.read(cx).switching_library);
         div()
+            .id("text-input")
+            .role(gpui::Role::TextInput)
+            .aria_label(self.label)
+            .aria_value(self.text.clone())
+            .aria_placeholder(self.placeholder)
+            .tab_index(0)
+            .a11y_synthetic_children(move |builder| {
+                if read_only {
+                    builder.parent_node().set_read_only();
+                }
+            })
+            .when(!read_only, |input| {
+                input.on_a11y_action(gpui::AccessibleAction::SetValue, move |data, _, cx| {
+                    if let Some(gpui::accesskit::ActionData::Value(value)) = data {
+                        accessible_input.update(cx, |this, cx| {
+                            let end = this.text.encode_utf16().count();
+                            this.replace(Some(0..end), value, cx);
+                        });
+                    }
+                })
+            })
             .key_context(if self.state.is_some() {
                 "Search"
             } else {
@@ -298,6 +336,8 @@ impl Render for Search {
             .text_sm()
             .text_color(theme.text)
             .cursor_text()
+            .on_action(|_: &crate::TrashSelected, _, cx| cx.stop_propagation())
+            .on_action(|_: &crate::PurgeSelected, _, cx| cx.stop_propagation())
             .on_action(cx.listener(|this, _: &Backspace, _, cx| {
                 if this.selection.is_empty() {
                     this.selection.start = this.previous();
@@ -426,6 +466,29 @@ impl Render for Search {
             )
     }
 }
+
+/// Click handlers also receive AccessKit Click and unmodified Enter/Space in GPUI.
+pub(crate) fn accessible_button(
+    element: gpui::Stateful<gpui::Div>,
+    label: impl Into<gpui::SharedString>,
+    enabled: bool,
+) -> gpui::Stateful<gpui::Div> {
+    element
+        .role(gpui::Role::Button)
+        .aria_label(label)
+        .tab_index(0)
+        .tab_stop(enabled)
+        .focus_visible(|style| style.border_2().border_color(gpui::rgb(0x007aff)))
+        .a11y_synthetic_children(move |builder| {
+            if !enabled {
+                builder.parent_node().set_disabled();
+            }
+        })
+}
+
+#[cfg(test)]
+#[path = "accessibility_tests.rs"]
+pub(crate) mod accessibility_tests;
 
 #[cfg(test)]
 mod tests {

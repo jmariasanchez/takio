@@ -25,13 +25,9 @@ pub fn run() {
 
     let mut cx = VisualTestAppContext::new(gpui_platform::current_platform(false));
     cx.update(|cx| cx.set_global(Theme::LIGHT));
-    let state = cx.new(|cx| {
-        let mut state = LibraryState::new(engine, cx);
-        if let Some(volumes) = volumes {
-            state.volumes_root = volumes;
-            state.refresh_destinations(cx);
-        }
-        state
+    let state = cx.new(|cx| match volumes {
+        Some(volumes) => LibraryState::new_with_volumes(engine, volumes, cx),
+        None => LibraryState::new(engine, cx),
     });
     settle(&mut cx, &state);
     // Wait for a reader to be connected while running, through the real volume poll.

@@ -46,6 +46,19 @@ pub struct LibraryList {
 }
 
 impl LibraryList {
+    pub(crate) fn benchmark_scroll_to(&mut self, index: usize, cx: &mut Context<Self>) {
+        self.scroll
+            .scroll_to_item_strict(index, ScrollStrategy::Nearest);
+        cx.notify();
+    }
+
+    pub(crate) fn benchmark_scroll_top(&self) -> usize {
+        // Use the applied offset, not a deferred requested index. The convenience
+        // logical-index accessor is test-support-only in the pinned GPUI release.
+        let offset = self.scroll.0.borrow().base_handle.offset().y;
+        ((-offset / px(metrics::ROW_HEIGHT)).max(0.)).floor() as usize
+    }
+
     pub fn new(state: LibraryEntity, cx: &mut Context<Self>) -> Self {
         cx.observe(&state, |this, _, cx| {
             if let Some(anchor) = this.state.read(cx).anchor {
@@ -83,6 +96,7 @@ impl LibraryList {
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<Div> {
         let sort = self.state.read(cx).sort;
+        let enabled = !self.state.read(cx).switching_library;
         let active = sort.column == column;
         let indicator = if active {
             if sort.ascending { " ↑" } else { " ↓" }
@@ -92,6 +106,28 @@ impl LibraryList {
         let state = self.state.clone();
         div()
             .id(label)
+            .map(|el| super::search::accessible_button(el, format!("Sort by {label}"), enabled))
+            .aria_description(if active {
+                if sort.ascending {
+                    "Sorted ascending"
+                } else {
+                    "Sorted descending"
+                }
+            } else {
+                "Not sorted"
+            })
+            .a11y_synthetic_children(move |builder| {
+                if !enabled {
+                    builder.parent_node().set_disabled();
+                }
+                if active {
+                    builder.parent_node().set_sort_direction(if sort.ascending {
+                        gpui::accesskit::SortDirection::Ascending
+                    } else {
+                        gpui::accesskit::SortDirection::Descending
+                    });
+                }
+            })
             .w(px(width))
             .flex_shrink_0()
             .px_2()
@@ -174,8 +210,12 @@ impl Render for LibraryList {
                             columns,
                             read.on_reader.contains_key(&item.id),
                         )
+                        .when(focused && read.anchor == Some(index), |row| {
+                            row.aria_active_descendant()
+                        })
                         .on_click(cx.listener(
-                            move |this, event, _, cx| {
+                            move |this, event, window, cx| {
+                                window.focus(&this.focus, cx);
                                 this.on_row_click(index, event, cx);
                             },
                         ))
@@ -188,6 +228,12 @@ impl Render for LibraryList {
         .size_full();
 
         div()
+            .id("library-list")
+            .role(gpui::Role::ListBox)
+            .aria_label("Books")
+            .aria_size_of_set(count)
+            .a11y_synthetic_children(|builder| builder.parent_node().set_multiselectable())
+            .tab_index(0)
             .key_context("LibraryList")
             .track_focus(&self.focus)
             .on_action(cx.listener(|this, _: &SelectNext, _, cx| {
@@ -224,6 +270,9 @@ impl Render for LibraryList {
             .child(header)
             .child(if count == 0 {
                 div()
+                    .id("empty-library")
+                    .role(gpui::Role::Status)
+                    .aria_label(empty_label(&state, cx))
                     .flex_1()
                     .flex()
                     .items_center()
@@ -276,7 +325,16 @@ fn row(
     }
     .into();
     div()
-        .id(index)
+        .id(gpui::SharedString::from(item.id.clone()))
+        .role(gpui::Role::ListBoxOption)
+        .aria_label(format!(
+            "{}, {}, {}",
+            item.title,
+            author_label(item),
+            formats
+        ))
+        .aria_selected(selected)
+        .aria_position_in_set(index + 1)
         .flex()
         .h(px(metrics::ROW_HEIGHT))
         .items_center()
@@ -337,6 +395,48 @@ fn empty_label(state: &LibraryEntity, cx: &App) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gpui::{AppContext, Element, TestAppContext};
+
+    #[gpui::test]
+    fn row_accessibility_uses_stable_book_identity_and_selection(cx: &mut TestAppContext) {
+        let (_temp, state) = crate::views::search::accessibility_tests::fixture(cx);
+        let item = state.read_with(cx, |state, _| state.items[0].clone());
+        let first = row(
+            0,
+            &item,
+            true,
+            true,
+            &Theme::LIGHT,
+            ColumnLayout::for_viewport(1280.),
+            false,
+        );
+        let reordered = row(
+            1,
+            &item,
+            false,
+            false,
+            &Theme::LIGHT,
+            ColumnLayout::for_viewport(1280.),
+            false,
+        );
+        assert_eq!(Element::id(&first), Element::id(&reordered));
+        assert_eq!(first.a11y_role(), Some(gpui::Role::ListBoxOption));
+        let mut node = gpui::accesskit::Node::new(first.a11y_role().unwrap());
+        first.write_a11y_info(&mut node);
+        assert_eq!(node.is_selected(), Some(true));
+        assert_eq!(node.position_in_set(), Some(1));
+        assert!(node.label().unwrap().contains(&item.title));
+
+        let list = cx.new(|cx| LibraryList::new(state, cx));
+        list.update(cx, |list, cx| {
+            let header = list.header_cell("Title", SortColumn::Title, 180., &Theme::LIGHT, cx);
+            let mut node = gpui::accesskit::Node::new(header.a11y_role().unwrap());
+            header.write_a11y_info(&mut node);
+            assert_eq!(node.role(), gpui::Role::Button);
+            assert_eq!(node.label(), Some("Sort by Title"));
+            assert!(node.supports_action(gpui::AccessibleAction::Click));
+        });
+    }
 
     fn assert_fits(viewport: f32, columns: ColumnLayout) {
         let total = columns.title

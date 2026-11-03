@@ -2,13 +2,15 @@
 //!
 //! The UI never touches SQLite. Every operation is a typed [`Request`]
 //! carrying a oneshot reply sender. One worker thread drains requests in
-//! order, which serializes mutations exactly like the Electron sidecar's
-//! `library service` loop did, but without a process boundary or JSON.
+//! order, which serializes mutations. Read-only reader scans use a separate
+//! bounded worker so uncached USB hashing cannot monopolize catalogue queries.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 
 pub use crate::library_location::OpenedLibrary;
@@ -22,6 +24,125 @@ use takio::paths::LibraryPaths;
 use takio::store::{BackupReport, LibraryQueryFilters, LibraryStore, RestoreReport};
 
 pub type ReaderShelves = Vec<(Destination, AppResult<takio::reader_shelf::ReaderShelf>)>;
+
+struct ReaderScanJob {
+    root: PathBuf,
+    destinations: Vec<Destination>,
+    fingerprints: Vec<takio::store::ActiveFingerprint>,
+    current: Arc<AtomicBool>,
+    reply: Sender<AppResult<ReaderShelves>>,
+}
+
+#[derive(Default)]
+struct ReaderScanQueue {
+    pending: Option<ReaderScanJob>,
+    running: Option<Arc<AtomicBool>>,
+    closed: bool,
+}
+
+/// One running scan and at most one pending scan, never one thread per refresh.
+/// Only owned fingerprints cross this boundary, not the catalogue connection.
+/// State's reader generation rejects replies invalidated by mutations or switching.
+struct ReaderScanWorker(Arc<(Mutex<ReaderScanQueue>, Condvar)>);
+
+impl ReaderScanWorker {
+    fn start() -> std::io::Result<Self> {
+        Self::with_handler(|job| {
+            // Bind cache reads/writes to the captured library, even after a switch.
+            // A first scan still reads candidate bytes in full. This only removes
+            // slow USB I/O from the serial catalogue request queue.
+            let mut hashes = takio::reader_shelf::HashCache::load(&job.root);
+            let shelves = job
+                .destinations
+                .into_iter()
+                .take_while(|_| job.current.load(Ordering::Acquire))
+                .map(|destination| {
+                    let shelf = takio::reader_shelf::scan_cached(
+                        &destination,
+                        &job.fingerprints,
+                        &mut hashes,
+                    );
+                    (destination, shelf)
+                })
+                .collect();
+            if job.current.load(Ordering::Acquire) {
+                let _ = hashes.save(&job.root);
+                let _ = job.reply.send(Ok(shelves));
+            }
+        })
+    }
+
+    fn with_handler(mut scan: impl FnMut(ReaderScanJob) + Send + 'static) -> std::io::Result<Self> {
+        let shared = Arc::new((Mutex::new(ReaderScanQueue::default()), Condvar::new()));
+        let worker = shared.clone();
+        thread::Builder::new()
+            .name("takio-reader-scan".into())
+            .spawn(move || {
+                let (lock, wake) = &*worker;
+                loop {
+                    let job = {
+                        let mut queue = lock.lock().unwrap_or_else(|error| error.into_inner());
+                        while queue.pending.is_none() && !queue.closed {
+                            queue = wake.wait(queue).unwrap_or_else(|error| error.into_inner());
+                        }
+                        if queue.closed {
+                            return;
+                        }
+                        let job = queue.pending.take().expect("pending scan");
+                        queue.running = Some(job.current.clone());
+                        job
+                    };
+                    scan(job);
+                    lock.lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .running = None;
+                }
+            })?;
+        Ok(Self(shared))
+    }
+
+    fn submit(&self, job: ReaderScanJob) {
+        let (lock, wake) = &*self.0;
+        // Replaced requests lose their sender, completing their receivers instead
+        // of leaking waiters. They have already been invalidated in UI state.
+        let mut queue = lock.lock().unwrap_or_else(|error| error.into_inner());
+        if let Some(current) = &queue.running {
+            current.store(false, Ordering::Release);
+        }
+        queue.pending = Some(job);
+        wake.notify_one();
+    }
+
+    fn invalidate(&self) {
+        let mut queue = self.0.0.lock().unwrap_or_else(|error| error.into_inner());
+        queue.pending = None;
+        if let Some(current) = &queue.running {
+            current.store(false, Ordering::Release);
+        }
+    }
+
+    fn is_running(&self) -> bool {
+        self.0
+            .0
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .running
+            .is_some()
+    }
+}
+
+impl Drop for ReaderScanWorker {
+    fn drop(&mut self) {
+        let (lock, wake) = &*self.0;
+        let mut queue = lock.lock().unwrap_or_else(|error| error.into_inner());
+        queue.closed = true;
+        queue.pending = None;
+        if let Some(current) = &queue.running {
+            current.store(false, Ordering::Release);
+        }
+        wake.notify_one();
+    }
+}
 
 /// Facet filters applied conjunctively to a query.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -151,6 +272,18 @@ pub struct SendEntry {
 
 /// Everything the UI can ask the engine to do.
 pub enum Request {
+    AutomaticBackupLoad {
+        reply: Sender<AppResult<crate::automatic_backup::Config>>,
+    },
+    AutomaticBackupConfigure {
+        destination: Option<PathBuf>,
+        reply: Sender<AppResult<crate::automatic_backup::Config>>,
+    },
+    AutomaticBackupRun {
+        config: crate::automatic_backup::Config,
+        now: u64,
+        reply: Sender<AppResult<crate::automatic_backup::RunReport>>,
+    },
     OpenLibrary {
         directory: PathBuf,
         remember: Option<PathBuf>,
@@ -311,13 +444,26 @@ impl Engine {
 }
 
 fn worker(
-    mut store: LibraryStore,
+    store: LibraryStore,
     receiver: Receiver<Request>,
     preparation_backend: Option<BackendDiscovery>,
 ) {
-    // Reader files are re-read only when their size or modification time changed, and
-    // the fingerprints survive restarts so a slow reader is read in full only once.
-    let mut reader_hashes = takio::reader_shelf::HashCache::load(&store.paths().root);
+    worker_with_reader_scans(
+        store,
+        receiver,
+        preparation_backend,
+        ReaderScanWorker::start().ok(),
+    );
+}
+
+fn worker_with_reader_scans(
+    mut store: LibraryStore,
+    receiver: Receiver<Request>,
+    preparation_backend: Option<BackendDiscovery>,
+    reader_scans: Option<ReaderScanWorker>,
+) {
+    // The scan worker is the sole writer of the native persistent hash cache.
+    // Import uses a separate temporary cache and never races its persistence.
     while let Ok(request) = receiver.recv() {
         match request {
             Request::OpenLibrary {
@@ -331,13 +477,27 @@ fn worker(
                             crate::preferences::save(path, &opened.root).is_err()
                         });
                         store = candidate;
-                        reader_hashes = takio::reader_shelf::HashCache::load(&store.paths().root);
+                        if let Some(scans) = &reader_scans {
+                            scans.invalidate();
+                        }
                         opened
                     });
                 let _ = reply.send(result);
             }
             Request::Backup { destination, reply } => {
                 let _ = reply.send(store.backup(&destination));
+            }
+            Request::AutomaticBackupLoad { reply } => {
+                let _ = reply.send(crate::automatic_backup::load(&store.paths().root));
+            }
+            Request::AutomaticBackupConfigure { destination, reply } => {
+                let _ = reply.send(crate::automatic_backup::configure(
+                    &store.paths().root,
+                    destination,
+                ));
+            }
+            Request::AutomaticBackupRun { config, now, reply } => {
+                let _ = reply.send(crate::automatic_backup::run(&store, config, now));
             }
             Request::RestoreBackupCopy {
                 source,
@@ -415,26 +575,26 @@ fn worker(
             Request::ReaderShelves {
                 destinations,
                 reply,
-            } => {
-                let result = store.active_fingerprints().map(|fingerprints| {
-                    destinations
+            } => match (&reader_scans, store.active_fingerprints()) {
+                (Some(scans), Ok(fingerprints)) => scans.submit(ReaderScanJob {
+                    root: store.paths().root.clone(),
+                    destinations: destinations
                         .into_iter()
                         .filter(|destination| !matches!(destination.kind, DestinationKind::Generic))
-                        .map(|destination| {
-                            let shelf = takio::reader_shelf::scan_cached(
-                                &destination,
-                                &fingerprints,
-                                &mut reader_hashes,
-                            );
-                            (destination, shelf)
-                        })
-                        .collect()
-                });
-                // Before replying, so quitting right after the marks appear keeps them.
-                let _ = reader_hashes.save(&store.paths().root);
-                let _ = reply.send(result);
-            }
+                        .collect(),
+                    fingerprints,
+                    current: Arc::new(AtomicBool::new(true)),
+                    reply,
+                }),
+                (_, Err(error)) => {
+                    let _ = reply.send(Err(error));
+                }
+                (None, _) => {
+                    let _ = reply.send(Err(AppError::new("storage-unavailable")));
+                }
+            },
             Request::ImportFromReader { destination, reply } => {
+                let mut reader_hashes = takio::reader_shelf::HashCache::load(&store.paths().root);
                 let result = destination
                     .path
                     .parent()
@@ -447,7 +607,6 @@ fn worker(
                             &mut reader_hashes,
                         )
                     });
-                let _ = reader_hashes.save(&store.paths().root);
                 let _ = reply.send(result);
             }
             Request::PreviewSend {
@@ -473,6 +632,15 @@ fn worker(
                 let _ = reply.send(send_many(&store, &destination, &item_ids));
             }
             Request::Eject { destination, reply } => {
+                // OS reads cannot be safely interrupted. Refuse rather than
+                // unmount beneath an active scan or block the catalogue queue.
+                if let Some(scans) = &reader_scans {
+                    scans.invalidate();
+                    if scans.is_running() {
+                        let _ = reply.send(Err(AppError::new("reader-scan-in-progress")));
+                        continue;
+                    }
+                }
                 let _ = reply.send(destinations::eject(&destination));
             }
         }
@@ -693,6 +861,140 @@ pub fn resolve_paths() -> AppResult<LibraryPaths> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn blocked_reader_scan_does_not_block_queries_and_pending_scans_are_bounded() {
+        use std::time::Duration;
+        let (_temp, store, destination) = delivery_fixture();
+        let (entered, started) = mpsc::channel();
+        let (release, blocked) = mpsc::channel();
+        let scans = ReaderScanWorker::with_handler(move |job| {
+            entered.send(job.root.clone()).unwrap();
+            blocked.recv().unwrap();
+            let _ = job.reply.send(Ok(Vec::new()));
+        })
+        .unwrap();
+        let (sender, receiver) = mpsc::channel();
+        let worker =
+            thread::spawn(move || worker_with_reader_scans(store, receiver, None, Some(scans)));
+        let engine = Engine {
+            sender,
+            root: PathBuf::new(),
+        };
+        let first = engine.request(|reply| Request::ReaderShelves {
+            destinations: Vec::new(),
+            reply,
+        });
+        started.recv_timeout(Duration::from_secs(2)).unwrap();
+        let eject = engine.request(|reply| Request::Eject { destination, reply });
+        assert_eq!(
+            eject
+                .recv_timeout(Duration::from_secs(2))
+                .unwrap()
+                .unwrap_err()
+                .code(),
+            "reader-scan-in-progress"
+        );
+        let replaced = engine.request(|reply| Request::ReaderShelves {
+            destinations: Vec::new(),
+            reply,
+        });
+        let latest = engine.request(|reply| Request::ReaderShelves {
+            destinations: Vec::new(),
+            reply,
+        });
+        // This is an ordering assertion with a generous timeout, not a latency
+        // measurement: the scanner cannot finish until we release it below.
+        let query = engine.request(|reply| Request::Query {
+            query: String::new(),
+            filters: Filters::default(),
+            reply,
+        });
+        assert!(query.recv_timeout(Duration::from_secs(2)).unwrap().is_ok());
+        assert!(matches!(
+            replaced.recv_timeout(Duration::from_secs(2)),
+            Err(mpsc::RecvTimeoutError::Disconnected)
+        ));
+        assert!(matches!(first.try_recv(), Err(mpsc::TryRecvError::Empty)));
+        release.send(()).unwrap();
+        first.recv_timeout(Duration::from_secs(2)).unwrap().unwrap();
+        started.recv_timeout(Duration::from_secs(2)).unwrap();
+        release.send(()).unwrap();
+        latest
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap()
+            .unwrap();
+        drop(engine);
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn switching_invalidates_running_and_pending_scans_without_waiting_for_usb() {
+        use std::time::Duration;
+        let (_temp, store, _) = delivery_fixture();
+        let (_other_temp, other, _) = delivery_fixture();
+        let original_root = store.paths().root.clone();
+        let other_root = other.paths().root.clone();
+        drop(other);
+        let (entered, started) = mpsc::channel();
+        let (release, blocked) = mpsc::channel();
+        let (exited, finished) = mpsc::channel();
+        let scans = ReaderScanWorker::with_handler(move |job| {
+            entered
+                .send((job.root.clone(), job.current.clone()))
+                .unwrap();
+            blocked.recv().unwrap();
+            assert!(!job.current.load(Ordering::Acquire));
+            drop(job);
+            exited.send(()).unwrap();
+        })
+        .unwrap();
+        let (sender, receiver) = mpsc::channel();
+        let worker =
+            thread::spawn(move || worker_with_reader_scans(store, receiver, None, Some(scans)));
+        let engine = Engine {
+            sender,
+            root: PathBuf::new(),
+        };
+        let first = engine.request(|reply| Request::ReaderShelves {
+            destinations: Vec::new(),
+            reply,
+        });
+        let (root, current) = started.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert_eq!(root, original_root);
+        let pending = engine.request(|reply| Request::ReaderShelves {
+            destinations: Vec::new(),
+            reply,
+        });
+        engine
+            .request(|reply| Request::OpenLibrary {
+                directory: other_root,
+                remember: None,
+                reply,
+            })
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap()
+            .unwrap();
+        assert!(!current.load(Ordering::Acquire));
+        assert!(matches!(
+            pending.recv_timeout(Duration::from_secs(2)),
+            Err(mpsc::RecvTimeoutError::Disconnected)
+        ));
+        // Catalogue shutdown does not join an uninterruptible OS read. The scan
+        // has no store handle and its invalid token prevents later publication.
+        drop(engine);
+        worker.join().unwrap();
+        release.send(()).unwrap();
+        finished.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert!(matches!(
+            first.recv_timeout(Duration::from_secs(2)),
+            Err(mpsc::RecvTimeoutError::Disconnected)
+        ));
+        assert!(matches!(
+            started.recv_timeout(Duration::from_secs(2)),
+            Err(mpsc::RecvTimeoutError::Disconnected)
+        ));
+    }
+
     use super::*;
     use std::fs;
 

@@ -25,6 +25,9 @@ use crate::preparation::PreparationPreview;
 #[path = "state_library.rs"]
 mod library;
 
+#[path = "automatic_backup_state.rs"]
+mod automatic_backup;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Section {
     Library,
@@ -74,6 +77,9 @@ struct LibrarySnapshot {
 }
 
 pub struct LibraryState {
+    pub automatic_backup: crate::automatic_backup::Schedule,
+    automatic_backup_timer: Option<Task<()>>,
+    pub automatic_backup_prompt_open: bool,
     engine: Engine,
     pub library_root: PathBuf,
     pub library_epoch: u64,
@@ -129,7 +135,18 @@ impl LibraryState {
         } else {
             PathBuf::from("/Volumes")
         };
+        Self::new_with_volumes(engine, volumes_root, cx)
+    }
+
+    pub(crate) fn new_with_volumes(
+        engine: Engine,
+        volumes_root: PathBuf,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let mut this = Self {
+            automatic_backup: crate::automatic_backup::Schedule::default(),
+            automatic_backup_timer: None,
+            automatic_backup_prompt_open: false,
             volumes_root,
             library_root: engine.root().to_path_buf(),
             library_epoch: 0,
@@ -175,6 +192,7 @@ impl LibraryState {
         this.reload(cx);
         this.refresh_destinations(cx);
         this.watch_volumes(cx);
+        this.initialize_automatic_backup(cx);
         this
     }
 
@@ -239,8 +257,9 @@ impl LibraryState {
         cx.notify();
     }
 
-    /// Update the query text and reload after a short debounce so fast
-    /// typing issues one engine request, not one per keystroke.
+    /// Update the query text and coalesce same-frame edits before dispatch.
+    /// Eight milliseconds leaves room in the 80ms target for query and rendering,
+    /// unlike the former 60ms floor. Generation guards still block stale actions.
     pub fn set_query(&mut self, query: String, cx: &mut Context<Self>) {
         if self.switching_library || self.query == query {
             return;
@@ -251,7 +270,7 @@ impl LibraryState {
         self.sorting = false;
         self.debounce = Some(cx.spawn(async move |this, cx| {
             cx.background_executor()
-                .timer(Duration::from_millis(60))
+                .timer(Duration::from_millis(8))
                 .await;
             let _ = this.update(cx, |this, cx| this.reload(cx));
         }));
@@ -1331,6 +1350,7 @@ pub fn humanize_error(code: &str) -> String {
         "format-not-found" => "That book has no file to send".into(),
         "no-compatible-format" | "destination-format-unsupported" => "No file this reader can open. KOReader reads EPUB, PDF, MOBI, AZW3, TXT and CBZ. A stock Kindle needs AZW3, MOBI, PDF or TXT.".into(),
         "invalid-arguments" => "Check the book details and selection, then try again".into(),
+        "reader-scan-in-progress" => "Reader scan is still finishing. Wait for it to stop, then try Eject again.".into(),
         "eject-failed" => "The device could not be ejected".into(),
         other => format!("Something went wrong ({other})"),
     }
@@ -1359,6 +1379,7 @@ mod tests {
 
     include!("preparation_state_tests.rs");
     include!("recovery_state_tests.rs");
+    include!("automatic_backup_state_tests.rs");
     include!("library_state_tests.rs");
     include!("reader_shelf_state_tests.rs");
 
@@ -1501,10 +1522,20 @@ mod tests {
         f.state.update(cx, |s, cx| s.set_query("a".into(), cx));
         f.state.update(cx, |s, cx| s.set_query("al".into(), cx));
         f.state.update(cx, |s, cx| s.set_query("alp".into(), cx));
-        // Before the debounce timer fires nothing has been requested.
+        // Same-frame edits are coalesced. No request is dispatched before 8ms.
+        let generation = f.state.read_with(cx, |s, _| s.generation);
+        cx.run_until_parked();
+        cx.executor().advance_clock(Duration::from_millis(7));
+        cx.run_until_parked();
+        assert_eq!(f.state.read_with(cx, |s, _| s.generation), generation);
+        assert!(f.state.read_with(cx, |s, _| s.loading && !s.can_mutate()));
         assert_eq!(titles(&f.state, cx).len(), 3);
-        cx.executor().advance_clock(Duration::from_millis(100));
+        cx.executor().advance_clock(Duration::from_millis(1));
         settle(&f.state, cx);
+        assert_eq!(
+            f.state.read_with(cx, |s, _| s.generation),
+            generation.wrapping_add(1)
+        );
         assert_eq!(titles(&f.state, cx), ["Alpha"]);
 
         f.state.update(cx, |s, cx| s.set_query(String::new(), cx));

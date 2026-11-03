@@ -50,6 +50,8 @@ impl LibraryState {
                         this.scan_readers(cx);
                         this.generation = this.generation.wrapping_add(1);
                         this.library_root = root;
+                        this.automatic_backup_prompt_open = false;
+                        this.initialize_automatic_backup(cx);
                         this.section = Section::Library;
                         this.query.clear();
                         this.filters = Filters::default();

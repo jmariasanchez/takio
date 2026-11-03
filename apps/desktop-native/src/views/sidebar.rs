@@ -41,6 +41,9 @@ impl Render for Sidebar {
             .filter(|device| !matches!(device.kind, takio::destinations::DestinationKind::Generic))
             .collect();
         let mut sidebar = div()
+            .id("sidebar")
+            .role(gpui::Role::Navigation)
+            .aria_label("Library navigation and filters")
             .w(px(metrics::SIDEBAR_WIDTH))
             .flex_shrink_0()
             .h_full()
@@ -62,6 +65,8 @@ impl Render for Sidebar {
             sidebar = sidebar.child(
                 div()
                     .id(label)
+                    .map(|el| super::search::accessible_button(el, label, available))
+                    .aria_selected(section == target)
                     .h(px(26.))
                     .px_2()
                     .flex()
@@ -72,6 +77,9 @@ impl Render for Sidebar {
                     .hover(|row| row.bg(theme.row_hover))
                     .child(label)
                     .on_click(cx.listener(move |this, _, _, cx| {
+                        if !available || !this.state.read(cx).can_mutate() {
+                            return;
+                        }
                         this.state
                             .update(cx, |state, cx| state.set_section(target, cx));
                     })),
@@ -88,11 +96,17 @@ impl Render for Sidebar {
                 .child(
                     div()
                         .id("refresh-readers")
+                        .map(|el| {
+                            super::search::accessible_button(el, "Refresh readers", !refreshing)
+                        })
                         .text_xs()
                         .cursor_pointer()
                         .text_color(theme.accent)
                         .child(if refreshing { "Checking..." } else { "Refresh" })
                         .on_click(cx.listener(|this, _, _, cx| {
+                            if this.state.read(cx).refreshing_devices {
+                                return;
+                            }
                             this.state
                                 .update(cx, |state, cx| state.refresh_destinations(cx))
                         })),
@@ -137,6 +151,9 @@ impl Render for Sidebar {
                     .child({
                         let label = destination.label();
                         div()
+                            .id(("reader-label", index))
+                            .role(gpui::Role::Label)
+                            .aria_label(label.clone())
                             .min_w_0()
                             .text_ellipsis()
                             .overflow_hidden()
@@ -145,6 +162,9 @@ impl Render for Sidebar {
                     })
                     .child(
                         div()
+                            .id(("reader-summary", index))
+                            .role(gpui::Role::Status)
+                            .aria_label(shelf_text.clone())
                             .text_xs()
                             .text_color(theme.text_secondary)
                             .debug_selector({
@@ -157,6 +177,13 @@ impl Render for Sidebar {
                         row.child(
                             div()
                                 .id(("import-reader", index))
+                                .map(|el| {
+                                    super::search::accessible_button(
+                                        el,
+                                        format!("Add {unmatched} books from reader"),
+                                        can_import,
+                                    )
+                                })
                                 .debug_selector(|| "import-reader".to_owned())
                                 .text_xs()
                                 .px_2()
@@ -171,6 +198,9 @@ impl Render for Sidebar {
                                 .when(can_import, |button| button.cursor_pointer())
                                 .child(format!("Add {unmatched} to library"))
                                 .on_click(cx.listener(move |this, _, _, cx| {
+                                    if !can_import {
+                                        return;
+                                    }
                                     this.state.update(cx, |state, cx| {
                                         state.import_from_reader(import.clone(), cx)
                                     });
@@ -185,6 +215,13 @@ impl Render for Sidebar {
                             .child(
                                 div()
                                     .id(("send-device", index))
+                                    .map(|el| {
+                                        super::search::accessible_button(
+                                            el,
+                                            format!("Review {selected} books to send"),
+                                            can_send,
+                                        )
+                                    })
                                     .debug_selector(|| "send-device".to_owned())
                                     .text_xs()
                                     .px_2()
@@ -203,6 +240,9 @@ impl Render for Sidebar {
                                         "Select books to send".to_owned()
                                     })
                                     .on_click(cx.listener(move |this, _, _, cx| {
+                                        if !can_send {
+                                            return;
+                                        }
                                         this.state.update(cx, |state, cx| {
                                             state.send_selected_to(send.clone(), cx)
                                         });
@@ -211,6 +251,13 @@ impl Render for Sidebar {
                             .child(
                                 div()
                                     .id(("eject", index))
+                                    .map(|el| {
+                                        super::search::accessible_button(
+                                            el,
+                                            "Eject reader",
+                                            available,
+                                        )
+                                    })
                                     .text_xs()
                                     .text_color(if available {
                                         theme.text_secondary
@@ -220,6 +267,9 @@ impl Render for Sidebar {
                                     .when(available, |button| button.cursor_pointer())
                                     .child("Eject")
                                     .on_click(cx.listener(move |this, _, _, cx| {
+                                        if !available {
+                                            return;
+                                        }
                                         this.state.update(cx, |state, cx| {
                                             state.eject(destination.clone(), cx)
                                         });
@@ -231,7 +281,7 @@ impl Render for Sidebar {
         if has_stock_kindle {
             sidebar = sidebar.child(div().px_2().py_2().flex().flex_col().gap_1()
             .child(div().text_xs().text_color(theme.text_secondary).child("Have an EPUB? Reveal its file in the inspector, then upload it yourself on Amazon."))
-            .child(div().id("amazon-send-to-kindle").debug_selector(|| "amazon-send-to-kindle".to_owned()).text_xs().text_color(theme.accent).cursor_pointer()
+            .child(div().id("amazon-send-to-kindle").map(|el| super::search::accessible_button(el, "Open Send to Kindle website", true)).debug_selector(|| "amazon-send-to-kindle".to_owned()).text_xs().text_color(theme.accent).cursor_pointer()
                 .child("Open Send to Kindle website")
                 .on_click(|_, _, cx| cx.open_url("https://www.amazon.com/sendtokindle")))
             .child(div().text_xs().text_color(theme.text_tertiary).child("Opens your browser. Takio does not upload files or confirm Amazon delivery.")));
@@ -246,12 +296,16 @@ impl Render for Sidebar {
             groups = groups.child(
                 div()
                     .id("clear-filters")
+                    .map(|el| super::search::accessible_button(el, "Clear filters", available))
                     .px_2()
                     .py_1()
                     .cursor_pointer()
                     .text_color(theme.accent)
                     .child("Clear filters")
                     .on_click(cx.listener(|this, _, _, cx| {
+                        if !this.state.read(cx).can_mutate() {
+                            return;
+                        }
                         this.state.update(cx, |state, cx| state.clear_filters(cx));
                     })),
             );
@@ -287,6 +341,8 @@ impl Render for Sidebar {
             groups = groups.child(
                 div()
                     .id(name)
+                    .map(|el| super::search::accessible_button(el, name, true))
+                    .aria_expanded(!collapsed)
                     .px_2()
                     .py_1()
                     .mt_2()
@@ -304,12 +360,24 @@ impl Render for Sidebar {
                 continue;
             }
             let remaining = values.len().saturating_sub(50);
-            for (index, (value, count)) in values.iter().take(50).enumerate() {
+            for (value, count) in values.iter().take(50) {
                 let value = value.clone();
                 let selected = active.contains(&value.to_lowercase());
                 groups = groups.child(
                     div()
-                        .id((name, index))
+                        .id(gpui::SharedString::from(format!("facet:{name}:{value}")))
+                        .map(|el| {
+                            super::search::accessible_button(
+                                el,
+                                format!("{name}: {value}, {count} books"),
+                                available,
+                            )
+                        })
+                        .aria_toggled(if selected {
+                            gpui::Toggled::True
+                        } else {
+                            gpui::Toggled::False
+                        })
                         .h(px(26.))
                         .px_2()
                         .ml_2()
@@ -335,6 +403,9 @@ impl Render for Sidebar {
                                 .child(count.to_string()),
                         )
                         .on_click(cx.listener(move |this, _, _, cx| {
+                            if !available || !this.state.read(cx).can_mutate() {
+                                return;
+                            }
                             this.state
                                 .update(cx, |state, cx| state.toggle_filter(dimension, &value, cx));
                         })),

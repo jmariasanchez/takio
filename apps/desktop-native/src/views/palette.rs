@@ -13,6 +13,16 @@ struct Command {
 }
 const COMMANDS: &[Command] = &[
     Command {
+        label: "Enable automatic recovery copies...",
+        hint: "",
+        action: || Box::new(crate::EnableAutomaticBackups),
+    },
+    Command {
+        label: "Disable automatic recovery copies",
+        hint: "",
+        action: || Box::new(crate::DisableAutomaticBackups),
+    },
+    Command {
         label: "Open Library...",
         hint: "Cmd Shift O",
         action: || Box::new(crate::OpenLibrary),
@@ -310,6 +320,7 @@ impl Render for Palette {
         }
         let theme = *cx.global::<Theme>();
         let entity = cx.entity();
+        let accessible_input = entity.clone();
         let focus = self.focus.clone();
         let matches = self.matches();
         div()
@@ -331,8 +342,29 @@ impl Render for Palette {
             .child(
                 div()
                     .id("command-palette")
+                    .role(gpui::Role::TextInput)
+                    .aria_label("Command palette")
+                    .aria_value(self.query.clone())
+                    .aria_placeholder("Type a command")
+                    .on_a11y_action(gpui::AccessibleAction::SetValue, move |data, window, cx| {
+                        if let Some(gpui::accesskit::ActionData::Value(value)) = data {
+                            accessible_input.update(cx, |this, cx| {
+                                let end = this.query.encode_utf16().count();
+                                this.replace_text_in_range(Some(0..end), value, window, cx);
+                            });
+                        }
+                    })
                     .track_focus(&self.focus)
                     .key_context("Palette")
+                    .on_action(|_: &crate::TrashSelected, _, cx| cx.stop_propagation())
+                    .on_action(|_: &crate::PurgeSelected, _, cx| cx.stop_propagation())
+                    .on_action(|_: &crate::RestoreSelected, _, cx| cx.stop_propagation())
+                    .on_action(|_: &crate::OpenSelected, _, cx| cx.stop_propagation())
+                    .on_action(|_: &crate::SendSelected, _, cx| cx.stop_propagation())
+                    .on_action(|_: &crate::PrepareSelected, _, cx| cx.stop_propagation())
+                    .on_action(|_: &crate::ConfirmSend, _, cx| cx.stop_propagation())
+                    .on_action(|_: &crate::ConfirmPreparation, _, cx| cx.stop_propagation())
+                    .on_action(|_: &crate::EjectReader, _, cx| cx.stop_propagation())
                     .w(px(520.))
                     .bg(theme.panel_bg)
                     .rounded_lg()
@@ -345,6 +377,10 @@ impl Render for Palette {
                         let matches = this.matches();
                         match event.keystroke.key.as_str() {
                             "escape" => this.close(window, cx),
+                            "tab" => {
+                                cx.stop_propagation();
+                                return;
+                            }
                             "up" => {
                                 this.highlighted = this.highlighted.saturating_sub(1);
                                 cx.notify();
@@ -413,11 +449,19 @@ impl Render for Palette {
                     )
                     .child(
                         div()
+                            .id("matching-commands")
+                            .role(gpui::Role::ListBox)
+                            .aria_label("Matching commands")
                             .p_2()
                             .children(matches.iter().enumerate().map(|(row, &index)| {
                                 let command = &COMMANDS[index];
                                 div()
                                     .id(index)
+                                    .role(gpui::Role::ListBoxOption)
+                                    .aria_label(command.label)
+                                    .aria_keyshortcuts(command.hint)
+                                    .aria_selected(row == self.highlighted)
+                                    .when(row == self.highlighted, |el| el.aria_active_descendant())
                                     .h(px(32.))
                                     .px_3()
                                     .flex()

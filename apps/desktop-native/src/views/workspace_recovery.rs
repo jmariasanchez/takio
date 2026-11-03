@@ -30,6 +30,7 @@ impl Workspace {
                 "Choose location",
             )
         };
+        let pause = self.state.read(cx).automatic_backup.pause();
         let answer = window.prompt(
             PromptLevel::Info,
             title,
@@ -39,6 +40,7 @@ impl Workspace {
         );
         cx.spawn(async move |this, cx| {
             let accepted = answer.await == Ok(1);
+            drop(pause);
             let _ = this.update(cx, |this, cx| {
                 if !accepted
                     || this.state.read(cx).library_epoch != epoch
@@ -57,6 +59,7 @@ impl Workspace {
 
     fn choose_backup_source(&mut self, cx: &mut Context<Self>) {
         let epoch = self.state.read(cx).library_epoch;
+        let pause = self.state.read(cx).automatic_backup.pause();
         let receiver = cx.prompt_for_paths(PathPromptOptions {
             files: false,
             directories: true,
@@ -65,6 +68,7 @@ impl Workspace {
         });
         cx.spawn(async move |this, cx| {
             let response = receiver.await;
+            drop(pause);
             let _ = this.update(cx, |this, cx| match response {
                 Ok(Ok(Some(paths)))
                     if paths.len() == 1
@@ -82,6 +86,7 @@ impl Workspace {
 
     fn choose_recovery_destination(&mut self, source: Option<PathBuf>, cx: &mut Context<Self>) {
         let epoch = self.state.read(cx).library_epoch;
+        let pause = self.state.read(cx).automatic_backup.pause();
         let home = std::env::var_os("HOME")
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("."));
@@ -95,6 +100,7 @@ impl Workspace {
         );
         cx.spawn(async move |this, cx| {
             let response = receiver.await;
+            drop(pause);
             let _ = this.update(cx, |this, cx| {
                 this.recovery_prompt_open = false;
                 if this.state.read(cx).library_epoch != epoch {

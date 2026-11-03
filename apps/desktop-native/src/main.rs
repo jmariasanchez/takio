@@ -1,6 +1,7 @@
 //! Takio native desktop. One process, one binary: the GPUI renderer links
 //! the library engine directly and talks to it over an in-process channel.
 
+mod automatic_backup;
 mod bench;
 mod covers;
 mod engine;
@@ -10,6 +11,7 @@ mod preparation;
 #[cfg(feature = "snapshot")]
 mod snapshot;
 mod startup;
+mod startup_window;
 mod state;
 mod theme;
 mod views;
@@ -20,9 +22,8 @@ use gpui::{
 };
 use gpui_platform::application;
 
-use crate::state::LibraryState;
+use crate::startup_window::StartupWindow;
 use crate::theme::Theme;
-use crate::views::workspace::Workspace;
 
 actions!(
     takio,
@@ -33,6 +34,8 @@ actions!(
         OpenLibrary,
         RevealLibrary,
         BackUpLibrary,
+        EnableAutomaticBackups,
+        DisableAutomaticBackups,
         RestoreBackupCopy,
         RevealRecovery,
         OpenSelected,
@@ -78,11 +81,6 @@ fn main() {
         std::env::var_os("TAKIO_DATA_DIR").is_some(),
         profile.as_deref(),
     );
-    let (engine, startup_warning) = match startup::open(paths, preference_path.as_deref()) {
-        Ok(opened) => opened,
-        Err(error) => fatal(&format!("could not open library: {}", error.code())),
-    };
-
     application().run(move |cx: &mut App| {
         cx.set_global(Theme::LIGHT);
         cx.bind_keys([
@@ -108,20 +106,6 @@ fn main() {
         ]);
         cx.set_menus(menus());
 
-        let state = cx.new(|cx| {
-            let mut state = LibraryState::new(engine.clone(), cx);
-            state.preference_path = preference_path;
-            if let Some(warning) = startup_warning {
-                state.set_status(warning, true, cx);
-            }
-            state
-        });
-        let quit_state = state.clone();
-        cx.on_action(move |_: &Quit, cx| {
-            if quit_state.update(cx, |state, cx| state.can_close(cx)) {
-                cx.quit();
-            }
-        });
         let bounds = Bounds::centered(None, size(px(1280.), px(800.)), cx);
         cx.open_window(
             WindowOptions {
@@ -136,11 +120,18 @@ fn main() {
             },
             |window, cx| {
                 cx.set_global(Theme::for_appearance(window.appearance()));
-                let close_state = state.clone();
+                let view = cx.new(|cx| StartupWindow::new(paths, preference_path, window, cx));
+                let close_view = view.clone();
                 window.on_window_should_close(cx, move |_, cx| {
-                    close_state.update(cx, |state, cx| state.can_close(cx))
+                    close_view.update(cx, |view, cx| view.can_close(cx))
                 });
-                cx.new(|cx| Workspace::new(state.clone(), window, cx))
+                let quit_view = view.clone();
+                cx.on_action(move |_: &Quit, cx| {
+                    if quit_view.update(cx, |view, cx| view.can_close(cx)) {
+                        cx.quit();
+                    }
+                });
+                view
             },
         )
         .expect("open main window");
@@ -159,6 +150,11 @@ fn menus() -> Vec<Menu> {
             MenuItem::action("Import and Move...", ImportMove),
             MenuItem::separator(),
             MenuItem::action("Back Up Library...", BackUpLibrary),
+            MenuItem::action(
+                "Enable Automatic Recovery Copies...",
+                EnableAutomaticBackups,
+            ),
+            MenuItem::action("Disable Automatic Recovery Copies", DisableAutomaticBackups),
             MenuItem::action("Restore Backup to New Folder...", RestoreBackupCopy),
             MenuItem::action("Reveal Last Recovery Copy", RevealRecovery),
             MenuItem::separator(),

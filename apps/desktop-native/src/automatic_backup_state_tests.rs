@@ -1,0 +1,299 @@
+fn automatic_ready(f: &Fixture, cx: &mut TestAppContext) {
+    for _ in 0..200 {
+        cx.run_until_parked();
+        if f.state.read_with(cx, |s, _| s.automatic_backup.ready) {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    panic!("automatic backup settings did not load");
+}
+
+#[gpui::test]
+fn automatic_backup_state_opt_in_roundtrip_disable_and_daily_clock(cx: &mut TestAppContext) {
+    let f = fixture(cx);
+    automatic_ready(&f, cx);
+    assert!(
+        !f.state
+            .read_with(cx, |s, _| s.automatic_backup.config.enabled)
+    );
+    assert!(!f._temp.path().join(".takio-automatic-backup").exists());
+    f.state.update(cx, |s, cx| {
+        s.select_only(0, cx);
+        s.trash_selected(cx);
+    });
+    settle(&f.state, cx);
+    let output = tempfile::tempdir().unwrap();
+    f.state.update(cx, |s, cx| {
+        s.configure_automatic_backup(Some(output.path().into()), cx)
+    });
+    settle(&f.state, cx);
+    let (backup, last) = f.state.read_with(cx, |s, _| {
+        (
+            s.recovery_outcome.as_ref().unwrap().path.clone(),
+            s.automatic_backup.config.last_success.unwrap(),
+        )
+    });
+    let restored = output.path().join("restored");
+    f.state.update(cx, |s, cx| {
+        s.restore_backup_copy(backup, restored.clone(), cx)
+    });
+    settle(&f.state, cx);
+    let recovered = takio::store::LibraryStore::open_read_only(
+        LibraryPaths::resolve(None, Some(&restored.join("library.sqlite"))).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(recovered.verify().unwrap().trashed_items, 1);
+    for book in recovered.list(true).unwrap() {
+        assert_eq!(
+            fs::read(&book.source_path).unwrap(),
+            fs::read(f._temp.path().join(format!("{}.epub", book.title))).unwrap()
+        );
+    }
+    f.state.update(cx, |s, cx| {
+        s.check_automatic_backup(last + crate::automatic_backup::DAILY_SECONDS - 1, cx);
+        assert!(!s.busy);
+        assert!(s.can_close(cx));
+        s.check_automatic_backup(last + crate::automatic_backup::DAILY_SECONDS, cx);
+        assert!(s.busy);
+        assert!(!s.can_close(cx));
+    });
+    settle(&f.state, cx);
+    assert_eq!(fs::read_dir(output.path()).unwrap().count(), 3);
+    f.state
+        .update(cx, |s, cx| s.configure_automatic_backup(None, cx));
+    settle(&f.state, cx);
+    f.state.update(cx, |s, cx| {
+        s.check_automatic_backup(u64::MAX, cx);
+        assert!(!s.busy);
+    });
+    assert_eq!(fs::read_dir(output.path()).unwrap().count(), 3);
+    assert!(
+        !crate::automatic_backup::load(f._temp.path())
+            .unwrap()
+            .enabled
+    );
+}
+
+#[gpui::test]
+fn automatic_backup_state_defers_for_edits_reviews_busy_loading_and_switch(
+    cx: &mut TestAppContext,
+) {
+    let f = fixture(cx);
+    automatic_ready(&f, cx);
+    let requests = preparation_channel(&f, cx);
+    f.state.update(cx, |s, cx| {
+        s.automatic_backup.config = crate::automatic_backup::Config {
+            enabled: true,
+            destination: Some(PathBuf::from("/unused")),
+            last_success: None,
+        };
+        for blocked in 0..8 {
+            s.busy = blocked == 0;
+            s.metadata_editing = blocked == 1;
+            s.loading = blocked == 2;
+            s.switching_library = blocked == 3;
+            s.refreshing_devices = blocked == 4;
+            s.preparation_pending = blocked == 5;
+            s.automatic_backup_prompt_open = blocked == 6;
+            if blocked == 7 {
+                s.preparation_preview = Some(preparation_review(&s.items[0], true));
+            }
+            s.check_automatic_backup(10, cx);
+            assert!(s.automatic_backup.last_attempt.is_none());
+        }
+        s.preparation_preview = None;
+        s.check_automatic_backup(10, cx);
+        assert!(s.busy);
+        assert!(!s.can_mutate());
+        assert!(!s.can_close(cx));
+    });
+    match requests.try_recv().unwrap() {
+        Request::AutomaticBackupRun { now: 10, reply, .. } => reply
+            .send(Err(AppError::new(
+                "automatic-backup-destination-unavailable",
+            )))
+            .unwrap(),
+        _ => panic!("only a single automatic backup should run"),
+    }
+    assert!(requests.try_recv().is_err());
+    settle(&f.state, cx);
+    f.state.update(cx, |s, cx| {
+        assert!(s.status.as_ref().unwrap().is_error);
+        assert!(s.status.as_ref().unwrap().text.contains("one hour"));
+        s.check_automatic_backup(10 + crate::automatic_backup::FAILURE_RETRY_SECONDS - 1, cx);
+        assert!(!s.busy);
+        s.check_automatic_backup(10 + crate::automatic_backup::FAILURE_RETRY_SECONDS, cx);
+        assert!(s.busy);
+    });
+    match requests.try_recv().unwrap() {
+        Request::AutomaticBackupRun { reply, .. } => {
+            reply.send(Err(AppError::new("still-offline"))).unwrap()
+        }
+        _ => panic!("expected throttled retry"),
+    }
+    settle(&f.state, cx);
+}
+
+#[gpui::test]
+fn automatic_backup_state_switch_cancels_old_config_and_restored_library_defaults_off(
+    cx: &mut TestAppContext,
+) {
+    let f = fixture(cx);
+    automatic_ready(&f, cx);
+    let output = tempfile::tempdir().unwrap();
+    f.state.update(cx, |s, cx| {
+        s.configure_automatic_backup(Some(output.path().into()), cx)
+    });
+    settle(&f.state, cx);
+    let backup = f
+        .state
+        .read_with(cx, |s, _| s.recovery_outcome.as_ref().unwrap().path.clone());
+    let restored = output.path().join("restored");
+    f.state.update(cx, |s, cx| {
+        s.restore_backup_copy(backup, restored.clone(), cx)
+    });
+    settle(&f.state, cx);
+    f.state.update(cx, |s, cx| s.open_library(restored, cx));
+    settle(&f.state, cx);
+    automatic_ready(&f, cx);
+    f.state.update(cx, |s, cx| {
+        assert_eq!(s.library_epoch, 1);
+        assert!(!s.automatic_backup.config.enabled);
+        assert!(s.automatic_backup.last_attempt.is_none());
+        s.check_automatic_backup(u64::MAX, cx);
+        assert!(!s.busy);
+    });
+    cx.executor().advance_clock(Duration::from_secs(60));
+    settle(&f.state, cx);
+    assert_eq!(fs::read_dir(output.path()).unwrap().count(), 2);
+}
+
+#[gpui::test]
+fn automatic_backup_state_disable_save_failure_still_stops_session(cx: &mut TestAppContext) {
+    let f = fixture(cx);
+    automatic_ready(&f, cx);
+    let requests = preparation_channel(&f, cx);
+    f.state.update(cx, |s, cx| {
+        s.automatic_backup.config.enabled = true;
+        s.automatic_backup.config.destination = Some(PathBuf::from("/unused"));
+        s.configure_automatic_backup(None, cx);
+        assert!(!s.automatic_backup.config.enabled);
+    });
+    match requests.try_recv().unwrap() {
+        Request::AutomaticBackupConfigure {
+            destination: None,
+            reply,
+        } => reply.send(Err(AppError::new("permission-denied"))).unwrap(),
+        _ => panic!("expected disable settings request"),
+    }
+    settle(&f.state, cx);
+    f.state.update(cx, |s, cx| {
+        assert!(
+            s.status
+                .as_ref()
+                .unwrap()
+                .text
+                .contains("previous setting may return")
+        );
+        s.check_automatic_backup(u64::MAX, cx);
+        assert!(!s.busy);
+    });
+    assert!(requests.try_recv().is_err());
+}
+
+#[gpui::test]
+fn automatic_backup_state_keeps_success_and_daily_throttle_when_timestamp_save_fails(
+    cx: &mut TestAppContext,
+) {
+    let f = fixture(cx);
+    automatic_ready(&f, cx);
+    let output = tempfile::tempdir().unwrap();
+    let parent = output.path().join("copies");
+    fs::create_dir(&parent).unwrap();
+    let config = crate::automatic_backup::configure(f._temp.path(), Some(parent)).unwrap();
+    let settings = f._temp.path().join(".takio-automatic-backup");
+    fs::remove_file(&settings).unwrap();
+    fs::create_dir(&settings).unwrap();
+    f.state.update(cx, |s, cx| {
+        s.automatic_backup.config = config;
+        s.check_automatic_backup(100, cx);
+    });
+    settle(&f.state, cx);
+    let backup = f.state.update(cx, |s, cx| {
+        assert!(s.status.as_ref().unwrap().is_error);
+        assert!(s.status.as_ref().unwrap().text.contains("Copy kept"));
+        assert_eq!(s.automatic_backup.config.last_success, Some(100));
+        s.check_automatic_backup(100 + crate::automatic_backup::FAILURE_RETRY_SECONDS, cx);
+        assert!(!s.busy);
+        s.recovery_outcome.as_ref().unwrap().path.clone()
+    });
+    assert!(backup.join("manifest.json").is_file());
+    let restored = output.path().join("restored");
+    f.state.update(cx, |s, cx| {
+        s.restore_backup_copy(backup, restored.clone(), cx)
+    });
+    settle(&f.state, cx);
+    assert!(restored.join("library.sqlite").is_file());
+    assert!(settings.is_dir());
+}
+
+#[gpui::test]
+fn automatic_backup_state_stale_settings_load_cannot_replace_new_library_config(
+    cx: &mut TestAppContext,
+) {
+    let f = fixture(cx);
+    automatic_ready(&f, cx);
+    let requests = preparation_channel(&f, cx);
+    f.state
+        .update(cx, |s, cx| s.initialize_automatic_backup(cx));
+    let reply = match requests.try_recv().unwrap() {
+        Request::AutomaticBackupLoad { reply } => reply,
+        _ => panic!("expected settings load"),
+    };
+    f.state.update(cx, |s, _| {
+        s.library_epoch += 1;
+        s.automatic_backup = crate::automatic_backup::Schedule::default();
+    });
+    reply
+        .send(Ok(crate::automatic_backup::Config {
+            enabled: true,
+            destination: Some(PathBuf::from("/unused-old-destination")),
+            last_success: None,
+        }))
+        .unwrap();
+    settle(&f.state, cx);
+    f.state.read_with(cx, |s, _| {
+        assert!(!s.automatic_backup.config.enabled);
+        assert!(s.automatic_backup_timer.is_none());
+    });
+    assert!(requests.try_recv().is_err());
+}
+
+#[gpui::test]
+fn automatic_backup_state_bad_settings_remain_disabled_and_visible_without_rewrite(
+    cx: &mut TestAppContext,
+) {
+    let f = fixture(cx);
+    automatic_ready(&f, cx);
+    let settings = f._temp.path().join(".takio-automatic-backup");
+    fs::write(&settings, b"invalid settings marker").unwrap();
+    f.state
+        .update(cx, |s, cx| s.initialize_automatic_backup(cx));
+    automatic_ready(&f, cx);
+    f.state.update(cx, |s, cx| {
+        assert!(!s.automatic_backup.config.enabled);
+        assert!(s.status.as_ref().unwrap().is_error);
+        assert!(
+            s.status
+                .as_ref()
+                .unwrap()
+                .text
+                .contains("settings could not be read")
+        );
+        s.check_automatic_backup(u64::MAX, cx);
+        assert!(!s.busy);
+        assert!(s.can_close(cx));
+    });
+    assert_eq!(fs::read(settings).unwrap(), b"invalid settings marker");
+}

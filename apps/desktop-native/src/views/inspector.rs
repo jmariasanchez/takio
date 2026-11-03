@@ -84,12 +84,19 @@ impl Inspector {
         details = details
             .child(
                 div()
+                    .id("book-title")
+                    .role(gpui::Role::Heading)
+                    .aria_label(item.title.clone())
+                    .aria_level(2)
                     .text_lg()
                     .font_weight(gpui::FontWeight::SEMIBOLD)
                     .child(item.title.clone()),
             )
             .children(nonempty(author_label(item)).map(|authors| {
                 div()
+                    .id("book-authors")
+                    .role(gpui::Role::Label)
+                    .aria_label(authors.clone())
                     .text_sm()
                     .text_color(theme.text_secondary)
                     .child(authors)
@@ -100,6 +107,13 @@ impl Inspector {
                     details.child(
                         div()
                             .id("edit-details")
+                            .map(|el| {
+                                super::search::accessible_button(
+                                    el,
+                                    "Edit details",
+                                    self.state.read(cx).can_mutate(),
+                                )
+                            })
                             .px_3()
                             .py_2()
                             .rounded(px(metrics::RADIUS))
@@ -148,12 +162,14 @@ impl Inspector {
         ] {
             if let Some(value) = value.and_then(nonempty) {
                 let selector = format!("inspector-{label}:{value}");
-                details =
-                    details.child(div().debug_selector(move || selector).child(metadata_row(
-                        label,
-                        div().child(value),
-                        theme,
-                    )));
+                details = details.child(
+                    div()
+                        .id(label)
+                        .role(gpui::Role::Label)
+                        .aria_label(format!("{label}: {value}"))
+                        .debug_selector(move || selector)
+                        .child(metadata_row(label, div().child(value), theme)),
+                );
             }
         }
         let tags = item
@@ -170,6 +186,9 @@ impl Inspector {
                     .gap_1()
                     .children(tags.into_iter().map(|tag| {
                         div()
+                            .id(gpui::SharedString::from(tag.clone()))
+                            .role(gpui::Role::Label)
+                            .aria_label(format!("Tag: {tag}"))
                             .px_2()
                             .py_1()
                             .rounded(px(metrics::RADIUS))
@@ -188,17 +207,26 @@ impl Inspector {
         if !identifiers.is_empty() {
             details = details.child(metadata_row(
                 "Identifiers",
-                div().flex().flex_col().gap_1().children(
-                    identifiers
-                        .into_iter()
-                        .map(|(key, value)| div().child(format!("{key}: {value}"))),
-                ),
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .children(identifiers.into_iter().map(|(key, value)| {
+                        div()
+                            .id(gpui::SharedString::from(key.clone()))
+                            .role(gpui::Role::Label)
+                            .aria_label(format!("{key}: {value}"))
+                            .child(format!("{key}: {value}"))
+                    })),
                 theme,
             ));
         }
         if let Some(description) = item.description.clone().and_then(nonempty) {
             details = details.child(
                 div()
+                    .id("description")
+                    .role(gpui::Role::Label)
+                    .aria_label(format!("Description: {description}"))
                     .flex()
                     .flex_col()
                     .gap_1()
@@ -223,6 +251,13 @@ impl Inspector {
                 let open_path = format.source_path.clone();
                 let reveal_path = open_path.clone();
                 div()
+                    .id(("format-details", index))
+                    .role(gpui::Role::Group)
+                    .aria_label(format!(
+                        "{} file: {}",
+                        format.format.as_str(),
+                        format.source_path.display()
+                    ))
                     .flex()
                     .flex_col()
                     .gap_1()
@@ -262,6 +297,13 @@ impl Inspector {
                             .child(
                                 div()
                                     .id(("open-format", index))
+                                    .map(|el| {
+                                        super::search::accessible_button(
+                                            el,
+                                            format!("Open {}", format.format.as_str()),
+                                            true,
+                                        )
+                                    })
                                     .px_2()
                                     .py_1()
                                     .text_xs()
@@ -275,6 +317,13 @@ impl Inspector {
                             .child(
                                 div()
                                     .id(("reveal-format", index))
+                                    .map(|el| {
+                                        super::search::accessible_button(
+                                            el,
+                                            format!("Reveal {} file", format.format.as_str()),
+                                            true,
+                                        )
+                                    })
                                     .px_2()
                                     .py_1()
                                     .text_xs()
@@ -324,6 +373,8 @@ impl Render for Inspector {
         };
         div()
             .id("inspector")
+            .role(gpui::Role::Group)
+            .aria_label("Book details")
             .w(px(metrics::INSPECTOR_WIDTH))
             .flex_shrink_0()
             .h_full()
@@ -345,6 +396,9 @@ fn nonempty(value: String) -> Option<String> {
 
 fn metadata_row(label: &'static str, value: impl IntoElement, theme: Theme) -> impl IntoElement {
     div()
+        .id(label)
+        .role(gpui::Role::Group)
+        .aria_label(label)
         .flex()
         .gap_2()
         .text_sm()

@@ -134,6 +134,14 @@ impl MetadataEditor {
         let draft = Draft::from_item(&item);
         let fields = [draft.title, draft.authors, draft.series, draft.tags]
             .map(|text| cx.new(|cx| Search::text_input(text, cx)));
+        for (field, label) in fields.iter().zip([
+            "Title (required)",
+            "Authors (separate with semicolons)",
+            "Series",
+            "Tags (separate with semicolons)",
+        ]) {
+            field.update(cx, |field, _| field.set_label(label));
+        }
         let return_focus = window.focused(cx);
         fields[0].update(cx, |field, cx| field.focus(window, cx));
         cx.observe(&state, |this, _, cx| {
@@ -250,6 +258,9 @@ impl Render for MetadataEditor {
         let theme = *cx.global::<Theme>();
         let busy = self.submitted;
         div()
+            .id("metadata-editor")
+            .role(gpui::Role::Group)
+            .aria_label("Edit book details")
             .key_context("MetadataEditor")
             .flex()
             .flex_col()
@@ -323,6 +334,17 @@ impl Render for MetadataEditor {
                     .child(
                         div()
                             .id("save-details")
+                            .map(|el| {
+                                super::search::accessible_button(
+                                    el,
+                                    if busy {
+                                        "Saving details"
+                                    } else {
+                                        "Save details"
+                                    },
+                                    !busy,
+                                )
+                            })
                             .key_context("MetadataButton")
                             .track_focus(&self.save_focus)
                             .px_3()
@@ -342,6 +364,13 @@ impl Render for MetadataEditor {
                     .child(
                         div()
                             .id("cancel-details")
+                            .map(|el| {
+                                super::search::accessible_button(
+                                    el,
+                                    "Cancel editing details",
+                                    !busy,
+                                )
+                            })
                             .key_context("MetadataButton")
                             .track_focus(&self.cancel_focus)
                             .px_3()

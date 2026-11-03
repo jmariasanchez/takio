@@ -7,6 +7,9 @@ mod tests;
 #[path = "workspace_recovery.rs"]
 mod recovery;
 
+#[path = "workspace_automatic_backup.rs"]
+mod automatic_backup;
+
 #[path = "workspace_library.rs"]
 mod library;
 
@@ -39,6 +42,14 @@ pub struct Workspace {
 }
 
 impl Workspace {
+    pub(crate) fn benchmark_search(&self) -> Entity<Search> {
+        self.search.clone()
+    }
+
+    pub(crate) fn benchmark_list(&self) -> Entity<LibraryList> {
+        self.list.clone()
+    }
+
     pub fn new(state: LibraryEntity, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let search = cx.new(|cx| Search::new(state.clone(), cx));
         let sidebar = cx.new(|cx| Sidebar::new(state.clone(), cx));
@@ -77,6 +88,7 @@ impl Workspace {
             return;
         }
         let epoch = self.state.read(cx).library_epoch;
+        let pause = self.state.read(cx).automatic_backup.pause();
         let answer = window.prompt(
             PromptLevel::Warning,
             "Move originals into Takio?",
@@ -85,7 +97,9 @@ impl Workspace {
             cx,
         );
         cx.spawn(async move |this, cx| {
-            if answer.await == Ok(1) {
+            let accepted = answer.await == Ok(1);
+            drop(pause);
+            if accepted {
                 let _ = this.update(cx, |this, cx| {
                     if this.state.read(cx).library_epoch == epoch
                         && this.state.read(cx).can_mutate()
@@ -100,6 +114,7 @@ impl Workspace {
 
     fn choose_import_paths(&mut self, mode: ImportMode, cx: &mut Context<Self>) {
         let epoch = self.state.read(cx).library_epoch;
+        let pause = self.state.read(cx).automatic_backup.pause();
         let receiver = cx.prompt_for_paths(PathPromptOptions {
             files: true,
             directories: true,
@@ -115,7 +130,9 @@ impl Workspace {
         });
         let state = self.state.clone();
         cx.spawn(async move |_, cx| {
-            if let Ok(Ok(Some(paths))) = receiver.await {
+            let response = receiver.await;
+            drop(pause);
+            if let Ok(Ok(Some(paths))) = response {
                 state.update(cx, |state, cx| {
                     if state.library_epoch == epoch {
                         state.import(paths, mode, cx);
@@ -136,6 +153,7 @@ impl Workspace {
             return;
         }
         let epoch = state.library_epoch;
+        let pause = state.automatic_backup.pause();
         let answer = window.prompt(
             PromptLevel::Warning,
             &format!("Permanently delete {} book(s)?", ids.len()),
@@ -145,7 +163,9 @@ impl Workspace {
         );
         let state = self.state.clone();
         cx.spawn(async move |_, cx| {
-            if answer.await == Ok(1) {
+            let accepted = answer.await == Ok(1);
+            drop(pause);
+            if accepted {
                 state.update(cx, |state, cx| {
                     if state.library_epoch == epoch {
                         state.purge_confirmed(ids, cx);
@@ -199,12 +219,15 @@ impl Workspace {
         } else {
             "Eject which reader?".to_owned()
         };
+        let pause = self.state.read(cx).automatic_backup.pause();
         let answer = window.prompt(PromptLevel::Info, &message,
             Some(if send { "Next, review compatible formats and any blocked books. Nothing is sent until you confirm Send ready." } else { "Wait for a successful eject before unplugging the USB cable." }),
             &buttons, cx);
         let state = self.state.clone();
         cx.spawn(async move |_, cx| {
-            if let Ok(index) = answer.await
+            let response = answer.await;
+            drop(pause);
+            if let Ok(index) = response
                 && let Some(destination) = index
                     .checked_sub(1)
                     .and_then(|index| readers.get(index))
@@ -230,7 +253,7 @@ impl Workspace {
         preview: crate::preparation::PreparationPreview,
         theme: Theme,
         cx: &mut Context<Self>,
-    ) -> gpui::Div {
+    ) -> gpui::Stateful<gpui::Div> {
         let enabled = preview.backend.available && !self.state.read(cx).loading;
         let backend_message = if preview.backend.available {
             "Calibre is available. Conversion runs locally and can take up to two minutes."
@@ -238,6 +261,10 @@ impl Workspace {
             "Calibre was not found. Install Calibre in Applications, then cancel and try again. Advanced setup: set TAKIO_EBOOK_CONVERT to its full executable path."
         };
         div()
+            .id("preparation-review")
+            .role(gpui::Role::Group)
+            .aria_label(format!("Prepare {} for Kindle. {backend_message}", preview.title))
+            .aria_description("EPUB to AZW3. Your EPUB is kept. Nothing has been converted or sent yet. Conversion does not remove DRM.")
             .flex().flex_col().flex_shrink_0().gap_2().p_3()
             .border_t_1().border_color(theme.border)
             .child(div().text_sm().font_weight(gpui::FontWeight::SEMIBOLD)
@@ -269,11 +296,15 @@ impl Workspace {
         preview: crate::engine::SendPreview,
         theme: Theme,
         cx: &mut Context<Self>,
-    ) -> gpui::Div {
+    ) -> gpui::Stateful<gpui::Div> {
         let ready = preview.ready_count();
         let blocked = preview.entries.len() - ready;
         let enabled = ready > 0 && !self.state.read(cx).loading;
         div()
+            .id("send-review")
+            .role(gpui::Role::Group)
+            .aria_label(format!("Review send to {}. {ready} ready, {blocked} need attention. Nothing sent yet.", preview.destination.name))
+            .aria_description("Files are checked again when sending. Existing reader files are never overwritten.")
             .flex().flex_col().flex_shrink_0().gap_2().p_3()
             .border_t_1().border_color(theme.border)
             .child(div().text_sm().font_weight(gpui::FontWeight::SEMIBOLD)
@@ -286,7 +317,8 @@ impl Workspace {
                         Ok(file) => (format!("Ready as {}", file.format.as_str().to_uppercase()), false),
                         Err(code) => (format!("Not ready: {}", humanize_error(&code)), true),
                     };
-                    div().py_1().text_xs()
+                    div().id(gpui::SharedString::from(entry.item_id)).role(gpui::Role::Label)
+                        .aria_label(format!("{}: {message}", entry.title)).py_1().text_xs()
                         .text_color(if blocked { theme.danger } else { theme.text_secondary })
                         .child(format!("{}: {message}", entry.title))
                 })))
@@ -360,6 +392,9 @@ impl Render for Workspace {
             .child(div().flex_shrink_0().child(summary))
             .children(status.map(|status| {
                 div()
+                    .id("operation-status")
+                    .role(gpui::Role::Status)
+                    .aria_label(status.text.clone())
                     .flex_1()
                     .min_w_0()
                     .text_color(if status.is_error {
@@ -372,6 +407,20 @@ impl Render for Workspace {
 
         div()
             .key_context("Workspace")
+            .on_key_down(|event, window, cx| {
+                if event.keystroke.key == "tab"
+                    && !event.keystroke.modifiers.platform
+                    && !event.keystroke.modifiers.control
+                    && !event.keystroke.modifiers.alt
+                {
+                    if event.keystroke.modifiers.shift {
+                        window.focus_prev(cx);
+                    } else {
+                        window.focus_next(cx);
+                    }
+                    cx.stop_propagation();
+                }
+            })
             .on_action(cx.listener(|this, _: &crate::OpenLibrary, _, cx| {
                 this.prompt_open_library(cx);
             }))
@@ -394,6 +443,16 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &crate::BackUpLibrary, window, cx| {
                 this.prompt_recovery(false, window, cx);
             }))
+            .on_action(
+                cx.listener(|this, _: &crate::EnableAutomaticBackups, window, cx| {
+                    this.prompt_automatic_backup(window, cx);
+                }),
+            )
+            .on_action(
+                cx.listener(|this, _: &crate::DisableAutomaticBackups, _, cx| {
+                    this.disable_automatic_backup(cx);
+                }),
+            )
             .on_action(
                 cx.listener(|this, _: &crate::RestoreBackupCopy, window, cx| {
                     this.prompt_recovery(true, window, cx);
@@ -628,6 +687,13 @@ impl Render for Workspace {
                             .children(recovery.map(|outcome| {
                                 div()
                                     .id("recovery-result")
+                                    .role(gpui::Role::Group)
+                                    .aria_label(format!(
+                                        "Recovery result: {}. {}. {}",
+                                        outcome.summary,
+                                        outcome.detail,
+                                        outcome.path.display()
+                                    ))
                                     .flex()
                                     .flex_col()
                                     .gap_2()
@@ -708,6 +774,13 @@ impl Render for Workspace {
                                             .child(
                                                 div()
                                                     .id("dismiss-transfers")
+                                                    .map(|el| {
+                                                        super::search::accessible_button(
+                                                            el,
+                                                            "Dismiss transfer results",
+                                                            true,
+                                                        )
+                                                    })
                                                     .cursor_pointer()
                                                     .text_sm()
                                                     .text_color(theme.accent)
@@ -724,6 +797,8 @@ impl Render for Workspace {
                                     .child(
                                         div()
                                             .id("transfer-results")
+                                            .role(gpui::Role::Group)
+                                            .aria_label("Transfer results")
                                             .overflow_y_scroll()
                                             .children(report.entries.into_iter().map(|entry| {
                                                 let (message, error) = match entry.result {
@@ -734,6 +809,11 @@ impl Render for Workspace {
                                                 };
                                                 div()
                                                     .id(gpui::SharedString::from(entry.item_id))
+                                                    .role(gpui::Role::Label)
+                                                    .aria_label(format!(
+                                                        "{}: {message}",
+                                                        entry.title
+                                                    ))
                                                     .py_1()
                                                     .text_xs()
                                                     .text_color(if error {
@@ -772,8 +852,10 @@ fn toolbar_button(
     enabled: bool,
     theme: Theme,
 ) -> gpui::Stateful<gpui::Div> {
+    let label = label.into();
     div()
         .id(id)
+        .map(|el| super::search::accessible_button(el, label.clone(), enabled))
         .debug_selector(move || id.to_owned())
         .px_2()
         .py_1()
@@ -790,5 +872,5 @@ fn toolbar_button(
                 .cursor_pointer()
                 .hover(|style| style.bg(theme.row_hover))
         })
-        .child(label.into())
+        .child(label)
 }

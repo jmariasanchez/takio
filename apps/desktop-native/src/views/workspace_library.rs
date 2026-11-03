@@ -14,6 +14,7 @@ impl Workspace {
         }
         self.library_picker_open = true;
         let epoch = self.state.read(cx).library_epoch;
+        let pause = self.state.read(cx).automatic_backup.pause();
         let receiver = cx.prompt_for_paths(PathPromptOptions {
             files: false,
             directories: true,
@@ -23,6 +24,7 @@ impl Workspace {
         cx.notify();
         cx.spawn(async move |this, cx| {
             let response = receiver.await;
+            drop(pause);
             let _ = this.update(cx, |this, cx| {
                 this.library_picker_open = false;
                 if this.state.read(cx).library_epoch != epoch {
