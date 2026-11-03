@@ -14,7 +14,7 @@ fn reader_scan_failures_retain_typed_error_status(cx: &mut TestAppContext) {
         let (sender, receiver) = std::sync::mpsc::channel();
         sender.send(result).unwrap();
         f.state.update(cx, |state, cx| {
-            state.scanning_readers = true;
+            state.session.scanning_readers = true;
             state.await_reader_scan(receiver, state.reader_scan_generation, vec![reader], cx);
         });
         settle(&f.state, cx);
@@ -23,7 +23,7 @@ fn reader_scan_failures_retain_typed_error_status(cx: &mut TestAppContext) {
             let error = state.reader_shelves[0].1.as_ref().unwrap_err();
             assert_eq!(error.code(), "destination-unavailable");
             assert_eq!(error.exit_code(), 74);
-            assert!(!state.scanning_readers);
+            assert!(!state.session.scanning_readers);
             assert!(state.on_reader.is_empty());
             assert!(state.reading.is_empty());
             let summary = crate::views::sidebar::shelf_summary(Some(&state.reader_shelves[0].1));
@@ -205,15 +205,15 @@ fn reader_import_respects_mutation_and_section_guards(cx: &mut TestAppContext) {
         state.import_from_reader(reader.clone(), cx);
         assert_eq!(state.status, status);
         assert!(!state.busy());
-        state.activity = Activity::Idle;
+        state.session.activity = Activity::Idle;
         for guard in 0..3 {
-            state.activity = if guard == 0 {
+            state.session.activity = if guard == 0 {
                 Activity::Running(Operation::Mutation)
             } else {
                 Activity::Idle
             };
-            state.metadata_editing = guard == 1;
-            state.section = if guard == 2 {
+            state.session.metadata_editing = guard == 1;
+            state.session.section = if guard == 2 {
                 Section::Trash
             } else {
                 Section::Library
@@ -221,9 +221,9 @@ fn reader_import_respects_mutation_and_section_guards(cx: &mut TestAppContext) {
             state.import_from_reader(reader.clone(), cx);
             assert_eq!(state.status, status);
         }
-        state.activity = Activity::Idle;
-        state.metadata_editing = false;
-        state.section = Section::Library;
+        state.session.activity = Activity::Idle;
+        state.session.metadata_editing = false;
+        state.session.section = Section::Library;
         state.reload(cx);
     });
     settle(&f.state, cx);
@@ -382,7 +382,7 @@ fn reader_shelf_empty_documents_and_generic_drives_are_not_errors(cx: &mut TestA
     f.state.update(cx, |state, cx| {
         state.destinations = vec![generic.clone()];
         state.scan_readers(cx);
-        assert!(!state.scanning_readers);
+        assert!(!state.session.scanning_readers);
         assert!(state.reader_shelves.is_empty());
     });
     let shelves = f
@@ -437,7 +437,7 @@ fn reader_shelf_stale_reply_cannot_replace_newer_scan_or_library(cx: &mut TestAp
             } else {
                 assert!(state.reader_shelves.is_empty());
             }
-            assert!(!state.scanning_readers);
+            assert!(!state.session.scanning_readers);
         });
     }
 }

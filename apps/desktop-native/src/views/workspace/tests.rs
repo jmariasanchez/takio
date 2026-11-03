@@ -101,10 +101,7 @@ fn fixture_with_preparation_backend(
         state.update(cx, |state, cx| state.set_section(Section::Trash, cx));
         settle(&state, cx);
     }
-    state.update(cx, |state, _| {
-        state.selected.insert(0);
-        state.anchor = Some(0);
-    });
+    state.update(cx, |state, cx| state.select_only(0, cx));
     let window = cx.add_window(|window, cx| Workspace::new(state.clone(), window, cx));
     cx.update_window(window.into(), |_, window, cx| window.draw(cx).clear(cx))
         .unwrap();
@@ -273,12 +270,7 @@ fn native_preparation_confirmation_keeps_captured_book_and_never_sends(cx: &mut 
     let chosen = f.state.read_with(cx, |state, _| state.items[0].id.clone());
     click_control(&f, "prepare-book", cx);
     settle(&f.state, cx);
-    f.state.update(cx, |state, cx| {
-        state.selected.clear();
-        state.selected.insert(1);
-        state.anchor = Some(1);
-        cx.notify();
-    });
+    f.state.update(cx, |state, cx| state.select_only(1, cx));
     click_control(&f, "confirm-preparation", cx);
     f.window
         .update(cx, |_, window, cx| {
@@ -395,11 +387,7 @@ fn purge_approval_uses_captured_ids_not_changed_selection(cx: &mut TestAppContex
         .unwrap();
     cx.run_until_parked();
     assert!(cx.has_pending_prompt());
-    f.state.update(cx, |state, _| {
-        state.selected.clear();
-        state.selected.insert(1);
-        state.anchor = Some(1);
-    });
+    f.state.update(cx, |state, cx| state.select_only(1, cx));
     cx.simulate_prompt_answer("Delete permanently");
     settle(&f.state, cx);
     assert_eq!(trash_ids(&f.engine), vec![other.id.clone()]);
@@ -553,11 +541,7 @@ fn send_chooser_uses_ids_captured_before_selection_changes(cx: &mut TestAppConte
             .0
             .contains("Send 1 selected book")
     );
-    f.state.update(cx, |state, _| {
-        state.selected.clear();
-        state.selected.insert(1);
-        state.anchor = Some(1);
-    });
+    f.state.update(cx, |state, cx| state.select_only(1, cx));
     cx.simulate_prompt_answer(&reader.name);
     settle(&f.state, cx);
     f.state.read_with(cx, |state, _| {
@@ -950,9 +934,7 @@ fn mixed_send_review_confirms_only_ready_ids_and_retains_exclusions(cx: &mut Tes
         (state.items[0].clone(), state.items[1].clone())
     });
     std::fs::remove_file(&blocked.formats[0].source_path).unwrap();
-    f.state.update(cx, |state, _| {
-        state.selected.insert(1);
-    });
+    f.state.update(cx, |state, cx| state.toggle_select(1, cx));
     preview_selected(&f, &reader, cx);
     f.state.read_with(cx, |state, _| {
         let preview = state.send_preview().unwrap();
@@ -992,9 +974,7 @@ fn all_blocked_send_review_cannot_confirm(cx: &mut TestAppContext) {
     let f = fixture(false, cx);
     let reader = reader(&f, cx);
     std::fs::remove_dir(reader.path.join("koreader")).unwrap();
-    f.state.update(cx, |state, _| {
-        state.selected.insert(1);
-    });
+    f.state.update(cx, |state, cx| state.toggle_select(1, cx));
     preview_selected(&f, &reader, cx);
     confirm_send(&f, cx);
     f.state.read_with(cx, |state, _| {
@@ -1019,11 +999,7 @@ fn send_confirmation_uses_preview_ids_and_ignores_repeated_confirmation(cx: &mut
     let reader = reader(&f, cx);
     let chosen = f.state.read_with(cx, |state, _| state.items[0].clone());
     preview_selected(&f, &reader, cx);
-    f.state.update(cx, |state, _| {
-        state.selected.clear();
-        state.selected.insert(1);
-        state.anchor = Some(1);
-    });
+    f.state.update(cx, |state, cx| state.select_only(1, cx));
     f.window
         .update(cx, |_, window, cx| {
             window.dispatch_action(Box::new(crate::ConfirmSend), cx);

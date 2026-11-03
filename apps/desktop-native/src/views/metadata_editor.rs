@@ -491,8 +491,8 @@ mod tests {
         let state = cx.new(|cx| LibraryState::new(engine, cx));
         crate::test_support::settle(&state, cx);
         state.update(cx, |state, cx| {
-            state.items = vec![std::sync::Arc::new(item())];
-            state.selected.insert(0);
+            state.install_test_items(vec![std::sync::Arc::new(item())]);
+            state.select_only(0, cx);
             assert!(state.begin_metadata_editing(cx));
         });
         (temp, state)

@@ -65,7 +65,7 @@ impl LibraryState {
         if disabling {
             self.automatic_backup.config.enabled = false;
         }
-        self.activity = Activity::Running(Operation::Mutation);
+        self.session.activity = Activity::Running(Operation::Mutation);
         self.set_status(
             "Saving automatic recovery-copy settings...".into(),
             false,
@@ -75,7 +75,7 @@ impl LibraryState {
             .engine
             .request(|reply| Request::AutomaticBackupConfigure { destination, reply });
         self.await_reply(receiver, cx, move |this, result, cx| {
-            this.activity = Activity::Idle;
+            this.session.activity = Activity::Idle;
             if this.automatic_backup.revision != revision { cx.notify(); return; }
             match result {
                 Ok(config) => {
@@ -112,7 +112,7 @@ impl LibraryState {
             return;
         }
         self.automatic_backup.last_attempt = Some(now);
-        self.activity = Activity::Running(Operation::Mutation);
+        self.session.activity = Activity::Running(Operation::Mutation);
         self.set_status(
             "Creating and verifying automatic recovery copy...".into(),
             false,
@@ -123,7 +123,7 @@ impl LibraryState {
             self.engine
                 .request(|reply| Request::AutomaticBackupRun { config, now, reply });
         self.await_reply(receiver, cx, |this, result, cx| {
-            this.activity = Activity::Idle;
+            this.session.activity = Activity::Idle;
             match result {
                 Ok(report) => {
                     this.automatic_backup.config = report.config;
@@ -133,7 +133,7 @@ impl LibraryState {
                         " The successful copy is preserved, but its timestamp could not be saved. This session will wait 24 hours. Reopening may create another copy. Check library permissions."
                     } else { "" });
                     this.set_status(if warning { format!("{summary}. Copy kept, but settings could not be saved. Check library permissions.") } else { summary.clone() }, warning, cx);
-                    this.recovery_outcome = Some(RecoveryOutcome { path: report.backup.destination_path, summary, detail });
+                    this.session.recovery_outcome = Some(RecoveryOutcome { path: report.backup.destination_path, summary, detail });
                     cx.notify();
                 }
                 Err(error) => this.set_status(format!("Automatic recovery copy failed ({}). Check that the selected backup drive/folder exists and is writable. Existing copies are kept. Retrying no sooner than one hour while Takio is open.", error.code()), true, cx),

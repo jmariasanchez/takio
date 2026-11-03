@@ -106,21 +106,21 @@ fn automatic_backup_state_defers_for_edits_reviews_busy_loading_and_switch(
             last_success: None,
         };
         for blocked in 0..8 {
-            s.activity = match blocked {
+            s.session.activity = match blocked {
                 0 => Activity::Running(Operation::Mutation),
                 3 => Activity::SwitchingLibrary,
                 5 => Activity::Running(Operation::PreviewingPreparation),
                 7 => Activity::ReviewingPreparation(preparation_review(&s.items[0], true)),
                 _ => Activity::Idle,
             };
-            s.metadata_editing = blocked == 1;
-            s.loading = blocked == 2;
+            s.session.metadata_editing = blocked == 1;
+            s.session.loading = blocked == 2;
             s.refreshing_devices = blocked == 4;
-            s.automatic_backup_prompt_open = blocked == 6;
+            s.session.automatic_backup_prompt_open = blocked == 6;
             s.check_automatic_backup(10, cx);
             assert!(s.automatic_backup.last_attempt.is_none());
         }
-        s.activity = Activity::Idle;
+        s.session.activity = Activity::Idle;
         s.check_automatic_backup(10, cx);
         assert!(s.busy());
         assert!(!s.can_mutate());

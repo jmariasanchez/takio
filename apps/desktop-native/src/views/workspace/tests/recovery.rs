@@ -347,8 +347,7 @@ fn native_backup_ignores_filtered_selection_and_includes_trash(cx: &mut TestAppC
     settle(&f.state, cx);
     assert!(f.state.read_with(cx, |state, _| state.items.is_empty()));
     f.state.update(cx, |state, _| {
-        state.selected.clear();
-        state.anchor = None;
+        state.clear_selection();
     });
     let before = recovery_snapshot(&f);
     let view = recovery_view(&f, cx);

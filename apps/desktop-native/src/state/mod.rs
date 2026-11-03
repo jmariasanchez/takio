@@ -28,6 +28,10 @@ mod library;
 mod activity;
 mod automatic_backup;
 use activity::{Activity, Operation};
+mod generation;
+mod session;
+use generation::Generation;
+pub use session::LibrarySession;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Section {
@@ -86,46 +90,33 @@ impl Drop for PendingQuery {
 }
 
 pub struct LibraryState {
+    session: LibrarySession,
     pub automatic_backup: crate::automatic_backup::Schedule,
     automatic_backup_timer: Option<Task<()>>,
-    automatic_backup_prompt_open: bool,
     engine: Engine,
     pub library_root: PathBuf,
     pub library_epoch: u64,
     pub preference_path: Option<PathBuf>,
-    pub section: Section,
-    pub items: Vec<Arc<LibraryItem>>,
-    pub facets: Arc<Facets>,
-    pub selected: BTreeSet<usize>,
-    pub anchor: Option<usize>,
-    pub query: String,
-    pub filters: Filters,
-    pub sort: Sort,
-    pub loading: bool,
-    pub status: Option<Status>,
-    recovery_outcome: Option<RecoveryOutcome>,
     pub destinations: Vec<Destination>,
     pub volumes_root: PathBuf,
-    pub reader_shelves: crate::engine::ReaderShelves,
-    pub on_reader: HashMap<String, Vec<String>>,
-    pub reading: HashMap<String, (String, takio::koreader::ReadingState)>,
-    pub scanning_readers: bool,
-    reader_scan_generation: u64,
+    reader_scan_generation: Generation,
     /// Volume names seen at the last refresh, so polling only acts on a change.
     seen_volumes: Option<BTreeSet<String>>,
     volume_watch: Option<Task<()>>,
     pub refreshing_devices: bool,
-    pub device_error: Option<AppError>,
-    activity: Activity,
-    metadata_editing: bool,
-    metadata_save_result: Option<AppResult<String>>,
-    delivery_report: Option<SendReport>,
-    preparation_generation: u64,
-    pub delivery_exclusions: Vec<SendPreviewEntry>,
-    send_preview_generation: u64,
-    generation: u64,
-    sorting: bool,
-    debounce: Option<PendingQuery>,
+    preparation_generation: Generation,
+    send_preview_generation: Generation,
+    generation: Generation,
+}
+
+// Views can read session data directly, but only state methods can mutate it.
+// Deliberately no DerefMut implementation.
+impl std::ops::Deref for LibraryState {
+    type Target = LibrarySession;
+
+    fn deref(&self) -> &Self::Target {
+        &self.session
+    }
 }
 
 impl LibraryState {
@@ -145,45 +136,22 @@ impl LibraryState {
         cx: &mut Context<Self>,
     ) -> Self {
         let mut this = Self {
+            session: LibrarySession::default(),
             automatic_backup: crate::automatic_backup::Schedule::default(),
             automatic_backup_timer: None,
-            automatic_backup_prompt_open: false,
             volumes_root,
             library_root: engine.root().to_path_buf(),
             library_epoch: 0,
             preference_path: None,
             engine,
-            section: Section::Library,
-            items: Vec::new(),
-            facets: Arc::new(Facets::default()),
-            selected: BTreeSet::new(),
-            anchor: None,
-            query: String::new(),
-            filters: Filters::default(),
-            sort: Sort::default(),
-            loading: false,
-            status: None,
-            recovery_outcome: None,
             destinations: Vec::new(),
-            reader_shelves: Vec::new(),
-            on_reader: HashMap::new(),
-            reading: HashMap::new(),
-            scanning_readers: false,
-            reader_scan_generation: 0,
+            reader_scan_generation: Generation::default(),
             seen_volumes: None,
             volume_watch: None,
             refreshing_devices: false,
-            device_error: None,
-            activity: Activity::Idle,
-            metadata_editing: false,
-            metadata_save_result: None,
-            delivery_report: None,
-            preparation_generation: 0,
-            delivery_exclusions: Vec::new(),
-            send_preview_generation: 0,
-            generation: 0,
-            sorting: false,
-            debounce: None,
+            preparation_generation: Generation::default(),
+            send_preview_generation: Generation::default(),
+            generation: Generation::default(),
         };
         this.reload(cx);
         this.refresh_destinations(cx);
@@ -193,9 +161,10 @@ impl LibraryState {
     }
 
     pub fn selected_items(&self) -> Vec<&LibraryItem> {
-        self.selected
+        self.session
+            .selected
             .iter()
-            .filter_map(|index| self.items.get(*index))
+            .filter_map(|index| self.session.items.get(*index))
             .map(Arc::as_ref)
             .collect()
     }
@@ -208,10 +177,11 @@ impl LibraryState {
     }
 
     pub fn primary_selected(&self) -> Option<&LibraryItem> {
-        self.anchor
-            .filter(|index| self.selected.contains(index))
-            .or_else(|| self.selected.iter().next().copied())
-            .and_then(|index| self.items.get(index))
+        self.session
+            .anchor
+            .filter(|index| self.session.selected.contains(index))
+            .or_else(|| self.session.selected.iter().next().copied())
+            .and_then(|index| self.session.items.get(index))
             .map(Arc::as_ref)
     }
 
@@ -222,16 +192,16 @@ impl LibraryState {
         if self.switching_library() {
             return;
         }
-        self.debounce = None;
-        self.generation = self.generation.wrapping_add(1);
+        self.session.debounce = None;
+        self.generation.advance();
         let generation = self.generation;
-        let sort = self.sort;
-        self.loading = true;
-        self.sorting = false;
-        let task = match self.section {
+        let sort = self.session.sort;
+        self.session.loading = true;
+        self.session.sorting = false;
+        let task = match self.session.section {
             Section::Library => {
-                let query = self.query.clone();
-                let filters = self.filters.clone();
+                let query = self.session.query.clone();
+                let filters = self.session.filters.clone();
                 let receiver = self.engine.request(|reply| Request::Query {
                     query,
                     filters,
@@ -265,22 +235,22 @@ impl LibraryState {
     /// Eight milliseconds leaves room in the 80ms target for query and rendering,
     /// unlike the former 60ms floor. Generation guards still block stale actions.
     pub fn set_query(&mut self, query: String, cx: &mut Context<Self>) {
-        if self.switching_library() || self.query == query {
+        if self.switching_library() || self.session.query == query {
             return;
         }
-        self.query = query;
-        self.generation = self.generation.wrapping_add(1);
-        self.loading = true;
-        self.sorting = false;
+        self.session.query = query;
+        self.generation.advance();
+        self.session.loading = true;
+        self.session.sorting = false;
         // Queue the read after the input deadline without a foreground round trip.
         // A busy first paint can overlap the query instead of delaying its start.
         let cancelled = Arc::new(AtomicBool::new(false));
-        self.debounce = Some(PendingQuery(cancelled.clone()));
+        self.session.debounce = Some(PendingQuery(cancelled.clone()));
         let engine = self.engine.clone();
-        let section = self.section;
-        let query = self.query.clone();
-        let filters = self.filters.clone();
-        let sort = self.sort;
+        let section = self.session.section;
+        let query = self.session.query.clone();
+        let filters = self.session.filters.clone();
+        let sort = self.session.sort;
         let generation = self.generation;
         let timer = cx.background_executor().timer(Duration::from_millis(8));
         let task = cx.background_executor().spawn(async move {
@@ -317,7 +287,7 @@ impl LibraryState {
         if self.switching_library() {
             return;
         }
-        if self.metadata_editing {
+        if self.session.metadata_editing {
             self.set_status(
                 "Save or cancel your book details before switching sections".into(),
                 false,
@@ -325,12 +295,12 @@ impl LibraryState {
             );
             return;
         }
-        if self.section == section {
+        if self.session.section == section {
             return;
         }
         self.cancel_send_preview(cx);
         self.cancel_preparation(cx);
-        self.section = section;
+        self.session.section = section;
         self.clear_selection();
         self.reload(cx);
     }
@@ -339,26 +309,26 @@ impl LibraryState {
         if self.switching_library() {
             return;
         }
-        if self.sort.column == column {
-            self.sort.ascending = !self.sort.ascending;
+        if self.session.sort.column == column {
+            self.session.sort.ascending = !self.session.sort.ascending;
         } else {
-            self.sort = Sort {
+            self.session.sort = Sort {
                 column,
                 ascending: true,
             };
         }
-        if self.loading && !self.sorting {
+        if self.session.loading && !self.session.sorting {
             self.reload(cx);
             return;
         }
-        self.generation = self.generation.wrapping_add(1);
-        self.loading = true;
-        self.sorting = true;
+        self.generation.advance();
+        self.session.loading = true;
+        self.session.sorting = true;
         let generation = self.generation;
-        let sort = self.sort;
+        let sort = self.session.sort;
         // Share book metadata while retaining the visible rows until sorting finishes.
-        let mut items = self.items.clone();
-        let facets = self.facets.clone();
+        let mut items = self.session.items.clone();
+        let facets = self.session.facets.clone();
         let task = cx.background_executor().spawn(async move {
             sort_items(&mut items, sort);
             Ok(LibrarySnapshot { items, facets })
@@ -377,11 +347,11 @@ impl LibraryState {
             return;
         }
         let list = match dimension {
-            FilterDimension::Author => &mut self.filters.authors,
-            FilterDimension::Tag => &mut self.filters.tags,
-            FilterDimension::Series => &mut self.filters.series,
-            FilterDimension::Language => &mut self.filters.languages,
-            FilterDimension::Format => &mut self.filters.formats,
+            FilterDimension::Author => &mut self.session.filters.authors,
+            FilterDimension::Tag => &mut self.session.filters.tags,
+            FilterDimension::Series => &mut self.session.filters.series,
+            FilterDimension::Language => &mut self.session.filters.languages,
+            FilterDimension::Format => &mut self.session.filters.formats,
         };
         let lower = value.to_lowercase();
         if let Some(position) = list.iter().position(|existing| *existing == lower) {
@@ -393,29 +363,29 @@ impl LibraryState {
     }
 
     pub fn clear_filters(&mut self, cx: &mut Context<Self>) {
-        if self.switching_library() || self.filters.is_empty() {
+        if self.switching_library() || self.session.filters.is_empty() {
             return;
         }
-        self.filters = Filters::default();
+        self.session.filters = Filters::default();
         self.reload(cx);
     }
 
     // ----- selection -------------------------------------------------------
 
     pub fn clear_selection(&mut self) {
-        self.selected.clear();
-        self.anchor = None;
+        self.session.selected.clear();
+        self.session.anchor = None;
     }
 
     pub fn select_only(&mut self, index: usize, cx: &mut Context<Self>) {
         if self.switching_library() {
             return;
         }
-        self.selected.clear();
-        self.anchor = None;
-        if index < self.items.len() {
-            self.selected.insert(index);
-            self.anchor = Some(index);
+        self.session.selected.clear();
+        self.session.anchor = None;
+        if index < self.session.items.len() {
+            self.session.selected.insert(index);
+            self.session.anchor = Some(index);
         }
         cx.notify();
     }
@@ -424,13 +394,13 @@ impl LibraryState {
         if self.switching_library() {
             return;
         }
-        if index >= self.items.len() {
+        if index >= self.session.items.len() {
             return;
         }
-        if !self.selected.remove(&index) {
-            self.selected.insert(index);
+        if !self.session.selected.remove(&index) {
+            self.session.selected.insert(index);
         }
-        self.anchor = Some(index);
+        self.session.anchor = Some(index);
         cx.notify();
     }
 
@@ -438,16 +408,16 @@ impl LibraryState {
         if self.switching_library() {
             return;
         }
-        if index >= self.items.len() {
+        if index >= self.session.items.len() {
             return;
         }
-        let anchor = self.anchor.unwrap_or(index);
+        let anchor = self.session.anchor.unwrap_or(index);
         let (low, high) = if anchor <= index {
             (anchor, index)
         } else {
             (index, anchor)
         };
-        self.selected.extend(low..=high);
+        self.session.selected.extend(low..=high);
         cx.notify();
     }
 
@@ -455,7 +425,7 @@ impl LibraryState {
         if self.switching_library() {
             return;
         }
-        self.selected = (0..self.items.len()).collect();
+        self.session.selected = (0..self.session.items.len()).collect();
         cx.notify();
     }
 
@@ -470,12 +440,20 @@ impl LibraryState {
         if self.switching_library() {
             return;
         }
-        if self.items.is_empty() {
+        if self.session.items.is_empty() {
             return;
         }
-        let next = self.anchor.map_or_else(
-            || if delta < 0 { self.items.len() - 1 } else { 0 },
-            |current| (current as isize + delta).clamp(0, self.items.len() as isize - 1) as usize,
+        let next = self.session.anchor.map_or_else(
+            || {
+                if delta < 0 {
+                    self.session.items.len() - 1
+                } else {
+                    0
+                }
+            },
+            |current| {
+                (current as isize + delta).clamp(0, self.session.items.len() as isize - 1) as usize
+            },
         );
         self.select_only(next, cx);
     }
@@ -484,20 +462,20 @@ impl LibraryState {
         let ids: HashSet<&str> = self
             .selected
             .iter()
-            .filter_map(|index| self.items.get(*index))
+            .filter_map(|index| self.session.items.get(*index))
             .map(|item| item.id.as_str())
             .collect();
         let primary_id = self.primary_selected().map(|item| item.id.clone());
-        self.selected = new_items
+        self.session.selected = new_items
             .iter()
             .enumerate()
             .filter(|(_, item)| ids.contains(item.id.as_str()))
             .map(|(index, _)| index)
             .collect();
-        self.anchor = primary_id
+        self.session.anchor = primary_id
             .and_then(|id| new_items.iter().position(|item| item.id == id))
-            .filter(|index| self.selected.contains(index))
-            .or_else(|| self.selected.iter().next().copied());
+            .filter(|index| self.session.selected.contains(index))
+            .or_else(|| self.session.selected.iter().next().copied());
     }
 
     // ----- mutations -------------------------------------------------------
@@ -507,18 +485,18 @@ impl LibraryState {
             self.set_status("Finish the current operation or save/cancel your edits, then choose Back Up Library again. No new backup was started.".into(), true, cx);
             return;
         }
-        self.activity = Activity::Running(Operation::Mutation);
-        self.recovery_outcome = None;
+        self.session.activity = Activity::Running(Operation::Mutation);
+        self.session.recovery_outcome = None;
         self.set_status("Copying and verifying library backup...".into(), false, cx);
         let receiver = self
             .engine
             .request(|reply| Request::Backup { destination, reply });
         self.await_reply(receiver, cx, |this, result, cx| {
-            this.activity = Activity::Idle;
+            this.session.activity = Activity::Idle;
             match result {
                 Ok(report) => {
                     let summary = format!("Backup verified: {} managed format(s)", report.managed_files);
-                    this.recovery_outcome = Some(RecoveryOutcome {
+                    this.session.recovery_outcome = Some(RecoveryOutcome {
                         path: report.destination_path,
                         summary: summary.clone(),
                         detail: "Includes the catalogue, Trash and managed files. External referenced files and conversion jobs are not included. Keep a copy on a separate drive.".into(),
@@ -540,8 +518,8 @@ impl LibraryState {
             self.set_status("Finish the current operation or save/cancel your edits, then choose Restore Backup again. No restore was started.".into(), true, cx);
             return;
         }
-        self.activity = Activity::Running(Operation::Mutation);
-        self.recovery_outcome = None;
+        self.session.activity = Activity::Running(Operation::Mutation);
+        self.session.recovery_outcome = None;
         self.set_status(
             "Restoring and verifying a separate library copy...".into(),
             false,
@@ -553,12 +531,12 @@ impl LibraryState {
             reply,
         });
         self.await_reply(receiver, cx, |this, result, cx| {
-            this.activity = Activity::Idle;
+            this.session.activity = Activity::Idle;
             match result {
                 Ok(report) => {
                     let summary = format!("Restore verified: {} book(s), {} in Trash, {} managed format(s)",
                         report.report.active_items, report.report.trashed_items, report.report.verified_managed_formats);
-                    this.recovery_outcome = Some(RecoveryOutcome {
+                    this.session.recovery_outcome = Some(RecoveryOutcome {
                         path: report.database_path.parent().expect("restored database has a parent").to_path_buf(),
                         summary: summary.clone(),
                         detail: format!("Your current library is unchanged and still open. {} external reference(s) still need their original files. Conversion jobs are not restored.", report.report.referenced_formats),
@@ -574,7 +552,7 @@ impl LibraryState {
         if roots.is_empty() || !self.can_mutate() {
             return;
         }
-        self.activity = Activity::Running(Operation::Mutation);
+        self.session.activity = Activity::Running(Operation::Mutation);
         let count = roots.len();
         self.set_status(format!("Importing {count} item(s)..."), false, cx);
         let receiver = self
@@ -584,10 +562,10 @@ impl LibraryState {
     }
 
     pub fn import_from_reader(&mut self, destination: Destination, cx: &mut Context<Self>) {
-        if self.section != Section::Library || !self.can_mutate() {
+        if self.session.section != Section::Library || !self.can_mutate() {
             return;
         }
-        self.activity = Activity::Running(Operation::Mutation);
+        self.session.activity = Activity::Running(Operation::Mutation);
         self.set_status(
             format!("Adding books from {}...", destination.name),
             false,
@@ -605,7 +583,7 @@ impl LibraryState {
         cx: &mut Context<Self>,
     ) {
         self.await_reply(receiver, cx, |this, result, cx| {
-            this.activity = Activity::Idle;
+            this.session.activity = Activity::Idle;
             match result {
                 Ok(scan) => {
                     let counts = scan.counts;
@@ -640,16 +618,22 @@ impl LibraryState {
     }
 
     pub fn can_mutate(&self) -> bool {
-        self.activity.is_idle() && !self.metadata_editing() && !self.loading
+        self.session.activity.is_idle() && !self.metadata_editing() && !self.session.loading
     }
 
     pub fn busy(&self) -> bool {
-        self.activity.is_running()
+        self.session.activity.is_running()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn install_test_items(&mut self, items: Vec<Arc<LibraryItem>>) {
+        self.session.items = items;
+        self.clear_selection();
     }
 
     #[cfg(test)]
     pub(crate) fn simulate_busy(&mut self, busy: bool) {
-        self.activity = if busy {
+        self.session.activity = if busy {
             Activity::Running(Operation::Mutation)
         } else {
             Activity::Idle
@@ -657,19 +641,21 @@ impl LibraryState {
     }
 
     pub fn switching_library(&self) -> bool {
-        matches!(self.activity, Activity::SwitchingLibrary)
+        matches!(self.session.activity, Activity::SwitchingLibrary)
     }
 
     fn preparation_pending(&self) -> bool {
-        self.activity.is_operation(Operation::PreviewingPreparation)
+        self.session
+            .activity
+            .is_operation(Operation::PreviewingPreparation)
     }
 
     pub fn send_preview(&self) -> Option<&SendPreview> {
-        self.activity.send_preview()
+        self.session.activity.send_preview()
     }
 
     pub fn preparation_preview(&self) -> Option<&PreparationPreview> {
-        self.activity.preparation_preview()
+        self.session.activity.preparation_preview()
     }
 
     pub fn can_close(&mut self, cx: &mut Context<Self>) -> bool {
@@ -681,7 +667,7 @@ impl LibraryState {
             );
             return false;
         }
-        if self.metadata_editing {
+        if self.session.metadata_editing {
             self.set_status(
                 "Save or cancel your book details before closing Takio".into(),
                 true,
@@ -693,51 +679,53 @@ impl LibraryState {
     }
 
     pub fn recovery_outcome(&self) -> &Option<RecoveryOutcome> {
-        &self.recovery_outcome
+        &self.session.recovery_outcome
     }
 
     pub fn delivery_report(&self) -> &Option<SendReport> {
-        &self.delivery_report
+        &self.session.delivery_report
     }
 
     pub fn automatic_backup_prompt_open(&self) -> bool {
-        self.automatic_backup_prompt_open
+        self.session.automatic_backup_prompt_open
     }
 
     pub fn metadata_editing(&self) -> bool {
-        self.metadata_editing
+        self.session.metadata_editing
     }
 
     pub fn saving_metadata(&self) -> bool {
-        self.activity.is_operation(Operation::SavingMetadata)
+        self.session
+            .activity
+            .is_operation(Operation::SavingMetadata)
     }
 
     pub fn metadata_save_result(&self) -> &Option<AppResult<String>> {
-        &self.metadata_save_result
+        &self.session.metadata_save_result
     }
 
     pub fn dismiss_recovery_outcome(&mut self, cx: &mut Context<Self>) {
-        self.recovery_outcome = None;
+        self.session.recovery_outcome = None;
         cx.notify();
     }
 
     pub fn dismiss_delivery_report(&mut self, cx: &mut Context<Self>) {
-        self.delivery_report = None;
-        self.delivery_exclusions.clear();
+        self.session.delivery_report = None;
+        self.session.delivery_exclusions.clear();
         cx.notify();
     }
 
     pub fn set_automatic_backup_prompt(&mut self, open: bool, cx: &mut Context<Self>) {
-        self.automatic_backup_prompt_open = open;
+        self.session.automatic_backup_prompt_open = open;
         cx.notify();
     }
 
     pub fn begin_metadata_editing(&mut self, cx: &mut Context<Self>) -> bool {
-        if !self.can_mutate() || self.section != Section::Library {
+        if !self.can_mutate() || self.session.section != Section::Library {
             return false;
         }
-        self.metadata_save_result = None;
-        self.metadata_editing = true;
+        self.session.metadata_save_result = None;
+        self.session.metadata_editing = true;
         cx.notify();
         true
     }
@@ -746,34 +734,37 @@ impl LibraryState {
         if self.saving_metadata() {
             return false;
         }
-        self.metadata_editing = false;
+        self.session.metadata_editing = false;
         cx.notify();
         true
     }
 
     pub fn update_metadata(&mut self, id: String, patch: LibraryPatch, cx: &mut Context<Self>) {
-        if !self.activity.is_idle() || self.loading || self.section != Section::Library {
-            self.metadata_save_result = Some(Err(AppError::new("operation-in-progress")));
+        if !self.session.activity.is_idle()
+            || self.session.loading
+            || self.session.section != Section::Library
+        {
+            self.session.metadata_save_result = Some(Err(AppError::new("operation-in-progress")));
             cx.notify();
             return;
         }
-        self.activity = Activity::Running(Operation::SavingMetadata);
-        self.metadata_save_result = None;
+        self.session.activity = Activity::Running(Operation::SavingMetadata);
+        self.session.metadata_save_result = None;
         self.set_status("Saving book details...".into(), false, cx);
         let receiver = self
             .engine
             .request(|reply| Request::Update { id, patch, reply });
         self.await_reply(receiver, cx, |this, result, cx| {
-            this.activity = Activity::Idle;
+            this.session.activity = Activity::Idle;
             match result {
                 Ok(item) => {
-                    this.metadata_save_result = Some(Ok(item.id));
+                    this.session.metadata_save_result = Some(Ok(item.id));
                     this.set_status("Book details saved".into(), false, cx);
                     this.reload(cx);
                 }
                 Err(error) => {
                     this.set_error(error.code(), cx);
-                    this.metadata_save_result = Some(Err(error));
+                    this.session.metadata_save_result = Some(Err(error));
                 }
             }
             cx.notify();
@@ -782,7 +773,7 @@ impl LibraryState {
     }
 
     pub fn trash_selected(&mut self, cx: &mut Context<Self>) {
-        if self.section != Section::Library {
+        if self.session.section != Section::Library {
             return;
         }
         self.mutate_selected(
@@ -793,7 +784,7 @@ impl LibraryState {
     }
 
     pub fn restore_selected(&mut self, cx: &mut Context<Self>) {
-        if self.section != Section::Trash {
+        if self.session.section != Section::Trash {
             return;
         }
         self.mutate_selected(|ids, reply| Request::Restore { ids, reply }, "Restored", cx);
@@ -801,7 +792,7 @@ impl LibraryState {
 
     /// Called only with the IDs captured by the native confirmation dialog.
     pub fn purge_confirmed(&mut self, ids: Vec<String>, cx: &mut Context<Self>) {
-        if self.section != Section::Trash {
+        if self.session.section != Section::Trash {
             return;
         }
         self.mutate_ids(
@@ -838,12 +829,12 @@ impl LibraryState {
         if ids.is_empty() || !self.can_mutate() {
             return;
         }
-        self.activity = Activity::Running(Operation::Mutation);
+        self.session.activity = Activity::Running(Operation::Mutation);
         let count = ids.len();
         self.set_status("Updating library...".into(), false, cx);
         let receiver = self.engine.request(|reply| build(ids, reply));
         self.await_reply(receiver, cx, move |this, result, cx| {
-            this.activity = Activity::Idle;
+            this.session.activity = Activity::Idle;
             match result {
                 Ok(report) => {
                     let changed = report.iter().filter(|(_, result)| result.is_ok()).count();
@@ -920,7 +911,7 @@ impl LibraryState {
             cx.notify();
             return;
         }
-        self.scanning_readers = true;
+        self.session.scanning_readers = true;
         let generation = self.reader_scan_generation;
         let failed_destinations = destinations.clone();
         let receiver = self.engine.request(|reply| Request::ScanReaderShelves {
@@ -934,7 +925,7 @@ impl LibraryState {
     fn await_reader_scan(
         &self,
         receiver: Receiver<AppResult<crate::engine::ReaderShelves>>,
-        generation: u64,
+        generation: Generation,
         failed_destinations: Vec<Destination>,
         cx: &mut Context<Self>,
     ) {
@@ -942,23 +933,25 @@ impl LibraryState {
             if generation != this.reader_scan_generation {
                 return;
             }
-            this.scanning_readers = false;
-            this.reader_shelves = match result {
+            this.session.scanning_readers = false;
+            this.session.reader_shelves = match result {
                 Ok(shelves) => shelves,
                 Err(error) => failed_destinations
                     .into_iter()
                     .map(|destination| (destination, Err(error.clone())))
                     .collect(),
             };
-            for (destination, shelf) in &this.reader_shelves {
+            for (destination, shelf) in &this.session.reader_shelves {
                 if let Ok(shelf) = shelf {
                     for id in shelf.item_ids() {
-                        this.on_reader
+                        this.session
+                            .on_reader
                             .entry(id.to_owned())
                             .or_default()
                             .push(destination.label());
                         if let Some(reading) = shelf.reading_for(id) {
-                            this.reading
+                            this.session
+                                .reading
                                 .entry(id.to_owned())
                                 .or_insert_with(|| (destination.label(), reading.clone()));
                         }
@@ -972,11 +965,11 @@ impl LibraryState {
     }
 
     fn clear_reader_shelves(&mut self) {
-        self.reader_scan_generation = self.reader_scan_generation.wrapping_add(1);
-        self.scanning_readers = false;
-        self.reader_shelves.clear();
-        self.on_reader.clear();
-        self.reading.clear();
+        self.reader_scan_generation.advance();
+        self.session.scanning_readers = false;
+        self.session.reader_shelves.clear();
+        self.session.on_reader.clear();
+        self.session.reading.clear();
     }
 
     pub fn refresh_destinations(&mut self, cx: &mut Context<Self>) {
@@ -985,7 +978,7 @@ impl LibraryState {
         }
         self.refreshing_devices = true;
         self.clear_reader_shelves();
-        self.device_error = None;
+        self.session.device_error = None;
         let volumes_root = self.volumes_root.clone();
         self.seen_volumes = Some(mounted_volume_names(&volumes_root));
         let receiver = self.engine.request(|reply| Request::ListDestinations {
@@ -1001,7 +994,7 @@ impl LibraryState {
                 }
                 Err(error) => {
                     this.destinations.clear();
-                    this.device_error = Some(error);
+                    this.session.device_error = Some(error);
                 }
             }
             cx.notify();
@@ -1044,7 +1037,7 @@ impl LibraryState {
     /// A detected change is applied only between operations so it never cancels a
     /// review or races a send, import or library switch. The next tick retries.
     fn can_auto_refresh(&self) -> bool {
-        !self.refreshing_devices && self.activity.is_idle()
+        !self.refreshing_devices && self.session.activity.is_idle()
     }
 
     pub fn send_ids_to(
@@ -1053,7 +1046,7 @@ impl LibraryState {
         item_ids: Vec<String>,
         cx: &mut Context<Self>,
     ) {
-        if self.section != Section::Library || !self.can_mutate() {
+        if self.session.section != Section::Library || !self.can_mutate() {
             return;
         }
         if item_ids.is_empty() {
@@ -1070,10 +1063,10 @@ impl LibraryState {
             );
             return;
         }
-        self.activity = Activity::Running(Operation::Mutation);
-        self.delivery_report = None;
-        self.delivery_exclusions.clear();
-        self.send_preview_generation = self.send_preview_generation.wrapping_add(1);
+        self.session.activity = Activity::Running(Operation::Mutation);
+        self.session.delivery_report = None;
+        self.session.delivery_exclusions.clear();
+        self.send_preview_generation.advance();
         let generation = self.send_preview_generation;
         self.set_status(
             format!(
@@ -1090,8 +1083,8 @@ impl LibraryState {
             reply,
         });
         self.await_reply(receiver, cx, move |this, result, cx| {
-            this.activity = Activity::Idle;
-            if this.send_preview_generation != generation || this.section != Section::Library {
+            this.session.activity = Activity::Idle;
+            if this.send_preview_generation != generation || this.session.section != Section::Library {
                 this.set_status("Send review cancelled. Nothing was sent.".into(), false, cx);
                 return;
             }
@@ -1099,7 +1092,7 @@ impl LibraryState {
                 Ok(preview) => {
                     let ready = preview.ready_count();
                     let blocked = preview.entries.len() - ready;
-                    this.activity = Activity::ReviewingSend(preview);
+                    this.session.activity = Activity::ReviewingSend(preview);
                     this.set_status(format!("Review send: {ready} ready, {blocked} need attention. Nothing sent yet."), false, cx);
                 }
                 Err(error) => this.set_error(error.code(), cx),
@@ -1108,15 +1101,18 @@ impl LibraryState {
     }
 
     pub fn cancel_send_preview(&mut self, cx: &mut Context<Self>) {
-        self.send_preview_generation = self.send_preview_generation.wrapping_add(1);
-        if matches!(self.activity, Activity::ReviewingSend(_)) {
-            self.activity = Activity::Idle;
+        self.send_preview_generation.advance();
+        if matches!(self.session.activity, Activity::ReviewingSend(_)) {
+            self.session.activity = Activity::Idle;
             self.set_status("Send review cancelled. Nothing was sent.".into(), false, cx);
         }
     }
 
     pub fn confirm_send_preview(&mut self, cx: &mut Context<Self>) {
-        if self.loading || self.metadata_editing || self.section != Section::Library {
+        if self.session.loading
+            || self.session.metadata_editing
+            || self.session.section != Section::Library
+        {
             return;
         }
         let Some(preview) = self.send_preview() else {
@@ -1125,14 +1121,14 @@ impl LibraryState {
         if preview.ready_count() == 0 {
             return;
         }
-        let Activity::ReviewingSend(preview) = std::mem::take(&mut self.activity) else {
+        let Activity::ReviewingSend(preview) = std::mem::take(&mut self.session.activity) else {
             unreachable!("checked send review")
         };
         let (ready, excluded) = preview
             .entries
             .into_iter()
             .partition(|entry| entry.result.is_ok());
-        self.delivery_exclusions = excluded;
+        self.session.delivery_exclusions = excluded;
         self.deliver_reviewed(preview.destination, ready, cx);
     }
 
@@ -1142,9 +1138,9 @@ impl LibraryState {
         entries: Vec<SendPreviewEntry>,
         cx: &mut Context<Self>,
     ) {
-        self.activity = Activity::Running(Operation::Mutation);
-        self.delivery_report = None;
-        let excluded = self.delivery_exclusions.len();
+        self.session.activity = Activity::Running(Operation::Mutation);
+        self.session.delivery_report = None;
+        let excluded = self.session.delivery_exclusions.len();
         let name = destination.name.clone();
         self.set_status(
             format!("Sending {} book(s) to {name}...", entries.len()),
@@ -1157,7 +1153,7 @@ impl LibraryState {
             reply,
         });
         self.await_reply(receiver, cx, move |this, result, cx| {
-            this.activity = Activity::Idle;
+            this.session.activity = Activity::Idle;
             match result {
                 Ok(report) => {
                     let sent = report
@@ -1188,7 +1184,7 @@ impl LibraryState {
                         failed > 0 || unrecorded > 0,
                         cx,
                     );
-                    this.delivery_report = Some(report);
+                    this.session.delivery_report = Some(report);
                 }
                 Err(error) => this.set_error(error.code(), cx),
             }
@@ -1202,14 +1198,14 @@ impl LibraryState {
         if !self.can_mutate() {
             return;
         }
-        self.activity = Activity::Running(Operation::Mutation);
+        self.session.activity = Activity::Running(Operation::Mutation);
         let name = destination.name.clone();
         self.set_status(format!("Ejecting {name}..."), false, cx);
         let receiver = self
             .engine
             .request(|reply| Request::Eject { destination, reply });
         self.await_reply(receiver, cx, move |this, result, cx| {
-            this.activity = Activity::Idle;
+            this.session.activity = Activity::Idle;
             match result {
                 Ok(()) => this.set_status(format!("Ejected {name}"), false, cx),
                 Err(error) => this.set_error(error.code(), cx),
@@ -1222,7 +1218,7 @@ impl LibraryState {
     // ----- explicit local preparation -------------------------------------
 
     pub fn prepare_selected(&mut self, cx: &mut Context<Self>) {
-        if !self.can_mutate() || self.section != Section::Library {
+        if !self.can_mutate() || self.session.section != Section::Library {
             return;
         }
         let ids = self.selected_ids();
@@ -1234,13 +1230,13 @@ impl LibraryState {
     }
 
     pub fn prepare_item(&mut self, item_id: String, cx: &mut Context<Self>) {
-        if !self.can_mutate() || self.section != Section::Library {
+        if !self.can_mutate() || self.session.section != Section::Library {
             return;
         }
-        self.activity = Activity::Running(Operation::PreviewingPreparation);
-        self.delivery_report = None;
-        self.delivery_exclusions.clear();
-        self.preparation_generation = self.preparation_generation.wrapping_add(1);
+        self.session.activity = Activity::Running(Operation::PreviewingPreparation);
+        self.session.delivery_report = None;
+        self.session.delivery_exclusions.clear();
+        self.preparation_generation.advance();
         let generation = self.preparation_generation;
         self.set_status(
             "Checking EPUB and local conversion backend...".into(),
@@ -1251,8 +1247,9 @@ impl LibraryState {
             .engine
             .request(|reply| Request::PreviewPrepare { item_id, reply });
         self.await_reply(receiver, cx, move |this, result, cx| {
-            this.activity = Activity::Idle;
-            if this.preparation_generation != generation || this.section != Section::Library {
+            this.session.activity = Activity::Idle;
+            if this.preparation_generation != generation || this.session.section != Section::Library
+            {
                 this.set_status(
                     "Preparation cancelled. No copy was prepared.".into(),
                     false,
@@ -1263,7 +1260,7 @@ impl LibraryState {
             match result {
                 Ok(preview) => {
                     let available = preview.backend.available;
-                    this.activity = Activity::ReviewingPreparation(preview);
+                    this.session.activity = Activity::ReviewingPreparation(preview);
                     if available {
                         this.set_status(
                             "Review AZW3 preparation. The EPUB will be kept. Nothing sent.".into(),
@@ -1283,9 +1280,9 @@ impl LibraryState {
     pub fn cancel_preparation(&mut self, cx: &mut Context<Self>) {
         // A running conversion cannot be cancelled by dismissing its review.
         if self.preparation_pending() || self.preparation_preview().is_some() {
-            self.preparation_generation = self.preparation_generation.wrapping_add(1);
-            if matches!(self.activity, Activity::ReviewingPreparation(_)) {
-                self.activity = Activity::Idle;
+            self.preparation_generation.advance();
+            if matches!(self.session.activity, Activity::ReviewingPreparation(_)) {
+                self.session.activity = Activity::Idle;
             }
             self.set_status(
                 "Preparation cancelled. No copy was prepared.".into(),
@@ -1296,7 +1293,10 @@ impl LibraryState {
     }
 
     pub fn confirm_preparation(&mut self, cx: &mut Context<Self>) {
-        if self.loading || self.metadata_editing || self.section != Section::Library {
+        if self.session.loading
+            || self.session.metadata_editing
+            || self.session.section != Section::Library
+        {
             return;
         }
         let Some(preview) = self.preparation_preview() else {
@@ -1306,16 +1306,17 @@ impl LibraryState {
             self.set_error("backend-unavailable", cx);
             return;
         }
-        let Activity::ReviewingPreparation(preview) = std::mem::take(&mut self.activity) else {
+        let Activity::ReviewingPreparation(preview) = std::mem::take(&mut self.session.activity)
+        else {
             unreachable!("checked preparation review")
         };
-        self.activity = Activity::Running(Operation::Mutation);
+        self.session.activity = Activity::Running(Operation::Mutation);
         self.set_status("Preparing an AZW3 copy locally (120-second conversion limit). EPUB kept. Nothing sent.".into(), false, cx);
         let receiver = self
             .engine
             .request(|reply| Request::PrepareReviewed { preview, reply });
         self.await_reply(receiver, cx, |this, result, cx| {
-            this.activity = Activity::Idle;
+            this.session.activity = Activity::Idle;
             match result {
                 Ok(_) => {
                     this.set_status(
@@ -1334,7 +1335,7 @@ impl LibraryState {
     // ----- status ----------------------------------------------------------
 
     pub fn set_status(&mut self, text: String, is_error: bool, cx: &mut Context<Self>) {
-        self.status = Some(Status { text, is_error });
+        self.session.status = Some(Status { text, is_error });
         cx.notify();
     }
 
@@ -1347,7 +1348,7 @@ impl LibraryState {
     fn await_snapshot(
         &self,
         task: Task<AppResult<LibrarySnapshot>>,
-        generation: u64,
+        generation: Generation,
         cx: &mut Context<Self>,
     ) -> Task<()> {
         cx.spawn(async move |this, cx| {
@@ -1358,13 +1359,14 @@ impl LibraryState {
                 if this.generation != generation {
                     return;
                 }
-                this.loading = false;
-                this.sorting = false;
+                this.session.loading = false;
+                this.session.sorting = false;
                 match result.take().expect("snapshot handled once") {
                     Ok(snapshot) => {
                         this.reconcile_selection(&snapshot.items);
-                        let old_items = std::mem::replace(&mut this.items, snapshot.items);
-                        let old_facets = std::mem::replace(&mut this.facets, snapshot.facets);
+                        let old_items = std::mem::replace(&mut this.session.items, snapshot.items);
+                        let old_facets =
+                            std::mem::replace(&mut this.session.facets, snapshot.facets);
                         // Releasing a whole catalogue can also be expensive.
                         cx.background_executor()
                             .spawn(async move { drop((old_items, old_facets)) })
@@ -1573,7 +1575,12 @@ mod tests {
 
     fn titles(state: &Entity<LibraryState>, cx: &mut TestAppContext) -> Vec<String> {
         state.read_with(cx, |state, _| {
-            state.items.iter().map(|item| item.title.clone()).collect()
+            state
+                .session
+                .items
+                .iter()
+                .map(|item| item.title.clone())
+                .collect()
         })
     }
 
@@ -1581,10 +1588,10 @@ mod tests {
     fn initial_load_sorts_by_title(cx: &mut TestAppContext) {
         let f = fixture(cx);
         assert_eq!(titles(&f.state, cx), ["Alpha", "Beta", "Gamma"]);
-        assert!(f.state.read_with(cx, |s, _| s.selected.is_empty()));
+        assert!(f.state.read_with(cx, |s, _| s.session.selected.is_empty()));
         assert_eq!(
             f.state
-                .read_with(cx, |s, _| s.facets.formats.get("epub").copied()),
+                .read_with(cx, |s, _| s.session.facets.formats.get("epub").copied()),
             Some(3)
         );
     }
@@ -1594,21 +1601,21 @@ mod tests {
         let f = fixture(cx);
         settle(&f.state, cx);
         f.state.update(cx, |state, cx| {
-            state.metadata_save_result = Some(Err(AppError::new("old-error")));
+            state.session.metadata_save_result = Some(Err(AppError::new("old-error")));
             assert!(state.begin_metadata_editing(cx));
-            assert!(state.metadata_save_result.is_none());
+            assert!(state.session.metadata_save_result.is_none());
             assert!(!state.can_mutate());
             assert!(!state.begin_metadata_editing(cx));
-            state.activity = Activity::Running(Operation::SavingMetadata);
+            state.session.activity = Activity::Running(Operation::SavingMetadata);
             assert!(!state.end_metadata_editing(cx));
-            assert!(state.metadata_editing);
-            state.activity = Activity::Idle;
+            assert!(state.session.metadata_editing);
+            state.session.activity = Activity::Idle;
             assert!(state.end_metadata_editing(cx));
             assert!(state.can_mutate());
-            state.loading = true;
+            state.session.loading = true;
             assert!(!state.begin_metadata_editing(cx));
-            state.loading = false;
-            state.section = Section::Trash;
+            state.session.loading = false;
+            state.session.section = Section::Trash;
             assert!(!state.begin_metadata_editing(cx));
         });
     }
@@ -1619,7 +1626,7 @@ mod tests {
         settle(&f.state, cx);
         let requests = preparation::preparation_channel(&f, cx);
         f.state.update(cx, |state, cx| {
-            let item = state.items[0].clone();
+            let item = state.session.items[0].clone();
             let destination = Destination {
                 id: "unused".into(),
                 name: "unused".into(),
@@ -1640,7 +1647,7 @@ mod tests {
             ];
             for activity in activities {
                 let running = activity.is_running();
-                state.activity = activity;
+                state.session.activity = activity;
                 assert!(!state.can_mutate());
                 assert_eq!(state.can_close(cx), !running);
                 state.update_metadata(item.id.clone(), LibraryPatch::default(), cx);
@@ -1658,11 +1665,11 @@ mod tests {
                 state.confirm_preparation(cx);
                 assert!(requests.try_recv().is_err());
             }
-            state.activity = Activity::Idle;
-            state.loading = true;
+            state.session.activity = Activity::Idle;
+            state.session.loading = true;
             state.update_metadata(item.id.clone(), LibraryPatch::default(), cx);
             assert!(requests.try_recv().is_err());
-            state.loading = false;
+            state.session.loading = false;
             assert!(state.can_mutate());
         });
     }
@@ -1671,12 +1678,12 @@ mod tests {
     fn navigation_without_anchor_selects_boundary_row(cx: &mut TestAppContext) {
         let f = fixture(cx);
         f.state.update(cx, |s, cx| s.move_selection(1, cx));
-        assert_eq!(f.state.read_with(cx, |s, _| s.anchor), Some(0));
+        assert_eq!(f.state.read_with(cx, |s, _| s.session.anchor), Some(0));
         f.state.update(cx, |s, cx| {
             s.clear_selection();
             s.move_selection(-1, cx);
         });
-        assert_eq!(f.state.read_with(cx, |s, _| s.anchor), Some(2));
+        assert_eq!(f.state.read_with(cx, |s, _| s.session.anchor), Some(2));
     }
 
     #[gpui::test]
@@ -1691,32 +1698,32 @@ mod tests {
         );
 
         f.state.update(cx, |s, cx| s.toggle_select(2, cx));
-        assert_eq!(f.state.read_with(cx, |s, _| s.selected.len()), 2);
+        assert_eq!(f.state.read_with(cx, |s, _| s.session.selected.len()), 2);
         f.state.update(cx, |s, cx| s.toggle_select(2, cx));
-        assert_eq!(f.state.read_with(cx, |s, _| s.selected.len()), 1);
+        assert_eq!(f.state.read_with(cx, |s, _| s.session.selected.len()), 1);
 
         f.state.update(cx, |s, cx| s.select_only(0, cx));
         f.state.update(cx, |s, cx| s.select_range_to(2, cx));
-        assert_eq!(f.state.read_with(cx, |s, _| s.selected.len()), 3);
+        assert_eq!(f.state.read_with(cx, |s, _| s.session.selected.len()), 3);
 
         f.state.update(cx, |s, cx| s.select_only(0, cx));
         f.state.update(cx, |s, cx| s.move_selection(5, cx));
         assert_eq!(
-            f.state.read_with(cx, |s, _| s.anchor),
+            f.state.read_with(cx, |s, _| s.session.anchor),
             Some(2),
             "clamped at end"
         );
         f.state.update(cx, |s, cx| s.move_selection(-10, cx));
         assert_eq!(
-            f.state.read_with(cx, |s, _| s.anchor),
+            f.state.read_with(cx, |s, _| s.session.anchor),
             Some(0),
             "clamped at start"
         );
 
         f.state.update(cx, |s, cx| s.select_all(cx));
-        assert_eq!(f.state.read_with(cx, |s, _| s.selected.len()), 3);
+        assert_eq!(f.state.read_with(cx, |s, _| s.session.selected.len()), 3);
         f.state.update(cx, |s, _| s.clear_selection());
-        assert!(f.state.read_with(cx, |s, _| s.selected.is_empty()));
+        assert!(f.state.read_with(cx, |s, _| s.session.selected.is_empty()));
     }
 
     #[gpui::test]
@@ -1737,7 +1744,7 @@ mod tests {
             .update(cx, |s, cx| s.set_sort(SortColumn::Author, cx));
         settle(&f.state, cx);
         assert!(
-            f.state.read_with(cx, |s, _| s.sort.ascending),
+            f.state.read_with(cx, |s, _| s.session.sort.ascending),
             "new column starts ascending"
         );
     }
@@ -1754,7 +1761,10 @@ mod tests {
         cx.executor().advance_clock(Duration::from_millis(7));
         cx.run_until_parked();
         assert_eq!(f.state.read_with(cx, |s, _| s.generation), generation);
-        assert!(f.state.read_with(cx, |s, _| s.loading && !s.can_mutate()));
+        assert!(
+            f.state
+                .read_with(cx, |s, _| s.session.loading && !s.can_mutate())
+        );
         assert_eq!(titles(&f.state, cx).len(), 3);
         cx.executor().advance_clock(Duration::from_millis(1));
         settle(&f.state, cx);
@@ -1770,7 +1780,7 @@ mod tests {
     #[gpui::test]
     fn background_debounce_sends_only_latest_query_after_deadline(cx: &mut TestAppContext) {
         let f = fixture(cx);
-        let item = f.state.read_with(cx, |s, _| s.items[0].clone());
+        let item = f.state.read_with(cx, |s, _| s.session.items[0].clone());
         let (engine, requests) = Engine::test_channel();
         f.state.update(cx, |s, _| s.engine = engine);
         let received = Arc::new(AtomicBool::new(false));
@@ -1797,13 +1807,19 @@ mod tests {
         cx.executor().advance_clock(Duration::from_millis(7));
         cx.run_until_parked();
         assert!(!received.load(Ordering::Acquire));
-        assert!(f.state.read_with(cx, |s, _| s.loading && !s.can_mutate()));
+        assert!(
+            f.state
+                .read_with(cx, |s, _| s.session.loading && !s.can_mutate())
+        );
         cx.executor().advance_clock(Duration::from_millis(1));
         settle(&f.state, cx);
         responder.join().unwrap();
         assert_eq!(titles(&f.state, cx), ["Alpha"]);
         assert!(!f.state.read_with(cx, |s, _| {
-            s.status.as_ref().is_some_and(|status| status.is_error)
+            s.session
+                .status
+                .as_ref()
+                .is_some_and(|status| status.is_error)
         }));
     }
 
@@ -1823,7 +1839,7 @@ mod tests {
     #[gpui::test]
     fn searches_share_unchanged_records_but_refresh_after_mutation(cx: &mut TestAppContext) {
         let f = fixture(cx);
-        let initial = f.state.read_with(cx, |s, _| s.items[0].clone());
+        let initial = f.state.read_with(cx, |s, _| s.session.items[0].clone());
         f.state.update(cx, |s, cx| {
             s.select_all(cx);
             s.set_query("Alpha".into(), cx);
@@ -1831,8 +1847,8 @@ mod tests {
         cx.executor().advance_clock(Duration::from_millis(100));
         settle(&f.state, cx);
         f.state.read_with(cx, |s, _| {
-            assert_eq!(s.items.len(), 1);
-            assert!(Arc::ptr_eq(&initial, &s.items[0]));
+            assert_eq!(s.session.items.len(), 1);
+            assert!(Arc::ptr_eq(&initial, &s.session.items[0]));
             assert_eq!(s.selected_ids(), vec![initial.id.clone()]);
         });
         let engine = f.state.read_with(cx, |s, _| s.engine.clone());
@@ -1851,8 +1867,8 @@ mod tests {
         f.state.update(cx, |s, cx| s.reload(cx));
         settle(&f.state, cx);
         f.state.read_with(cx, |s, _| {
-            assert_eq!(s.items[0].title, "Alpha revised");
-            assert!(!Arc::ptr_eq(&initial, &s.items[0]));
+            assert_eq!(s.session.items[0].title, "Alpha revised");
+            assert!(!Arc::ptr_eq(&initial, &s.session.items[0]));
             assert_eq!(initial.title, "Alpha");
             assert_eq!(s.selected_ids(), vec![initial.id.clone()]);
         });
@@ -1861,21 +1877,21 @@ mod tests {
     #[gpui::test]
     fn sorting_retains_visible_rows_and_uses_latest_selection(cx: &mut TestAppContext) {
         let f = fixture(cx);
-        let original = f.state.read_with(cx, |s, _| s.items[0].clone());
+        let original = f.state.read_with(cx, |s, _| s.session.items[0].clone());
         f.state.update(cx, |s, cx| {
             s.select_only(0, cx);
             s.set_sort(SortColumn::Title, cx);
-            assert!(s.loading);
+            assert!(s.session.loading);
             assert!(!s.can_mutate());
-            assert!(Arc::ptr_eq(&s.items[0], &original));
-            assert_eq!(s.items[0].title, "Alpha");
+            assert!(Arc::ptr_eq(&s.session.items[0], &original));
+            assert_eq!(s.session.items[0].title, "Alpha");
             s.select_only(2, cx);
         });
         settle(&f.state, cx);
         f.state.read_with(cx, |s, _| {
             assert_eq!(s.primary_selected().unwrap().title, "Gamma");
-            assert_eq!(s.anchor, Some(0));
-            assert!(Arc::ptr_eq(&s.items[2], &original));
+            assert_eq!(s.session.anchor, Some(0));
+            assert!(Arc::ptr_eq(&s.session.items[2], &original));
             assert!(s.can_mutate());
         });
     }
@@ -1914,7 +1930,7 @@ mod tests {
         let f = fixture(cx);
         let (engine, id) = f
             .state
-            .read_with(cx, |s, _| (s.engine.clone(), s.items[1].id.clone()));
+            .read_with(cx, |s, _| (s.engine.clone(), s.session.items[1].id.clone()));
         engine
             .request(|reply| Request::Trash {
                 ids: vec![id],
@@ -1942,14 +1958,14 @@ mod tests {
         let f = fixture(cx);
         f.state.update(cx, |s, cx| {
             let ready = Task::ready(Ok(LibrarySnapshot {
-                items: vec![s.items[0].clone()],
-                facets: s.facets.clone(),
+                items: vec![s.session.items[0].clone()],
+                facets: s.session.facets.clone(),
             }));
             s.await_snapshot(ready, s.generation, cx).detach();
             s.set_query("Beta".into(), cx);
         });
         cx.run_until_parked();
-        assert!(f.state.read_with(cx, |s, _| s.loading));
+        assert!(f.state.read_with(cx, |s, _| s.session.loading));
         assert_eq!(titles(&f.state, cx), ["Alpha", "Beta", "Gamma"]);
         cx.executor().advance_clock(Duration::from_millis(100));
         settle(&f.state, cx);
@@ -1960,8 +1976,8 @@ mod tests {
     fn ten_thousand_selected_rows_keep_primary_book_when_sorted(cx: &mut TestAppContext) {
         let f = fixture(cx);
         f.state.update(cx, |s, cx| {
-            let template = s.items[0].as_ref();
-            s.items = (0..10_000)
+            let template = s.session.items[0].as_ref();
+            s.session.items = (0..10_000)
                 .map(|index| {
                     let mut item = template.clone();
                     item.id = format!("book-{index:05}");
@@ -1970,15 +1986,15 @@ mod tests {
                 })
                 .collect();
             s.select_all(cx);
-            s.anchor = Some(7_000);
+            s.session.anchor = Some(7_000);
             s.set_sort(SortColumn::Title, cx);
         });
         settle(&f.state, cx);
         f.state.read_with(cx, |s, _| {
-            assert_eq!(s.selected.len(), 10_000);
+            assert_eq!(s.session.selected.len(), 10_000);
             assert_eq!(s.primary_selected().unwrap().id, "book-07000");
-            assert_eq!(s.anchor, Some(2_999));
-            assert_eq!(s.items[0].id, "book-09999");
+            assert_eq!(s.session.anchor, Some(2_999));
+            assert_eq!(s.session.items[0].id, "book-09999");
         });
     }
 
@@ -1987,13 +2003,13 @@ mod tests {
         let f = fixture(cx);
         f.state.update(cx, |s, cx| {
             s.select_all(cx);
-            s.anchor = Some(2);
+            s.session.anchor = Some(2);
             s.set_query("Alpha".into(), cx);
         });
         cx.executor().advance_clock(Duration::from_millis(100));
         settle(&f.state, cx);
         f.state.read_with(cx, |s, _| {
-            assert_eq!(s.selected.len(), 1);
+            assert_eq!(s.session.selected.len(), 1);
             assert_eq!(s.primary_selected().unwrap().title, "Alpha");
         });
         f.state
@@ -2001,8 +2017,8 @@ mod tests {
         cx.executor().advance_clock(Duration::from_millis(100));
         settle(&f.state, cx);
         f.state.read_with(cx, |s, _| {
-            assert!(s.selected.is_empty());
-            assert_eq!(s.anchor, None);
+            assert!(s.session.selected.is_empty());
+            assert_eq!(s.session.anchor, None);
             assert!(s.primary_selected().is_none());
         });
     }
@@ -2015,7 +2031,7 @@ mod tests {
             let generation = s.generation;
             s.set_query("Alpha".into(), cx);
             assert_ne!(s.generation, generation);
-            assert!(s.loading);
+            assert!(s.session.loading);
             assert!(!s.can_mutate());
             s.trash_selected(cx);
             assert!(!s.busy());
@@ -2037,7 +2053,8 @@ mod tests {
         });
         settle(&f.state, cx);
         assert_eq!(
-            f.state.read_with(cx, |s, _| s.filters.formats.clone()),
+            f.state
+                .read_with(cx, |s, _| s.session.filters.formats.clone()),
             ["epub"],
             "lowercased"
         );
@@ -2066,7 +2083,7 @@ mod tests {
 
         f.state.update(cx, |s, cx| s.clear_filters(cx));
         settle(&f.state, cx);
-        assert!(f.state.read_with(cx, |s, _| s.filters.is_empty()));
+        assert!(f.state.read_with(cx, |s, _| s.session.filters.is_empty()));
         assert_eq!(titles(&f.state, cx).len(), 3);
     }
 
@@ -2077,17 +2094,16 @@ mod tests {
         f.state.update(cx, |s, cx| s.trash_selected(cx));
         settle(&f.state, cx);
         assert_eq!(titles(&f.state, cx), ["Alpha", "Gamma"]);
-        assert!(
-            f.state
-                .read_with(cx, |s, _| s.status.as_ref().unwrap().text.contains("Trash"))
-        );
+        assert!(f.state.read_with(cx, |s, _| {
+            s.session.status.as_ref().unwrap().text.contains("Trash")
+        }));
 
         f.state
             .update(cx, |s, cx| s.set_section(Section::Trash, cx));
         settle(&f.state, cx);
         assert_eq!(titles(&f.state, cx), ["Beta"]);
         assert!(
-            f.state.read_with(cx, |s, _| s.selected.is_empty()),
+            f.state.read_with(cx, |s, _| s.session.selected.is_empty()),
             "section change clears selection"
         );
 
@@ -2124,9 +2140,9 @@ mod tests {
         // Issue two reloads back to back. Only the newest generation may
         // land; the state must never flip to a result from the first.
         f.state.update(cx, |s, cx| {
-            s.query = "zzz-no-match".into();
+            s.session.query = "zzz-no-match".into();
             s.reload(cx);
-            s.query = String::new();
+            s.session.query = String::new();
             s.reload(cx);
         });
         settle(&f.state, cx);
@@ -2141,7 +2157,9 @@ mod tests {
             .update(cx, |s, cx| s.import(vec![extra], ImportMode::Copy, cx));
         settle(&f.state, cx);
         assert_eq!(titles(&f.state, cx), ["Alpha", "Beta", "Delta", "Gamma"]);
-        let status = f.state.read_with(cx, |s, _| s.status.clone().unwrap());
+        let status = f
+            .state
+            .read_with(cx, |s, _| s.session.status.clone().unwrap());
         assert!(status.text.starts_with("Imported 1"), "{}", status.text);
         assert!(!status.is_error);
     }
@@ -2159,7 +2177,9 @@ mod tests {
         });
         settle(&f.state, cx);
         assert_eq!(titles(&f.state, cx), ["Alpha", "Beta", "Delta", "Gamma"]);
-        let status = f.state.read_with(cx, |s, _| s.status.clone().unwrap());
+        let status = f
+            .state
+            .read_with(cx, |s, _| s.session.status.clone().unwrap());
         assert_eq!(
             status.text,
             "Imported 1, skipped 1 (1 short PDF looked like a document), failed 0"
@@ -2172,7 +2192,9 @@ mod tests {
         let f = fixture(cx);
         f.state
             .update(cx, |s, cx| s.set_error("unsupported-format", cx));
-        let status = f.state.read_with(cx, |s, _| s.status.clone().unwrap());
+        let status = f
+            .state
+            .read_with(cx, |s, _| s.session.status.clone().unwrap());
         assert!(status.is_error);
         assert!(
             !status.text.contains("unsupported-format"),
@@ -2193,7 +2215,12 @@ mod tests {
         });
         settle(&f.state, cx);
         assert!(f.state.read_with(cx, |s, _| {
-            s.status.as_ref().unwrap().text.starts_with("Imported 1")
+            s.session
+                .status
+                .as_ref()
+                .unwrap()
+                .text
+                .starts_with("Imported 1")
         }));
         f.state
             .update(cx, |s, cx| s.set_section(Section::Library, cx));
@@ -2204,7 +2231,7 @@ mod tests {
     #[gpui::test]
     fn purge_reports_committed_catalogue_change_and_pending_cleanup(cx: &mut TestAppContext) {
         let f = fixture(cx);
-        let item = f.state.read_with(cx, |s, _| s.items[0].clone());
+        let item = f.state.read_with(cx, |s, _| s.session.items[0].clone());
         f.state.update(cx, |s, cx| {
             s.select_only(0, cx);
             s.trash_selected(cx);
@@ -2218,8 +2245,8 @@ mod tests {
             .update(cx, |s, cx| s.purge_confirmed(vec![item.id.clone()], cx));
         settle(&f.state, cx);
         f.state.read_with(cx, |s, _| {
-            assert!(s.items.is_empty());
-            let status = s.status.as_ref().unwrap();
+            assert!(s.session.items.is_empty());
+            let status = s.session.status.as_ref().unwrap();
             assert!(status.is_error);
             assert!(status.text.contains("1 of 1 item(s)"));
             assert!(status.text.contains("file cleanup is pending"));
@@ -2239,9 +2266,9 @@ mod tests {
     fn partial_mutation_failures_warn_and_reload_committed_changes(cx: &mut TestAppContext) {
         for operation in ["trash", "restore", "purge"] {
             let f = fixture(cx);
-            let (first, last) = f
-                .state
-                .read_with(cx, |s, _| (s.items[0].clone(), s.items[2].clone()));
+            let (first, last) = f.state.read_with(cx, |s, _| {
+                (s.session.items[0].clone(), s.session.items[2].clone())
+            });
             if operation != "trash" {
                 f.state.update(cx, |s, cx| {
                     s.select_all(cx);
@@ -2267,7 +2294,7 @@ mod tests {
             settle(&f.state, cx);
             assert_eq!(titles(&f.state, cx), ["Beta"], "{operation}");
             f.state.read_with(cx, |s, _| {
-                let status = s.status.as_ref().unwrap();
+                let status = s.session.status.as_ref().unwrap();
                 assert!(status.is_error);
                 assert!(status.text.contains("Updated 2 of 3 item(s)"));
                 assert!(status.text.contains("absent-item"));
@@ -2312,12 +2339,12 @@ mod tests {
         });
         settle(&f.state, cx);
         f.state.read_with(cx, |s, _| {
-            assert!(s.delivery_report.is_none());
+            assert!(s.session.delivery_report.is_none());
             assert!(s.send_preview().is_none());
-            let message = &s.status.as_ref().unwrap().text;
+            let message = &s.session.status.as_ref().unwrap().text;
             assert!(message.contains("Reconnect"));
             assert!(message.contains("Refresh readers"));
-            assert!(s.status.as_ref().unwrap().is_error);
+            assert!(s.session.status.as_ref().unwrap().is_error);
         });
         assert!(!mount.exists());
     }
@@ -2357,9 +2384,9 @@ mod tests {
     fn blocked_metadata_save_retains_reason_and_writes_nothing(cx: &mut TestAppContext) {
         let f = fixture(cx);
         f.state.update(cx, |state, cx| {
-            state.activity = Activity::Running(Operation::Mutation);
+            state.session.activity = Activity::Running(Operation::Mutation);
             state.update_metadata(
-                state.items[0].id.clone(),
+                state.session.items[0].id.clone(),
                 LibraryPatch {
                     title: takio::model::Patch::Set("Never saved".into()),
                     ..LibraryPatch::default()
@@ -2379,7 +2406,7 @@ mod tests {
                 "Finish the current operation first"
             );
             assert!(!state.saving_metadata());
-            state.activity = Activity::Idle;
+            state.session.activity = Activity::Idle;
         });
         let matches = f
             .state
@@ -2419,10 +2446,15 @@ mod tests {
         f.state.read_with(cx, |s, _| {
             assert_eq!(s.primary_selected().unwrap().id, id);
             assert_eq!(
-                s.metadata_save_result.as_ref().unwrap().as_ref().unwrap(),
+                s.session
+                    .metadata_save_result
+                    .as_ref()
+                    .unwrap()
+                    .as_ref()
+                    .unwrap(),
                 &id
             );
-            assert_eq!(s.facets.tags.get("To read"), Some(&1));
+            assert_eq!(s.session.facets.tags.get("To read"), Some(&1));
         });
         let paths =
             LibraryPaths::resolve(None, Some(&f._temp.path().join("library.sqlite"))).unwrap();
@@ -2447,10 +2479,10 @@ mod tests {
         let extra = epub(f._temp.path(), "Delta");
         f.state.update(cx, |s, cx| {
             s.select_all(cx);
-            s.metadata_editing = true;
+            s.session.metadata_editing = true;
             assert!(!s.can_close(cx));
             s.set_section(Section::Trash, cx);
-            assert_eq!(s.section, Section::Library);
+            assert_eq!(s.session.section, Section::Library);
             s.trash_selected(cx);
             s.import(vec![extra], ImportMode::Copy, cx);
         });
@@ -2514,11 +2546,18 @@ mod tests {
             settle(&f.state, cx);
             f.state.update(cx, |s, cx| {
                 assert!(s.send_preview().is_none());
-                assert!(s.delivery_report.is_none());
+                assert!(s.session.delivery_report.is_none());
                 assert!(s.can_mutate());
                 s.confirm_send_preview(cx);
                 assert!(!s.busy());
-                assert!(s.status.as_ref().unwrap().text.contains("Nothing was sent"));
+                assert!(
+                    s.session
+                        .status
+                        .as_ref()
+                        .unwrap()
+                        .text
+                        .contains("Nothing was sent")
+                );
             });
             assert_eq!(fs::read_dir(mount.join("documents")).unwrap().count(), 0);
             assert!(!mount.join(".takio").exists());
@@ -2544,7 +2583,7 @@ mod tests {
             s.trash_selected(cx);
             s.eject(destination.clone(), cx);
             s.send_selected_to(destination, cx);
-            s.update_metadata(s.items[0].id.clone(), LibraryPatch::default(), cx);
+            s.update_metadata(s.session.items[0].id.clone(), LibraryPatch::default(), cx);
             assert!(!s.busy());
             assert_eq!(s.send_preview().unwrap().entries.len(), 3);
             s.cancel_send_preview(cx);
@@ -2583,7 +2622,7 @@ mod tests {
             let preview = s.send_preview().unwrap();
             assert_eq!(preview.entries.len(), 4);
             assert_eq!(preview.ready_count(), 1);
-            assert!(s.delivery_report.is_none());
+            assert!(s.session.delivery_report.is_none());
             assert!(!s.can_mutate());
             assert_eq!(fs::read_dir(device.join("documents")).unwrap().count(), 0);
             s.select_only(0, cx);
@@ -2594,9 +2633,9 @@ mod tests {
         });
         settle(&f.state, cx);
         f.state.read_with(cx, |s, _| {
-            let report = s.delivery_report.as_ref().unwrap();
+            let report = s.session.delivery_report.as_ref().unwrap();
             assert_eq!(report.entries.len(), 1);
-            assert_eq!(s.delivery_exclusions.len(), 3);
+            assert_eq!(s.session.delivery_exclusions.len(), 3);
             assert_eq!(
                 report
                     .entries
@@ -2606,7 +2645,8 @@ mod tests {
                 1
             );
             assert!(
-                s.status
+                s.session
+                    .status
                     .as_ref()
                     .unwrap()
                     .text

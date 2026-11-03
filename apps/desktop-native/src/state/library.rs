@@ -15,9 +15,9 @@ impl LibraryState {
             );
             return;
         }
-        self.activity = Activity::SwitchingLibrary;
-        self.debounce = None;
-        self.generation = self.generation.wrapping_add(1);
+        self.session.activity = Activity::SwitchingLibrary;
+        self.session.debounce = None;
+        self.generation.advance();
         self.set_status("Opening existing library...".into(), false, cx);
         let remember = self.preference_path.clone();
         let receiver = self.engine.request(|reply| Request::OpenLibrary {
@@ -41,32 +41,23 @@ impl LibraryState {
         cx.spawn(async move |this, cx| {
             let mut result = Some(task.await);
             let _ = this.update(cx, |this, cx| {
-                this.activity = Activity::Idle;
+                this.session.activity = Activity::Idle;
                 match result.take().expect("library reply handled once") {
                     Ok((root, snapshot, remember_failed)) => {
                         this.library_epoch = this.library_epoch.wrapping_add(1);
-                        this.scan_readers(cx);
-                        this.generation = this.generation.wrapping_add(1);
+                        this.generation.advance();
                         this.library_root = root;
-                        this.automatic_backup_prompt_open = false;
+                        this.send_preview_generation.advance();
+                        this.preparation_generation.advance();
+                        let session = LibrarySession {
+                            items: snapshot.items,
+                            facets: snapshot.facets,
+                            ..LibrarySession::default()
+                        };
+                        let old_session = std::mem::replace(&mut this.session, session);
+                        cx.background_executor().spawn(async move { drop(old_session) }).detach();
                         this.initialize_automatic_backup(cx);
-                        this.section = Section::Library;
-                        this.query.clear();
-                        this.filters = Filters::default();
-                        this.sort = Sort::default();
-                        this.clear_selection();
-                        this.loading = false;
-                        this.sorting = false;
-                        this.metadata_save_result = None;
-                        this.recovery_outcome = None;
-                        this.delivery_report = None;
-                        this.delivery_exclusions.clear();
-                        this.activity = Activity::Idle;
-                        this.send_preview_generation = this.send_preview_generation.wrapping_add(1);
-                        this.preparation_generation = this.preparation_generation.wrapping_add(1);
-                        let old_items = std::mem::replace(&mut this.items, snapshot.items);
-                        let old_facets = std::mem::replace(&mut this.facets, snapshot.facets);
-                        cx.background_executor().spawn(async move { drop((old_items, old_facets)) }).detach();
+                        this.scan_readers(cx);
                         let suffix = if remember_failed {
                             " This switch is for this session only: the startup preference could not be saved. Check the profile folder permissions."
                         } else if this.preference_path.is_none() {

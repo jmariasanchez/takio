@@ -98,15 +98,15 @@ fn preparation_confirmation_captures_id_and_success_reloads_without_sending(
     let requests = preparation_channel(&f, cx);
     let item = f.state.read_with(cx, |s, _| s.items[0].clone());
     f.state.update(cx, |s, cx| {
-        s.delivery_report = Some(SendReport::default());
-        s.delivery_exclusions.push(SendPreviewEntry {
+        s.session.delivery_report = Some(SendReport::default());
+        s.session.delivery_exclusions.push(SendPreviewEntry {
             item_id: item.id.clone(),
             title: item.title.clone(),
             result: Err(AppError::new("no-compatible-format")),
         });
         s.select_only(0, cx);
         s.prepare_selected(cx);
-        assert!(s.delivery_report.is_none());
+        assert!(s.session.delivery_report.is_none());
         assert!(s.delivery_exclusions.is_empty());
         s.select_only(1, cx);
     });
@@ -144,7 +144,7 @@ fn preparation_confirmation_captures_id_and_success_reloads_without_sending(
             "AZW3 prepared. EPUB kept. Review send when ready."
         );
         assert!(!s.status.as_ref().unwrap().is_error);
-        assert!(s.delivery_report.is_none());
+        assert!(s.session.delivery_report.is_none());
     });
     assert!(requests.try_recv().is_err());
 }
@@ -162,7 +162,7 @@ fn preparation_review_and_running_conversion_block_overlapping_actions(cx: &mut 
         let destination = takio::destinations::authorize(&mount, &volumes).unwrap();
         f.state.update(cx, |s, cx| {
             s.select_only(0, cx);
-            s.activity = Activity::ReviewingPreparation(preparation_review(&item, true));
+            s.session.activity = Activity::ReviewingPreparation(preparation_review(&item, true));
             if running {
                 s.confirm_preparation(cx);
             }
@@ -174,10 +174,10 @@ fn preparation_review_and_running_conversion_block_overlapping_actions(cx: &mut 
             s.confirm_send_preview(cx);
             s.eject(destination, cx);
             s.prepare_selected(cx);
-            s.section = Section::Trash;
+            s.session.section = Section::Trash;
             s.restore_selected(cx);
             s.purge_confirmed(vec![item.id.clone()], cx);
-            s.section = Section::Library;
+            s.session.section = Section::Library;
         });
         if running {
             match requests.try_recv().unwrap() {
@@ -238,7 +238,7 @@ fn preparation_failure_preserves_sources_and_never_claims_success(cx: &mut TestA
         let requests = preparation_channel(&f, cx);
         let item = f.state.read_with(cx, |s, _| s.items[0].clone());
         f.state.update(cx, |s, cx| {
-            s.activity = Activity::ReviewingPreparation(preparation_review(&item, true));
+            s.session.activity = Activity::ReviewingPreparation(preparation_review(&item, true));
             s.confirm_preparation(cx);
         });
         match requests.try_recv().unwrap() {
@@ -270,7 +270,7 @@ fn preparation_failure_preserves_sources_and_never_claims_success(cx: &mut TestA
             }
             assert!(s.can_mutate());
             assert_eq!(s.items.len(), 3);
-            assert!(s.delivery_report.is_none());
+            assert!(s.session.delivery_report.is_none());
         });
         assert_eq!(fs::read(&item.source_path).unwrap(), b"book Alpha");
         assert_eq!(
