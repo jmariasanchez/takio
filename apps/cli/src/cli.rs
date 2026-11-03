@@ -1948,7 +1948,7 @@ fn library(command: LibraryCommand, library: Option<&str>) -> AppResult<()> {
         LibraryCommand::Remove { db, id } => {
             let paths = LibraryPaths::resolve(library, db.as_deref())?;
             let mut store = LibraryStore::open(paths, true)?;
-            print_success(json!({"item":store.remove(&id)?,"cleanupPending":false}))
+            print_success(store.remove(&id)?)
         }
         LibraryCommand::ImportCalibre { db, library_root } => {
             let paths = LibraryPaths::resolve(library, db.as_deref())?;
@@ -2501,7 +2501,7 @@ fn replace_format_request(
     if request.id.is_empty() {
         return Err(AppError::new("invalid-arguments"));
     }
-    let result = store.replace_format_with_cleanup(
+    let result = store.replace_format(
         &request.id,
         request.format,
         &Value::Object(request.expected_current),
@@ -2534,7 +2534,7 @@ fn library_format(command: FormatCommand, library: Option<&str>) -> AppResult<()
         FormatCommand::Remove { db, id, format } => {
             let paths = LibraryPaths::resolve(library, db.as_deref())?;
             let mut store = LibraryStore::open(paths, true)?;
-            print_success(store.remove_format_with_cleanup(&id, format)?)
+            print_success(store.remove_format(&id, format)?)
         }
         FormatCommand::Replace { db, request_json } => {
             let request: ReplaceFormatRequest = decode_request(&read_json(&request_json)?)?;
@@ -2611,7 +2611,7 @@ fn library_trash(command: TrashCommand, library: Option<&str>) -> AppResult<()> 
             let id = request_id(&request)?;
             let paths = LibraryPaths::resolve(library, db.as_deref())?;
             let mut store = LibraryStore::open(paths, true)?;
-            print_success(store.purge_with_cleanup(id)?)
+            print_success(store.purge(id)?)
         }
     }
 }
@@ -2742,7 +2742,7 @@ fn service_request(store: &mut LibraryStore, request: &Value) -> AppResult<Value
                     .ok_or_else(|| AppError::new("invalid-arguments"))?,
             )
             .map_err(|_| AppError::new("invalid-arguments"))?;
-            serde_json::to_value(store.remove_format_with_cleanup(id, format)?)
+            serde_json::to_value(store.remove_format(id, format)?)
                 .map_err(|_| AppError::new("storage-unavailable"))
         }
         "library_cover_set" => {
@@ -2767,8 +2767,7 @@ fn service_request(store: &mut LibraryStore, request: &Value) -> AppResult<Value
         }
         "library_purge" => {
             let id = request_id(args)?;
-            serde_json::to_value(store.purge_with_cleanup(id)?)
-                .map_err(|_| AppError::new("storage-unavailable"))
+            serde_json::to_value(store.purge(id)?).map_err(|_| AppError::new("storage-unavailable"))
         }
         "library_replace_format" => replace_format_request(store, decode_request(args)?),
         _ => Err(AppError::new("invalid-arguments")),

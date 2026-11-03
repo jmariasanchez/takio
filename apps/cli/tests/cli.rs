@@ -2230,7 +2230,7 @@ fn remove_is_idempotent_recoverable_trash_and_preserves_managed_files() {
     assert!(removed.status.success());
     assert_eq!(
         success_value(&removed.stdout),
-        serde_json::json!({"item":item,"cleanupPending":false})
+        serde_json::json!({"item":item,"cleanupPending":false,"cleanupPendingPaths":[]})
     );
     assert!(std::path::Path::new(managed_path).exists());
 
@@ -2242,7 +2242,7 @@ fn remove_is_idempotent_recoverable_trash_and_preserves_managed_files() {
         .expect("repeat removal");
     assert_eq!(
         success_value(&repeated.stdout),
-        serde_json::json!({"item":item,"cleanupPending":false})
+        serde_json::json!({"item":item,"cleanupPending":false,"cleanupPendingPaths":[]})
     );
     assert!(std::path::Path::new(managed_path).exists());
     let restored = cargo_bin_cmd!("takio")
