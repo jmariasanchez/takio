@@ -21,6 +21,8 @@ use gpui::{
     WindowOptions, actions, point, px, size,
 };
 use gpui_platform::application;
+use std::io::Write;
+use std::process::ExitCode;
 
 use crate::startup_window::StartupWindow;
 use crate::theme::Theme;
@@ -62,18 +64,27 @@ actions!(
     ]
 );
 
-fn main() {
+fn main() -> ExitCode {
     let started = std::time::Instant::now();
     if std::env::var_os("TAKIO_DESKTOP_BENCH").is_some() {
-        return bench::run(started);
+        bench::run(started);
+        return ExitCode::SUCCESS;
     }
     #[cfg(feature = "snapshot")]
     if std::env::var_os("TAKIO_SNAPSHOT_OUTPUT").is_some() {
-        return snapshot::run();
+        snapshot::run();
+        return ExitCode::SUCCESS;
     }
     let paths = match engine::resolve_paths() {
         Ok(paths) => paths,
-        Err(error) => fatal(&format!("could not resolve library path: {}", error.code())),
+        Err(error) => {
+            let _ = writeln!(
+                std::io::stderr().lock(),
+                "takio-desktop: could not resolve library path: {}",
+                error.code()
+            );
+            return ExitCode::FAILURE;
+        }
     };
     let profile = std::env::var_os("TAKIO_DESKTOP_PROFILE_DIR").map(std::path::PathBuf::from);
     let preference_path = preferences::location(
@@ -137,6 +148,7 @@ fn main() {
         .expect("open main window");
         cx.activate(true);
     });
+    ExitCode::SUCCESS
 }
 
 fn menus() -> Vec<Menu> {
@@ -191,7 +203,10 @@ fn menus() -> Vec<Menu> {
     ]
 }
 
+// Used only by opt-in acceptance probes. GPUI's macOS quit calls Cocoa's
+// terminate: rather than returning from the event loop, so returning an error
+// after application().run() would lose the probe's nonzero failure status.
 fn fatal(message: &str) -> ! {
-    eprintln!("takio-desktop: {message}");
+    let _ = writeln!(std::io::stderr().lock(), "takio-desktop: {message}");
     std::process::exit(1);
 }
