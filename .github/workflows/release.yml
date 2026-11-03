@@ -1,52 +1,70 @@
-name: Release
+name: Release artifacts
 
 on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      distribution:
+        description: Use supplied Apple credentials to sign and notarize (uploads to Apple)
+        type: boolean
+        default: false
+      publish:
+        description: Create a draft GitHub release for the selected annotated tag (requires distribution)
+        type: boolean
+        default: false
 
+# Building artifacts needs no write permission. Draft creation is explicit.
 permissions:
   contents: read
 
 jobs:
   version:
-    name: Validate release version
+    name: Validate exact release source
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
-      - name: Check out repository
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
-
-      - name: Set up Bun
-        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
-          bun-version: 1.3.13
-
-      - name: Set up Rust
-        run: rustup toolchain install 1.97.1 --profile minimal --component rustfmt,clippy
-
-      - name: Require the tag to match all package versions
+          bun-version: 1.3.14
+      - run: rustup show
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      - name: Require matching versions and immutable annotated mainline tag
         shell: bash
+        env:
+          REQUEST_PUBLISH: ${{ inputs.publish }}
+          REQUEST_DISTRIBUTION: ${{ inputs.distribution }}
         run: |
-          test "$(git cat-file -t "$GITHUB_REF_NAME")" = tag
-          git merge-base --is-ancestor "$GITHUB_SHA" origin/main
-          bash scripts/verify-release-version.sh "$GITHUB_REF_NAME"
-
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
-
-      - name: Validate release source
+          if [[ "$REQUEST_PUBLISH" == true ]]; then
+            test "$GITHUB_REF_TYPE" = tag
+            test "$REQUEST_DISTRIBUTION" = true
+          fi
+          if [[ "$GITHUB_REF_TYPE" == tag ]]; then
+            test "$(git cat-file -t "$GITHUB_REF_NAME")" = tag
+            git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+            bash scripts/verify-release-version.sh "$GITHUB_REF_NAME"
+          else
+            bash scripts/verify-release-version.sh "v$(bun -p 'require("./package.json").version')"
+          fi
+      - run: bun install --frozen-lockfile
+      - name: Validate source and release scripts
         run: |
           bun run build
           bun run check
           bun run test
+          bash scripts/test-verify-macos-bundle.sh
+          bash scripts/test-release-scripts.sh
           bun run test:performance:library
           bun run test:performance:native:library
 
-  build:
+  cli:
     name: Build ${{ matrix.os }} CLI
     needs: version
+    timeout-minutes: 45
     strategy:
       matrix:
         include:
@@ -56,23 +74,13 @@ jobs:
             runner: macos-latest
     runs-on: ${{ matrix.runner }}
     steps:
-      - name: Check out repository
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-
-      - name: Set up Bun
-        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
-          bun-version: 1.3.13
-
-      - name: Set up Rust
-        run: rustup toolchain install 1.97.1 --profile minimal
-
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
-
-      - name: Build checksummed executable
-        run: bun run release:cli
-
+          bun-version: 1.3.14
+      - run: rustup show
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      - run: bun run release:cli
       - name: Archive and smoke-test executable
         shell: bash
         run: |
@@ -80,23 +88,19 @@ jobs:
           test -n "$artifact"
           env -i PATH=/usr/bin:/bin "$artifact" capabilities
           (cd dist/releases && shasum -a 256 --check ./*.sha256)
-
           archive="${artifact}.tar.gz"
           artifact_name="$(basename "$artifact")"
           archive_name="$(basename "$archive")"
           tar -czf "$archive" -C dist/releases "$artifact_name"
           (cd dist/releases && shasum -a 256 "$archive_name" > "${archive_name}.sha256")
           rm -- "$artifact" "${artifact}.sha256"
-
           extraction_directory="$(mktemp -d "${RUNNER_TEMP}/takio-cli.XXXXXX")"
           trap 'rm -rf -- "$extraction_directory"' EXIT
           tar -xzf "$archive" -C "$extraction_directory"
           test -x "$extraction_directory/$artifact_name"
           env -i PATH=/usr/bin:/bin "$extraction_directory/$artifact_name" capabilities
           (cd dist/releases && shasum -a 256 --check ./*.sha256)
-
-      - name: Upload executable archive and checksum
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: takio-cli-${{ matrix.os }}
           path: |
@@ -105,106 +109,101 @@ jobs:
           if-no-files-found: error
 
   desktop-macos:
-    name: Build signed and notarized macOS desktop app
+    name: Build native macOS DMG
     needs: version
     runs-on: macos-latest
+    timeout-minutes: 90
+    outputs:
+      mode: ${{ steps.mode.outputs.value }}
+    env:
+      APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+      APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
     steps:
-      - name: Check out repository
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-
-      - name: Set up Bun
-        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
-          bun-version: 1.3.13
-
-      - name: Set up Rust
-        run: rustup toolchain install 1.97.1 --profile minimal
-
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
-
-      - name: Require Apple Silicon runner
-        run: test "$(uname -m)" = arm64
-
-      - name: Check native application
-        run: bun run check:native:macos
-
-      - name: Import Developer ID certificate
-        if: ${{ secrets.APPLE_CERTIFICATE != '' && secrets.APPLE_CERTIFICATE_PASSWORD != '' }}
+          bun-version: 1.3.14
+      - run: rustup show
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      - run: bun install --frozen-lockfile
+      - name: Require Apple Silicon and Metal shader toolchain
+        run: |
+          test "$(uname -m)" = arm64
+          xcodebuild -downloadComponent MetalToolchain
+      - run: bun run check:native:macos
+      - run: bash scripts/bench-desktop-native.sh
+      - name: Choose explicit packaging mode
+        id: mode
+        env:
+          REQUEST_DISTRIBUTION: ${{ inputs.distribution }}
+        shell: bash
+        run: |
+          mode=local
+          if [[ "$REQUEST_DISTRIBUTION" == true ]]; then
+            for variable in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
+              if [[ -z "${!variable}" ]]; then
+                echo "Distribution requested but $variable is missing. No account setup is attempted." >&2
+                exit 1
+              fi
+            done
+            mode=distribution
+          else
+            echo 'Local ad-hoc artifact only. Distribution requires an explicit manual run and existing credentials.'
+          fi
+          echo "value=$mode" >> "$GITHUB_OUTPUT"
+      - name: Import supplied Developer ID certificate
+        if: steps.mode.outputs.value == 'distribution'
         uses: apple-actions/import-codesign-certs@7abe6dfe88f6bf6b1fa06e6a5704a2605d897418 # v7
         with:
           p12-file-base64: ${{ secrets.APPLE_CERTIFICATE }}
           p12-password: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-
-      - name: Build desktop app with the native Rust sidecar
+      - name: Build and verify native artifact
         env:
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          CSC_NAME: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-        shell: bash
+          MODE: ${{ steps.mode.outputs.value }}
         run: |
-          if [[ -n "${APPLE_SIGNING_IDENTITY:-}" && -n "${APPLE_ID:-}" && -n "${APPLE_PASSWORD:-}" && -n "${APPLE_TEAM_ID:-}" ]]; then
-            echo "Apple signing and notarization credentials are present. Building distribution DMG."
+          if [[ "$MODE" == distribution ]]; then
+            bash scripts/package-macos-release.sh --distribution
           else
-            echo "Apple signing and notarization credentials are absent. Building unsigned local DMG and skipping distribution-only gates truthfully."
+            bash scripts/package-macos-release.sh
           fi
-          if [[ -z "${CSC_NAME:-}" ]]; then export CSC_IDENTITY_AUTO_DISCOVERY=false; fi
-          bun run --filter '@takio/desktop' package
-
-      - name: Verify distribution bundle
-        if: ${{ secrets.APPLE_SIGNING_IDENTITY != '' && secrets.APPLE_ID != '' && secrets.APPLE_PASSWORD != '' && secrets.APPLE_TEAM_ID != '' }}
-        shell: bash
-        run: |
-          bash scripts/verify-macos-bundle.sh --distribution apps/desktop/release/mac-arm64/Takio.app
-          xcrun stapler validate apps/desktop/release/*.dmg
-
-      - name: Verify local unsigned bundle
-        if: ${{ !(secrets.APPLE_SIGNING_IDENTITY != '' && secrets.APPLE_ID != '' && secrets.APPLE_PASSWORD != '' && secrets.APPLE_TEAM_ID != '') }}
-        shell: bash
-        run: |
-          bash scripts/verify-macos-bundle.sh apps/desktop/release/mac-arm64/Takio.app
-          echo "Skipped distribution signing, notarization, stapler, and Gatekeeper gates because Apple credentials were not provided."
-
-      - name: Checksum notarized DMG
-        shell: bash
-        run: |
-          cd apps/desktop/release
-          shasum -a 256 ./*.dmg > Takio.dmg.sha256
-
-      - name: Upload notarized DMG
+      - name: Upload labeled native DMG and checksum (not publication)
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: takio-desktop-macos
+          name: takio-native-macos-${{ steps.mode.outputs.value }}
           path: |
-            apps/desktop/release/*.dmg
-            apps/desktop/release/*.sha256
+            dist/releases/*-${{ steps.mode.outputs.value }}.dmg
+            dist/releases/*-${{ steps.mode.outputs.value }}.dmg.sha256
           if-no-files-found: error
 
-  publish:
-    name: Create draft GitHub release
-    needs: [build, desktop-macos]
+  draft-release:
+    name: Create explicitly requested distribution draft
+    needs: [cli, desktop-macos]
+    if: github.event_name == 'workflow_dispatch' && inputs.publish && github.ref_type == 'tag' && needs.desktop-macos.outputs.mode == 'distribution'
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      - name: Download release artifacts
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          pattern: takio-*
+          pattern: takio-cli-*
           path: dist/releases
           merge-multiple: true
-
-      - name: Verify release asset inventory and checksums
-        shell: bash
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: takio-native-macos-distribution
+          path: dist/releases
+      - name: Verify exact distribution inventory and checksums
         run: |
           test "$(find dist/releases -maxdepth 1 -type f | wc -l | tr -d ' ')" = 6
-          test "$(find dist/releases -maxdepth 1 -type f -name '*.sha256' | wc -l | tr -d ' ')" = 3
+          test "$(find dist/releases -maxdepth 1 -name '*-distribution.dmg' | wc -l | tr -d ' ')" = 1
+          test "$(find dist/releases -maxdepth 1 -name '*.tar.gz' | wc -l | tr -d ' ')" = 2
+          test "$(find dist/releases -maxdepth 1 -name '*.sha256' | wc -l | tr -d ' ')" = 3
           (cd dist/releases && sha256sum --check ./*.sha256)
-
-      - name: Create draft release
+      - name: Create draft only, never replace existing releases
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}

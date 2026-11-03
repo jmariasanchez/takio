@@ -11,10 +11,11 @@ usage() {
   cat <<'EOF'
 Usage: scripts/verify-macos-bundle.sh [--distribution] <path-to-app>
 
-Verifies a built macOS application bundle. Local mode verifies bundle shape,
-architectures, minimum OS, and dependency portability. Distribution mode also
-requires a valid code signature, signing team, hardened runtime, and a
-successful Gatekeeper check.
+Verifies a standalone native macOS application bundle. Local mode verifies native
+bundle shape, version, arm64 architecture, minimum OS, dependency portability and
+strict signature integrity. Distribution mode additionally requires a signing
+team, hardened runtime, matching executable team and successful Gatekeeper check.
+Version defaults to package.json; TAKIO_EXPECTED_VERSION can verify an older app.
 
 For focused tests, tool paths may be overridden with:
   TAKIO_PLUTIL_COMMAND, TAKIO_LIPO_COMMAND, TAKIO_OTOOL_COMMAND,
@@ -72,8 +73,16 @@ case "$executable_name" in
   .|..|*/*) fail "CFBundleExecutable must be a file name, got: $executable_name" ;;
 esac
 
+[[ "$executable_name" == takio-desktop ]] || fail "expected native CFBundleExecutable takio-desktop, got: $executable_name"
 main_executable="$bundle_path/Contents/MacOS/$executable_name"
-sidecar_executable="$bundle_path/Contents/Resources/bin/takio-library-engine"
+[[ ! -e "$bundle_path/Contents/Frameworks" ]] || fail "standalone native bundle must not contain Frameworks"
+[[ ! -e "$bundle_path/Contents/Resources/bin" ]] || fail "standalone native bundle must not contain sidecars"
+[[ -f "$bundle_path/Contents/Resources/icon.icns" ]] || fail "missing native application icon"
+expected_version="${TAKIO_EXPECTED_VERSION:-$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' "$(dirname "$0")/../package.json")}"
+for key in CFBundleShortVersionString CFBundleVersion; do
+  actual_version="$("$plutil_command" -extract "$key" raw -o - "$info_plist")"
+  [[ "$actual_version" == "$expected_version" ]] || fail "$key version mismatch: expected $expected_version, got $actual_version"
+done
 
 if ! bundle_minimum_version="$("$plutil_command" -extract LSMinimumSystemVersion raw -o - "$info_plist")"; then
   fail "could not read LSMinimumSystemVersion from $info_plist"
@@ -82,10 +91,8 @@ if [[ ! "$bundle_minimum_version" =~ ^[0-9]+([.][0-9]+){0,2}$ ]]; then
   fail "invalid LSMinimumSystemVersion in $info_plist: $bundle_minimum_version"
 fi
 
-for executable in "$main_executable" "$sidecar_executable"; do
-  [[ -f "$executable" ]] || fail "missing bundled executable: $executable"
-  [[ -x "$executable" ]] || fail "bundled executable is not executable: $executable"
-done
+[[ -f "$main_executable" ]] || fail "missing bundled executable: $main_executable"
+[[ -x "$main_executable" ]] || fail "bundled executable is not executable: $main_executable"
 
 read_minimum_system_version() {
   local executable="$1"
@@ -118,12 +125,10 @@ version_is_newer() {
   }'
 }
 
-for executable in "$main_executable" "$sidecar_executable"; do
-  executable_minimum_version="$(read_minimum_system_version "$executable")"
-  if version_is_newer "$executable_minimum_version" "$bundle_minimum_version"; then
-    fail "$executable requires macOS $executable_minimum_version but the bundle declares $bundle_minimum_version"
-  fi
-done
+executable_minimum_version="$(read_minimum_system_version "$main_executable")"
+if version_is_newer "$executable_minimum_version" "$bundle_minimum_version"; then
+  fail "$main_executable requires macOS $executable_minimum_version but the bundle declares $bundle_minimum_version"
+fi
 
 read_architectures() {
   local executable="$1"
@@ -136,10 +141,7 @@ read_architectures() {
 }
 
 main_architectures="$(read_architectures "$main_executable")"
-sidecar_architectures="$(read_architectures "$sidecar_executable")"
-if [[ "$main_architectures" != "$sidecar_architectures" ]]; then
-  fail "architecture mismatch: $executable_name has [$main_architectures], takio-library-engine has [$sidecar_architectures]"
-fi
+[[ "$main_architectures" == arm64 ]] || fail "unsupported architecture: expected arm64, got [$main_architectures]"
 
 verify_dependencies() {
   local executable="$1"
@@ -160,7 +162,7 @@ verify_dependencies() {
     dependency="${trimmed%% (compatibility version*}"
 
     case "$dependency" in
-      /System/Library/*|/usr/lib/*|@rpath/*|@loader_path/*|@executable_path/*) ;;
+      /System/Library/*|/usr/lib/*) ;;
       /*) fail "non-system absolute dependency in $executable: $dependency" ;;
       *) fail "unexpected dependency reference in $executable: $dependency" ;;
     esac
@@ -168,7 +170,6 @@ verify_dependencies() {
 }
 
 verify_dependencies "$main_executable"
-verify_dependencies "$sidecar_executable"
 
 distribution_team() {
   local target="$1"
@@ -199,18 +200,18 @@ distribution_team() {
   printf '%s\n' "$team_identifier"
 }
 
+if ! "$codesign_command" --verify --deep --strict --verbose=2 "$bundle_path"; then
+  fail "strict deep code-signature verification failed: $bundle_path"
+fi
 if [[ "$distribution" == true ]]; then
-  if ! "$codesign_command" --verify --deep --strict --verbose=2 "$bundle_path"; then
-    fail "strict deep code-signature verification failed: $bundle_path"
-  fi
   if ! app_team="$(distribution_team "$bundle_path" "application bundle")"; then
     exit 1
   fi
-  if ! sidecar_team="$(distribution_team "$sidecar_executable" "sidecar executable")"; then
+  if ! executable_team="$(distribution_team "$main_executable" "native executable")"; then
     exit 1
   fi
-  if [[ "$app_team" != "$sidecar_team" ]]; then
-    fail "signing-team mismatch: application uses $app_team, sidecar uses $sidecar_team"
+  if [[ "$app_team" != "$executable_team" ]]; then
+    fail "signing-team mismatch: application uses $app_team, native executable uses $executable_team"
   fi
   if ! "$spctl_command" --assess --type execute --verbose=4 "$bundle_path"; then
     fail "Gatekeeper assessment failed: $bundle_path"
@@ -221,5 +222,5 @@ mode="local"
 [[ "$distribution" == true ]] && mode="distribution"
 echo "Verified macOS bundle: $bundle_path (architectures: $main_architectures; mode: $mode)"
 if [[ "$distribution" != true ]]; then
-  echo "Skipped code-signing, notarization, stapler, and Gatekeeper checks because distribution mode was not requested."
+  echo "Local signature verified. Developer ID, notarization, stapler, and Gatekeeper distribution gates were not requested."
 fi

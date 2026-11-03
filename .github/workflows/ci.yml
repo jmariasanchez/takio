@@ -12,217 +12,106 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  bun:
-    name: Bun workspace
+  bun-cli:
+    name: Reusable Bun packages and Rust CLI
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-      - name: Check out repository
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-
-      - name: Set up Bun
-        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
-          bun-version: 1.3.13
-
+          bun-version: 1.3.14
       - name: Set up Rust
-        run: rustup toolchain install 1.97.1 --profile minimal --component rustfmt,clippy
-
-      - name: Cache Rust dependencies
-        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
-
-      - name: Cache Bun dependencies
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          path: ~/.bun/install/cache
-          key: ${{ runner.os }}-${{ runner.arch }}-bun-1.3.13-${{ hashFiles('bun.lock') }}
-
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
-
-      - name: Reject disabled or focused tests
-        shell: bash
+        run: rustup show
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      - run: bun install --frozen-lockfile
+      - name: Reject disabled or focused tests except explicit external/performance gates
         run: |
           if git grep -nE '(describe|test|it)\.(skip|todo|only)[[:space:]]*\(' -- '*.ts' '*.tsx' '*.js' '*.jsx' '*.mjs' '*.cjs'; then
             echo 'Committed test skip, todo, or only markers are not allowed.' >&2
             exit 1
           fi
-          if git grep -nE '#\[ignore([^]]*)?\]' -- '*.rs'; then
-            echo 'Committed ignored Rust tests are not allowed.' >&2
+          ignored="$(git grep -nE '#\[ignore([^]]*)?\]' -- '*.rs' || true)"
+          unexpected="$(printf '%s\n' "$ignored" | grep -vE '^(apps/cli/src/store.rs:[0-9]+:    #\[ignore = "release performance report, not a wall-clock correctness gate"\]|apps/cli/src/import_scan.rs:[0-9]+:    #\[ignore = "release microbenchmark using generated temporary files"\]|apps/cli/tests/pdf_metadata.rs:[0-9]+:#\[ignore = "requires independent local Poppler pdfinfo oracle"\])$' | grep -v '^$' || true)"
+          if [[ -n "$unexpected" ]]; then
+            printf 'Unexpected ignored Rust tests:\n%s\n' "$unexpected" >&2
             exit 1
           fi
-
-      - name: Build
-        run: bun run build
-
-      - name: Check
-        run: bun run check
-
-      - name: Test
-        run: bun run test
-
-      - name: Test library performance gates
+          oracle_reason='#[ignore = "requires independent local Poppler pdfinfo oracle"]'
+          test "$(grep -Fc "$oracle_reason" apps/cli/tests/pdf_metadata.rs)" = 1
+          grep -A 1 -Fx "$oracle_reason" apps/cli/tests/pdf_metadata.rs | grep -Fx 'fn synthetic_pdf_metadata_matches_poppler_oracle() {'
+      - run: bun run build
+      - run: bun run check
+      - run: bun run test
+      - name: Verify PDF metadata against independent Poppler oracle
+        run: |
+          if ! command -v pdfinfo >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install --no-install-recommends -y poppler-utils
+          fi
+          pdfinfo -v
+          cargo test -p takio --test pdf_metadata synthetic_pdf_metadata_matches_poppler_oracle -- --ignored --exact
+      - name: Release script regression tests
+        run: |
+          bash scripts/test-verify-macos-bundle.sh
+          bash scripts/test-release-scripts.sh
+      - name: Library performance gates
         run: |
           bun run test:performance:library
           bun run test:performance:native:library
-
       - name: Package and smoke-test standalone CLI
-        shell: bash
         run: |
           bun run release:cli
           artifact="$(find dist/releases -maxdepth 1 -type f ! -name '*.sha256' -print -quit)"
           test -n "$artifact"
           env -i PATH=/usr/bin:/bin "$artifact" capabilities
           (cd dist/releases && sha256sum --check ./*.sha256)
-
-      - name: Check whitespace
-        run: git diff --check
+      - run: git diff --check
 
   native-macos:
-    name: macOS native
+    name: Native GPUI macOS
     runs-on: macos-latest
     timeout-minutes: 60
     steps:
-      - name: Check out repository
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-
-      - name: Set up Bun
-        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
-          bun-version: 1.3.13
-
+          bun-version: 1.3.14
       - name: Set up Rust
-        run: rustup toolchain install 1.97.1 --profile minimal --component rustfmt,clippy
-
-      - name: Cache Rust dependencies
-        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
-
-      - name: Cache Bun dependencies
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          path: ~/.bun/install/cache
-          key: ${{ runner.os }}-${{ runner.arch }}-bun-1.3.13-${{ hashFiles('bun.lock') }}
-
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
-
-      - name: Require Apple Silicon runner
-        run: test "$(uname -m)" = arm64
-
-      - name: Install Metal toolchain for GPUI shaders
-        run: xcodebuild -downloadComponent MetalToolchain
-
-      - name: Check native GPUI desktop
+        run: rustup show
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      - run: bun install --frozen-lockfile
+      - name: Require Apple Silicon and Metal shader toolchain
         run: |
-          cargo clippy -p takio-desktop --all-targets -- -D warnings
-          cargo test -p takio-desktop
-          cargo build --release -p takio-desktop
-          test "$(wc -c < target/release/takio-desktop)" -lt 12000000
-
+          test "$(uname -m)" = arm64
+          xcodebuild -downloadComponent MetalToolchain
+      - run: bun run check:native:macos
       - name: Enforce native desktop startup budgets
         run: bash scripts/bench-desktop-native.sh
-
-      - name: Package and smoke-launch Takio.app
-        run: bash scripts/package-desktop-native.sh
-
-      - name: Upload Takio.app
+      - name: Package, verify and smoke-launch local native app and DMG
+        run: bun run package:macos
+      - name: Upload local-only DMG and checksum
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: takio-desktop-native-macos
-          path: dist/Takio.app
+          name: takio-native-macos-local-only
+          path: |
+            dist/releases/*-local.dmg
+            dist/releases/*-local.dmg.sha256
           if-no-files-found: error
-
-  electron-macos:
-    name: Electron desktop (legacy, non-blocking)
-    runs-on: macos-latest
-    timeout-minutes: 60
-    continue-on-error: true
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-
-      - name: Set up Bun
-        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
-        with:
-          bun-version: 1.3.13
-
-      - name: Set up Rust
-        run: rustup toolchain install 1.97.1 --profile minimal --component rustfmt,clippy
-
-      - name: Cache Rust dependencies
-        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
-
-      - name: Cache Bun dependencies
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          path: ~/.bun/install/cache
-          key: ${{ runner.os }}-${{ runner.arch }}-bun-1.3.13-${{ hashFiles('bun.lock') }}
-
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
-
-      - name: Check Electron app
-        run: bun run check:native:macos
-
-      - name: Test bundle verifier
-        run: bash scripts/test-verify-macos-bundle.sh
-
-      - name: Build ad-hoc signed app
-        env:
-          CSC_IDENTITY_AUTO_DISCOVERY: "false"
-        run: bun run --filter '@takio/desktop' package:dir
-
-      - name: Verify and launch packaged app
-        shell: bash
-        run: |
-          app="apps/desktop/release/mac-arm64/Takio.app"
-          bun run verify:bundle:macos -- "$app"
-
-          data_directory="$(mktemp -d "${RUNNER_TEMP}/takio-startup.XXXXXX")"
-          trap 'rm -rf -- "$data_directory"' EXIT
-          executable_name="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app/Contents/Info.plist")"
-          TAKIO_NATIVE_STARTUP_EXECUTABLE="$app/Contents/MacOS/$executable_name" \
-            TAKIO_DATA_DIR="$data_directory" \
-            bun run test:performance:native:macos
 
   security:
     name: Dependency security
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    continue-on-error: false
     steps:
-      - name: Check out repository
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Set up Rust
-        run: rustup toolchain install 1.97.1 --profile minimal
-
-      - name: Cache Rust dependencies
-        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
-
-      - name: Set up Bun
-        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        run: rustup show
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
-          bun-version: 1.3.13
-
-      - name: Cache Bun dependencies
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          path: ~/.bun/install/cache
-          key: ${{ runner.os }}-${{ runner.arch }}-bun-1.3.13-${{ hashFiles('bun.lock') }}
-
-      - name: Install cargo-audit
-        run: cargo install cargo-audit --locked
-
-      - name: Audit Rust dependencies
-        run: cargo audit
-
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
-
-      - name: Audit Bun dependencies
-        # GHSA-hp3w-g68c-fv3c: sprintf-js DoS via unbounded precision specifiers.
-        # Reached only through electron > @electron/get > global-agent > roarr,
-        # a download-time dev path with no fix available upstream yet. Remove
-        # the ignore once @electron/get or roarr publishes a patched release.
-        run: bun audit --ignore GHSA-hp3w-g68c-fv3c
+          bun-version: 1.3.14
+      - run: cargo install cargo-audit --locked
+      - run: cargo audit
+      - run: bun install --frozen-lockfile
+      - run: bun audit

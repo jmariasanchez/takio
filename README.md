@@ -22,7 +22,7 @@ source code is not copied, translated, or incorporated into Takio.
 
 It is a hybrid Rust and Bun workspace with three deliberate product surfaces:
 
-- **Desktop (`takio-desktop`)**: a native GPUI application linking the library engine directly. The earlier Electron app remains in `apps/desktop` behind `bun run electron:*` scripts for advanced legacy workflows, not as a feature-parity checklist. Measurements are recorded in `docs/specs/gpui-desktop.md`.
+- **Desktop (`takio-desktop`)**: a native GPUI application linking the library engine directly. The former Electron application has been removed. Measurements are recorded in `docs/specs/gpui-desktop.md`.
 - **Terminal UI (`takio`)**: a keyboard-first Ratatui application for people who prefer to work without a desktop app.
 - **CLI (`takio`)**: the same Rust binary, with deterministic JSON commands for AI agents, skills, automations, and power users.
 
@@ -38,8 +38,8 @@ originals. Searches cannot cancel operation results, and active operations or
 unsaved details block normal app closure.
 
 The shared engine also supports rich metadata and bulk export. Advanced metadata
-candidate review, custom-column editing, and conversion tools remain in the CLI,
-TUI, or legacy Electron desktop. They are not all exposed in the native UI.
+candidate review, custom-column editing, and conversion tools remain in the CLI
+or TUI. They are not all exposed in the native UI.
 
 Conversion currently supports EPUB-to-PDF, EPUB-to-AZW3, and DOCX, HTML, or
 TXT to EPUB through a discovered Calibre `ebook-convert` backend. Conversion can
@@ -113,7 +113,7 @@ Calibre as an optional conversion and metadata backend.
 ## Requirements
 
 - [Rust](https://www.rust-lang.org/tools/install) 1.97.1 for the CLI, TUI, and native desktop
-- [Bun](https://bun.sh/) 1.3+ for the Electron/React workspace
+- [Bun](https://bun.sh/) 1.3.14+ for reusable TypeScript packages and workspace scripts (not required by the native app at runtime)
 - Xcode and its Metal toolchain on macOS for the native desktop build
 - Optional [Calibre](https://calibre-ebook.com/download_osx) 9.9.0 or newer for the five currently advertised conversion pairs
 
@@ -151,14 +151,21 @@ bun run desktop
 # Enforce the desktop startup budgets on a generated 10k library
 bun run desktop:bench
 
-# Produce a signed dist/Takio.app
+# Produce an ad-hoc signed local dist/Takio.app (not notarized)
 bun run desktop:package
+
+# Produce and verify a local-only native DMG and SHA-256 sidecar
+bun run package:macos
 ```
 
 To produce a checksummed standalone executable for the current macOS or Linux
 platform, run `bun run release:cli`; outputs are written to `dist/releases` and
-do not require Bun at runtime. A pushed `v<package-version>` tag publishes the
-macOS and Linux artifacts through the release workflow. Calibre remains an
+do not require Bun at runtime. A pushed annotated `v<package-version>` tag builds
+macOS and Linux artifacts through the release workflow, but does not publish
+them. Native DMGs default to clearly labeled local ad-hoc builds. Explicit
+distribution packaging uses existing Apple credentials only when requested.
+See `docs/release-macos.md` and `docs/macos-release-acceptance.md` for signing,
+notarization, acceptance, and forward rollback. Calibre remains an
 external runtime dependency for the advertised conversions.
 
 ## Library storage and schema v12
@@ -237,13 +244,12 @@ Structured search intentionally does not yet support `or`, parentheses,
 regular expressions, numeric/date comparisons, library-defined column labels,
 typed custom values, custom sorting, or custom facets.
 
-The legacy Electron metadata editor can keep, replace, or clear up to 64 bounded custom
-text fields per book, and the inspector shows them as sorted `#key` entries.
-Libraries can define up to 64 labeled, single-valued text columns. Definitions
-survive migration, Calibre import, portable export/rebuild, and reopen; that desktop
-uses their labels and can show one session-selected, non-sortable custom column in
-the table. Typed or multi-valued columns, custom sorting and facets, persistent
-column preferences, and bulk delta editing remain intentionally unsupported.
+The shared engine supports up to 64 bounded custom text fields per book and up
+to 64 labeled, single-valued text column definitions. Definitions survive
+migration, Calibre import, portable export/rebuild, and reopen. Use the CLI for
+advanced custom-field workflows not exposed by the native desktop. Typed or
+multi-valued columns, custom sorting and facets, persistent column preferences,
+and bulk delta editing remain intentionally unsupported.
 The Rust migration currently exposes the core daily-driver and automation surface:
 
 | Command family | Purpose |
@@ -299,11 +305,10 @@ operating system's installed applications.
 ## Workspace
 
 ```text
-apps/desktop                Electron + React local-first desktop UI
 apps/desktop-native         GPUI desktop linking the Rust engine in-process (see docs/specs/gpui-desktop.md)
 apps/cli                    Rust CLI, Ratatui interface, SQLite store, jobs, and delivery
-packages/core               Shared TypeScript domain used by the desktop renderer
-packages/library-contract   Runtime-neutral desktop wire schemas
+packages/core               Reusable TypeScript domain and validation
+packages/library-contract   Runtime-neutral library wire schemas
 packages/library-store-bun  TypeScript reference and contract implementation for tests and migration work
 packages/epub-transform     Independent TypeScript EPUB transformation library, not a Rust CLI backend
 scripts/                    Release packaging, bundle verification, and performance gates

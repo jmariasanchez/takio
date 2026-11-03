@@ -1,26 +1,20 @@
 #!/usr/bin/env bash
-
 set -euo pipefail
-
+cd "$(dirname "$0")/.."
 if [[ "$#" -ne 1 || ! "$1" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
-  echo "Usage: scripts/verify-release-version.sh v<major>.<minor>.<patch>" >&2
+  echo 'Usage: scripts/verify-release-version.sh v<major>.<minor>.<patch>' >&2
   exit 1
 fi
-
-tag_version="${1#v}"
-root_version="$(bun -p 'require("./package.json").version')"
-desktop_version="$(bun -p 'require("./apps/desktop/package.json").version')"
-cli_version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n 1)"
-for version_source in \
-  "package.json:$root_version" \
-  "apps/desktop/package.json:$desktop_version" \
-  "Cargo.toml:$cli_version"; do
-  source_path="${version_source%%:*}"
-  source_version="${version_source#*:}"
-  if [[ "$source_version" != "$tag_version" ]]; then
-    echo "Release version mismatch: $source_path has '$source_version', tag has '$tag_version'." >&2
-    exit 1
-  fi
-done
-
-echo "Release version verified: $1"
+cargo metadata --offline --no-deps --format-version 1 | python3 -c '
+import json, sys
+metadata = json.load(sys.stdin)
+expected = sys.argv[1][1:]
+versions = {"package.json": json.load(open("package.json"))["version"]}
+for name in ("takio", "takio-desktop"):
+    package = next(p for p in metadata["packages"] if p["name"] == name)
+    versions[package["manifest_path"]] = package["version"]
+for source, version in versions.items():
+    if version != expected:
+        sys.exit(f"Release version mismatch: {source} has {version}, tag has {expected}")
+print(f"Release version verified: v{expected}")
+' "$1"

@@ -12,7 +12,10 @@ case "$(uname -m)" in arm64|x86_64) ;; *) echo "Unsupported macOS architecture: 
 repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repository_root"
 
-cargo test -p takio
-bun run --filter '@takio/desktop' check
-bun run --filter '@takio/desktop' test
-bun run --filter '@takio/desktop' build
+cargo fmt --all --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+cargo build --release -p takio-desktop
+test "$(wc -c < target/release/takio-desktop)" -lt 12000000
+bash scripts/test-verify-macos-bundle.sh
+bash scripts/test-release-scripts.sh

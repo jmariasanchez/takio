@@ -9,7 +9,7 @@ fail() {
 
 usage() {
   cat <<'EOF'
-Usage: scripts/verify-macos-dmg.sh <path-to-dmg> [expected-app-name]
+Usage: scripts/verify-macos-dmg.sh [--distribution] <path-to-dmg> [expected-app-name]
 
 Verifies a built macOS DMG deterministically without Finder or signing secrets:
   - hdiutil imageinfo reports a compressed read-only UDIF image
@@ -21,6 +21,11 @@ Verifies a built macOS DMG deterministically without Finder or signing secrets:
 EOF
 }
 
+distribution=false
+if [[ "${1:-}" == --distribution ]]; then
+  distribution=true
+  shift
+fi
 if [[ "$#" -lt 1 || "$#" -gt 2 ]]; then
   usage >&2
   fail "expected a DMG path and optional expected app name"
@@ -34,11 +39,15 @@ case "$dmg_path" in
   *) fail "target must have a .dmg suffix: $dmg_path" ;;
 esac
 case "$expected_app_name" in
-  -*) fail "expected app name must not begin with '-': $expected_app_name" ;;
+  -*|*/*) fail "expected app name must be a plain file name: $expected_app_name" ;;
   *.app) ;;
   *) fail "expected app name must have a .app suffix: $expected_app_name" ;;
 esac
 [[ -f "$dmg_path" ]] || fail "DMG does not exist: $dmg_path"
+if [[ "$distribution" == true ]]; then
+  /usr/bin/codesign --verify --strict --verbose=2 "$dmg_path"
+  /usr/bin/xcrun stapler validate "$dmg_path"
+fi
 
 hdiutil_command="${TAKIO_HDIUTIL_COMMAND:-/usr/bin/hdiutil}"
 shasum_command="${TAKIO_SHASUM_COMMAND:-/usr/bin/shasum}"
@@ -60,7 +69,7 @@ if ! "$hdiutil_command" verify "$dmg_path"; then
   fail "hdiutil verify failed: $dmg_path"
 fi
 
-mount_root="$(mktemp -d "${TMPDIR:-/tmp}/takio-dmg-verify.XXXXXX")"
+mount_root="$(mktemp -d "${JCODE_SCRATCH_DIR:-${TMPDIR:-/tmp}}/takio-dmg-verify.XXXXXX")"
 mount_point=""
 declare -a devices=()
 cleanup() {
@@ -80,8 +89,8 @@ if ! attach_output="$($hdiutil_command attach -readonly -noverify -noautoopen -n
 fi
 while IFS= read -r line; do
   [[ "$line" == /dev/* ]] || continue
-  set -- $line
-  devices+=("$1")
+  read -r device _ <<< "$line"
+  devices+=("$device")
 done <<< "$attach_output"
 [[ "${#devices[@]}" -gt 0 ]] || fail "hdiutil attach did not report a device for $dmg_path"
 
@@ -92,7 +101,16 @@ applications_target="$(readlink "$mount_point/Applications")"
 [[ "$applications_target" == "/Applications" ]] || fail "Applications symlink points to $applications_target, expected /Applications"
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-"$script_dir/verify-macos-bundle.sh" "$app_path"
+if [[ "$distribution" == true ]]; then
+  /usr/bin/xcrun stapler validate "$app_path"
+  bash "$script_dir/verify-macos-bundle.sh" --distribution "$app_path"
+else
+  bash "$script_dir/verify-macos-bundle.sh" "$app_path"
+fi
+if ! "$hdiutil_command" detach "${devices[0]}"; then
+  fail "could not detach verified DMG: $dmg_path"
+fi
+devices=()
 
 (
   cd "$(dirname "$dmg_path")"

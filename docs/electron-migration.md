@@ -1,4 +1,14 @@
-# Electron migration
+# Historical Electron migration (superseded)
+
+**Historical record only.** On November 3, 2026, the Electron application and
+its exclusive packages, build scripts, and CI lane were removed. Commands and
+paths below describe the earlier Tauri-to-Electron transition and no longer
+exist. The maintained desktop is `apps/desktop-native`, a standalone Rust/GPUI
+app linking the Rust library engine directly. Use `bun run desktop`,
+`bun run check:native:macos`, and `bun run package:macos`. Current packaging and
+release gates are in `docs/release-macos.md` and
+`docs/macos-release-acceptance.md`. Reusable Bun packages and CLI/TUI capabilities
+are retained. No legacy runtime or automatic library migration is shipped.
 
 Takio moved from Tauri to Electron as a clean pre-release cutover. There are no
 customer installations or production libraries that require a dual-runtime
