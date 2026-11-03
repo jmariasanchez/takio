@@ -477,8 +477,10 @@ impl LibraryState {
         if self.items.is_empty() {
             return;
         }
-        let current = self.anchor.unwrap_or(0) as isize;
-        let next = (current + delta).clamp(0, self.items.len() as isize - 1) as usize;
+        let next = self.anchor.map_or_else(
+            || if delta < 0 { self.items.len() - 1 } else { 0 },
+            |current| (current as isize + delta).clamp(0, self.items.len() as isize - 1) as usize,
+        );
         self.select_only(next, cx);
     }
 
@@ -762,7 +764,10 @@ impl LibraryState {
 
     fn mutate_selected(
         &mut self,
-        build: impl FnOnce(Vec<String>, std::sync::mpsc::Sender<AppResult<Vec<LibraryItem>>>) -> Request,
+        build: impl FnOnce(
+            Vec<String>,
+            std::sync::mpsc::Sender<AppResult<crate::engine::MutationReport>>,
+        ) -> Request,
         verb: &'static str,
         cx: &mut Context<Self>,
     ) {
@@ -773,7 +778,10 @@ impl LibraryState {
     fn mutate_ids(
         &mut self,
         ids: Vec<String>,
-        build: impl FnOnce(Vec<String>, std::sync::mpsc::Sender<AppResult<Vec<LibraryItem>>>) -> Request,
+        build: impl FnOnce(
+            Vec<String>,
+            std::sync::mpsc::Sender<AppResult<crate::engine::MutationReport>>,
+        ) -> Request,
         verb: &'static str,
         cx: &mut Context<Self>,
     ) {
@@ -787,15 +795,54 @@ impl LibraryState {
         self.await_reply(receiver, cx, move |this, result, cx| {
             this.busy = false;
             match result {
-                Ok(_) => this.set_status(format!("{verb} {count} item(s)"), false, cx),
-                Err(error) if count > 1 => this.set_status(
-                    format!(
-                        "{} Earlier books may already have changed. Books after the failure were not processed. Review the refreshed list before retrying.",
-                        humanize_error(error.code())
-                    ),
-                    true,
-                    cx,
-                ),
+                Ok(report) => {
+                    let changed = report.iter().filter(|(_, result)| result.is_ok()).count();
+                    let failures = report
+                        .iter()
+                        .filter_map(|(id, result)| {
+                            result
+                                .as_ref()
+                                .err()
+                                .map(|error| format!("{id}: {}", humanize_error(error.code())))
+                        })
+                        .collect::<Vec<_>>();
+                    let mut detail = if failures.is_empty() {
+                        String::new()
+                    } else {
+                        format!(". Failed: {}", failures.join("; "))
+                    };
+                    let pending = report
+                        .iter()
+                        .filter_map(|(id, result)| {
+                            result
+                                .as_ref()
+                                .ok()
+                                .filter(|result| result.cleanup_pending)
+                                .map(|result| {
+                                    format!(
+                                        "{id}: {}",
+                                        result
+                                            .cleanup_pending_paths
+                                            .iter()
+                                            .map(|path| path.display().to_string())
+                                            .collect::<Vec<_>>()
+                                            .join(", ")
+                                    )
+                                })
+                        })
+                        .collect::<Vec<_>>();
+                    if !pending.is_empty() {
+                        detail.push_str(&format!(
+                            ". Catalogue updated, but file cleanup is pending: {}",
+                            pending.join("; ")
+                        ));
+                    }
+                    this.set_status(
+                        format!("{verb} {changed} of {count} item(s){detail}"),
+                        !failures.is_empty() || !pending.is_empty(),
+                        cx,
+                    );
+                }
                 Err(error) => this.set_error(error.code(), cx),
             }
             this.reload(cx);
@@ -1075,9 +1122,26 @@ impl LibraryState {
                         .filter(|entry| entry.result.is_ok())
                         .count();
                     let failed = report.entries.len() - sent;
+                    let unrecorded = report
+                        .entries
+                        .iter()
+                        .filter(|entry| {
+                            entry
+                                .result
+                                .as_ref()
+                                .is_ok_and(|delivery| delivery.record_error.is_some())
+                        })
+                        .count();
+                    let warning = if unrecorded == 0 {
+                        String::new()
+                    } else {
+                        format!(". {unrecorded} delivered, but history was not updated")
+                    };
                     this.set_status(
-                        format!("Sent {sent} to {name}, {failed} failed, {excluded} not sent"),
-                        failed > 0,
+                        format!(
+                            "Sent {sent} to {name}, {failed} failed, {excluded} not sent{warning}"
+                        ),
+                        failed > 0 || unrecorded > 0,
                         cx,
                     );
                     this.delivery_report = Some(report);
@@ -1496,6 +1560,18 @@ mod tests {
                 .read_with(cx, |s, _| s.facets.formats.get("epub").copied()),
             Some(3)
         );
+    }
+
+    #[gpui::test]
+    fn navigation_without_anchor_selects_boundary_row(cx: &mut TestAppContext) {
+        let f = fixture(cx);
+        f.state.update(cx, |s, cx| s.move_selection(1, cx));
+        assert_eq!(f.state.read_with(cx, |s, _| s.anchor), Some(0));
+        f.state.update(cx, |s, cx| {
+            s.clear_selection();
+            s.move_selection(-1, cx);
+        });
+        assert_eq!(f.state.read_with(cx, |s, _| s.anchor), Some(2));
     }
 
     #[gpui::test]
@@ -2050,25 +2126,16 @@ mod tests {
                 );
             });
             settle(&f.state, cx);
-            assert_eq!(titles(&f.state, cx), ["Beta", "Gamma"], "{operation}");
+            assert_eq!(titles(&f.state, cx), ["Beta"], "{operation}");
             f.state.read_with(cx, |s, _| {
                 let status = s.status.as_ref().unwrap();
                 assert!(status.is_error);
-                assert!(
-                    status
-                        .text
-                        .contains("Earlier books may already have changed")
-                );
-                assert!(
-                    status
-                        .text
-                        .contains("Books after the failure were not processed")
-                );
-                assert!(status.text.contains("Review the refreshed list"));
+                assert!(status.text.contains("Updated 2 of 3 item(s)"));
+                assert!(status.text.contains("absent-item"));
                 assert!(!s.busy);
             });
             assert!(f._temp.path().join("Alpha.epub").exists());
-            assert!(last.source_path.exists());
+            assert_eq!(last.source_path.exists(), operation != "purge");
             if operation == "purge" {
                 assert!(!first.source_path.exists());
             } else {
@@ -2084,7 +2151,7 @@ mod tests {
                     );
                 });
                 settle(&f.state, cx);
-                assert_eq!(titles(&f.state, cx), ["Alpha"], "{operation}");
+                assert_eq!(titles(&f.state, cx), ["Alpha", "Gamma"], "{operation}");
             }
         }
     }

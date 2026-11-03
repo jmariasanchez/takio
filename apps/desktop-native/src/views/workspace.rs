@@ -802,6 +802,9 @@ impl Render for Workspace {
                                             .overflow_y_scroll()
                                             .children(report.entries.into_iter().map(|entry| {
                                                 let (message, error) = match entry.result {
+                                                    Ok(delivery) if delivery.record_error.is_some() => {
+                                                        ("Delivered and verified, but history was not updated".to_owned(), true)
+                                                    }
                                                     Ok(_) => {
                                                         ("Sent and verified".to_owned(), false)
                                                     }

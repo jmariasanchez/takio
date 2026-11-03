@@ -274,6 +274,9 @@ pub struct SendEntry {
     pub result: AppResult<DeliveryResult>,
 }
 
+/// Every requested mutation is attempted, with committed results retained in order.
+pub type MutationReport = Vec<(String, AppResult<takio::store::MutationResult>)>;
+
 /// Everything the UI can ask the engine to do.
 pub enum Request {
     AutomaticBackupLoad {
@@ -330,15 +333,15 @@ pub enum Request {
     },
     Trash {
         ids: Vec<String>,
-        reply: Sender<AppResult<Vec<LibraryItem>>>,
+        reply: Sender<AppResult<MutationReport>>,
     },
     Restore {
         ids: Vec<String>,
-        reply: Sender<AppResult<Vec<LibraryItem>>>,
+        reply: Sender<AppResult<MutationReport>>,
     },
     Purge {
         ids: Vec<String>,
-        reply: Sender<AppResult<Vec<LibraryItem>>>,
+        reply: Sender<AppResult<MutationReport>>,
     },
     ListDestinations {
         volumes_root: PathBuf,
@@ -562,13 +565,13 @@ fn worker_with_reader_scans(
                 let _ = reply.send(result);
             }
             Request::Trash { ids, reply } => {
-                let _ = reply.send(each(&ids, |id| store.trash(id)));
+                let _ = reply.send(Ok(each(&ids, |id| store.trash(id).map(Into::into))));
             }
             Request::Restore { ids, reply } => {
-                let _ = reply.send(each(&ids, |id| store.restore(id)));
+                let _ = reply.send(Ok(each(&ids, |id| store.restore(id).map(Into::into))));
             }
             Request::Purge { ids, reply } => {
-                let _ = reply.send(each(&ids, |id| store.purge(id)));
+                let _ = reply.send(Ok(each(&ids, |id| store.purge(id))));
             }
             Request::ListDestinations {
                 volumes_root,
@@ -653,9 +656,9 @@ fn worker_with_reader_scans(
 
 fn each(
     ids: &[String],
-    mut op: impl FnMut(&str) -> AppResult<LibraryItem>,
-) -> AppResult<Vec<LibraryItem>> {
-    ids.iter().map(|id| op(id)).collect()
+    mut op: impl FnMut(&str) -> AppResult<takio::store::MutationResult>,
+) -> MutationReport {
+    ids.iter().map(|id| (id.clone(), op(id))).collect()
 }
 
 #[cfg(test)]
@@ -748,15 +751,13 @@ fn send_reviewed(
     Ok(SendReport {
         entries: entries
             .iter()
-            .filter_map(|entry| {
-                let ready = entry.result.as_ref().ok()?;
-                Some(send_entry(
-                    store,
-                    destination,
-                    &trashed,
-                    &entry.item_id,
-                    Some(ready),
-                ))
+            .map(|entry| match &entry.result {
+                Ok(ready) => send_entry(store, destination, &trashed, &entry.item_id, Some(ready)),
+                Err(error) => SendEntry {
+                    item_id: entry.item_id.clone(),
+                    title: entry.title.clone(),
+                    result: Err(error.clone()),
+                },
             })
             .collect(),
     })
@@ -1394,9 +1395,13 @@ mod tests {
         );
         assert!(!destination.path.join(".takio").exists());
         let report = send_reviewed(&store, &preview.destination, &preview.entries).unwrap();
-        assert_eq!(report.entries.len(), 1);
-        assert_eq!(report.entries[0].item_id, ready.id);
-        let result = report.entries[0].result.as_ref().unwrap();
+        assert_eq!(report.entries.len(), 2);
+        assert_eq!(
+            report.entries[0].result.as_ref().unwrap_err().code(),
+            "no-compatible-format"
+        );
+        assert_eq!(report.entries[1].item_id, ready.id);
+        let result = report.entries[1].result.as_ref().unwrap();
         assert_eq!(
             fs::read(&result.path).unwrap(),
             fs::read(&selected.source_path).unwrap()

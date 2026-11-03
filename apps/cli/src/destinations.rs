@@ -58,6 +58,19 @@ pub struct DeliveryResult {
     pub path: PathBuf,
     pub bytes: u64,
     pub sha256: String,
+    /// The copy is verified even when recording delivery history fails.
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "serialize_record_error"
+    )]
+    pub record_error: Option<AppError>,
+}
+
+fn serialize_record_error<S: serde::Serializer>(
+    error: &Option<AppError>,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    error.as_ref().map(AppError::code).serialize(serializer)
 }
 
 #[derive(Default, Deserialize, Serialize)]
@@ -271,13 +284,14 @@ pub fn send(
         format: format.to_owned(),
         timestamp: Utc::now().to_rfc3339(),
     };
-    record_delivery(destination, record)?;
+    let record_error = record_delivery(destination, record).err();
     Ok(DeliveryResult {
         item_id: item_id.to_owned(),
         destination_id: destination.id.clone(),
         path: target,
         bytes: expected.0,
         sha256: expected.1,
+        record_error,
     })
 }
 
@@ -538,6 +552,55 @@ fn write_manifest_with_publisher(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn verified_delivery_survives_manifest_failure() {
+        let temporary = tempfile::tempdir().unwrap();
+        let destination = manifest_destination(temporary.path());
+        let source = temporary.path().join("source.txt");
+        fs::write(&source, b"delivered bytes").unwrap();
+        fs::create_dir(destination.path.join(".takio")).unwrap();
+        let manifest = manifest_path(&destination);
+        fs::write(&manifest, b"broken history").unwrap();
+        let delivered = send(
+            &destination,
+            "book",
+            &source,
+            "book.txt",
+            "txt",
+            None,
+            false,
+        )
+        .unwrap();
+        assert_eq!(fs::read(&delivered.path).unwrap(), b"delivered bytes");
+        assert_eq!(
+            hash_file(&delivered.path).unwrap(),
+            (delivered.bytes, delivered.sha256.clone())
+        );
+        assert_eq!(
+            delivered.record_error.as_ref().unwrap().code(),
+            "copy-failed"
+        );
+        assert_eq!(
+            serde_json::to_value(&delivered).unwrap()["recordError"],
+            "copy-failed"
+        );
+        assert_eq!(fs::read(manifest).unwrap(), b"broken history");
+        assert_eq!(
+            send(
+                &destination,
+                "book",
+                &source,
+                "book.txt",
+                "txt",
+                None,
+                false
+            )
+            .unwrap_err()
+            .code(),
+            "destination-file-exists"
+        );
+    }
 
     fn manifest_destination(path: &Path) -> Destination {
         Destination {

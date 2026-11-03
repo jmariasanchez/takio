@@ -20,13 +20,7 @@ pub fn location(
     data_override: bool,
     profile_override: Option<&Path>,
 ) -> Option<PathBuf> {
-    if let Some(profile) = profile_override {
-        Some(profile.join("last-library"))
-    } else if data_override {
-        None
-    } else {
-        Some(default_root.join("desktop").join("last-library"))
-    }
+    takio::paths::desktop_preference_location(default_root, data_override, profile_override)
 }
 
 fn validate_root(value: &str) -> AppResult<&Path> {

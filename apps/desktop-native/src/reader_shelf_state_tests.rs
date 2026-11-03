@@ -293,6 +293,31 @@ fn reader_shelf_matches_bytes_counts_unknown_and_trash_removes_mark(cx: &mut Tes
 }
 
 #[gpui::test]
+fn delivered_book_with_broken_history_is_reported_as_delivered(cx: &mut TestAppContext) {
+    let f = fixture(cx);
+    let reader = shelf_reader(&f, cx);
+    fs::create_dir(reader.path.join(".takio")).unwrap();
+    fs::write(reader.path.join(".takio/deliveries.json"), b"broken").unwrap();
+    f.state.update(cx, |state, cx| {
+        state.select_only(0, cx);
+        state.send_selected_to(reader, cx);
+    });
+    settle(&f.state, cx);
+    f.state.update(cx, |state, cx| state.confirm_send_preview(cx));
+    settle(&f.state, cx);
+    f.state.read_with(cx, |state, _| {
+        let delivery = state.delivery_report.as_ref().unwrap().entries[0].result.as_ref().unwrap();
+        assert!(delivery.path.is_file());
+        assert!(delivery.record_error.is_some());
+        let status = state.status.as_ref().unwrap();
+        assert!(status.is_error);
+        assert!(status.text.contains("Sent 1"));
+        assert!(status.text.contains("0 failed"));
+        assert!(status.text.contains("delivered, but history was not updated"));
+    });
+}
+
+#[gpui::test]
 fn reader_shelf_send_review_rescans_sent_book(cx: &mut TestAppContext) {
     let f = fixture(cx);
     let reader = shelf_reader(&f, cx);
