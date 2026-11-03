@@ -6,7 +6,6 @@ use std::thread;
 use std::time::{Duration as StdDuration, Instant};
 
 use chrono::{DateTime, Duration, Utc};
-use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
@@ -466,9 +465,9 @@ impl StageGuard {
             .map_err(|_| AppError::new("storage-unavailable"))?;
         let deadline = Instant::now() + LOCK_TIMEOUT;
         loop {
-            match file.try_lock_exclusive() {
+            match file.try_lock() {
                 Ok(()) => return Ok(Self { file }),
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                Err(std::fs::TryLockError::WouldBlock) => {
                     if Instant::now() >= deadline {
                         return Err(AppError::new("candidate-cover-unavailable"));
                     }
@@ -482,7 +481,7 @@ impl StageGuard {
 
 impl Drop for StageGuard {
     fn drop(&mut self) {
-        let _ = FileExt::unlock(&self.file);
+        let _ = self.file.unlock();
     }
 }
 

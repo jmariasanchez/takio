@@ -2,39 +2,70 @@ use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
 pub(crate) fn discover_executable(env_name: &str, name: &str, macos_path: &str) -> Option<PathBuf> {
-    discover_from(
-        std::env::var_os(env_name).as_deref(),
+    discover_executable_with_source(env_name, name, macos_path).map(|(path, _)| path)
+}
+
+pub(crate) fn discover_executable_with_source(
+    env_name: &str,
+    name: &str,
+    macos_path: &str,
+) -> Option<(PathBuf, &'static str)> {
+    discover_with_paths(
+        std::env::var_os(env_name).as_deref().map(Path::new),
         std::env::var_os("PATH").as_deref(),
         name,
-        Path::new(macos_path),
+        cfg!(target_os = "macos").then(|| Path::new(macos_path)),
+        std::env::current_dir().ok().as_deref(),
     )
 }
 
 // Keep environment reads at the boundary so tests never mutate process-wide PATH.
+#[cfg(test)]
 fn discover_from(
     explicit: Option<&OsStr>,
     search_path: Option<&OsStr>,
     name: &str,
     macos_path: &Path,
 ) -> Option<PathBuf> {
-    if let Some(path) = explicit.map(PathBuf::from) {
-        return canonical_executable(&path);
+    discover_with_paths(
+        explicit.map(Path::new),
+        search_path,
+        name,
+        cfg!(target_os = "macos").then_some(macos_path),
+        std::env::current_dir().ok().as_deref(),
+    )
+    .map(|(path, _)| path)
+}
+
+pub(crate) fn discover_with_paths(
+    explicit: Option<&Path>,
+    search_path: Option<&OsStr>,
+    name: &str,
+    macos_path: Option<&Path>,
+    cwd: Option<&Path>,
+) -> Option<(PathBuf, &'static str)> {
+    if let Some(path) = explicit {
+        return canonical_executable(path, cwd).map(|path| (path, "env"));
     }
     if let Some(path) = search_path.and_then(|value| {
         std::env::split_paths(value)
             .map(|directory| directory.join(name))
-            .find_map(|candidate| canonical_executable(&candidate))
+            .find_map(|candidate| canonical_executable(&candidate, cwd))
     }) {
-        return Some(path);
+        return Some((path, "path"));
     }
-    if cfg!(target_os = "macos") {
-        return canonical_executable(macos_path);
-    }
-    None
+    macos_path
+        .and_then(|path| canonical_executable(path, cwd))
+        .map(|path| (path, "macos-bundle"))
 }
 
-fn canonical_executable(path: &Path) -> Option<PathBuf> {
+fn canonical_executable(path: &Path, cwd: Option<&Path>) -> Option<PathBuf> {
     // Resolve against the caller's cwd, not the backend's later private workspace.
+    let path = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        cwd?.join(path)
+    };
     let path = path.canonicalize().ok()?;
     executable(&path).then_some(path)
 }
