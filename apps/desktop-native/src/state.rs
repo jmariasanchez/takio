@@ -2069,6 +2069,40 @@ mod tests {
     }
 
     #[gpui::test]
+    fn purge_reports_committed_catalogue_change_and_pending_cleanup(cx: &mut TestAppContext) {
+        let f = fixture(cx);
+        let item = f.state.read_with(cx, |s, _| s.items[0].clone());
+        f.state.update(cx, |s, cx| {
+            s.select_only(0, cx);
+            s.trash_selected(cx);
+        });
+        settle(&f.state, cx);
+        f.state
+            .update(cx, |s, cx| s.set_section(Section::Trash, cx));
+        settle(&f.state, cx);
+        fs::write(&item.source_path, b"externally changed bytes").unwrap();
+        f.state
+            .update(cx, |s, cx| s.purge_confirmed(vec![item.id.clone()], cx));
+        settle(&f.state, cx);
+        f.state.read_with(cx, |s, _| {
+            assert!(s.items.is_empty());
+            let status = s.status.as_ref().unwrap();
+            assert!(status.is_error);
+            assert!(status.text.contains("1 of 1 item(s)"));
+            assert!(status.text.contains("file cleanup is pending"));
+            assert!(
+                status
+                    .text
+                    .contains(&item.source_path.display().to_string())
+            );
+        });
+        assert_eq!(
+            fs::read(&item.source_path).unwrap(),
+            b"externally changed bytes"
+        );
+    }
+
+    #[gpui::test]
     fn partial_mutation_failures_warn_and_reload_committed_changes(cx: &mut TestAppContext) {
         for operation in ["trash", "restore", "purge"] {
             let f = fixture(cx);

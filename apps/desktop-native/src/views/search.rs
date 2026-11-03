@@ -17,6 +17,10 @@ actions!(
     [Backspace, Delete, Left, Right, Home, End, SelectAll, Paste]
 );
 
+pub struct TextChanged;
+
+impl gpui::EventEmitter<TextChanged> for Search {}
+
 pub struct Search {
     state: Option<LibraryEntity>,
     placeholder: &'static str,
@@ -86,6 +90,15 @@ impl Search {
 
     pub fn set_label(&mut self, label: &'static str) {
         self.label = label;
+    }
+
+    pub fn set_placeholder(&mut self, placeholder: &'static str) {
+        self.placeholder = placeholder;
+    }
+
+    pub fn set_text(&mut self, text: String, cx: &mut Context<Self>) {
+        let end = self.text.encode_utf16().count();
+        self.replace(Some(0..end), &text, cx);
     }
 
     pub fn set_read_only(&mut self, read_only: bool, cx: &mut Context<Self>) {
@@ -168,6 +181,7 @@ impl Search {
         if let Some(state) = &self.state {
             state.update(cx, |state, cx| state.set_query(self.text.clone(), cx));
         }
+        cx.emit(TextChanged);
         cx.notify();
         inserted
     }

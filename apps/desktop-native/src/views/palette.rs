@@ -1,10 +1,9 @@
 //! Keyboard-first command launcher, with native text input and restored action focus.
+use super::search::Search;
 use crate::theme::Theme;
 use gpui::{
-    Action, Bounds, Context, ElementInputHandler, EntityInputHandler, FocusHandle, MouseButton,
-    Pixels, Point, UTF16Selection, Window, canvas, div, prelude::*, px,
+    Action, Context, Entity, FocusHandle, MouseButton, Subscription, Window, div, prelude::*, px,
 };
-use std::ops::Range;
 
 struct Command {
     label: &'static str,
@@ -160,24 +159,30 @@ fn matching_commands(query: &str) -> Vec<usize> {
 
 pub struct Palette {
     open: bool,
-    focus: FocusHandle,
+    input: Entity<Search>,
+    _input_change: Subscription,
     previous_focus: Option<FocusHandle>,
     action_focus: FocusHandle,
-    query: String,
-    selected: Range<usize>,
-    marked: Option<Range<usize>>,
     highlighted: usize,
 }
 impl Palette {
     pub fn new(action_focus: FocusHandle, cx: &mut Context<Self>) -> Self {
+        let input = cx.new(|cx| {
+            let mut input = Search::text_input(String::new(), cx);
+            input.set_label("Command palette");
+            input.set_placeholder("Type a command");
+            input
+        });
+        let input_change = cx.subscribe(&input, |this, _, _: &super::search::TextChanged, cx| {
+            this.highlighted = 0;
+            cx.notify();
+        });
         Self {
             open: false,
-            focus: cx.focus_handle(),
+            input,
+            _input_change: input_change,
             previous_focus: None,
             action_focus,
-            query: String::new(),
-            selected: 0..0,
-            marked: None,
             highlighted: 0,
         }
     }
@@ -187,11 +192,11 @@ impl Palette {
         } else {
             self.previous_focus = window.focused(cx);
             self.open = true;
-            self.query.clear();
-            self.selected = 0..0;
-            self.marked = None;
+            self.input
+                .update(cx, |input, cx| input.set_text(String::new(), cx));
             self.highlighted = 0;
-            window.focus(&self.focus, cx);
+            let focus = self.input.read(cx).focus_handle();
+            window.focus(&focus, cx);
             cx.notify();
         }
     }
@@ -202,8 +207,8 @@ impl Palette {
         }
         cx.notify();
     }
-    fn matches(&self) -> Vec<usize> {
-        matching_commands(&self.query)
+    fn matches(&self, cx: &Context<Self>) -> Vec<usize> {
+        matching_commands(self.input.read(cx).text())
     }
     fn run(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
         self.close(window, cx);
@@ -212,106 +217,6 @@ impl Palette {
         window.focus(&self.action_focus, cx);
         window.dispatch_action((COMMANDS[index].action)().boxed_clone(), cx);
     }
-    fn byte_offset(&self, offset: usize) -> usize {
-        let mut units = 0;
-        for (byte, ch) in self.query.char_indices() {
-            if units >= offset {
-                return byte;
-            }
-            units += ch.len_utf16();
-        }
-        self.query.len()
-    }
-    fn bytes(&self, range: Range<usize>) -> Range<usize> {
-        self.byte_offset(range.start)..self.byte_offset(range.end)
-    }
-    fn units(&self, range: Range<usize>) -> Range<usize> {
-        self.query[..range.start].encode_utf16().count()
-            ..self.query[..range.end].encode_utf16().count()
-    }
-}
-impl EntityInputHandler for Palette {
-    fn text_for_range(
-        &mut self,
-        range: Range<usize>,
-        actual: &mut Option<Range<usize>>,
-        _: &mut Window,
-        _: &mut Context<Self>,
-    ) -> Option<String> {
-        let range = self.bytes(range);
-        *actual = Some(self.units(range.clone()));
-        Some(self.query[range].to_owned())
-    }
-    fn selected_text_range(
-        &mut self,
-        _: bool,
-        _: &mut Window,
-        _: &mut Context<Self>,
-    ) -> Option<UTF16Selection> {
-        Some(UTF16Selection {
-            range: self.units(self.selected.clone()),
-            reversed: false,
-        })
-    }
-    fn marked_text_range(&self, _: &mut Window, _: &mut Context<Self>) -> Option<Range<usize>> {
-        self.marked.clone().map(|r| self.units(r))
-    }
-    fn unmark_text(&mut self, _: &mut Window, _: &mut Context<Self>) {
-        self.marked = None;
-    }
-    fn replace_text_in_range(
-        &mut self,
-        range: Option<Range<usize>>,
-        text: &str,
-        _: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let range = range
-            .map(|r| self.bytes(r))
-            .or(self.marked.take())
-            .unwrap_or(self.selected.clone());
-        self.query.replace_range(range.clone(), text);
-        let end = range.start + text.len();
-        self.selected = end..end;
-        self.highlighted = 0;
-        cx.notify();
-    }
-    fn replace_and_mark_text_in_range(
-        &mut self,
-        range: Option<Range<usize>>,
-        text: &str,
-        selected: Option<Range<usize>>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let range = range
-            .map(|r| self.bytes(r))
-            .or(self.marked.clone())
-            .unwrap_or(self.selected.clone());
-        self.replace_text_in_range(Some(self.units(range.clone())), text, window, cx);
-        self.marked = (!text.is_empty()).then_some(range.start..range.start + text.len());
-        if let Some(selected) = selected {
-            let start = self.query[..range.start].encode_utf16().count();
-            self.selected = self.bytes(start + selected.start..start + selected.end);
-        }
-    }
-    fn bounds_for_range(
-        &mut self,
-        _: Range<usize>,
-        bounds: Bounds<Pixels>,
-        _: &mut Window,
-        _: &mut Context<Self>,
-    ) -> Option<Bounds<Pixels>> {
-        Some(bounds)
-    }
-    fn character_index_for_point(
-        &mut self,
-        _: Point<Pixels>,
-        _: &mut Window,
-        _: &mut Context<Self>,
-    ) -> Option<usize> {
-        Some(self.query.encode_utf16().count())
-    }
 }
 impl Render for Palette {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -319,10 +224,7 @@ impl Render for Palette {
             return div().into_any_element();
         }
         let theme = *cx.global::<Theme>();
-        let entity = cx.entity();
-        let accessible_input = entity.clone();
-        let focus = self.focus.clone();
-        let matches = self.matches();
+        let matches = self.matches(cx);
         div()
             .absolute()
             .inset_0()
@@ -342,19 +244,8 @@ impl Render for Palette {
             .child(
                 div()
                     .id("command-palette")
-                    .role(gpui::Role::TextInput)
+                    .role(gpui::Role::Group)
                     .aria_label("Command palette")
-                    .aria_value(self.query.clone())
-                    .aria_placeholder("Type a command")
-                    .on_a11y_action(gpui::AccessibleAction::SetValue, move |data, window, cx| {
-                        if let Some(gpui::accesskit::ActionData::Value(value)) = data {
-                            accessible_input.update(cx, |this, cx| {
-                                let end = this.query.encode_utf16().count();
-                                this.replace_text_in_range(Some(0..end), value, window, cx);
-                            });
-                        }
-                    })
-                    .track_focus(&self.focus)
                     .key_context("Palette")
                     .on_action(|_: &crate::TrashSelected, _, cx| cx.stop_propagation())
                     .on_action(|_: &crate::PurgeSelected, _, cx| cx.stop_propagation())
@@ -374,7 +265,7 @@ impl Render for Palette {
                     .overflow_hidden()
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
-                        let matches = this.matches();
+                        let matches = this.matches(cx);
                         match event.keystroke.key.as_str() {
                             "escape" => this.close(window, cx),
                             "tab" => {
@@ -395,20 +286,6 @@ impl Render for Palette {
                                     this.run(*index, window, cx);
                                 }
                             }
-                            "backspace" => {
-                                if this.selected.is_empty() {
-                                    let start = this.query[..this.selected.start]
-                                        .char_indices()
-                                        .last()
-                                        .map_or(0, |(i, _)| i);
-                                    this.selected.start = start;
-                                }
-                                this.replace_text_in_range(None, "", window, cx);
-                            }
-                            "a" if event.keystroke.modifiers.platform => {
-                                this.selected = 0..this.query.len();
-                                cx.notify();
-                            }
                             _ => return,
                         }
                         cx.stop_propagation();
@@ -422,30 +299,7 @@ impl Render for Palette {
                             .items_center()
                             .border_b_1()
                             .border_color(theme.border)
-                            .text_color(if self.query.is_empty() {
-                                theme.text_tertiary
-                            } else {
-                                theme.text
-                            })
-                            .child(if self.query.is_empty() {
-                                "Type a command...".to_owned()
-                            } else {
-                                format!("{}|", self.query)
-                            })
-                            .child(
-                                canvas(
-                                    |_, _, _| (),
-                                    move |bounds, _, window, cx| {
-                                        window.handle_input(
-                                            &focus,
-                                            ElementInputHandler::new(bounds, entity),
-                                            cx,
-                                        )
-                                    },
-                                )
-                                .absolute()
-                                .inset_0(),
-                            ),
+                            .child(self.input.clone()),
                     )
                     .child(
                         div()
@@ -501,6 +355,45 @@ impl Render for Palette {
 #[cfg(test)]
 mod tests {
     use super::{COMMANDS, matching_commands};
+    use gpui::{EntityInputHandler, TestAppContext};
+
+    #[gpui::test]
+    fn palette_shared_input_composition_refilters_and_resets_highlight(cx: &mut TestAppContext) {
+        cx.update(|cx| cx.set_global(crate::theme::Theme::LIGHT));
+        let window = cx.add_window(|window, cx| {
+            let focus = cx.focus_handle();
+            let mut palette = super::Palette::new(focus, cx);
+            palette.toggle(window, cx);
+            palette
+        });
+        window
+            .update(cx, |palette, window, cx| {
+                palette.highlighted = 2;
+                palette.input.update(cx, |input, cx| {
+                    input.replace_and_mark_text_in_range(None, "\u{1f4da}", Some(0..2), window, cx);
+                    assert_eq!(input.marked_text_range(window, cx), Some(0..2));
+                    input.replace_text_in_range(None, "Show", window, cx);
+                    assert_eq!(input.text(), "Show");
+                    assert_eq!(input.marked_text_range(window, cx), None);
+                });
+            })
+            .unwrap();
+        cx.run_until_parked();
+        window
+            .update(cx, |palette, window, cx| {
+                assert_eq!(palette.highlighted, 0);
+                let labels = palette
+                    .matches(cx)
+                    .into_iter()
+                    .map(|i| COMMANDS[i].label)
+                    .collect::<Vec<_>>();
+                assert_eq!(labels, ["Show Library", "Show Trash"]);
+                palette.close(window, cx);
+                palette.toggle(window, cx);
+                assert!(palette.input.read(cx).text().is_empty());
+            })
+            .unwrap();
+    }
 
     #[test]
     fn empty_filter_preserves_all_command_order() {
