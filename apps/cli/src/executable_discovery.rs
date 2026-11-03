@@ -18,19 +18,25 @@ fn discover_from(
     macos_path: &Path,
 ) -> Option<PathBuf> {
     if let Some(path) = explicit.map(PathBuf::from) {
-        return executable(&path).then_some(path);
+        return canonical_executable(&path);
     }
     if let Some(path) = search_path.and_then(|value| {
         std::env::split_paths(value)
             .map(|directory| directory.join(name))
-            .find(|candidate| executable(candidate))
+            .find_map(|candidate| canonical_executable(&candidate))
     }) {
         return Some(path);
     }
-    if cfg!(target_os = "macos") && executable(macos_path) {
-        return Some(macos_path.to_path_buf());
+    if cfg!(target_os = "macos") {
+        return canonical_executable(macos_path);
     }
     None
+}
+
+fn canonical_executable(path: &Path) -> Option<PathBuf> {
+    // Resolve against the caller's cwd, not the backend's later private workspace.
+    let path = path.canonicalize().ok()?;
+    executable(&path).then_some(path)
 }
 
 fn executable(path: &Path) -> bool {
@@ -80,6 +86,30 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn selected_backend_is_canonical_for_override_path_and_macos_fallback() {
+        use std::os::unix::fs::symlink;
+        let temp = tempfile::tempdir().unwrap();
+        let real = temp.path().join("real");
+        let alias = temp.path().join("backend");
+        backend(&real);
+        symlink(&real, &alias).unwrap();
+        let canonical = real.canonicalize().unwrap();
+        assert_eq!(
+            discover_from(Some(alias.as_os_str()), None, "backend", &alias),
+            Some(canonical.clone())
+        );
+        assert_eq!(
+            discover_from(None, Some(temp.path().as_os_str()), "backend", &alias),
+            Some(canonical.clone())
+        );
+        assert_eq!(
+            discover_from(None, None, "backend", &alias),
+            cfg!(target_os = "macos").then_some(canonical)
+        );
+    }
+
     #[test]
     fn explicit_override_wins_and_invalid_override_never_falls_back() {
         let temp = tempfile::tempdir().unwrap();
@@ -95,7 +125,7 @@ mod tests {
                 "backend",
                 &fallback
             ),
-            Some(explicit)
+            Some(explicit.canonicalize().unwrap())
         );
         for invalid in [
             temp.path().join("missing"),
@@ -130,9 +160,9 @@ mod tests {
         let search = std::env::join_paths(&directories).unwrap();
         assert_eq!(
             discover_from(None, Some(&search), "backend", &second),
-            Some(first)
+            Some(first.canonicalize().unwrap())
         );
-        let fallback = cfg!(target_os = "macos").then_some(second.clone());
+        let fallback = cfg!(target_os = "macos").then(|| second.canonicalize().unwrap());
         assert_eq!(discover_from(None, None, "backend", &second), fallback);
         assert_eq!(
             discover_from(None, None, "backend", &temp.path().join("absent")),
@@ -157,7 +187,7 @@ mod tests {
         let search = std::env::join_paths([first, second]).unwrap();
         assert_eq!(
             discover_from(None, Some(&search), "backend", &valid),
-            Some(valid.clone())
+            Some(valid.canonicalize().unwrap())
         );
         assert_eq!(
             discover_from(Some(blocked.as_os_str()), Some(&search), "backend", &valid),
