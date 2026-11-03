@@ -1,7 +1,15 @@
 //! Immutable hydration reuse, scoped to one SQLite connection and read snapshot.
+use std::collections::HashMap;
 use std::sync::Arc;
 
-use super::*;
+#[cfg(test)]
+use std::cell::RefCell;
+
+use super::hydration::read_items_bulk;
+use super::query::query_item_ids;
+use super::{LibraryQueryFilters, LibraryQueryScope, LibraryQuerySyntax, LibraryStore};
+use crate::model::{BookAuthor, BookFormat, LibraryItem};
+use crate::output::AppResult;
 
 const MAX_ITEMS: usize = 10_000;
 const MAX_PAYLOAD_BYTES: usize = 32 * 1024 * 1024;

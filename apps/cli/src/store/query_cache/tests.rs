@@ -1,4 +1,8 @@
 use super::*;
+use crate::model::{LibraryPatch, Patch};
+use crate::paths::LibraryPaths;
+use rusqlite::Connection;
+use std::path::PathBuf;
 
 fn filters() -> LibraryQueryFilters<'static> {
     LibraryQueryFilters {

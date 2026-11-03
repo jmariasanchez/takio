@@ -1394,10 +1394,7 @@ mod tests {
         fail_after_step(None);
         assert_eq!(error.code(), "migration-failed");
         let reopened = Connection::open(&paths.database).unwrap();
-        assert_eq!(
-            reopened.serialize("main").unwrap().as_ref(),
-            before.as_slice()
-        );
+        assert_eq!(&*reopened.serialize("main").unwrap(), before.as_slice());
         assert_eq!(
             reopened
                 .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
