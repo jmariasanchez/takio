@@ -355,3 +355,35 @@ directory entries were unchanged. This is a startup/recovery-screen smoke check,
 not live system-picker or VoiceOver acceptance. The bounded smoke script and log
 are `takio-final-recovery-smoke.py` and `takio-final-recovery-smoke-20261103.log`
 in the scratch root. Only that test process is terminated afterward.
+
+### Acceptance feedback recheck (19:02 UTC)
+
+The local release feedback loop includes execution, not only inspection. The
+initial 12,504,400-byte executable failed the unchanged 12,000,000-byte gate.
+The final 11,927,760-byte executable passes, a reduction of 576,640 bytes.
+Packaging and actual read-only DMG verification passed as recorded above.
+As an additional non-benchmark acceptance path, the public CLI copied a valid
+disposable EPUB into a new library, then the app inside the actual mounted final
+DMG launched through normal production startup with all benchmark flags absent.
+The window screenshot at 19:01:33 showed `Signal Acceptance Book`, author
+`Local Acceptance`, format `EPUB`, the author facet count 1 and footer `1 book`.
+The app remained alive for 48 seconds. Public CLI catalogue output and original
+source bytes were identical afterward. Only its test PID was terminated and its
+test disk image ejected. The run exited 0. Evidence: scratch files
+`takio-mounted-acceptance.py` and `takio-mounted-acceptance-20261103.log`.
+This closes local artifact launch/display acceptance, not distribution signing,
+quarantined clean-Mac installation or a complete user interaction workflow.
+
+Performance improved in the measured production-handler probe: initial matching
+and clear p95 were 97.521/84.182 ms, while the final independent runs measured
+63.216/49.969 ms and 63.273/49.956 ms with correct results. Those are concrete
+observations but remain a scoped probe, not end-user input-to-display acceptance.
+The attempt to exercise normal OS input is **blocked**: the macOS permission
+check at 19:00:22 reported `Accessibility (input + AX control): NOT granted`,
+with screen recording granted. No permissions were changed or bypassed, and no
+user intervention was requested. Thus normal search keystrokes, actual wheel
+scrolling and input-to-display latency remain unverified. The normal mounted-app
+screenshot above verifies startup/display only and does not replace those tests.
+The overall performance goal remains acceptance-blocked despite the passing
+probe budgets. Resume real-input acceptance only in an authorized environment
+with input control and suitable display-timing observation.

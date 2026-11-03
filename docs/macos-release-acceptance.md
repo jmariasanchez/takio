@@ -122,6 +122,14 @@ Use disposable fixtures and a separate profile, not personal books:
   verification, ejection and sidecar checks. A separate production-entry startup
   smoke visibly presents recovery controls for a corrupt temporary catalogue
   without changing its bytes or creating additional library entries.
+- At 19:02 UTC a second check launched the app directly from the final read-only
+  mounted DMG, without benchmark flags, using a disposable EPUB imported through
+  the public CLI. The actual window displayed the correct title, author, EPUB
+  format and one-book count. It stayed alive for 48 seconds, preserved source
+  bytes and catalogue output, then its test process and mount were cleaned up.
+  Normal OS search-input acceptance was blocked by the confirmed absence of
+  macOS Accessibility permission. Passing handler-injection performance probes
+  do not close physical-input or input-to-display acceptance.
 
 Still external gates: real Developer ID/notarization/stapler/Gatekeeper approval,
 clean-Mac quarantined install, a completed GitHub workflow on the exact release
