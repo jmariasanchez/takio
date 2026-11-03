@@ -10,6 +10,7 @@ use sha2::{Digest, Sha256};
 use unicode_normalization::UnicodeNormalization;
 
 use crate::calibre_import::import_calibre_library;
+use crate::catalog::catalog_record;
 use crate::conversion::{
     CALIBRE_CAPABILITIES, FormatId, convert, detect_format, discover_ebook_convert,
 };
@@ -2211,58 +2212,6 @@ fn write_catalog(
     )
 }
 
-fn catalog_record(item: &crate::model::LibraryItem) -> Value {
-    let authors = if item.authors.is_empty() {
-        item.author.clone().into_iter().collect::<Vec<_>>()
-    } else {
-        item.authors
-            .iter()
-            .map(|author| author.name.clone())
-            .collect::<Vec<_>>()
-    };
-    let mut record = json!({
-        "id":item.id,
-        "title":item.title,
-        "authors":authors,
-        "tags":item.tags,
-        "formats":item.formats.iter().map(|format|format.format).collect::<Vec<_>>(),
-        "hasCover":item.cover_path.is_some()
-    });
-    let object = record.as_object_mut().expect("catalog record object");
-    for (key, value) in [
-        ("series", item.series.as_ref().map(|value| json!(value))),
-        ("seriesIndex", item.series_index.map(|value| json!(value))),
-        (
-            "publisher",
-            item.publisher.as_ref().map(|value| json!(value)),
-        ),
-        (
-            "publishedDate",
-            item.published_date.as_ref().map(|value| json!(value)),
-        ),
-        ("rating", item.rating.map(|value| json!(value))),
-        (
-            "description",
-            item.description.as_ref().map(|value| json!(value)),
-        ),
-    ] {
-        if let Some(value) = value {
-            object.insert(key.to_owned(), value);
-        }
-    }
-    if !item.languages.is_empty() {
-        object.insert("languages".to_owned(), json!(item.languages));
-    }
-    if !item.identifiers.is_empty() {
-        object.insert("identifiers".to_owned(), json!(item.identifiers));
-    }
-    let custom_metadata = user_custom_metadata(&item.custom_metadata);
-    if !custom_metadata.is_empty() {
-        object.insert("customMetadata".to_owned(), json!(custom_metadata));
-    }
-    record
-}
-
 fn render_catalog_csv(items: &[crate::model::LibraryItem]) -> String {
     let mut output = "id,title,authors,series,seriesIndex,publisher,publishedDate,languages,tags,formats,rating,identifiers,customMetadata,description\n".to_owned();
     for item in items {
@@ -4140,6 +4089,35 @@ fn open_path(path: &Path) -> AppResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn catalog_exports_preserve_json_and_csv_schemas() {
+        use crate::catalog::tests::{rich_book, rich_record, sparse_book, sparse_record};
+
+        let temp = tempfile::tempdir().unwrap();
+        let items = vec![rich_book(), sparse_book()];
+        let output = temp.path().join("catalog.json");
+        write_catalog(&items, "json", &output).unwrap();
+        let actual: Value = serde_json::from_slice(&std::fs::read(output).unwrap()).unwrap();
+        assert_eq!(
+            actual,
+            json!({"version":1,"books":[rich_record(), sparse_record()]})
+        );
+
+        let output = temp.path().join("catalog.csv");
+        write_catalog(&items, "csv", &output).unwrap();
+        let csv = std::fs::read_to_string(output).unwrap();
+        assert_eq!(
+            csv,
+            concat!(
+                "id,title,authors,series,seriesIndex,publisher,publishedDate,languages,tags,formats,rating,identifiers,customMetadata,description\n",
+                "\"book-1\",\"Example\",\"Public author\",\"Series\",\"0\",\"Publisher\",\"2026\",\"en\",\"fiction\",\"epub\",\"0\",\"{\"\"isbn\"\":\"\"123\"\"}\",\"{\"\"shelf\"\":\"\"favorites\"\"}\",\"Description\"\n",
+                "\"book-1\",\"Example\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"{}\",\"{}\",\"\"\n"
+            )
+        );
+        assert!(!csv.contains("/private/"));
+        assert!(!csv.contains("takio_metadata_audit"));
+    }
 
     fn walk(command: &clap::Command, path: &str, missing: &mut Vec<String>) {
         for subcommand in command.get_subcommands() {

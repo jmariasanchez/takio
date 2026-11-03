@@ -6,10 +6,10 @@ use serde_json::json;
 use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 use uuid::Uuid;
 
+use crate::catalog::catalog_record;
 use crate::conversion::{FormatId, detect_format};
-use crate::model::LibraryItem;
 use crate::output::{AppError, AppResult, print_success};
-use crate::store::{LibraryStore, user_custom_metadata};
+use crate::store::LibraryStore;
 
 const MAX_CATALOG_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
 
@@ -178,58 +178,6 @@ fn page(query: &str) -> Option<(usize, usize)> {
     ((1..=256).contains(&limit) && offset <= 1_000_000).then_some((limit, offset))
 }
 
-fn catalog_record(item: &LibraryItem) -> serde_json::Value {
-    let authors = if item.authors.is_empty() {
-        item.author.clone().into_iter().collect::<Vec<_>>()
-    } else {
-        item.authors
-            .iter()
-            .map(|author| author.name.clone())
-            .collect::<Vec<_>>()
-    };
-    let mut record = json!({
-        "id":item.id,
-        "title":item.title,
-        "authors":authors,
-        "tags":item.tags,
-        "formats":item.formats.iter().map(|value|value.format).collect::<Vec<_>>(),
-        "hasCover":item.cover_path.is_some()
-    });
-    let object = record.as_object_mut().expect("catalog record object");
-    for (key, value) in [
-        ("series", item.series.as_ref().map(|value| json!(value))),
-        ("seriesIndex", item.series_index.map(|value| json!(value))),
-        (
-            "publisher",
-            item.publisher.as_ref().map(|value| json!(value)),
-        ),
-        (
-            "publishedDate",
-            item.published_date.as_ref().map(|value| json!(value)),
-        ),
-        ("rating", item.rating.map(|value| json!(value))),
-        (
-            "description",
-            item.description.as_ref().map(|value| json!(value)),
-        ),
-    ] {
-        if let Some(value) = value {
-            object.insert(key.to_owned(), value);
-        }
-    }
-    if !item.languages.is_empty() {
-        object.insert("languages".to_owned(), json!(item.languages));
-    }
-    if !item.identifiers.is_empty() {
-        object.insert("identifiers".to_owned(), json!(item.identifiers));
-    }
-    let custom_metadata = user_custom_metadata(&item.custom_metadata);
-    if !custom_metadata.is_empty() {
-        object.insert("customMetadata".to_owned(), json!(custom_metadata));
-    }
-    record
-}
-
 fn respond_file(request: Request, path: &Path, format: FormatId) {
     let Ok(path) = path.canonicalize() else {
         respond_error(request, "missing-file", 404);
@@ -370,7 +318,117 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
-    use crate::model::{BookAuthor, BookFormat, Provenance};
+    use crate::model::{BookAuthor, BookFormat, LibraryItem, Provenance};
+
+    #[test]
+    fn catalog_http_boundary_authenticates_and_projects_rich_and_sparse_books() {
+        use std::io::{Read, Write};
+        use std::net::TcpStream;
+        use std::time::Duration;
+
+        use crate::catalog::tests::{rich_record, sparse_record};
+        use crate::paths::LibraryPaths;
+
+        let temp = tempfile::tempdir().unwrap();
+        let paths = LibraryPaths::resolve(None, Some(&temp.path().join("library.sqlite"))).unwrap();
+        let mut store = LibraryStore::open(paths.clone(), true).unwrap();
+        let source = temp.path().join("sparse.txt");
+        std::fs::write(&source, "sparse book").unwrap();
+        let sparse = store.import(&source, Some("Example"), false).unwrap();
+        let source = temp.path().join("rich.txt");
+        std::fs::write(&source, "rich book").unwrap();
+        let rich = store.import(&source, Some("Example"), false).unwrap();
+        store
+            .update(
+                &rich.id,
+                serde_json::from_value(json!({
+                    "authors":[{"name":"Public author","sortName":"Private sort name"}],
+                    "series":"Series", "seriesIndex":0.0, "publisher":"Publisher",
+                    "publishedDate":"2026", "rating":0.0, "description":"Description",
+                    "languages":["en"], "identifiers":{"isbn":"123"},
+                    "customMetadata":{"shelf":"favorites"}, "tags":["fiction"]
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+        let database = rusqlite::Connection::open(&paths.database).unwrap();
+        for id in [&sparse.id, &rich.id] {
+            database.execute(
+                "INSERT INTO library_item_custom_metadata(library_item_id,name,value) VALUES(?1,'takio_metadata_audit',?2)",
+                rusqlite::params![id, temp.path().join("private-audit").to_str().unwrap()],
+            ).unwrap();
+        }
+        drop(database);
+
+        let server = Server::http(("127.0.0.1", 0)).unwrap();
+        let address = server.server_addr().to_ip().unwrap();
+        let timeout = Duration::from_secs(5);
+        std::thread::scope(|scope| {
+            let worker = scope.spawn(move || {
+                for _ in 0..2 {
+                    let request = server
+                        .recv_timeout(timeout)
+                        .unwrap()
+                        .expect("bounded request wait");
+                    handle(request, &store, "test-token");
+                }
+            });
+            let request = |authorization: &str| {
+                let mut stream = TcpStream::connect_timeout(&address, timeout).unwrap();
+                stream.set_read_timeout(Some(timeout)).unwrap();
+                stream.set_write_timeout(Some(timeout)).unwrap();
+                write!(stream, "GET /v1/catalog?limit=2&offset=0 HTTP/1.1\r\nHost: {address}\r\n{authorization}Connection: close\r\n\r\n").unwrap();
+                let mut response = String::new();
+                stream
+                    .take(64 * 1024)
+                    .read_to_string(&mut response)
+                    .unwrap();
+                let (headers, body) = response.split_once("\r\n\r\n").unwrap();
+                (
+                    headers.to_owned(),
+                    serde_json::from_str::<serde_json::Value>(body).unwrap(),
+                )
+            };
+            let (headers, body) = request("");
+            assert!(headers.starts_with("HTTP/1.1 401 "), "{headers}");
+            assert_eq!(body, json!({"ok":false,"error":{"code":"unauthorized"}}));
+
+            let (headers, body) = request("Authorization: Bearer test-token\r\n");
+            assert!(headers.starts_with("HTTP/1.1 200 "), "{headers}");
+            assert!(
+                headers
+                    .to_ascii_lowercase()
+                    .contains("content-type: application/json")
+            );
+            assert!(
+                headers
+                    .to_ascii_lowercase()
+                    .contains("cache-control: no-store")
+            );
+            let mut sparse_expected = sparse_record();
+            sparse_expected["id"] = json!(sparse.id);
+            sparse_expected["formats"] = json!(["txt"]);
+            let mut rich_expected = rich_record();
+            rich_expected["id"] = json!(rich.id);
+            rich_expected["formats"] = json!(["txt"]);
+            rich_expected["hasCover"] = json!(false);
+            let books = body["value"]["books"].as_array().unwrap();
+            assert_eq!(books.len(), 2);
+            assert!(books.contains(&sparse_expected));
+            assert!(books.contains(&rich_expected));
+            assert_eq!(
+                body,
+                json!({"ok":true,"value":{
+                    "books":books,"limit":2,"offset":0,"total":2
+                }})
+            );
+            let serialized = body.to_string();
+            assert!(!serialized.contains(temp.path().to_str().unwrap()));
+            assert!(!serialized.contains("takio_metadata_audit"));
+            assert!(!serialized.contains("Private sort name"));
+            worker.join().unwrap();
+        });
+    }
 
     #[test]
     fn parses_bounded_catalog_pages() {

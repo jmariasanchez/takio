@@ -11,6 +11,7 @@ use tempfile::Builder;
 use uuid::Uuid;
 
 use crate::conversion::{FormatId, detect_format, discover_ebook_convert};
+use crate::executable_discovery::discover_executable;
 use crate::output::{AppError, AppResult};
 
 pub const POLISH_OPERATIONS: [&str; 8] = [
@@ -303,46 +304,6 @@ fn fingerprint(path: &Path) -> AppResult<(u64, String)> {
     crate::fingerprint::hash_file(path).map_err(|_| AppError::new("artifact-invalid"))
 }
 
-fn discover_executable(env_name: &str, name: &str, macos_path: &str) -> Option<PathBuf> {
-    if let Some(path) = std::env::var_os(env_name).map(PathBuf::from) {
-        return executable(&path).then_some(path);
-    }
-    if let Some(path) = std::env::var_os("PATH").and_then(|value| {
-        std::env::split_paths(&value)
-            .map(|directory| directory.join(name))
-            .find(|candidate| executable(candidate))
-    }) {
-        return Some(path);
-    }
-    #[cfg(target_os = "macos")]
-    {
-        let path = PathBuf::from(macos_path);
-        if executable(&path) {
-            return Some(path);
-        }
-    }
-    let _ = macos_path;
-    None
-}
-
-fn executable(path: &Path) -> bool {
-    let Ok(metadata) = path.metadata() else {
-        return false;
-    };
-    if !metadata.is_file() {
-        return false;
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        metadata.permissions().mode() & 0o111 != 0
-    }
-    #[cfg(not(unix))]
-    {
-        true
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -364,19 +325,5 @@ mod tests {
             .code(),
             "invalid-arguments"
         );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn requires_executable_permissions_for_polish_backend() {
-        use std::os::unix::fs::PermissionsExt;
-
-        let temp = tempfile::tempdir().unwrap();
-        let candidate = temp.path().join("ebook-polish");
-        std::fs::write(&candidate, b"#!/bin/sh\n").unwrap();
-        std::fs::set_permissions(&candidate, std::fs::Permissions::from_mode(0o600)).unwrap();
-        assert!(!executable(&candidate));
-        std::fs::set_permissions(&candidate, std::fs::Permissions::from_mode(0o700)).unwrap();
-        assert!(executable(&candidate));
     }
 }

@@ -16,6 +16,7 @@ use sha2::{Digest, Sha256};
 use tempfile::Builder;
 
 use crate::candidate_cover::CapturedCover;
+use crate::executable_discovery::discover_executable;
 use crate::model::BookAuthor;
 use crate::output::{AppError, AppResult};
 
@@ -41,8 +42,8 @@ pub struct CoverSummary {
 #[serde(rename_all = "camelCase")]
 pub struct PublishedCover {
     pub path: PathBuf,
-    pub media_type: &'static str,
-    pub extension: &'static str,
+    pub media_type: String,
+    pub extension: String,
     pub bytes: u64,
     pub sha256: String,
 }
@@ -276,8 +277,8 @@ fn fetch_with_cancellation(
         (Some(captured), Some(output)) => Some(publish_cover(
             output,
             &captured.bytes,
-            Box::leak(captured.extension.clone().into_boxed_str()),
-            Box::leak(captured.media_type.clone().into_boxed_str()),
+            &captured.extension,
+            &captured.media_type,
         )?),
         _ => None,
     };
@@ -726,8 +727,8 @@ fn detect_cover(bytes: &[u8]) -> Option<(&'static str, &'static str)> {
 fn publish_cover(
     output: &Path,
     bytes: &[u8],
-    extension: &'static str,
-    media_type: &'static str,
+    extension: &str,
+    media_type: &str,
 ) -> AppResult<PublishedCover> {
     let parent = output
         .parent()
@@ -757,8 +758,8 @@ fn publish_cover(
     hash.update(bytes);
     Ok(PublishedCover {
         path: output,
-        media_type,
-        extension,
+        media_type: media_type.to_owned(),
+        extension: extension.to_owned(),
         bytes: u64::try_from(bytes.len()).map_err(|_| AppError::new("cover-write-failed"))?,
         sha256: hex::encode(hash.finalize()),
     })
@@ -819,46 +820,6 @@ fn run_bounded(
 fn terminate_and_reap(child: &mut std::process::Child) {
     let _ = child.kill();
     let _ = child.wait();
-}
-
-fn discover_executable(env_name: &str, name: &str, macos_path: &str) -> Option<PathBuf> {
-    if let Some(path) = std::env::var_os(env_name).map(PathBuf::from) {
-        return executable(&path).then_some(path);
-    }
-    if let Some(path) = std::env::var_os("PATH").and_then(|value| {
-        std::env::split_paths(&value)
-            .map(|directory| directory.join(name))
-            .find(|candidate| executable(candidate))
-    }) {
-        return Some(path);
-    }
-    #[cfg(target_os = "macos")]
-    {
-        let path = PathBuf::from(macos_path);
-        if executable(&path) {
-            return Some(path);
-        }
-    }
-    let _ = macos_path;
-    None
-}
-
-fn executable(path: &Path) -> bool {
-    let Ok(metadata) = path.metadata() else {
-        return false;
-    };
-    if !metadata.is_file() {
-        return false;
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        metadata.permissions().mode() & 0o111 != 0
-    }
-    #[cfg(not(unix))]
-    {
-        true
-    }
 }
 
 /// Builds a zip whose first entry is stored and the rest deflated, like an EPUB.
@@ -979,6 +940,56 @@ pub(crate) fn pdf_fixture(pages: usize) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn published_cover_owns_metadata_and_preserves_wire_shape() {
+        let temp = tempfile::tempdir().unwrap();
+        let output = temp.path().join("cover.jpg");
+        let bytes = [0xff, 0xd8, 0xff, 1, 2, 3];
+        let published = {
+            let extension = String::from(".jpg");
+            let media_type = String::from("image/jpeg");
+            publish_cover(&output, &bytes, &extension, &media_type).unwrap()
+        };
+        // Moving these fields into String is a compile-time ownership regression check.
+        let extension: String = published.extension.clone();
+        let media_type: String = published.media_type.clone();
+        assert_eq!(
+            serde_json::to_value(&published).unwrap(),
+            json!({
+                "path": output,
+                "mediaType": media_type,
+                "extension": extension,
+                "bytes": bytes.len(),
+                "sha256": hex::encode(Sha256::digest(bytes)),
+            })
+        );
+        assert_eq!(fs::read(&output).unwrap(), bytes);
+        assert_eq!(
+            publish_cover(&output, b"replacement", ".png", "image/png")
+                .unwrap_err()
+                .code(),
+            "cover-output-exists"
+        );
+        assert_eq!(fs::read(&output).unwrap(), bytes);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn published_cover_never_follows_existing_output_symlinks() {
+        use std::os::unix::fs::symlink;
+        let temp = tempfile::tempdir().unwrap();
+        let target = temp.path().join("original");
+        let output = temp.path().join("cover");
+        fs::write(&target, b"keep").unwrap();
+        symlink(&target, &output).unwrap();
+        assert!(publish_cover(&output, b"new", ".jpg", "image/jpeg").is_err());
+        assert_eq!(fs::read(&target).unwrap(), b"keep");
+        fs::remove_file(&target).unwrap();
+        assert!(publish_cover(&output, b"new", ".jpg", "image/jpeg").is_err());
+        assert!(!target.exists());
+        assert!(output.symlink_metadata().unwrap().file_type().is_symlink());
+    }
 
     #[test]
     fn reads_mobi_exth_authors_and_title_without_a_backend() {
@@ -1190,19 +1201,5 @@ mod tests {
             Some((".jpg", "image/jpeg"))
         );
         assert_eq!(detect_cover(b"not an image"), None);
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn requires_executable_permissions_for_external_backends() {
-        use std::os::unix::fs::PermissionsExt;
-
-        let temp = tempfile::tempdir().unwrap();
-        let candidate = temp.path().join("ebook-meta");
-        std::fs::write(&candidate, b"#!/bin/sh\n").unwrap();
-        std::fs::set_permissions(&candidate, std::fs::Permissions::from_mode(0o600)).unwrap();
-        assert!(!executable(&candidate));
-        std::fs::set_permissions(&candidate, std::fs::Permissions::from_mode(0o700)).unwrap();
-        assert!(executable(&candidate));
     }
 }
