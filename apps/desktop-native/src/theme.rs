@@ -31,9 +31,9 @@ impl Theme {
         border: rgba_const(0x00000018),
         text: rgb_const(0x1c1b19),
         text_secondary: rgb_const(0x5c5a55),
-        text_tertiary: rgb_const(0x8f8c85),
-        accent: rgb_const(0x2f6fdb),
-        danger: rgb_const(0xc8362b),
+        text_tertiary: rgb_const(0x63605a),
+        accent: rgb_const(0x235cb8),
+        danger: rgb_const(0xb32b22),
     };
 
     pub const DARK: Self = Self {
@@ -41,14 +41,14 @@ impl Theme {
         sidebar_bg: rgb_const(0x242320),
         panel_bg: rgb_const(0x1a1917),
         row_hover: rgba_const(0xffffff0a),
-        row_selected: rgb_const(0x2c4473),
+        row_selected: rgb_const(0x243553),
         row_selected_inactive: rgb_const(0x33322e),
         border: rgba_const(0xffffff14),
         text: rgb_const(0xeceae4),
         text_secondary: rgb_const(0xa5a29b),
-        text_tertiary: rgb_const(0x6f6c66),
-        accent: rgb_const(0x5b8def),
-        danger: rgb_const(0xe5584d),
+        text_tertiary: rgb_const(0xa09d96),
+        accent: rgb_const(0x8fa9df),
+        danger: rgb_const(0xe98278),
     };
 
     pub fn for_appearance(appearance: WindowAppearance) -> Self {
@@ -86,4 +86,77 @@ pub mod metrics {
     pub const ROW_HEIGHT: f32 = 28.0;
     pub const TOOLBAR_HEIGHT: f32 = 44.0;
     pub const RADIUS: f32 = 6.0;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn luminance(color: Rgba) -> f64 {
+        let linear = |value: f32| {
+            let value = f64::from(value);
+            if value <= 0.04045 {
+                value / 12.92
+            } else {
+                ((value + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        0.2126 * linear(color.r) + 0.7152 * linear(color.g) + 0.0722 * linear(color.b)
+    }
+
+    fn contrast(foreground: Rgba, background: Rgba) -> f64 {
+        let foreground = luminance(foreground);
+        let background = luminance(background);
+        (foreground.max(background) + 0.05) / (foreground.min(background) + 0.05)
+    }
+
+    fn composite(overlay: Rgba, background: Rgba) -> Rgba {
+        Rgba {
+            r: overlay.r * overlay.a + background.r * (1.0 - overlay.a),
+            g: overlay.g * overlay.a + background.g * (1.0 - overlay.a),
+            b: overlay.b * overlay.a + background.b * (1.0 - overlay.a),
+            a: 1.0,
+        }
+    }
+
+    #[test]
+    fn small_text_keeps_contrast_in_both_appearances_and_selection_states() {
+        // WCAG 2.2's sRGB contrast formula, applied to our native small-text tokens.
+        // This checks these combinations, not complete application accessibility.
+        for (appearance, theme) in [("light", Theme::LIGHT), ("dark", Theme::DARK)] {
+            let backgrounds = [
+                ("window", theme.window_bg),
+                ("sidebar", theme.sidebar_bg),
+                ("panel", theme.panel_bg),
+                ("selected", theme.row_selected),
+                ("inactive selection", theme.row_selected_inactive),
+                ("striped row", composite(theme.row_hover, theme.panel_bg)),
+                (
+                    "hovered sidebar",
+                    composite(theme.row_hover, theme.sidebar_bg),
+                ),
+            ];
+            for (text, foreground) in [
+                ("primary", theme.text),
+                ("secondary", theme.text_secondary),
+                ("tertiary", theme.text_tertiary),
+                ("action", theme.accent),
+                ("error", theme.danger),
+            ] {
+                for (surface, background) in backgrounds {
+                    let ratio = contrast(foreground, background);
+                    assert!(
+                        ratio >= 4.5,
+                        "{appearance} {text} text on {surface}: {ratio:.2}:1 is below 4.5:1"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn luminance_formula_matches_black_white_reference() {
+        assert!((contrast(rgb_const(0x000000), rgb_const(0xffffff)) - 21.0).abs() < 0.001);
+        assert_eq!(contrast(Theme::LIGHT.text, Theme::LIGHT.text), 1.0);
+    }
 }
