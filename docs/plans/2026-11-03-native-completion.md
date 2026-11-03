@@ -60,8 +60,8 @@ file hashes, rendered snapshots and temporary reader directories cannot prove it
 
 ## Results
 
-Final follow-up checks on November 3: **494 Rust tests pass**, as do strict
-workspace/snapshot Clippy, 235 snapshot native tests and the unchanged native
+Final follow-up checks on November 3: **495 Rust tests pass**, as do strict
+workspace/snapshot Clippy, 236 snapshot native tests and the unchanged native
 size gate at **11,927,760 bytes**. Two independent enforced rendered-search runs
 pass at approximately **63 ms matching / 50 ms clearing p95**. Detailed final
 evidence follows the historical results below. Platform VoiceOver, physical
@@ -387,3 +387,63 @@ screenshot above verifies startup/display only and does not replace those tests.
 The overall performance goal remains acceptance-blocked despite the passing
 probe budgets. Resume real-input acceptance only in an authorized environment
 with input control and suitable display-timing observation.
+
+### Automatic backup workflow follow-through (19:10 UTC)
+
+The actual packaged production app, with no benchmark or timer hooks, completed
+the following workflow against an isolated library imported using the public CLI:
+
+1. Default-off startup created neither automatic-backup settings nor copies.
+2. With an isolated persisted-consent fixture, normal startup automatically made
+   one verified recovery copy and persisted its success timestamp.
+3. A fresh process remained open through the real 60-second scheduler tick.
+   Persisted success prevented a duplicate copy after restart.
+4. An expired persisted success timestamp caused the next process to make a
+   second copy. Both copies remained. Only the fixture timestamp was changed,
+   not the system clock or app timer. This is not a 24-hour soak test.
+5. Renaming the test destination simulated an unavailable backup drive. The app
+   did not recreate it, did not record success, and retained both existing copies.
+   The actual window at 19:07:57 displayed the failure code, writable-folder
+   guidance, preservation notice and retry-no-sooner-than-one-hour explanation.
+6. Reopening with a disabled preference created no new destination or copies.
+7. After changing the live book title and relocating the entire original library
+   without deleting it, the public `library restore-backup` command restored the
+   first automatic copy into a separate new library. Verification reported SQLite
+   integrity `ok`, one active item, one trashed item and two verified managed
+   formats. Both restored file hashes matched the untouched original source files.
+8. The restored library defaulted to automatic backups off, with no inherited
+   backup settings. The actual app opened it successfully. A second launch and
+   screenshot at 19:10:01 showed the original pre-mutation title and one active
+   book in the restored library. The first screenshot attempt raced the bounded
+   process cleanup, so it was repeated rather than counted as evidence.
+
+The main workflow exited 0 in 191.8 seconds. Evidence is
+`$JCODE_SCRATCH_DIR/takio-automatic-backup-workflow.py` and
+`$JCODE_SCRATCH_DIR/takio-automatic-backup-workflow-20261103.log`, with the retained
+isolated fixture `takio-auto-workflow-x6bjzj6s`. Only test processes were terminated.
+
+Boundary: actual enable/disable clicks and native chooser interactions remain
+blocked by missing macOS Accessibility permission. Persisted consent/preferences
+were fixture preconditions, not proof of live user consent. Native window tests
+exercise the real action/state/engine/copy/restore chain with simulated prompt
+responses. The observed production scheduler-to-restored-library workflow is
+validated, but complete live OS consent/chooser acceptance is not claimed.
+
+Added `native_automatic_backup_enable_reload_mutate_restore_and_disable` to
+`workspace_automatic_backup_tests.rs`. It uses native menu actions and simulated
+consent/path prompts, the real worker and store, a fresh state loading persisted
+settings, a pre-daily-deadline duplicate check, subsequent metadata/Trash changes,
+native restore into a new folder, native opening of the restored library with
+original titles/bytes and default-disabled settings, then return to the original
+library and native Disable without deleting or changing the existing backup.
+The original mutated library remains unchanged by restoration.
+
+Coordinator validation: `bash scripts/check-native-macos.sh` passes 495 workspace
+tests (236 native), formatting, strict all-target workspace Clippy, the unchanged
+size gate and release-script self-tests. All 236 snapshot-feature native tests and
+strict native snapshot-feature Clippy also pass. This follow-up changes only tests
+and evidence, not production code. The release executable remains 11,927,760 bytes
+with the same SHA-256 recorded above. Logs in the scratch root:
+`takio-backup-workflow-native-check-20261103.log`,
+`takio-backup-workflow-snapshot-full-20261103.log`, and
+`takio-backup-workflow-clippy-20261103.log`.

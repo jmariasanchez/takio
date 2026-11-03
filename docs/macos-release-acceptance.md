@@ -108,7 +108,7 @@ Use disposable fixtures and a separate profile, not personal books:
   12,000,000-byte gate. Subsequent work retained unwinding and parser/cover format
   support, using whole-program opt-level 2 and `lopdf` opt-level `z`. The final
   executable is 11,927,760 bytes and the actual `check:native:macos` script passes.
-  All 494 workspace tests pass, plus 235 snapshot-feature native tests and strict
+  All 495 workspace tests pass, plus 236 snapshot-feature native tests and strict
   workspace/snapshot Clippy. Three release-profile PDF tests, including the
   independent Poppler oracle, also pass.
 - Bounded immutable hydration reuse and background debounce dispatch pass two
@@ -130,6 +130,14 @@ Use disposable fixtures and a separate profile, not personal books:
   Normal OS search-input acceptance was blocked by the confirmed absence of
   macOS Accessibility permission. Passing handler-injection performance probes
   do not close physical-input or input-to-display acceptance.
+- The packaged automatic-backup workflow also passes actual default-off startup,
+  persisted opt-in scheduling, restart through a real 60-second tick without a
+  duplicate, overdue-copy retention, missing-destination failure without
+  recreation, and restoration after the original test library was relocated.
+  Public CLI verification found one active item, one Trash item and two verified
+  managed formats. The restored normal app displayed the original book title.
+  Consent/preferences were isolated fixtures and live chooser acceptance remains
+  blocked by input permissions. See the completion plan for scope and raw evidence.
 
 Still external gates: real Developer ID/notarization/stapler/Gatekeeper approval,
 clean-Mac quarantined install, a completed GitHub workflow on the exact release

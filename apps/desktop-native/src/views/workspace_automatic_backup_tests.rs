@@ -7,6 +7,191 @@ fn automatic_backup_action(f: &Fixture, cx: &mut TestAppContext) {
     cx.run_until_parked();
 }
 
+fn automatic_backup_settings_ready(state: &LibraryEntity, cx: &mut TestAppContext) {
+    for _ in 0..200 {
+        cx.run_until_parked();
+        if state.read_with(cx, |state, _| state.automatic_backup.ready) {
+            settle(state, cx);
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    panic!("automatic backup settings did not load");
+}
+
+#[gpui::test]
+fn native_automatic_backup_enable_reload_mutate_restore_and_disable(cx: &mut TestAppContext) {
+    let f = fixture(false, cx);
+    let output = tempfile::tempdir().unwrap();
+    let restored_output = tempfile::tempdir().unwrap();
+    let restored = restored_output.path().join("restored");
+    let original_root = f.state.read_with(cx, |state, _| state.library_root.clone());
+    automatic_backup_settings_ready(&f.state, cx);
+    assert_eq!(
+        f.state
+            .read_with(cx, |state, _| state.automatic_backup.config.clone()),
+        crate::automatic_backup::Config::default()
+    );
+
+    // Only the native consent/picker boundary is simulated. Actions, state,
+    // worker, settings, SQLite, copying and verification use real implementations.
+    automatic_backup_action(&f, cx);
+    assert_eq!(
+        cx.pending_prompt().unwrap().0,
+        "Enable automatic recovery copies?"
+    );
+    cx.simulate_prompt_answer("Choose existing folder");
+    cx.run_until_parked();
+    assert!(cx.did_prompt_for_paths());
+    cx.simulate_path_prompt_response(|options| {
+        assert!(!options.files && options.directories && !options.multiple);
+        Some(vec![output.path().into()])
+    });
+    settle(&f.state, cx);
+    recovery_no_dialogs(cx);
+    let (backup, config) = f.state.read_with(cx, |state, _| {
+        assert!(!state.status.as_ref().unwrap().is_error);
+        assert!(state.automatic_backup.config.enabled);
+        let outcome = state.recovery_outcome.as_ref().unwrap();
+        assert!(outcome.summary.contains("verified"));
+        (outcome.path.clone(), state.automatic_backup.config.clone())
+    });
+    assert_eq!(
+        config.destination,
+        Some(output.path().canonicalize().unwrap())
+    );
+    let last_success = config.last_success.unwrap();
+    recovery_assert_copied_books(&f, &backup, 0);
+    let backup_database = std::fs::read(backup.join("library.sqlite")).unwrap();
+    let backup_manifest = std::fs::read(backup.join("manifest.json")).unwrap();
+
+    // A fresh native state must load persisted settings, not inherit the old
+    // state's in-memory last_attempt throttle or create another immediate copy.
+    let reopened = cx.new(|cx| LibraryState::new(f.engine.clone(), cx));
+    automatic_backup_settings_ready(&reopened, cx);
+    reopened.update(cx, |state, cx| {
+        assert_eq!(state.automatic_backup.config, config);
+        assert!(state.automatic_backup.last_attempt.is_none());
+        assert!(
+            !state
+                .automatic_backup
+                .due(last_success + crate::automatic_backup::DAILY_SECONDS - 1)
+        );
+        state.check_automatic_backup(
+            last_success + crate::automatic_backup::DAILY_SECONDS - 1,
+            cx,
+        );
+        assert!(!state.busy);
+        assert!(state.automatic_backup.last_attempt.is_none());
+    });
+    settle(&reopened, cx);
+    assert_eq!(std::fs::read_dir(output.path()).unwrap().count(), 1);
+    drop(reopened);
+
+    let updated = f
+        .engine
+        .request(|reply| Request::Update {
+            id: f.books[0].id.clone(),
+            patch: takio::model::LibraryPatch {
+                title: takio::model::Patch::Set("Changed after automatic backup".into()),
+                ..Default::default()
+            },
+            reply,
+        })
+        .recv()
+        .unwrap()
+        .unwrap();
+    assert_eq!(updated.title, "Changed after automatic backup");
+    f.state.update(cx, |state, cx| {
+        state.select_only(1, cx);
+        state.trash_selected(cx);
+    });
+    settle(&f.state, cx);
+    assert_eq!(trash_ids(&f.engine), vec![f.books[1].id.clone()]);
+    let mutated = recovery_snapshot(&f);
+
+    recovery_begin(&f, true, cx);
+    recovery_source(&backup, cx);
+    cx.simulate_new_path_selection(|_| Some(restored.clone()));
+    settle(&f.state, cx);
+    recovery_no_dialogs(cx);
+    f.state.read_with(cx, |state, _| {
+        assert!(!state.status.as_ref().unwrap().is_error);
+        assert_eq!(state.library_root, original_root);
+        assert_eq!(
+            state.recovery_outcome.as_ref().unwrap().path,
+            restored.canonicalize().unwrap()
+        );
+    });
+    assert_eq!(recovery_snapshot(&f), mutated);
+    recovery_assert_copied_books(&f, &restored, 0);
+
+    switch_prompt(&f, cx);
+    cx.simulate_path_prompt_response(|_| Some(vec![restored.clone()]));
+    settle(&f.state, cx);
+    automatic_backup_settings_ready(&f.state, cx);
+    f.state.update(cx, |state, cx| {
+        assert_eq!(state.library_root, restored.canonicalize().unwrap());
+        assert_eq!(state.items.len(), f.books.len());
+        for original in &f.books {
+            let book = state
+                .items
+                .iter()
+                .find(|book| book.id == original.id)
+                .unwrap();
+            assert_eq!(book.title, original.title);
+        }
+        assert_eq!(
+            state.automatic_backup.config,
+            crate::automatic_backup::Config::default()
+        );
+        state.check_automatic_backup(u64::MAX, cx);
+        assert!(!state.busy);
+        assert!(state.automatic_backup.last_attempt.is_none());
+    });
+    assert!(trash_ids(&f.engine).is_empty());
+    assert!(!restored.join(".takio-automatic-backup").exists());
+
+    switch_to(&f, &original_root, cx);
+    automatic_backup_settings_ready(&f.state, cx);
+    assert_eq!(recovery_snapshot(&f), mutated);
+    assert_eq!(
+        f.state
+            .read_with(cx, |state, _| state.automatic_backup.config.clone()),
+        config
+    );
+    f.window
+        .update(cx, |_, window, cx| {
+            window.dispatch_action(Box::new(crate::DisableAutomaticBackups), cx)
+        })
+        .unwrap();
+    settle(&f.state, cx);
+    f.state.update(cx, |state, cx| {
+        assert!(!state.status.as_ref().unwrap().is_error);
+        assert!(!state.automatic_backup.config.enabled);
+        state.check_automatic_backup(u64::MAX, cx);
+        assert!(!state.busy);
+    });
+    assert!(
+        !crate::automatic_backup::load(&original_root)
+            .unwrap()
+            .enabled
+    );
+    assert_eq!(std::fs::read_dir(output.path()).unwrap().count(), 1);
+    assert_eq!(
+        std::fs::read(backup.join("library.sqlite")).unwrap(),
+        backup_database
+    );
+    assert_eq!(
+        std::fs::read(backup.join("manifest.json")).unwrap(),
+        backup_manifest
+    );
+    recovery_assert_copied_books(&f, &backup, 0);
+    recovery_assert_copied_books(&f, &restored, 0);
+    assert_files_unchanged(&f);
+    recovery_no_dialogs(cx);
+}
+
 fn automatic_backup_due_for_dialog_test(f: &Fixture, cx: &mut TestAppContext) {
     for _ in 0..200 {
         cx.run_until_parked();
