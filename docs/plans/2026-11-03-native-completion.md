@@ -188,3 +188,30 @@ a local artifact, not a signed/notarized distribution release or a green size ga
 - DMG SHA-256:
   `cb23ddf565289f009cf82a2e6382d78e55358c1b4f90c31f042265dc5222aadd`.
 - Final packaging log: `$JCODE_SCRATCH_DIR/takio-native-package-final-20261103.log`.
+
+### Follow-up acceptance: cover decoding and size attribution
+
+The linker map shows duplicate general image-decoder instantiations, including
+EXR and TIFF code, in the image crate and GPUI. Investigate sharing the same
+decoder entry path without dropping supported image formats. Native covers also
+currently read an unbounded file before resizing. Before accepting this slice,
+test all engine-produced cover formats, existing extra formats, corrupt inputs,
+file-size and decoded-dimension/output limits, thumbnail dimensions and BGRA
+conversion. Measure the production binary again, retain panic unwinding and the
+strict size budget, and rerun native tests/Clippy and packaging.
+Allocation limits are not a claim of a hard process-memory or wall-time bound.
+
+Observed follow-up: all 232 native tests, including six cover checks, pass with
+the real macOS alias temp root. Strict all-target snapshot Clippy and formatting
+pass. PNG/JPEG/GIF/WebP and existing BMP/TIFF covers still decode from their bytes
+with misleading extensions, preserving source bytes. Oversized input, excessive
+dimensions and compressed grayscale images whose RGBA expansion exceeds the cap
+are rejected. Missing/corrupt images retain the existing placeholder behavior.
+
+This decoder entry change does not reduce executable size: with opt-level 3 the
+intermediate build measured 12,570,480 bytes. A whole-program opt-level 2 experiment
+measured 11,976,080 bytes without disabling unwinding or changing any threshold.
+Its idle 25-sample rendered probe passed startup/state budgets but still missed
+search at 103.086 ms matching and 83.338 ms clearing. This is preliminary evidence,
+not completion of the latency or final integrated packaging gate. Further query
+work is in progress, and all final measurements must use the integrated source.
