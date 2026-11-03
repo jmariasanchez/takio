@@ -1,3 +1,6 @@
+use super::preparation::preparation_channel;
+use super::*;
+
 #[gpui::test]
 fn recovery_round_trip_keeps_whole_catalogue_trash_and_originals(cx: &mut TestAppContext) {
     let f = fixture(cx);
@@ -5,13 +8,20 @@ fn recovery_round_trip_keeps_whole_catalogue_trash_and_originals(cx: &mut TestAp
     let backup = output.path().join("backup");
     let restored = output.path().join("restored");
     let books = f.state.read_with(cx, |s, _| s.items.clone());
-    let bytes: Vec<_> = books.iter().map(|book| fs::read(&book.source_path).unwrap()).collect();
+    let bytes: Vec<_> = books
+        .iter()
+        .map(|book| fs::read(&book.source_path).unwrap())
+        .collect();
     f.state.update(cx, |s, cx| {
         s.select_only(0, cx);
-        s.update_metadata(books[0].id.clone(), LibraryPatch {
-            tags: takio::model::Patch::Set(vec!["Keep this tag".into()]),
-            ..Default::default()
-        }, cx);
+        s.update_metadata(
+            books[0].id.clone(),
+            LibraryPatch {
+                tags: takio::model::Patch::Set(vec!["Keep this tag".into()]),
+                ..Default::default()
+            },
+            cx,
+        );
     });
     settle(&f.state, cx);
     f.state.update(cx, |s, cx| s.trash_selected(cx));
@@ -20,7 +30,8 @@ fn recovery_round_trip_keeps_whole_catalogue_trash_and_originals(cx: &mut TestAp
     cx.executor().advance_clock(Duration::from_millis(100));
     settle(&f.state, cx);
     assert_eq!(titles(&f.state, cx), ["Beta"]);
-    f.state.update(cx, |s, cx| s.back_up_library(backup.clone(), cx));
+    f.state
+        .update(cx, |s, cx| s.back_up_library(backup.clone(), cx));
     settle(&f.state, cx);
     f.state.read_with(cx, |s, _| {
         assert!(!s.status.as_ref().unwrap().is_error);
@@ -30,7 +41,9 @@ fn recovery_round_trip_keeps_whole_catalogue_trash_and_originals(cx: &mut TestAp
     });
     let moved = output.path().join("moved-backup");
     fs::rename(&backup, &moved).unwrap();
-    f.state.update(cx, |s, cx| s.restore_backup_copy(moved.clone(), restored.clone(), cx));
+    f.state.update(cx, |s, cx| {
+        s.restore_backup_copy(moved.clone(), restored.clone(), cx)
+    });
     settle(&f.state, cx);
     assert_eq!(titles(&f.state, cx), ["Beta"]);
     f.state.read_with(cx, |s, _| {
@@ -43,14 +56,28 @@ fn recovery_round_trip_keeps_whole_catalogue_trash_and_originals(cx: &mut TestAp
     let paths = LibraryPaths::resolve(None, Some(&restored.join("library.sqlite"))).unwrap();
     let store = takio::store::LibraryStore::open_read_only(paths).unwrap();
     let report = store.verify().unwrap();
-    assert_eq!((report.active_items, report.trashed_items, report.verified_managed_formats), (2, 1, 3));
+    assert_eq!(
+        (
+            report.active_items,
+            report.trashed_items,
+            report.verified_managed_formats
+        ),
+        (2, 1, 3)
+    );
     assert_eq!(store.list_trash().unwrap()[0].tags, ["Keep this tag"]);
     for (book, expected) in books.iter().zip(bytes) {
         let recovered = store.get(&book.id).unwrap().unwrap();
-        assert!(recovered.source_path.starts_with(restored.canonicalize().unwrap()));
+        assert!(
+            recovered
+                .source_path
+                .starts_with(restored.canonicalize().unwrap())
+        );
         assert_eq!(fs::read(recovered.source_path).unwrap(), expected);
         assert_eq!(fs::read(&book.source_path).unwrap(), expected);
-        assert_eq!(fs::read(f._temp.path().join(format!("{}.epub", book.title))).unwrap(), expected);
+        assert_eq!(
+            fs::read(f._temp.path().join(format!("{}.epub", book.title))).unwrap(),
+            expected
+        );
     }
 }
 
@@ -62,7 +89,8 @@ fn recovery_collision_and_invalid_backup_leave_current_library_unchanged(cx: &mu
     fs::create_dir(&existing).unwrap();
     fs::write(existing.join("marker"), b"preserve me").unwrap();
     let before = titles(&f.state, cx);
-    f.state.update(cx, |s, cx| s.back_up_library(existing.clone(), cx));
+    f.state
+        .update(cx, |s, cx| s.back_up_library(existing.clone(), cx));
     settle(&f.state, cx);
     f.state.read_with(cx, |s, _| {
         assert!(s.status.as_ref().unwrap().is_error);
@@ -73,11 +101,16 @@ fn recovery_collision_and_invalid_backup_leave_current_library_unchanged(cx: &mu
     fs::create_dir(&invalid).unwrap();
     fs::write(invalid.join("manifest.json"), b"not JSON").unwrap();
     let destination = output.path().join("rejected");
-    f.state.update(cx, |s, cx| s.restore_backup_copy(invalid.clone(), destination.clone(), cx));
+    f.state.update(cx, |s, cx| {
+        s.restore_backup_copy(invalid.clone(), destination.clone(), cx)
+    });
     settle(&f.state, cx);
     assert!(!destination.exists());
     assert_eq!(fs::read(existing.join("marker")).unwrap(), b"preserve me");
-    assert_eq!(fs::read(invalid.join("manifest.json")).unwrap(), b"not JSON");
+    assert_eq!(
+        fs::read(invalid.join("manifest.json")).unwrap(),
+        b"not JSON"
+    );
     assert_eq!(titles(&f.state, cx), before);
     f.state.read_with(cx, |s, _| {
         assert!(s.status.as_ref().unwrap().is_error);
@@ -116,8 +149,12 @@ fn recovery_blocks_overlap_and_close_until_reply(cx: &mut TestAppContext) {
             s.eject(reader, cx);
         });
         match requests.try_recv().unwrap() {
-            Request::Backup { reply, .. } if !restore => reply.send(Err(AppError::new("backup-failed"))).unwrap(),
-            Request::RestoreBackupCopy { reply, .. } if restore => reply.send(Err(AppError::new("restore-failed"))).unwrap(),
+            Request::Backup { reply, .. } if !restore => {
+                reply.send(Err(AppError::new("backup-failed"))).unwrap()
+            }
+            Request::RestoreBackupCopy { reply, .. } if restore => {
+                reply.send(Err(AppError::new("restore-failed"))).unwrap()
+            }
             _ => panic!("expected only the original recovery operation"),
         }
         assert!(requests.try_recv().is_err());
@@ -155,7 +192,8 @@ fn recovery_rejects_corrupt_managed_bytes_without_false_success(cx: &mut TestApp
     let f = fixture(cx);
     let output = tempfile::tempdir().unwrap();
     let backup = output.path().join("backup");
-    f.state.update(cx, |s, cx| s.back_up_library(backup.clone(), cx));
+    f.state
+        .update(cx, |s, cx| s.back_up_library(backup.clone(), cx));
     settle(&f.state, cx);
     let paths = LibraryPaths::resolve(None, Some(&backup.join("library.sqlite"))).unwrap();
     let store = takio::store::LibraryStore::open_read_only(paths).unwrap();
@@ -163,7 +201,9 @@ fn recovery_rejects_corrupt_managed_bytes_without_false_success(cx: &mut TestApp
     drop(store);
     fs::write(&path, b"corrupted").unwrap();
     let destination = output.path().join("restore");
-    f.state.update(cx, |s, cx| s.restore_backup_copy(backup, destination.clone(), cx));
+    f.state.update(cx, |s, cx| {
+        s.restore_backup_copy(backup, destination.clone(), cx)
+    });
     settle(&f.state, cx);
     f.state.read_with(cx, |s, _| {
         assert!(s.recovery_outcome.is_none());

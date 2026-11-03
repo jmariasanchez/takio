@@ -282,5 +282,4 @@ impl Render for StartupWindow {
 }
 
 #[cfg(test)]
-#[path = "startup_window_tests.rs"]
 mod tests;

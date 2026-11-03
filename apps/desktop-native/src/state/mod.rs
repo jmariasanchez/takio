@@ -23,10 +23,8 @@ use crate::engine::{
 };
 use crate::preparation::PreparationPreview;
 
-#[path = "state_library.rs"]
 mod library;
 
-#[path = "automatic_backup_state.rs"]
 mod automatic_backup;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1470,11 +1468,11 @@ mod tests {
     use std::path::Path;
     use takio::paths::LibraryPaths;
 
-    include!("preparation_state_tests.rs");
-    include!("recovery_state_tests.rs");
-    include!("automatic_backup_state_tests.rs");
-    include!("library_state_tests.rs");
-    include!("reader_shelf_state_tests.rs");
+    mod automatic_backup;
+    mod library;
+    mod preparation;
+    mod reader_shelf;
+    mod recovery;
 
     struct Fixture {
         _temp: tempfile::TempDir,

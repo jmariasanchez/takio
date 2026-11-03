@@ -1,4 +1,5 @@
-// Included in state::tests. Every reader and library is disposable.
+use super::library::switching_candidate;
+use super::*;
 #[gpui::test]
 fn reader_scan_failures_retain_typed_error_status(cx: &mut TestAppContext) {
     for whole_request in [false, true] {
@@ -47,7 +48,8 @@ fn check_reader_progress(cx: &mut TestAppContext, koreader: bool, status: &str) 
     )
     .unwrap();
     let before = reader_tree_snapshot(&reader.path);
-    f.state.update(cx, |state, cx| state.refresh_destinations(cx));
+    f.state
+        .update(cx, |state, cx| state.refresh_destinations(cx));
     settle(&f.state, cx);
     f.state.read_with(cx, |state, _| {
         let shelf = state.reader_shelves[0].1.as_ref().unwrap();
@@ -56,8 +58,18 @@ fn check_reader_progress(cx: &mut TestAppContext, koreader: bool, status: &str) 
             let (label, reading) = &state.reading[&book.id];
             assert_eq!(label, "Kindle (KOReader)");
             assert_eq!(state.on_reader[&book.id], vec!["Kindle (KOReader)"]);
-            assert_eq!(reading.label().as_deref(), Some(if status == "complete" { "finished" } else { "50%" }));
-            assert_eq!((shelf.finished, shelf.in_progress), if status == "complete" { (1, 0) } else { (0, 1) });
+            assert_eq!(
+                reading.label().as_deref(),
+                Some(if status == "complete" {
+                    "finished"
+                } else {
+                    "50%"
+                })
+            );
+            assert_eq!(
+                (shelf.finished, shelf.in_progress),
+                if status == "complete" { (1, 0) } else { (0, 1) }
+            );
         } else {
             assert!(state.reading.is_empty());
             assert_eq!(state.on_reader[&book.id], vec!["Kindle"]);
@@ -303,17 +315,25 @@ fn delivered_book_with_broken_history_is_reported_as_delivered(cx: &mut TestAppC
         state.send_selected_to(reader, cx);
     });
     settle(&f.state, cx);
-    f.state.update(cx, |state, cx| state.confirm_send_preview(cx));
+    f.state
+        .update(cx, |state, cx| state.confirm_send_preview(cx));
     settle(&f.state, cx);
     f.state.read_with(cx, |state, _| {
-        let delivery = state.delivery_report.as_ref().unwrap().entries[0].result.as_ref().unwrap();
+        let delivery = state.delivery_report.as_ref().unwrap().entries[0]
+            .result
+            .as_ref()
+            .unwrap();
         assert!(delivery.path.is_file());
         assert!(delivery.record_error.is_some());
         let status = state.status.as_ref().unwrap();
         assert!(status.is_error);
         assert!(status.text.contains("Sent 1"));
         assert!(status.text.contains("0 failed"));
-        assert!(status.text.contains("delivered, but history was not updated"));
+        assert!(
+            status
+                .text
+                .contains("delivered, but history was not updated")
+        );
     });
 }
 
@@ -424,7 +444,11 @@ fn reader_marks_after_restart_reuse_saved_fingerprints(cx: &mut TestAppContext) 
     let reader = shelf_reader(&f, cx);
     let book = f.state.read_with(cx, |state, _| state.items[0].clone());
     fs::copy(&book.source_path, reader.path.join("documents/book.epub")).unwrap();
-    fs::write(reader.path.join("documents/reader only.epub"), "only on the reader").unwrap();
+    fs::write(
+        reader.path.join("documents/reader only.epub"),
+        "only on the reader",
+    )
+    .unwrap();
     f.state.update(cx, |state, cx| state.scan_readers(cx));
     settle(&f.state, cx);
     let root = f._temp.path();
@@ -432,10 +456,14 @@ fn reader_marks_after_restart_reuse_saved_fingerprints(cx: &mut TestAppContext) 
     let saved = fs::read(&cache).expect("the scan saved the reader's fingerprints");
 
     // Import updates the cache with what it read, so the next launch needs no reading.
-    f.state.update(cx, |state, cx| state.import_from_reader(reader.clone(), cx));
+    f.state
+        .update(cx, |state, cx| state.import_from_reader(reader.clone(), cx));
     settle(&f.state, cx);
     let after_import = fs::read(&cache).unwrap();
-    assert_ne!(after_import, saved, "the imported file's fingerprint is remembered");
+    assert_ne!(
+        after_import, saved,
+        "the imported file's fingerprint is remembered"
+    );
     let before = reader_tree_snapshot(&reader.path);
     // Saving replaces the file, so an unchanged identity means nothing was re-read.
     let identity = || {
@@ -460,9 +488,21 @@ fn reader_marks_after_restart_reuse_saved_fingerprints(cx: &mut TestAppContext) 
         assert_eq!((shelf.in_library, shelf.not_in_library), (2, 0));
         assert!(state.on_reader.contains_key(&book.id));
     });
-    assert_eq!(fs::read(&cache).unwrap(), after_import, "nothing new had to be read");
-    assert_eq!(identity(), saved_identity, "the restarted app re-read nothing");
-    assert_eq!(reader_tree_snapshot(&reader.path), before, "the reader is not modified");
+    assert_eq!(
+        fs::read(&cache).unwrap(),
+        after_import,
+        "nothing new had to be read"
+    );
+    assert_eq!(
+        identity(),
+        saved_identity,
+        "the restarted app re-read nothing"
+    );
+    assert_eq!(
+        reader_tree_snapshot(&reader.path),
+        before,
+        "the reader is not modified"
+    );
 }
 
 #[gpui::test]
@@ -495,7 +535,8 @@ fn kindle_at(volumes: &Path, name: &str) -> PathBuf {
 
 /// Let the volume poll run once, then wait for any refresh and scan it started.
 fn poll_volumes(f: &Fixture, cx: &mut TestAppContext) {
-    cx.executor().advance_clock(VOLUME_POLL + Duration::from_millis(50));
+    cx.executor()
+        .advance_clock(VOLUME_POLL + Duration::from_millis(50));
     settle(&f.state, cx);
 }
 
@@ -509,14 +550,21 @@ fn plugging_in_a_reader_is_noticed_without_refresh(cx: &mut TestAppContext) {
         state.refresh_destinations(cx);
     });
     settle(&f.state, cx);
-    assert!(f.state.read_with(cx, |state, _| state.destinations.is_empty()));
+    assert!(
+        f.state
+            .read_with(cx, |state, _| state.destinations.is_empty())
+    );
 
     let book = f.state.read_with(cx, |state, _| state.items[0].clone());
     let mount = kindle_at(&volumes, "Kindle");
     fs::copy(&book.source_path, mount.join("documents/book.epub")).unwrap();
     poll_volumes(&f, cx);
     f.state.read_with(cx, |state, _| {
-        assert_eq!(state.destinations.len(), 1, "reader noticed without Refresh");
+        assert_eq!(
+            state.destinations.len(),
+            1,
+            "reader noticed without Refresh"
+        );
         assert_eq!(state.on_reader[&book.id], vec!["Kindle".to_owned()]);
     });
 
@@ -540,12 +588,15 @@ fn unchanged_volumes_do_not_rescan_and_changes_wait_for_open_reviews(cx: &mut Te
         state.refresh_destinations(cx);
     });
     settle(&f.state, cx);
-    let generation = f.state.read_with(cx, |state, _| state.reader_scan_generation);
+    let generation = f
+        .state
+        .read_with(cx, |state, _| state.reader_scan_generation);
     for _ in 0..3 {
         poll_volumes(&f, cx);
     }
     assert_eq!(
-        f.state.read_with(cx, |state, _| state.reader_scan_generation),
+        f.state
+            .read_with(cx, |state, _| state.reader_scan_generation),
         generation,
         "an unchanged volume list does not rescan the reader"
     );
@@ -560,12 +611,21 @@ fn unchanged_volumes_do_not_rescan_and_changes_wait_for_open_reviews(cx: &mut Te
     poll_volumes(&f, cx);
     f.state.read_with(cx, |state, _| {
         assert!(state.send_preview.is_some(), "review left intact");
-        assert_eq!(state.destinations.len(), 1, "refresh deferred during review");
+        assert_eq!(
+            state.destinations.len(),
+            1,
+            "refresh deferred during review"
+        );
     });
-    f.state.update(cx, |state, cx| state.cancel_send_preview(cx));
+    f.state
+        .update(cx, |state, cx| state.cancel_send_preview(cx));
     poll_volumes(&f, cx);
     f.state.read_with(cx, |state, _| {
-        assert_eq!(state.destinations.len(), 2, "deferred change applied next tick");
+        assert_eq!(
+            state.destinations.len(),
+            2,
+            "deferred change applied next tick"
+        );
     });
 }
 
@@ -575,9 +635,13 @@ fn failed_volume_listing_clears_stale_reader_marks(cx: &mut TestAppContext) {
     let reader = shelf_reader(&f, cx);
     let book = f.state.read_with(cx, |state, _| state.items[0].clone());
     fs::copy(&book.source_path, reader.path.join("documents/book.epub")).unwrap();
-    f.state.update(cx, |state, cx| state.refresh_destinations(cx));
+    f.state
+        .update(cx, |state, cx| state.refresh_destinations(cx));
     settle(&f.state, cx);
-    assert!(f.state.read_with(cx, |state, _| state.on_reader.contains_key(&book.id)));
+    assert!(
+        f.state
+            .read_with(cx, |state, _| state.on_reader.contains_key(&book.id))
+    );
 
     // The volumes root itself becomes unreadable: listing fails, so nothing can be
     // claimed about which books are on a reader any more.
@@ -589,7 +653,10 @@ fn failed_volume_listing_clears_stale_reader_marks(cx: &mut TestAppContext) {
     f.state.read_with(cx, |state, _| {
         assert!(state.device_error.is_some());
         assert!(state.destinations.is_empty());
-        assert!(state.on_reader.is_empty(), "no stale markers after a failed listing");
+        assert!(
+            state.on_reader.is_empty(),
+            "no stale markers after a failed listing"
+        );
         assert!(state.reader_shelves.is_empty());
     });
 }

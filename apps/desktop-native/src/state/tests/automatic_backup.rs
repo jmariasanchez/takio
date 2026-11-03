@@ -1,3 +1,6 @@
+use super::preparation::{preparation_channel, preparation_review};
+use super::*;
+
 fn automatic_ready(f: &Fixture, cx: &mut TestAppContext) {
     crate::test_support::wait_until("automatic backup settings", || {
         cx.run_until_parked();
@@ -10,12 +13,15 @@ fn stale_backup_configuration_reply_releases_busy(cx: &mut TestAppContext) {
     let f = fixture(cx);
     automatic_ready(&f, cx);
     let requests = preparation_channel(&f, cx);
-    f.state.update(cx, |s, cx| s.configure_automatic_backup(None, cx));
+    f.state
+        .update(cx, |s, cx| s.configure_automatic_backup(None, cx));
     let Request::AutomaticBackupConfigure { reply, .. } = requests.recv().unwrap() else {
         panic!("expected configuration request");
     };
     f.state.update(cx, |s, _| s.automatic_backup.revision += 1);
-    reply.send(Ok(crate::automatic_backup::Config::default())).unwrap();
+    reply
+        .send(Ok(crate::automatic_backup::Config::default()))
+        .unwrap();
     settle(&f.state, cx);
     assert!(f.state.read_with(cx, |s, _| s.can_mutate()));
 }

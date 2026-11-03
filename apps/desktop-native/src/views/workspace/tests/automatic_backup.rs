@@ -1,3 +1,7 @@
+use super::library::{switch_prompt, switch_to};
+use super::recovery::*;
+use super::*;
+
 fn automatic_backup_action(f: &Fixture, cx: &mut TestAppContext) {
     f.window
         .update(cx, |_, window, cx| {

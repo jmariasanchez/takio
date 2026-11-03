@@ -501,7 +501,6 @@ pub(crate) fn accessible_button(
 }
 
 #[cfg(test)]
-#[path = "accessibility_tests.rs"]
 pub(crate) mod accessibility_tests;
 
 #[cfg(test)]

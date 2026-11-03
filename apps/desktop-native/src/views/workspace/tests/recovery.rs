@@ -1,4 +1,4 @@
-// Included in workspace_tests.rs so recovery checks reuse its real-engine fixture.
+use super::*;
 
 #[cfg(debug_assertions)]
 #[gpui::test]
@@ -106,7 +106,7 @@ fn recovery_action(f: &Fixture, restore: bool, cx: &mut TestAppContext) {
     cx.run_until_parked();
 }
 
-fn recovery_begin(f: &Fixture, restore: bool, cx: &mut TestAppContext) {
+pub(super) fn recovery_begin(f: &Fixture, restore: bool, cx: &mut TestAppContext) {
     recovery_action(f, restore, cx);
     let (title, detail) = cx
         .pending_prompt()
@@ -135,7 +135,7 @@ fn recovery_begin(f: &Fixture, restore: bool, cx: &mut TestAppContext) {
     cx.run_until_parked();
 }
 
-fn recovery_source(source: &std::path::Path, cx: &mut TestAppContext) {
+pub(super) fn recovery_source(source: &std::path::Path, cx: &mut TestAppContext) {
     assert!(cx.did_prompt_for_paths());
     cx.simulate_path_prompt_response(|options| {
         assert!(!options.files);
@@ -153,7 +153,7 @@ type RecoverySnapshot = (
     std::collections::BTreeMap<PathBuf, Vec<u8>>,
 );
 
-fn recovery_snapshot(f: &Fixture) -> RecoverySnapshot {
+pub(super) fn recovery_snapshot(f: &Fixture) -> RecoverySnapshot {
     (
         format!("{:?}", preparation_catalogue(f)),
         trash_ids(&f.engine),
@@ -170,7 +170,7 @@ fn recovery_view(f: &Fixture, cx: &mut TestAppContext) -> String {
     })
 }
 
-fn recovery_no_dialogs(cx: &TestAppContext) {
+pub(super) fn recovery_no_dialogs(cx: &TestAppContext) {
     assert!(!cx.has_pending_prompt());
     assert!(!cx.did_prompt_for_paths());
     assert!(!cx.did_prompt_for_new_path());

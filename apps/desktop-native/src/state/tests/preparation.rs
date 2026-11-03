@@ -1,10 +1,12 @@
-fn preparation_channel(f: &Fixture, cx: &mut TestAppContext) -> Receiver<Request> {
+use super::*;
+
+pub(super) fn preparation_channel(f: &Fixture, cx: &mut TestAppContext) -> Receiver<Request> {
     let (engine, requests) = Engine::test_channel();
     f.state.update(cx, |s, _| s.engine = engine);
     requests
 }
 
-fn preparation_review(item: &LibraryItem, available: bool) -> PreparationPreview {
+pub(super) fn preparation_review(item: &LibraryItem, available: bool) -> PreparationPreview {
     PreparationPreview {
         item_id: item.id.clone(),
         title: item.title.clone(),

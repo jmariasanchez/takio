@@ -248,5 +248,4 @@ pub fn run(store: &LibraryStore, mut config: Config, now: u64) -> AppResult<RunR
 }
 
 #[cfg(test)]
-#[path = "automatic_backup_tests.rs"]
 mod tests;

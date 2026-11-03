@@ -1,6 +1,6 @@
-// Included in state::tests to exercise the real engine with disposable libraries.
+use super::*;
 
-fn switching_candidate(title: &str) -> (tempfile::TempDir, PathBuf) {
+pub(super) fn switching_candidate(title: &str) -> (tempfile::TempDir, PathBuf) {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().canonicalize().unwrap().join("library");
     let paths = LibraryPaths::resolve(None, Some(&root.join("library.sqlite"))).unwrap();
@@ -29,7 +29,11 @@ fn library_switch_resets_view_and_routes_mutation_to_new_catalogue(cx: &mut Test
         state.anchor = Some(0);
         state.sort.ascending = false;
         state.section = Section::Trash;
-        state.recovery_outcome = Some(RecoveryOutcome { path: a.clone(), summary: "old".into(), detail: "old".into() });
+        state.recovery_outcome = Some(RecoveryOutcome {
+            path: a.clone(),
+            summary: "old".into(),
+            detail: "old".into(),
+        });
         state.delivery_report = Some(SendReport::default());
         state.open_library(b.clone(), cx);
         assert!(state.switching_library && state.busy);
@@ -52,11 +56,15 @@ fn library_switch_resets_view_and_routes_mutation_to_new_catalogue(cx: &mut Test
     settle(&f.state, cx);
     assert!(titles(&f.state, cx).is_empty());
     assert_eq!(fs::read(a.join("library.sqlite")).unwrap(), before);
-    f.state.update(cx, |state, cx| state.open_library(a.clone(), cx));
+    f.state
+        .update(cx, |state, cx| state.open_library(a.clone(), cx));
     settle(&f.state, cx);
     assert_eq!(titles(&f.state, cx), ["Alpha", "Beta", "Gamma"]);
     assert_eq!(f.state.read_with(cx, |state, _| state.library_epoch), 2);
-    let b_store = takio::store::LibraryStore::open_read_only(LibraryPaths::resolve(None, Some(&b.join("library.sqlite"))).unwrap()).unwrap();
+    let b_store = takio::store::LibraryStore::open_read_only(
+        LibraryPaths::resolve(None, Some(&b.join("library.sqlite"))).unwrap(),
+    )
+    .unwrap();
     assert_eq!(b_store.list_trash().unwrap()[0].title, "Different library");
 }
 
@@ -65,15 +73,34 @@ fn library_switch_invalid_folder_preserves_view_and_does_not_create(cx: &mut Tes
     let f = fixture(cx);
     switching_ready(&f.state, cx);
     f.state.update(cx, |state, cx| state.select_only(1, cx));
-    let before = f.state.read_with(cx, |state, _| format!("{:?}|{:?}|{:?}|{:?}|{:?}", state.library_root, state.items, state.selected, state.query, state.filters));
+    let before = f.state.read_with(cx, |state, _| {
+        format!(
+            "{:?}|{:?}|{:?}|{:?}|{:?}",
+            state.library_root, state.items, state.selected, state.query, state.filters
+        )
+    });
     let missing = f._temp.path().join("not-a-library");
-    f.state.update(cx, |state, cx| state.open_library(missing.clone(), cx));
+    f.state
+        .update(cx, |state, cx| state.open_library(missing.clone(), cx));
     settle(&f.state, cx);
     assert!(!missing.exists());
     f.state.read_with(cx, |state, _| {
-        assert_eq!(format!("{:?}|{:?}|{:?}|{:?}|{:?}", state.library_root, state.items, state.selected, state.query, state.filters), before);
+        assert_eq!(
+            format!(
+                "{:?}|{:?}|{:?}|{:?}|{:?}",
+                state.library_root, state.items, state.selected, state.query, state.filters
+            ),
+            before
+        );
         assert_eq!(state.library_epoch, 0);
-        assert!(state.status.as_ref().unwrap().text.contains("still open and unchanged"));
+        assert!(
+            state
+                .status
+                .as_ref()
+                .unwrap()
+                .text
+                .contains("still open and unchanged")
+        );
         assert!(state.can_switch_library());
     });
 }
@@ -104,9 +131,13 @@ fn library_switch_pending_freezes_dispatch_and_failure_releases_busy(cx: &mut Te
         assert!(state.query.is_empty() && state.filters.is_empty());
         assert_eq!(state.section, Section::Library);
     });
-    let Request::OpenLibrary { reply, .. } = requests.recv().unwrap() else { panic!("expected open request") };
+    let Request::OpenLibrary { reply, .. } = requests.recv().unwrap() else {
+        panic!("expected open request")
+    };
     assert!(requests.try_recv().is_err());
-    reply.send(Err(AppError::new("storage-unavailable"))).unwrap();
+    reply
+        .send(Err(AppError::new("storage-unavailable")))
+        .unwrap();
     settle(&f.state, cx);
     assert_eq!(titles(&f.state, cx), before);
     assert!(f.state.read_with(cx, |state, _| state.can_switch_library()));
@@ -125,7 +156,13 @@ fn library_switch_guards_edits_operations_loading_and_reviews(cx: &mut TestAppCo
             state.loading = guard == 2;
             state.refreshing_devices = guard == 3;
             state.send_preview = (guard == 4).then(|| SendPreview {
-                destination: takio::destinations::Destination { id: "test".into(), name: "test".into(), path: "/unused".into(), kind: takio::destinations::DestinationKind::Generic, features: Vec::new() },
+                destination: takio::destinations::Destination {
+                    id: "test".into(),
+                    name: "test".into(),
+                    path: "/unused".into(),
+                    kind: takio::destinations::DestinationKind::Generic,
+                    features: Vec::new(),
+                },
                 entries: Vec::new(),
             });
             state.open_library("/unused".into(), cx);
@@ -153,14 +190,27 @@ fn library_switch_rejects_stale_snapshot_and_old_generic_reply(cx: &mut TestAppC
         // The deterministic test executor cannot park a synchronous recv while
         // this test holds its sender. Queue a ready reply, then change identity
         // before polling it to exercise the stale generic callback boundary.
-        state.await_reply(receiver, cx, |state, _: AppResult<()>, cx| state.set_status("obsolete".into(), true, cx)).detach();
+        state
+            .await_reply(receiver, cx, |state, _: AppResult<()>, cx| {
+                state.set_status("obsolete".into(), true, cx)
+            })
+            .detach();
         state.library_epoch = state.library_epoch.wrapping_add(1);
-        let task = cx.background_executor().spawn(async move { Ok(LibrarySnapshot { items: old_items, facets: Arc::new(Facets::default()) }) });
+        let task = cx.background_executor().spawn(async move {
+            Ok(LibrarySnapshot {
+                items: old_items,
+                facets: Arc::new(Facets::default()),
+            })
+        });
         state.await_snapshot(task, generation, cx).detach();
     });
     cx.run_until_parked();
     assert_eq!(titles(&f.state, cx), ["New library"]);
-    assert_ne!(f.state.read_with(cx, |state, _| state.status.as_ref().unwrap().text.clone()), "obsolete");
+    assert_ne!(
+        f.state
+            .read_with(cx, |state, _| state.status.as_ref().unwrap().text.clone()),
+        "obsolete"
+    );
 }
 
 #[gpui::test]
@@ -174,7 +224,10 @@ fn library_switch_persists_selection_and_reports_preference_failure(cx: &mut Tes
         state.open_library(b.clone(), cx);
     });
     settle(&f.state, cx);
-    assert_eq!(crate::preferences::load(&preference).unwrap(), Some(b.clone()));
+    assert_eq!(
+        crate::preferences::load(&preference).unwrap(),
+        Some(b.clone())
+    );
     f.state.update(cx, |state, cx| {
         state.preference_path = Some(f._temp.path().to_path_buf());
         state.open_library(b.clone(), cx);

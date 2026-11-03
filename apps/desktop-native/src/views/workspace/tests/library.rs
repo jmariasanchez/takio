@@ -1,4 +1,5 @@
-// Included by workspace_tests.rs to share its native window and real-worker fixture.
+use super::recovery::*;
+use super::*;
 
 fn switch_copy(f: &Fixture) -> (tempfile::TempDir, PathBuf) {
     let output = tempfile::tempdir().unwrap();
@@ -24,7 +25,7 @@ fn switch_copy(f: &Fixture) -> (tempfile::TempDir, PathBuf) {
     (output, restored)
 }
 
-fn switch_to(f: &Fixture, root: &std::path::Path, cx: &mut TestAppContext) {
+pub(super) fn switch_to(f: &Fixture, root: &std::path::Path, cx: &mut TestAppContext) {
     let epoch = f.state.read_with(cx, |state, _| state.library_epoch);
     f.state
         .update(cx, |state, cx| state.open_library(root.to_path_buf(), cx));
@@ -47,7 +48,7 @@ fn switch_old_catalogue(f: &Fixture) -> Vec<LibraryItem> {
         .unwrap()
 }
 
-fn switch_prompt(f: &Fixture, cx: &mut TestAppContext) {
+pub(super) fn switch_prompt(f: &Fixture, cx: &mut TestAppContext) {
     f.window
         .update(cx, |workspace, _, cx| workspace.prompt_open_library(cx))
         .unwrap();
@@ -336,7 +337,15 @@ fn library_switch_stale_reader_chooser_never_starts_send_or_eject(cx: &mut TestA
         let device = reader(&f, cx);
         f.window
             .update(cx, |workspace, window, cx| {
-                workspace.choose_reader(if send { ReaderAction::Send } else { ReaderAction::Eject }, window, cx)
+                workspace.choose_reader(
+                    if send {
+                        ReaderAction::Send
+                    } else {
+                        ReaderAction::Eject
+                    },
+                    window,
+                    cx,
+                )
             })
             .unwrap();
         cx.run_until_parked();

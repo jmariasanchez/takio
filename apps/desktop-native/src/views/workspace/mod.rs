@@ -1,16 +1,12 @@
 //! Three-pane shell: sidebar, list, inspector, plus toolbar and status bar.
 
 #[cfg(test)]
-#[path = "workspace_tests.rs"]
 mod tests;
 
-#[path = "workspace_recovery.rs"]
 mod recovery;
 
-#[path = "workspace_automatic_backup.rs"]
 mod automatic_backup;
 
-#[path = "workspace_library.rs"]
 mod library;
 
 use gpui::{
