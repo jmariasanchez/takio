@@ -41,6 +41,19 @@ struct TreeSummary {
     scan_complete: bool,
 }
 
+/// Publish a bounded, path-free JSON diagnostic bundle outside the library.
+///
+/// Catalogue verification failures are recorded in the bundle, not returned as
+/// publication failures. The existing library is never created or migrated.
+/// Existing destinations are preserved, and the parent directory must exist.
+///
+/// # Errors
+/// Returns `invalid-arguments` for unsafe destinations, including traversal,
+/// library-owned paths and invalid parents; `destination-exists` for collisions;
+/// or `diagnostics-failed` if serialization, writing, publication or syncing fails.
+/// Resolving a relative destination can also return `storage-unavailable` if the
+/// working directory is unavailable. A parent-sync failure can occur after the
+/// completed bundle has been published, so callers must not assume no file exists.
 pub fn write_library_diagnostics(
     paths: &LibraryPaths,
     destination: &Path,
@@ -60,7 +73,7 @@ pub fn write_library_diagnostics(
 
     let generated_at = Utc::now().to_rfc3339();
     let verification =
-        match LibraryStore::open(paths.clone(), false).and_then(|store| store.verify()) {
+        match LibraryStore::open_read_only(paths.clone()).and_then(|store| store.verify()) {
             Ok(report) => json!({"status":"ok","report":integrity_value(&report)}),
             Err(error) => json!({"status":"failed","errorCode":error.code()}),
         };
@@ -312,6 +325,45 @@ mod tests {
         assert_eq!(report.verification_status, "failed");
         assert_eq!(value["library"]["verification"]["status"], "failed");
         assert!(!library_root.exists());
+    }
+
+    #[test]
+    fn diagnostics_preserve_current_legacy_and_corrupt_database_bytes() -> AppResult<()> {
+        let workspace = tempdir()?;
+        for (name, expected_status) in [
+            ("current", "ok"),
+            ("legacy", "failed"),
+            ("corrupt", "failed"),
+        ] {
+            let root = workspace.path().join(name);
+            fs::create_dir(&root)?;
+            let library = paths(&root);
+            match name {
+                "current" => drop(LibraryStore::open(library.clone(), true)?),
+                "legacy" => {
+                    let connection = rusqlite::Connection::open(&library.database)?;
+                    connection.execute_batch(include_str!(
+                        "../tests/fixtures/legacy-library-schemas/schema-v1.sql"
+                    ))?;
+                }
+                _ => fs::write(&library.database, b"not a SQLite database")?,
+            }
+            let before = fs::read(&library.database)?;
+            let entries = || -> std::io::Result<Vec<PathBuf>> {
+                let mut entries = fs::read_dir(&root)?
+                    .map(|entry| entry.map(|entry| entry.path()))
+                    .collect::<std::io::Result<Vec<_>>>()?;
+                entries.sort();
+                Ok(entries)
+            };
+            let before_entries = entries()?;
+            let destination = workspace.path().join(format!("{name}.json"));
+            let report = write_library_diagnostics(&library, &destination)?;
+            assert_eq!(report.verification_status, expected_status, "{name}");
+            assert_eq!(fs::read(&library.database)?, before, "{name}");
+            assert_eq!(entries()?, before_entries, "{name}");
+        }
+        Ok(())
     }
 
     #[test]

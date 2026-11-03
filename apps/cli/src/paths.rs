@@ -14,6 +14,17 @@ pub struct LibraryPaths {
 }
 
 impl LibraryPaths {
+    /// Resolve a named library or an explicit database into its storage paths.
+    ///
+    /// With neither argument, use the platform's local application-data directory.
+    /// Relative database paths are joined to the current working directory, not
+    /// canonicalized. This only computes paths; it does not create or open files.
+    ///
+    /// # Errors
+    /// Returns `invalid-arguments` for mutually exclusive selectors, an empty or
+    /// parentless database path, or a library name outside 1-64 ASCII letters,
+    /// digits, hyphens and underscores. Returns `storage-unavailable` if the
+    /// application-data directory or current working directory cannot be resolved.
     pub fn resolve(library: Option<&str>, database: Option<&Path>) -> AppResult<Self> {
         if library.is_some() && database.is_some() {
             return Err(AppError::new("invalid-arguments"));
@@ -70,5 +81,62 @@ fn validate_library_name(name: &str) -> AppResult<()> {
         Ok(())
     } else {
         Err(AppError::new("invalid-arguments"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{LibraryPaths, validate_library_name};
+    use std::path::Path;
+
+    #[test]
+    fn explicit_database_derives_siblings_without_creating_anything() -> super::AppResult<()> {
+        let temp = tempfile::tempdir()?;
+        let root = temp.path().join("missing-library");
+        let database = root.join("catalog.sqlite");
+        let paths = LibraryPaths::resolve(None, Some(&database))?;
+        assert_eq!(paths.root, root);
+        assert_eq!(paths.database, database);
+        assert_eq!(paths.jobs, root.join("jobs.sqlite"));
+        assert_eq!(paths.items, root.join("items"));
+        assert_eq!(paths.covers, root.join("covers"));
+        assert!(!root.exists());
+        Ok(())
+    }
+
+    #[test]
+    fn relative_paths_are_absolute_but_not_canonicalized() -> super::AppResult<()> {
+        let relative = Path::new("not-created/../library.sqlite");
+        let paths = LibraryPaths::resolve(None, Some(relative))?;
+        assert_eq!(paths.database, std::env::current_dir()?.join(relative));
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_conflicting_selectors_and_empty_database() {
+        for result in [
+            LibraryPaths::resolve(Some("named"), Some(Path::new("library.sqlite"))),
+            LibraryPaths::resolve(None, Some(Path::new(""))),
+        ] {
+            assert_eq!(
+                result.expect_err("invalid selector").code(),
+                "invalid-arguments"
+            );
+        }
+    }
+
+    #[test]
+    fn library_names_have_bounded_path_safe_ascii_syntax() {
+        for valid in ["A", "library-2_test", &"a".repeat(64)] {
+            assert!(validate_library_name(valid).is_ok(), "{valid}");
+        }
+        for invalid in ["", ".", "..", "a/b", "a\\b", "has space", &"a".repeat(65)] {
+            assert_eq!(
+                validate_library_name(invalid)
+                    .expect_err("invalid name")
+                    .code(),
+                "invalid-arguments"
+            );
+        }
     }
 }
