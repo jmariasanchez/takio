@@ -158,7 +158,7 @@ fn startup_open_existing_activates_only_valid_choice_and_remembers_it(cx: &mut T
     original_unchanged(&f);
     let (engine, warning) = startup::open(f.paths.clone(), Some(&f.preference)).unwrap();
     assert_eq!(engine.root(), good.canonicalize().unwrap());
-    assert!(warning.is_none());
+    assert!(warning.warning.is_none());
 }
 
 #[gpui::test]

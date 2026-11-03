@@ -2,7 +2,6 @@
 
 use std::path::{Path, PathBuf};
 
-use takio::model::LibraryItem;
 use takio::output::{AppError, AppResult};
 use takio::paths::LibraryPaths;
 use takio::store::LibraryStore;
@@ -10,8 +9,6 @@ use takio::store::LibraryStore;
 #[derive(Clone, Debug)]
 pub struct OpenedLibrary {
     pub root: PathBuf,
-    pub items: Vec<LibraryItem>,
-    pub remember_failed: bool,
 }
 
 pub fn open(directory: &Path) -> AppResult<(LibraryStore, OpenedLibrary)> {
@@ -27,15 +24,7 @@ pub fn open(directory: &Path) -> AppResult<(LibraryStore, OpenedLibrary)> {
     }
     let paths = LibraryPaths::resolve(None, Some(&root.join("library.sqlite")))?;
     let store = LibraryStore::open_existing(paths)?;
-    let items = store.list(false)?;
-    Ok((
-        store,
-        OpenedLibrary {
-            root,
-            items,
-            remember_failed: false,
-        },
-    ))
+    Ok((store, OpenedLibrary { root }))
 }
 
 #[cfg(test)]
@@ -43,6 +32,7 @@ mod tests {
     use super::*;
     use crate::engine::{Engine, Filters, Request};
     use std::fs;
+    use takio::model::LibraryItem;
 
     fn fixture() -> (tempfile::TempDir, PathBuf, String) {
         let temp = tempfile::tempdir().unwrap();
@@ -59,7 +49,6 @@ mod tests {
         engine
             .request(|reply| Request::OpenLibrary {
                 directory: directory.to_path_buf(),
-                remember: None,
                 reply,
             })
             .recv()
@@ -90,8 +79,7 @@ mod tests {
         assert_eq!(query(&engine)[0].id, a_id);
         let opened = switch(&engine, &b).unwrap();
         assert_eq!(opened.root, b);
-        assert_eq!(opened.items[0].id, b_id);
-        assert!(!opened.remember_failed);
+        assert_eq!(query(&engine)[0].id, b_id);
         engine
             .request(|reply| Request::Trash {
                 ids: vec![b_id.clone()],
@@ -102,7 +90,8 @@ mod tests {
             .unwrap();
         assert!(query(&engine).is_empty());
         let opened = switch(&engine, &a).unwrap();
-        assert_eq!(opened.items[0].id, a_id);
+        assert_eq!(opened.root, a);
+        assert_eq!(query(&engine)[0].id, a_id);
         engine
             .request(|reply| Request::Trash {
                 ids: vec![a_id.clone()],
@@ -195,7 +184,8 @@ mod tests {
             .recv()
             .unwrap()
             .unwrap();
-        assert_eq!(switch(&engine, &restored).unwrap().items.len(), 1);
+        switch(&engine, &restored).unwrap();
+        assert_eq!(query(&engine).len(), 1);
     }
 
     #[test]
@@ -223,8 +213,8 @@ mod tests {
     #[test]
     fn missing_managed_bytes_do_not_prevent_catalogue_management() {
         let (_temp, root, id) = fixture();
-        let (store, snapshot) = open(&root).unwrap();
-        fs::remove_file(&snapshot.items[0].source_path).unwrap();
+        let (store, _) = open(&root).unwrap();
+        fs::remove_file(&store.list(false).unwrap()[0].source_path).unwrap();
         drop(store);
         let engine = Engine::open_existing(root).unwrap();
         engine
@@ -246,13 +236,16 @@ mod tests {
         let result = engine
             .request(|reply| Request::OpenLibrary {
                 directory: b.clone(),
-                remember: Some(b.clone()),
                 reply,
             })
             .recv()
             .unwrap()
             .unwrap();
-        assert!(result.remember_failed);
+        let report = crate::activation::ActivationReport::remember(result.root, Some(&b));
+        assert_eq!(
+            report.preference,
+            crate::activation::PreferenceOutcome::SessionOnly
+        );
         assert_eq!(query(&engine)[0].id, id);
     }
 
@@ -266,7 +259,6 @@ mod tests {
         let result = engine
             .request(|reply| Request::OpenLibrary {
                 directory: temp.path().join("missing"),
-                remember: Some(preference.clone()),
                 reply,
             })
             .recv()
@@ -305,9 +297,10 @@ mod tests {
         let before = fs::read(real.join("library.sqlite")).unwrap();
         let (_b, b, _) = fixture();
         switch(&engine, &b).unwrap();
-        let reopened = switch(&engine, &real).unwrap();
-        assert_eq!(reopened.items[0].id, item.id);
-        assert_eq!(reopened.items[0].source_path, item.source_path);
+        switch(&engine, &real).unwrap();
+        let reopened = query(&engine);
+        assert_eq!(reopened[0].id, item.id);
+        assert_eq!(reopened[0].source_path, item.source_path);
         assert_eq!(fs::read(real.join("library.sqlite")).unwrap(), before);
         assert_eq!(switch(&engine, &alias).unwrap().root, real);
         fs::write(&item.source_path, b"alias-origin book").unwrap();
@@ -337,7 +330,7 @@ mod tests {
             .unwrap();
         assert!(!item.source_path.exists());
         assert!(query(&engine).is_empty());
-        assert_eq!(open(&b).unwrap().1.items.len(), 1);
+        assert_eq!(open(&b).unwrap().0.list(false).unwrap().len(), 1);
     }
 
     #[cfg(unix)]
@@ -374,7 +367,7 @@ mod tests {
         assert_eq!(engine.root(), root);
         let opened = switch(&engine, &alias).unwrap();
         assert_eq!(opened.root, root);
-        assert_eq!(opened.items[0].id, id);
+        assert_eq!(query(&engine)[0].id, id);
         let database = aliases.path().join("library.sqlite");
         symlink(root.join("library.sqlite"), &database).unwrap();
         assert!(switch(&engine, aliases.path()).is_err());

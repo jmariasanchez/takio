@@ -84,6 +84,19 @@ pub fn save(path: &Path, root: &Path) -> AppResult<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn captured_data_override_drives_resolution_and_preference_policy() {
+        let temp = tempfile::tempdir().unwrap();
+        let data_override = Some(temp.path().join("isolated-library"));
+        let paths = crate::engine::resolve_paths(data_override.as_deref()).unwrap();
+        assert_eq!(paths.root, *data_override.as_ref().unwrap());
+        assert_eq!(paths.database, paths.root.join("library.sqlite"));
+        assert!(super::location(&paths.root, data_override.is_some(), None).is_none());
+        let profile = temp.path().join("profile");
+        assert!(super::location(&paths.root, data_override.is_some(), Some(&profile)).is_some());
+        assert!(!paths.root.exists());
+    }
+
     use super::*;
 
     #[test]

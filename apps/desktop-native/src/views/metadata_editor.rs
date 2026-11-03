@@ -32,15 +32,7 @@ impl Draft {
     fn from_item(item: &LibraryItem) -> Self {
         Self {
             title: item.title.clone(),
-            authors: if item.authors.is_empty() {
-                item.author.clone().unwrap_or_default()
-            } else {
-                item.authors
-                    .iter()
-                    .map(|author| author.name.as_str())
-                    .collect::<Vec<_>>()
-                    .join("; ")
-            },
+            authors: item.author_names().collect::<Vec<_>>().join("; "),
             series: item.series.clone().unwrap_or_default(),
             tags: item.tags.join("; "),
         }

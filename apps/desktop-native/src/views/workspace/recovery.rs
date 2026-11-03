@@ -87,9 +87,7 @@ impl Workspace {
     fn choose_recovery_destination(&mut self, source: Option<PathBuf>, cx: &mut Context<Self>) {
         let epoch = self.state.read(cx).library_epoch();
         let pause = self.state.read(cx).automatic_backup().pause();
-        let home = std::env::var_os("HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("."));
+        let home = crate::recovery_chooser_directory();
         let receiver = cx.prompt_for_new_path(
             &home,
             Some(if source.is_some() {

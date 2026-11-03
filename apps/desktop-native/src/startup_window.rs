@@ -63,7 +63,7 @@ impl StartupWindow {
 
     fn run(
         &mut self,
-        job: impl FnOnce() -> AppResult<(Engine, Option<String>)> + Send + 'static,
+        job: impl FnOnce() -> AppResult<(Engine, crate::activation::ActivationReport)> + Send + 'static,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -75,11 +75,11 @@ impl StartupWindow {
             let _ = this.update_in(cx, |this, window, cx| {
                 this.busy = false;
                 match result {
-                    Ok((engine, warning)) => {
+                    Ok((engine, report)) => {
                         let state = cx.new(|cx| {
                             let mut state = LibraryState::new(engine, cx);
                             state.set_preference_path(this.preference.clone());
-                            if let Some(warning) = warning {
+                            if let Some(warning) = report.warning {
                                 state.set_status(warning, true, cx);
                             }
                             state
@@ -196,9 +196,7 @@ impl StartupWindow {
     }
 
     fn choose_destination(&mut self, source: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
-        let home = std::env::var_os("HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("/"));
+        let home = crate::recovery_chooser_directory();
         let receiver = cx.prompt_for_new_path(&home, Some("Takio Recovered Library"));
         cx.spawn_in(window, async move |this, cx| {
             let response = receiver.await;

@@ -224,7 +224,6 @@ pub enum Request {
     },
     OpenLibrary {
         directory: PathBuf,
-        remember: Option<PathBuf>,
         reply: Sender<AppResult<OpenedLibrary>>,
     },
     Backup {
@@ -398,16 +397,9 @@ fn worker_with_reader_scans(
     // Import uses a separate temporary cache and never races its persistence.
     while let Ok(request) = receiver.recv() {
         match request {
-            Request::OpenLibrary {
-                directory,
-                remember,
-                reply,
-            } => {
+            Request::OpenLibrary { directory, reply } => {
                 let result =
-                    crate::library_location::open(&directory).map(|(candidate, mut opened)| {
-                        opened.remember_failed = remember.as_ref().is_some_and(|path| {
-                            crate::preferences::save(path, &opened.root).is_err()
-                        });
+                    crate::library_location::open(&directory).map(|(candidate, opened)| {
                         store = candidate;
                         if let Some(scans) = &reader_scans {
                             scans.invalidate();
@@ -656,11 +648,11 @@ fn send_entry(
 
 /// Resolve the library location the desktop should open.
 ///
-/// Honors `TAKIO_DATA_DIR` for tests and sandboxes, otherwise the platform
+/// Accepts the caller's captured data override, otherwise uses the platform
 /// data directory shared with the CLI and TUI.
-pub fn resolve_paths() -> AppResult<LibraryPaths> {
-    if let Some(dir) = std::env::var_os("TAKIO_DATA_DIR") {
-        let database = Path::new(&dir).join("library.sqlite");
+pub fn resolve_paths(data_override: Option<&Path>) -> AppResult<LibraryPaths> {
+    if let Some(dir) = data_override {
+        let database = dir.join("library.sqlite");
         return LibraryPaths::resolve(None, Some(&database));
     }
     LibraryPaths::resolve(None, None)
@@ -827,7 +819,6 @@ mod tests {
         engine
             .request(|reply| Request::OpenLibrary {
                 directory: other_root,
-                remember: None,
                 reply,
             })
             .recv_timeout(Duration::from_secs(2))

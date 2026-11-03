@@ -6,8 +6,8 @@ use crate::{
     views::workspace::Workspace,
 };
 use gpui::{
-    AnyWindowHandle, App, AppContext, Bounds, Context, Entity, EntityInputHandler, TitlebarOptions,
-    Window, WindowBounds, WindowOptions, canvas, div, point, prelude::*, px, size,
+    AnyWindowHandle, App, AppContext, Context, Entity, EntityInputHandler, Window, canvas, div,
+    prelude::*, px,
 };
 use std::{cell::RefCell, process::Command, rc::Rc, time::Instant};
 
@@ -305,7 +305,9 @@ impl Render for BenchWindow {
 }
 
 pub fn run(started: Instant) {
-    let paths = engine::resolve_paths().unwrap_or_else(|error| crate::fatal(error.code()));
+    let data_override = std::env::var_os("TAKIO_DATA_DIR").map(std::path::PathBuf::from);
+    let paths = engine::resolve_paths(data_override.as_deref())
+        .unwrap_or_else(|error| crate::fatal(error.code()));
     let engine = Engine::open(paths).unwrap_or_else(|error| crate::fatal(error.code()));
     gpui_platform::application().run(move |cx: &mut App| {
         cx.set_global(Theme::LIGHT);
@@ -332,41 +334,28 @@ pub fn run(started: Instant) {
             measurement.finish(cx);
         })
         .detach();
-        let bounds = Bounds::centered(None, size(px(1280.), px(800.)), cx);
-        cx.open_window(
-            WindowOptions {
-                window_bounds: Some(WindowBounds::Windowed(bounds)),
-                titlebar: Some(TitlebarOptions {
-                    title: Some("Takio".into()),
-                    appears_transparent: true,
-                    traffic_light_position: Some(point(px(14.), px(14.))),
-                }),
-                window_min_size: Some(size(px(900.), px(560.))),
-                ..Default::default()
-            },
-            move |window, cx| {
-                cx.set_global(Theme::for_appearance(window.appearance()));
-                let presented = measurements.clone();
-                window.on_next_frame(move |window, _| {
-                    window.on_next_frame(move |_, cx| {
-                        let mut measurement = presented.borrow_mut();
-                        measurement.presented = true;
-                        measurement.finish(cx);
-                    });
+        cx.open_window(crate::main_window_options(cx), move |window, cx| {
+            cx.set_global(Theme::for_appearance(window.appearance()));
+            let presented = measurements.clone();
+            window.on_next_frame(move |window, _| {
+                window.on_next_frame(move |_, cx| {
+                    let mut measurement = presented.borrow_mut();
+                    measurement.presented = true;
+                    measurement.finish(cx);
                 });
-                let workspace = cx.new(|cx| Workspace::new(state.clone(), window, cx));
-                measurements.borrow_mut().workspace = Some(workspace.clone());
-                measurements.borrow_mut().window = Some(window.window_handle());
-                cx.new(|cx| {
-                    cx.observe(&state, |_, _, cx| cx.notify()).detach();
-                    BenchWindow {
-                        workspace,
-                        started,
-                        measurements,
-                    }
-                })
-            },
-        )
+            });
+            let workspace = cx.new(|cx| Workspace::new(state.clone(), window, cx));
+            measurements.borrow_mut().workspace = Some(workspace.clone());
+            measurements.borrow_mut().window = Some(window.window_handle());
+            cx.new(|cx| {
+                cx.observe(&state, |_, _, cx| cx.notify()).detach();
+                BenchWindow {
+                    workspace,
+                    started,
+                    measurements,
+                }
+            })
+        })
         .expect("open benchmark window");
         cx.activate(true);
     });

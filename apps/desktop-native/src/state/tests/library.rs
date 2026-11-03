@@ -55,7 +55,10 @@ fn library_switch_resets_view_and_routes_mutation_to_new_catalogue(cx: &mut Test
                 && state.session.selected.is_empty()
         );
         assert_eq!(state.session.sort, Sort::default());
-        assert!(state.device_error.is_none());
+        assert_ne!(
+            state.device_error.as_ref().map(AppError::code),
+            Some("old-reader-error")
+        );
         assert!(state.metadata_save_result().is_none());
         assert!(!state.on_reader.contains_key("old-library-book"));
         assert!(

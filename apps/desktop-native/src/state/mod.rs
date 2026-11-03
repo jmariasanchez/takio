@@ -200,10 +200,8 @@ impl LibraryState {
             send_preview_generation: Generation::default(),
             generation: Generation::default(),
         };
-        this.reload(cx);
-        this.refresh_destinations(cx);
+        this.activate_library(this.library_root.clone(), cx);
         this.watch_volumes(cx);
-        this.initialize_automatic_backup(cx);
         this
     }
 
@@ -1484,15 +1482,7 @@ fn mounted_volume_names(root: &std::path::Path) -> BTreeSet<String> {
 }
 
 pub fn author_label(item: &LibraryItem) -> String {
-    if !item.authors.is_empty() {
-        return item
-            .authors
-            .iter()
-            .map(|author| author.name.as_str())
-            .collect::<Vec<_>>()
-            .join(", ");
-    }
-    item.author.clone().unwrap_or_default()
+    item.author_names().collect::<Vec<_>>().join(", ")
 }
 
 fn build_snapshot(mut items: Vec<Arc<LibraryItem>>, sort: Sort) -> LibrarySnapshot {
@@ -1502,19 +1492,14 @@ fn build_snapshot(mut items: Vec<Arc<LibraryItem>>, sort: Sort) -> LibrarySnapsh
 }
 
 fn sort_items(items: &mut [Arc<LibraryItem>], sort: Sort) {
-    let key = |item: &Arc<LibraryItem>| -> String {
-        match sort.column {
-            SortColumn::Title => item.title.to_lowercase(),
-            SortColumn::Author => author_label(item).to_lowercase(),
-            SortColumn::Series => item
-                .series
-                .as_deref()
-                .map(str::to_lowercase)
-                .unwrap_or_default(),
-            SortColumn::Added => item.added_at.clone(),
-        }
+    use takio::library_query::{SortField, sort_key};
+    let field = match sort.column {
+        SortColumn::Title => SortField::Title,
+        SortColumn::Author => SortField::Author,
+        SortColumn::Series => SortField::Series,
+        SortColumn::Added => SortField::AddedAt,
     };
-    items.sort_by_cached_key(key);
+    items.sort_by_cached_key(|item| sort_key(item, field));
     if !sort.ascending {
         items.reverse();
     }
@@ -1919,6 +1904,43 @@ mod tests {
             assert_eq!(initial.title, "Alpha");
             assert_eq!(s.selected_ids(), vec![initial.id.clone()]);
         });
+    }
+
+    #[gpui::test]
+    fn author_display_and_sort_use_shared_structured_author_policy(cx: &mut TestAppContext) {
+        let f = fixture(cx);
+        let mut first = f.state.read_with(cx, |s, _| (*s.items[0]).clone());
+        first.author = Some("Legacy".into());
+        first.authors = vec![
+            takio::model::BookAuthor {
+                name: "Same".into(),
+                sort_name: None,
+            },
+            takio::model::BookAuthor {
+                name: "Zulu".into(),
+                sort_name: None,
+            },
+        ];
+        assert_eq!(author_label(&first), "Same, Zulu");
+        let mut second = first.clone();
+        second.authors[1].name = "Alpha".into();
+        let mut items = vec![Arc::new(first.clone()), Arc::new(second)];
+        sort_items(
+            &mut items,
+            Sort {
+                column: SortColumn::Author,
+                ascending: true,
+            },
+        );
+        assert_eq!(
+            author_label(&items[0]),
+            "Same, Zulu",
+            "secondary names must not override the shared primary-author key"
+        );
+        first.authors.clear();
+        assert_eq!(author_label(&first), "Legacy");
+        first.author = None;
+        assert_eq!(author_label(&first), "");
     }
 
     #[gpui::test]

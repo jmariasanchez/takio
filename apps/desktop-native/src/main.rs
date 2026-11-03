@@ -1,6 +1,7 @@
 //! Takio native desktop. One process, one binary: the GPUI renderer links
 //! the library engine directly and talks to it over an in-process channel.
 
+mod activation;
 mod automatic_backup;
 mod bench;
 mod covers;
@@ -77,7 +78,8 @@ fn main() -> ExitCode {
         snapshot::run();
         return ExitCode::SUCCESS;
     }
-    let paths = match engine::resolve_paths() {
+    let data_override = std::env::var_os("TAKIO_DATA_DIR").map(std::path::PathBuf::from);
+    let paths = match engine::resolve_paths(data_override.as_deref()) {
         Ok(paths) => paths,
         Err(error) => {
             let _ = writeln!(
@@ -89,11 +91,8 @@ fn main() -> ExitCode {
         }
     };
     let profile = std::env::var_os("TAKIO_DESKTOP_PROFILE_DIR").map(std::path::PathBuf::from);
-    let preference_path = preferences::location(
-        &paths.root,
-        std::env::var_os("TAKIO_DATA_DIR").is_some(),
-        profile.as_deref(),
-    );
+    let preference_path =
+        preferences::location(&paths.root, data_override.is_some(), profile.as_deref());
     application().run(move |cx: &mut App| {
         cx.set_global(Theme::LIGHT);
         cx.bind_keys([
@@ -119,38 +118,45 @@ fn main() -> ExitCode {
         ]);
         cx.set_menus(menus());
 
-        let bounds = Bounds::centered(None, size(px(1280.), px(800.)), cx);
-        cx.open_window(
-            WindowOptions {
-                window_bounds: Some(WindowBounds::Windowed(bounds)),
-                titlebar: Some(TitlebarOptions {
-                    title: Some("Takio".into()),
-                    appears_transparent: true,
-                    traffic_light_position: Some(point(px(14.), px(14.))),
-                }),
-                window_min_size: Some(size(px(900.), px(560.))),
-                ..Default::default()
-            },
-            |window, cx| {
-                cx.set_global(Theme::for_appearance(window.appearance()));
-                let view = cx.new(|cx| StartupWindow::new(paths, preference_path, window, cx));
-                let close_view = view.clone();
-                window.on_window_should_close(cx, move |_, cx| {
-                    close_view.update(cx, |view, cx| view.can_close(cx))
-                });
-                let quit_view = view.clone();
-                cx.on_action(move |_: &Quit, cx| {
-                    if quit_view.update(cx, |view, cx| view.can_close(cx)) {
-                        cx.quit();
-                    }
-                });
-                view
-            },
-        )
+        cx.open_window(main_window_options(cx), |window, cx| {
+            cx.set_global(Theme::for_appearance(window.appearance()));
+            let view = cx.new(|cx| StartupWindow::new(paths, preference_path, window, cx));
+            let close_view = view.clone();
+            window.on_window_should_close(cx, move |_, cx| {
+                close_view.update(cx, |view, cx| view.can_close(cx))
+            });
+            let quit_view = view.clone();
+            cx.on_action(move |_: &Quit, cx| {
+                if quit_view.update(cx, |view, cx| view.can_close(cx)) {
+                    cx.quit();
+                }
+            });
+            view
+        })
         .expect("open main window");
         cx.activate(true);
     });
     ExitCode::SUCCESS
+}
+
+fn main_window_options(cx: &App) -> WindowOptions {
+    let bounds = Bounds::centered(None, size(px(1280.), px(800.)), cx);
+    WindowOptions {
+        window_bounds: Some(WindowBounds::Windowed(bounds)),
+        titlebar: Some(TitlebarOptions {
+            title: Some("Takio".into()),
+            appears_transparent: true,
+            traffic_light_position: Some(point(px(14.), px(14.))),
+        }),
+        window_min_size: Some(size(px(900.), px(560.))),
+        ..Default::default()
+    }
+}
+
+fn recovery_chooser_directory() -> std::path::PathBuf {
+    std::env::var_os("HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from("/"))
 }
 
 fn menus() -> Vec<Menu> {

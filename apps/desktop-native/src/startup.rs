@@ -1,5 +1,5 @@
 //! Resolve a remembered library without recreating a missing selected database.
-use crate::{engine::Engine, preferences};
+use crate::{activation::ActivationReport, engine::Engine, preferences};
 use std::path::{Path, PathBuf};
 use takio::{
     output::{AppError, AppResult},
@@ -10,12 +10,15 @@ use takio::{
 pub fn open(
     default: LibraryPaths,
     preference: Option<&Path>,
-) -> AppResult<(Engine, Option<String>)> {
+) -> AppResult<(Engine, ActivationReport)> {
     let mut warning = None;
     if let Some(preference) = preference {
         match preferences::load(preference) {
             Ok(Some(root)) => match Engine::open_existing(root.clone()) {
-                Ok(engine) => return Ok((engine, None)),
+                Ok(engine) => {
+                    let report = ActivationReport::startup(engine.root().to_path_buf(), None);
+                    return Ok((engine, report));
+                }
                 Err(error) => {
                     // Falling back to the same location would turn strict open
                     // failure into implicit creation or migration of that library.
@@ -54,18 +57,17 @@ pub fn open(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Engine::open(default)?,
         Err(error) => return Err(error.into()),
     };
-    Ok((engine, warning))
+    let report = ActivationReport::startup(engine.root().to_path_buf(), warning);
+    Ok((engine, report))
 }
 
 pub fn open_recovery(
     root: PathBuf,
     preference: Option<&Path>,
-) -> AppResult<(Engine, Option<String>)> {
+) -> AppResult<(Engine, ActivationReport)> {
     let engine = Engine::open_existing(root)?;
-    let warning = preference
-        .filter(|path| preferences::save(path, engine.root()).is_err())
-        .map(|_| "Opened this library for this session, but could not remember its location. The previous library was not replaced.".to_string());
-    Ok((engine, warning))
+    let report = ActivationReport::remember(engine.root().to_path_buf(), preference);
+    Ok((engine, report))
 }
 
 pub fn restore_recovery(
@@ -73,7 +75,7 @@ pub fn restore_recovery(
     destination: &Path,
     default: &Path,
     preference: Option<&Path>,
-) -> AppResult<(Engine, Option<String>)> {
+) -> AppResult<(Engine, ActivationReport)> {
     let destination = resolved_location(destination)?;
     let mut protected = vec![default.to_path_buf(), source.to_path_buf()];
     if let Some(preference) = preference
@@ -199,7 +201,7 @@ mod tests {
             LibraryPaths::resolve(None, Some(&temp.path().join("default/library.sqlite"))).unwrap();
         let (engine, warning) = open(default.clone(), Some(&preference)).unwrap();
         assert_eq!(engine.root(), selected.canonicalize().unwrap());
-        assert!(warning.is_none());
+        assert!(warning.warning.is_none());
         assert!(!default.root.exists());
         assert!(
             engine
@@ -225,13 +227,18 @@ mod tests {
             LibraryPaths::resolve(None, Some(&temp.path().join("default/library.sqlite"))).unwrap();
         let (engine, warning) = open(default.clone(), Some(&preference)).unwrap();
         assert_eq!(engine.root(), default.root.canonicalize().unwrap());
-        assert!(warning.unwrap().contains("not recreated or replaced"));
+        assert!(
+            warning
+                .warning
+                .unwrap()
+                .contains("not recreated or replaced")
+        );
         assert!(!selected.exists());
         std::fs::create_dir(&selected).unwrap();
         let database = selected.join("library.sqlite");
         std::fs::write(&database, b"not sqlite").unwrap();
         let (_, warning) = open(default, Some(&preference)).unwrap();
-        assert!(warning.is_some());
+        assert!(warning.warning.is_some());
         assert_eq!(std::fs::read(database).unwrap(), b"not sqlite");
         assert_eq!(preferences::load(&preference).unwrap(), Some(selected));
     }
@@ -244,9 +251,9 @@ mod tests {
         let default =
             LibraryPaths::resolve(None, Some(&temp.path().join("default/library.sqlite"))).unwrap();
         let (_, warning) = open(default.clone(), Some(&preference)).unwrap();
-        assert!(warning.unwrap().contains("Could not read"));
+        assert!(warning.warning.unwrap().contains("Could not read"));
         let (_, warning) = open(default, None).unwrap();
-        assert!(warning.is_none());
+        assert!(warning.warning.is_none());
         assert_eq!(std::fs::read(preference).unwrap(), b"relative");
     }
 
@@ -298,7 +305,7 @@ mod tests {
         drop(LibraryStore::open(paths.clone(), true).unwrap());
         let (engine, warning) = open_recovery(paths.root.clone(), Some(&paths.root)).unwrap();
         assert_eq!(engine.root(), paths.root.canonicalize().unwrap());
-        assert!(warning.unwrap().contains("for this session"));
+        assert!(warning.warning.unwrap().contains("for this session"));
         assert!(paths.database.is_file());
     }
 }

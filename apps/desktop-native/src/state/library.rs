@@ -2,6 +2,22 @@
 use super::*;
 
 impl LibraryState {
+    /// Startup, recovery and runtime switching initialize the same session and query path.
+    pub(super) fn activate_library(&mut self, root: PathBuf, cx: &mut Context<Self>) {
+        self.generation.advance();
+        self.send_preview_generation.advance();
+        self.preparation_generation.advance();
+        self.reader_scan_generation.advance();
+        self.library_root = root;
+        let old_session = std::mem::take(&mut self.session);
+        cx.background_executor()
+            .spawn(async move { drop(old_session) })
+            .detach();
+        self.reload(cx);
+        self.refresh_destinations(cx);
+        self.initialize_automatic_backup(cx);
+    }
+
     pub fn can_switch_library(&self) -> bool {
         self.can_mutate() && !self.refreshing_devices
     }
@@ -20,22 +36,16 @@ impl LibraryState {
         self.generation.advance();
         self.set_status("Opening existing library...".into(), false, cx);
         let remember = self.preference_path.clone();
-        let receiver = self.engine.request(|reply| Request::OpenLibrary {
-            directory,
-            remember,
-            reply,
-        });
+        let receiver = self
+            .engine
+            .request(|reply| Request::OpenLibrary { directory, reply });
         let task = cx.background_executor().spawn(async move {
             let report = receiver
                 .recv()
                 .unwrap_or_else(|_| Err(AppError::new("storage-unavailable")))?;
-            let facets = Arc::new(Facets::from_items(&report.items));
-            let mut items: Vec<_> = report.items.into_iter().map(Arc::new).collect();
-            sort_items(&mut items, Sort::default());
-            Ok::<_, AppError>((
+            Ok::<_, AppError>(crate::activation::ActivationReport::remember(
                 report.root,
-                LibrarySnapshot { items, facets },
-                report.remember_failed,
+                remember.as_deref(),
             ))
         });
         cx.spawn(async move |this, cx| {
@@ -43,38 +53,23 @@ impl LibraryState {
             let _ = this.update(cx, |this, cx| {
                 this.session.activity = Activity::Idle;
                 match result.take().expect("library reply handled once") {
-                    Ok((root, snapshot, remember_failed)) => {
+                    Ok(report) => {
                         this.library_epoch = this.library_epoch.wrapping_add(1);
-                        this.generation.advance();
-                        this.library_root = root;
-                        this.send_preview_generation.advance();
-                        this.preparation_generation.advance();
-                        let session = LibrarySession {
-                            items: snapshot.items,
-                            facets: snapshot.facets,
-                            ..LibrarySession::default()
-                        };
-                        let old_session = std::mem::replace(&mut this.session, session);
-                        cx.background_executor().spawn(async move { drop(old_session) }).detach();
-                        this.initialize_automatic_backup(cx);
-                        this.scan_readers(cx);
-                        let suffix = if remember_failed {
-                            " This switch is for this session only: the startup preference could not be saved. Check the profile folder permissions."
-                        } else if this.preference_path.is_none() {
-                            " Session only: the explicit data-directory override is unchanged."
-                        } else {
-                            " This library will reopen next time."
-                        };
-                        this.set_status(format!("Opened {}.{suffix}", this.library_root.display()), remember_failed, cx);
+                        this.activate_library(report.root.clone(), cx);
+                        let (message, error) = report.message();
+                        this.set_status(message, error, cx);
                     }
                     Err(error) => this.set_status(open_library_error(error.code()), true, cx),
                 }
                 cx.notify();
             });
             if let Some(result) = result {
-                cx.background_executor().spawn(async move { drop(result) }).detach();
+                cx.background_executor()
+                    .spawn(async move { drop(result) })
+                    .detach();
             }
-        }).detach();
+        })
+        .detach();
     }
 }
 
