@@ -14,6 +14,7 @@ use crate::conversion::FormatId;
 use crate::model::{BookAuthor, CustomColumnDefinition, LibraryItem, Provenance};
 use crate::output::{AppError, AppResult};
 use crate::paths::{LibraryPaths, absolute as absolute_nonempty};
+pub(crate) use crate::store::valid_item_id;
 use crate::store::{LibraryStore, METADATA_AUDIT_KEY, VerifyReport, normalize_custom_metadata};
 
 const PORTABLE_FORMAT: &str = "takio-portable-library";
@@ -796,15 +797,6 @@ fn valid_component(value: &str) -> bool {
             .components()
             .eq([Component::Normal(value.as_ref())])
         && !value.contains(['/', '\\'])
-}
-pub(crate) fn valid_item_id(value: &str) -> bool {
-    !value.is_empty()
-        && value.len() <= 128
-        && value != "."
-        && value != ".."
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
 }
 fn valid_timestamp(value: &str) -> bool {
     chrono::DateTime::parse_from_rfc3339(value).is_ok()

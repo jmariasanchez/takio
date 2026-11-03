@@ -21,6 +21,7 @@ use crate::paths::LibraryPaths;
 mod columns;
 mod duplicates;
 mod hydration;
+mod item_id;
 mod metadata;
 mod migration;
 mod query;
@@ -30,6 +31,7 @@ mod recovery;
 mod safety_tests;
 mod schema;
 
+pub(crate) use item_id::valid_item_id;
 use schema::{create_schema, has_schema};
 
 use hydration::read_item_from;
@@ -720,10 +722,7 @@ impl LibraryStore {
         formats: &[(FormatId, PathBuf)],
         cover: Option<&Path>,
     ) -> AppResult<LibraryItem> {
-        if !crate::portable_library::valid_item_id(&item.id)
-            || formats.is_empty()
-            || formats.len() != item.formats.len()
-        {
+        if !valid_item_id(&item.id) || formats.is_empty() || formats.len() != item.formats.len() {
             return Err(AppError::new("invalid-arguments"));
         }
         let mut published = Vec::new();

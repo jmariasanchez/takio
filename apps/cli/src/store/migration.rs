@@ -16,14 +16,10 @@ type ForeignKeySignature = Vec<(String, String, String, String, String, String)>
 type SchemaSignature = Vec<(String, String, String, String)>;
 
 const V1_SCHEMA: &str = include_str!("../../tests/fixtures/legacy-library-schemas/schema-v1.sql");
-const V2_SCHEMA: &str =
-    include_str!("../../../../packages/library-store-bun/test/fixtures/schema-v2.sql");
-const V3_SCHEMA: &str =
-    include_str!("../../../../packages/library-store-bun/test/fixtures/schema-v3.sql");
-const V4_SCHEMA: &str =
-    include_str!("../../../../packages/library-store-bun/test/fixtures/schema-v4.sql");
-const V5_SCHEMA: &str =
-    include_str!("../../../../packages/library-store-bun/test/fixtures/schema-v5.sql");
+const V2_SCHEMA: &str = include_str!("../../tests/fixtures/legacy-library-schemas/schema-v2.sql");
+const V3_SCHEMA: &str = include_str!("../../tests/fixtures/legacy-library-schemas/schema-v3.sql");
+const V4_SCHEMA: &str = include_str!("../../tests/fixtures/legacy-library-schemas/schema-v4.sql");
+const V5_SCHEMA: &str = include_str!("../../tests/fixtures/legacy-library-schemas/schema-v5.sql");
 const V6_SCHEMA: &str = include_str!("../../tests/fixtures/legacy-library-schemas/schema-v6.sql");
 const V7_SCHEMA: &str = include_str!("../../tests/fixtures/legacy-library-schemas/schema-v7.sql");
 const V8_SCHEMA: &str = include_str!("../../tests/fixtures/legacy-library-schemas/schema-v8.sql");
@@ -1113,14 +1109,10 @@ mod tests {
     use crate::store::{LIBRARY_SCHEMA_VERSION, LibraryStore};
 
     const V1: &str = include_str!("../../tests/fixtures/legacy-library-schemas/schema-v1.sql");
-    const V2: &str =
-        include_str!("../../../../packages/library-store-bun/test/fixtures/schema-v2.sql");
-    const V3: &str =
-        include_str!("../../../../packages/library-store-bun/test/fixtures/schema-v3.sql");
-    const V4: &str =
-        include_str!("../../../../packages/library-store-bun/test/fixtures/schema-v4.sql");
-    const V5: &str =
-        include_str!("../../../../packages/library-store-bun/test/fixtures/schema-v5.sql");
+    const V2: &str = include_str!("../../tests/fixtures/legacy-library-schemas/schema-v2.sql");
+    const V3: &str = include_str!("../../tests/fixtures/legacy-library-schemas/schema-v3.sql");
+    const V4: &str = include_str!("../../tests/fixtures/legacy-library-schemas/schema-v4.sql");
+    const V5: &str = include_str!("../../tests/fixtures/legacy-library-schemas/schema-v5.sql");
     const V6: &str = include_str!("../../tests/fixtures/legacy-library-schemas/schema-v6.sql");
     const V7: &str = include_str!("../../tests/fixtures/legacy-library-schemas/schema-v7.sql");
     const V8: &str = include_str!("../../tests/fixtures/legacy-library-schemas/schema-v8.sql");
@@ -1128,6 +1120,31 @@ mod tests {
 
     fn paths(temp: &tempfile::TempDir) -> LibraryPaths {
         LibraryPaths::resolve(None, Some(&temp.path().join("library.sqlite"))).unwrap()
+    }
+
+    #[test]
+    fn rust_owned_legacy_fixtures_preserve_original_bytes() {
+        // Freeze the historical fixtures without depending on the Bun package.
+        for (fixture, expected) in [
+            (
+                V2_SCHEMA,
+                "b0f7a54209eecd9c7bf92dd897ab2147ac64f0ac21b8e9624eb1c6ca4807b9fd",
+            ),
+            (
+                V3_SCHEMA,
+                "cdf9436647c8971285f21e6c13f353100d5883b7d4b52d07d874762200d78b87",
+            ),
+            (
+                V4_SCHEMA,
+                "af3f68cf07f61a375a1aa95551793fbe8fd5279e3724fd4cd556310268bedc0e",
+            ),
+            (
+                V5_SCHEMA,
+                "a404ee47836b79c014a896902a2103662684cc0bd9bda0cef56e27a3db5fca0d",
+            ),
+        ] {
+            assert_eq!(hex::encode(Sha256::digest(fixture.as_bytes())), expected);
+        }
     }
 
     fn install_fixture(paths: &LibraryPaths, version: i64) {
