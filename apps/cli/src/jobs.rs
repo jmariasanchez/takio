@@ -56,11 +56,42 @@ pub struct JobArtifact {
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct JobAttachment {
-    pub status: String,
+    pub status: JobAttachmentStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub finished_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error_code: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum JobAttachmentStatus {
+    Pending,
+    Attached,
+    Failed,
+}
+
+impl JobAttachmentStatus {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Attached => "attached",
+            Self::Failed => "failed",
+        }
+    }
+}
+
+impl std::str::FromStr for JobAttachmentStatus {
+    type Err = AppError;
+
+    fn from_str(value: &str) -> AppResult<Self> {
+        match value {
+            "pending" => Ok(Self::Pending),
+            "attached" => Ok(Self::Attached),
+            "failed" => Ok(Self::Failed),
+            _ => Err(AppError::new("invalid-stored-data")),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -205,7 +236,8 @@ impl JobStore {
         if job.status != JobStatus::Completed
             || job.library_item_id.is_none()
             || job.artifact.is_none()
-            || job.attachment.as_ref().map(|value| value.status.as_str()) != Some("failed")
+            || job.attachment.as_ref().map(|value| value.status)
+                != Some(JobAttachmentStatus::Failed)
         {
             return Err(AppError::new("invalid-transition"));
         }
@@ -367,11 +399,16 @@ fn parse_job(row: JobRow) -> AppResult<ConversionJob> {
         (None, None) => None,
         _ => return Err(AppError::new("invalid-stored-data")),
     };
-    let attachment = row.14.map(|status| JobAttachment {
-        status,
-        finished_at: row.15,
-        error_code: row.16,
-    });
+    let attachment = row
+        .14
+        .map(|status| -> AppResult<_> {
+            Ok(JobAttachment {
+                status: status.parse()?,
+                finished_at: row.15,
+                error_code: row.16,
+            })
+        })
+        .transpose()?;
     Ok(ConversionJob {
         id: row.0,
         status,
@@ -383,7 +420,11 @@ fn parse_job(row: JobRow) -> AppResult<ConversionJob> {
         created_at: row.7,
         started_at: row.8,
         finished_at: row.9,
-        owner_pid: row.10.map(|value| u32::try_from(value).unwrap_or_default()),
+        owner_pid: row
+            .10
+            .map(u32::try_from)
+            .transpose()
+            .map_err(|_| AppError::new("invalid-stored-data"))?,
         error_code: row.11,
         artifact,
         attachment,
@@ -403,6 +444,51 @@ fn create_schema(connection: &Connection) -> AppResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn corrupt_attachment_status_and_owner_pid_are_rejected() {
+        let temp = tempfile::tempdir().unwrap();
+        let input = temp.path().join("book.epub");
+        std::fs::write(&input, b"book").unwrap();
+        let store = JobStore::open(&temp.path().join("jobs.sqlite")).unwrap();
+        let job = store
+            .enqueue(&input, FormatId::Pdf, &temp.path().join("book.pdf"), None)
+            .unwrap();
+        for pid in [-1_i64, i64::from(u32::MAX) + 1] {
+            store
+                .connection
+                .execute("UPDATE jobs SET owner_pid=?1", [pid])
+                .unwrap();
+            assert_eq!(
+                store.get(&job.id).unwrap_err().code(),
+                "invalid-stored-data"
+            );
+        }
+        store
+            .connection
+            .execute("UPDATE jobs SET owner_pid=NULL", [])
+            .unwrap();
+        for status in ["pending", "attached", "failed"] {
+            store
+                .connection
+                .execute("UPDATE jobs SET attachment_status=?1", [status])
+                .unwrap();
+            let attachment = store.get(&job.id).unwrap().unwrap().attachment.unwrap();
+            assert_eq!(attachment.status.as_str(), status);
+            assert_eq!(serde_json::to_value(attachment).unwrap()["status"], status);
+        }
+        store
+            .connection
+            .pragma_update(None, "ignore_check_constraints", true)
+            .unwrap();
+        store
+            .connection
+            .execute("UPDATE jobs SET attachment_status='bogus'", [])
+            .unwrap();
+        assert_eq!(
+            store.get(&job.id).unwrap_err().code(),
+            "invalid-stored-data"
+        );
+    }
     #[test]
     fn queues_and_cancels() {
         let temp = tempfile::tempdir().unwrap();

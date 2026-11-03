@@ -4,6 +4,7 @@ use std::path::{Component, Path, PathBuf};
 
 use regex::Regex;
 use rusqlite::{Connection, OpenFlags};
+use serde::Serialize;
 use serde_json::{Value, json};
 
 use crate::conversion::detect_format;
@@ -14,6 +15,35 @@ use crate::store::LibraryStore;
 
 const MAX_CUSTOM_FIELDS_PER_BOOK: usize = 64;
 const MAX_CUSTOM_VALUE_BYTES: usize = 16 * 1024;
+
+#[derive(Debug, Serialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+enum CalibreImportWarning {
+    CustomColumn { key: String, code: &'static str },
+}
+
+fn import_column_definitions(
+    store: &mut LibraryStore,
+    definitions: Vec<(String, String)>,
+) -> AppResult<Vec<CalibreImportWarning>> {
+    let existing = store
+        .list_custom_column_definitions()?
+        .into_iter()
+        .map(|definition| definition.key)
+        .collect::<std::collections::HashSet<_>>();
+    let mut warnings = Vec::new();
+    for (key, label) in definitions {
+        if !existing.contains(&key)
+            && let Err(error) = store.create_custom_column_definition(&key, &label)
+        {
+            warnings.push(CalibreImportWarning::CustomColumn {
+                key,
+                code: error.code(),
+            });
+        }
+    }
+    Ok(warnings)
+}
 
 #[derive(Debug)]
 struct CalibreFormat {
@@ -51,16 +81,7 @@ pub fn import_calibre_library(paths: LibraryPaths, library_root: &Path) -> AppRe
         custom_definitions(&database).map_err(|_| AppError::new("storage-unavailable"))?;
     drop(database);
     let mut store = LibraryStore::open(paths, true)?;
-    let existing = store
-        .list_custom_column_definitions()?
-        .into_iter()
-        .map(|definition| definition.key)
-        .collect::<std::collections::HashSet<_>>();
-    for (key, label) in definitions {
-        if !existing.contains(&key) {
-            let _ = store.create_custom_column_definition(&key, &label);
-        }
-    }
+    let warnings = import_column_definitions(&mut store, definitions)?;
     let original_ids = store
         .list(true)?
         .into_iter()
@@ -141,6 +162,7 @@ pub fn import_calibre_library(paths: LibraryPaths, library_root: &Path) -> AppRe
     };
     Ok(json!({
         "outcomes":outcomes,
+        "warnings":warnings,
         "counts":{
             "total":outcomes.len(),
             "imported":count("imported"),
@@ -739,6 +761,33 @@ fn import_failure_code(code: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::{maybe_json, normalize_date, normalize_language};
+
+    #[test]
+    fn column_creation_failures_are_reported_and_later_columns_continue() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths =
+            crate::paths::LibraryPaths::resolve(None, Some(&temp.path().join("library.sqlite")))
+                .unwrap();
+        let mut store = crate::store::LibraryStore::open(paths, true).unwrap();
+        let warnings = super::import_column_definitions(
+            &mut store,
+            vec![
+                ("invalid key".to_owned(), "Bad".to_owned()),
+                ("valid".to_owned(), "Good".to_owned()),
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            serde_json::to_value(warnings).unwrap(),
+            serde_json::json!([
+                {"kind":"custom-column","key":"invalid key","code":"invalid-arguments"}
+            ])
+        );
+        assert_eq!(
+            store.list_custom_column_definitions().unwrap()[0].key,
+            "valid"
+        );
+    }
 
     #[test]
     fn normalizes_legacy_date_language_and_custom_json_values() {

@@ -47,7 +47,7 @@ impl LibraryStore {
         transaction.execute(
             "INSERT INTO library_custom_column_definitions(key,label,type,position) VALUES(?1,?2,'text',?3)",
             params![key, label, count],
-        ).map_err(|error| if matches!(error, rusqlite::Error::SqliteFailure(_, _)) {
+        ).map_err(|error| if error.sqlite_error_code() == Some(rusqlite::ErrorCode::ConstraintViolation) {
             AppError::new("invalid-arguments")
         } else { error.into() })?;
         transaction.commit()?;
@@ -168,6 +168,34 @@ fn valid_custom_column_key(key: &str) -> bool {
 mod tests {
     use super::LibraryStore;
     use crate::paths::LibraryPaths;
+
+    #[test]
+    fn column_storage_failures_are_not_invalid_arguments() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = LibraryPaths::resolve(None, Some(&temp.path().join("library.sqlite"))).unwrap();
+        let mut store = LibraryStore::open(paths, true).unwrap();
+        store
+            .create_custom_column_definition("key", "Label")
+            .unwrap();
+        assert_eq!(
+            store
+                .create_custom_column_definition("key", "Duplicate")
+                .unwrap_err()
+                .code(),
+            "invalid-arguments"
+        );
+        store
+            .connection
+            .pragma_update(None, "query_only", true)
+            .unwrap();
+        assert_eq!(
+            store
+                .create_custom_column_definition("another", "Label")
+                .unwrap_err()
+                .code(),
+            "storage-unavailable"
+        );
+    }
 
     #[test]
     fn custom_column_lists_reject_invalid_untrimmed_reserved_and_noncontiguous_rows() {

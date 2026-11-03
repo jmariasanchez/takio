@@ -63,8 +63,9 @@ thread_local! {
 }
 
 #[cfg(test)]
-static HOLD_AFTER_WRITER_LOCK: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
+thread_local! {
+    static AFTER_WRITER_LOCK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
+}
 
 pub(super) fn migrate(
     connection: &mut Connection,
@@ -75,9 +76,11 @@ pub(super) fn migrate(
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|_| AppError::new("migration-failed"))?;
     #[cfg(test)]
-    if HOLD_AFTER_WRITER_LOCK.load(std::sync::atomic::Ordering::SeqCst) {
-        std::thread::sleep(Duration::from_millis(150));
-    }
+    AFTER_WRITER_LOCK.with(|hook| {
+        if let Some(hook) = hook.borrow_mut().take() {
+            hook();
+        }
+    });
     let snapshot =
         Connection::open(&paths.database).map_err(|_| AppError::new("migration-failed"))?;
     snapshot
@@ -1080,9 +1083,9 @@ pub(super) fn verify_current(connection: &Connection, paths: &LibraryPaths) -> A
 }
 
 fn file_fingerprint(path: &Path) -> std::io::Result<(i64, String)> {
-    let bytes = fs::read(path)?;
-    let size = i64::try_from(bytes.len()).map_err(|_| std::io::Error::other("file too large"))?;
-    Ok((size, hex::encode(Sha256::digest(bytes))))
+    let (bytes, digest) = crate::fingerprint::hash_file(path)?;
+    let size = i64::try_from(bytes).map_err(|_| std::io::Error::other("file too large"))?;
+    Ok((size, digest))
 }
 
 #[cfg(test)]
@@ -1419,18 +1422,33 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let paths = paths(&temp);
         install_fixture(&paths, 7);
-        HOLD_AFTER_WRITER_LOCK.store(true, std::sync::atomic::Ordering::SeqCst);
+        let (locked_tx, locked_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
         let migration_paths = paths.clone();
-        let migration = std::thread::spawn(move || LibraryStore::open(migration_paths, true));
-        std::thread::sleep(Duration::from_millis(30));
+        let migration = std::thread::spawn(move || {
+            AFTER_WRITER_LOCK.with(|hook| {
+                *hook.borrow_mut() = Some(Box::new(move || {
+                    locked_tx.send(()).unwrap();
+                    release_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+                }))
+            });
+            LibraryStore::open(migration_paths, true)
+        });
+        locked_rx.recv_timeout(Duration::from_secs(10)).unwrap();
         let writer_path = paths.database.clone();
         let writer = std::thread::spawn(move || {
             let writer = Connection::open(writer_path).unwrap();
-            writer.busy_timeout(Duration::from_secs(2)).unwrap();
+            writer.busy_timeout(Duration::ZERO).unwrap();
+            let error = writer.execute("UPDATE library_items SET title='Concurrent writer' WHERE id='fixture-book-managed'", []).unwrap_err();
+            assert_eq!(
+                error.sqlite_error_code(),
+                Some(rusqlite::ErrorCode::DatabaseBusy)
+            );
+            release_tx.send(()).unwrap();
+            writer.busy_timeout(Duration::from_secs(10)).unwrap();
             writer.execute("UPDATE library_items SET title='Concurrent writer' WHERE id='fixture-book-managed'", []).unwrap();
         });
         let store = migration.join().unwrap().unwrap();
-        HOLD_AFTER_WRITER_LOCK.store(false, std::sync::atomic::Ordering::SeqCst);
         writer.join().unwrap();
         drop(store);
         let backup = Connection::open(format!("{}.v7.backup", paths.database.display())).unwrap();
@@ -1455,6 +1473,19 @@ mod tests {
                 .unwrap(),
             "Concurrent writer"
         );
+    }
+
+    #[test]
+    fn migration_fingerprint_matches_streaming_digest_across_chunks() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("large.epub");
+        fs::write(&path, vec![42_u8; 256 * 1024 + 7]).unwrap();
+        let (size, digest) = crate::fingerprint::hash_file(&path).unwrap();
+        assert_eq!(
+            file_fingerprint(&path).unwrap(),
+            (i64::try_from(size).unwrap(), digest)
+        );
+        assert!(file_fingerprint(&temp.path().join("missing")).is_err());
     }
 
     #[test]
