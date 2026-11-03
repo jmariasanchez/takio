@@ -19,6 +19,7 @@ directories = "6.0"
 flate2 = "1.1"
 fs2 = "0.4"
 hex = "0.4"
+lopdf = { version = "0.46", default-features = false }
 ratatui = "0.29"
 regex = "1.11"
 roxmltree = "0.20"

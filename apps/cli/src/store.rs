@@ -344,6 +344,50 @@ impl LibraryStore {
         Ok(Self { connection, paths })
     }
 
+    /// Validate an existing default before writable startup opening. Returns true
+    /// only for a supported legacy catalogue requiring the verified migration.
+    pub fn preflight_startup(paths: LibraryPaths) -> AppResult<bool> {
+        if !fs::symlink_metadata(&paths.database)?.file_type().is_file() {
+            return Err(AppError::new("storage-unavailable"));
+        }
+        // SQLite NOFOLLOW rejects aliased ancestors too. Resolve the parent only,
+        // retaining the final-entry symlink rejection and NOFOLLOW protection.
+        let database = paths
+            .database
+            .parent()
+            .ok_or_else(|| AppError::new("invalid-arguments"))?
+            .canonicalize()?
+            .join(
+                paths
+                    .database
+                    .file_name()
+                    .ok_or_else(|| AppError::new("invalid-arguments"))?,
+            );
+        let connection = Connection::open_with_flags(
+            database,
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+        )?;
+        connection.busy_timeout(std::time::Duration::from_secs(5))?;
+        let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
+        if !(1..=LIBRARY_SCHEMA_VERSION).contains(&version) {
+            return Err(AppError::new("incompatible-schema"));
+        }
+        let mut store = Self { connection, paths };
+        if version == LIBRARY_SCHEMA_VERSION {
+            store.validate_catalogue()?;
+            return Ok(false);
+        }
+        migration::verify_schema_version(&store.connection, version)?;
+        let integrity: String =
+            store
+                .connection
+                .query_row("PRAGMA integrity_check", [], |row| row.get(0))?;
+        if integrity != "ok" {
+            return Err(AppError::new("integrity-failed"));
+        }
+        Ok(true)
+    }
+
     /// Open a current, readable catalogue without creating or migrating it.
     /// Managed file contents are not read: missing attachments remain manageable.
     pub fn open_existing(paths: LibraryPaths) -> AppResult<Self> {
@@ -391,27 +435,7 @@ impl LibraryStore {
         migration::verify_schema_version(&self.connection, version)?;
         // Keep the recorded ownership spelling for existing purge/backup operations.
         // A canonical UI root must not implicitly rebase catalogue file paths.
-        let canonical_root = self.paths.root.canonicalize()?;
-        let mut recorded_root = None;
-        let mut statement = self
-            .connection
-            .prepare("SELECT source_path FROM library_item_formats WHERE provenance='managed'")?;
-        for path in statement.query_map([], |row| row.get::<_, String>(0))? {
-            let path = PathBuf::from(path?);
-            let root = existing_owned_root(&path, &canonical_root)?;
-            if recorded_root
-                .as_ref()
-                .is_some_and(|existing| *existing != root)
-            {
-                return Err(AppError::new("integrity-failed"));
-            }
-            recorded_root = Some(root);
-        }
-        if let Some(root) = recorded_root {
-            let database = self.paths.database.clone();
-            self.paths = LibraryPaths::resolve(None, Some(&root.join("library.sqlite")))?;
-            self.paths.database = database;
-        }
+        self.paths = recovery::ownership_paths(&self.connection, &self.paths)?;
         migration::verify_current(&self.connection, &self.paths)?;
         self.list(true)?;
         self.list_trash()?;
@@ -587,6 +611,7 @@ impl LibraryStore {
         let (embedded_title, embedded_authors) = match format {
             FormatId::Epub | FormatId::Kepub => crate::metadata::embedded_epub(&source),
             FormatId::Mobi | FormatId::Azw3 => crate::metadata::embedded_mobi(&source),
+            FormatId::Pdf => crate::metadata::embedded_pdf(&source),
             _ => (None, Vec::new()),
         };
         let title = title
@@ -1710,7 +1735,8 @@ impl LibraryStore {
         if foreign_keys != 0 {
             return Err(AppError::new("integrity-failed"));
         }
-        migration::verify_current(&self.connection, &self.paths)?;
+        let ownership = recovery::ownership_paths(&self.connection, &self.paths)?;
+        migration::verify_current(&self.connection, &ownership)?;
         let active_items = count(
             &self.connection,
             "SELECT COUNT(*) FROM library_items WHERE trashed_at IS NULL",
@@ -3199,7 +3225,7 @@ fn replace_metadata(transaction: &Transaction<'_>, item: &LibraryItem) -> AppRes
     Ok(())
 }
 
-fn existing_owned_root(path: &Path, canonical_root: &Path) -> AppResult<PathBuf> {
+fn existing_owned_root(path: &Path, canonical_root: &Path, directory: &str) -> AppResult<PathBuf> {
     use std::path::Component;
     if !path.is_absolute()
         || path
@@ -3212,7 +3238,7 @@ fn existing_owned_root(path: &Path, canonical_root: &Path) -> AppResult<PathBuf>
         let Some(recorded_root) = owned.parent() else {
             continue;
         };
-        if owned.file_name().is_some_and(|name| name == "items")
+        if owned.file_name().is_some_and(|name| name == directory)
             && recorded_root
                 .canonicalize()
                 .is_ok_and(|root| root == canonical_root)

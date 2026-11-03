@@ -6,6 +6,39 @@ use std::path::Component;
 #[path = "recovery_tests.rs"]
 mod tests;
 
+// Resolve only the recorded library root, never an owned entry. Canonicalizing
+// attachment paths would hide symlink escapes and change their ownership meaning.
+pub(super) fn ownership_paths(
+    connection: &Connection,
+    paths: &LibraryPaths,
+) -> AppResult<LibraryPaths> {
+    let canonical_root = paths.root.canonicalize()?;
+    let mut recorded_root = None;
+    let mut statement = connection.prepare(
+        "SELECT source_path,'items' FROM library_item_formats WHERE provenance='managed'
+         UNION ALL SELECT cover_path,'covers' FROM library_items WHERE cover_path IS NOT NULL",
+    )?;
+    for entry in statement.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })? {
+        let (path, directory) = entry?;
+        let root = existing_owned_root(Path::new(&path), &canonical_root, &directory)?;
+        if recorded_root
+            .as_ref()
+            .is_some_and(|existing| *existing != root)
+        {
+            return Err(AppError::new("integrity-failed"));
+        }
+        recorded_root = Some(root);
+    }
+    let Some(root) = recorded_root else {
+        return Ok(paths.clone());
+    };
+    let mut resolved = LibraryPaths::resolve(None, Some(&root.join("library.sqlite")))?;
+    resolved.database = paths.database.clone();
+    Ok(resolved)
+}
+
 // Only entries created by this operation are removed on failure. In particular,
 // never recursively remove a tree another writer may have added files to.
 #[derive(Default)]

@@ -437,3 +437,200 @@ fn recovery_rejects_symlinked_snapshot_metadata_and_destination_sidecars() {
         fs::remove_file(sidecar).unwrap();
     }
 }
+
+#[cfg(unix)]
+#[test]
+fn recovery_read_only_verification_accepts_root_aliases_without_rebasing() {
+    let (temp, store, _) = fixture();
+    let real = temp.path().join("copies");
+    fs::create_dir(&real).unwrap();
+    let alias = temp.path().join("copies-alias");
+    std::os::unix::fs::symlink(&real, &alias).unwrap();
+    let backup = alias.join("backup");
+    store.backup(&backup).unwrap();
+    let restored = alias.join("restored");
+    store.restore_backup_copy(&backup, &restored).unwrap();
+    for root in [&backup, &restored] {
+        let database = root.join("library.sqlite");
+        let before = fs::read(&database).unwrap();
+        let opened =
+            LibraryStore::open_read_only(LibraryPaths::resolve(None, Some(&database)).unwrap())
+                .unwrap();
+        assert_eq!(opened.verify().unwrap().verified_managed_formats, 1);
+        assert_eq!(fs::read(&database).unwrap(), before);
+    }
+    assert!(
+        store
+            .restore_backup_copy(&backup, &alias.join("backup/inside"))
+            .is_err()
+    );
+    assert!(!backup.join("inside").exists());
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn recovery_verifies_through_macos_var_alias_with_any_tmpdir() {
+    // Exercise the actual system alias even when the test runner overrides TMPDIR.
+    let temp = tempfile::tempdir_in("/var/tmp").unwrap();
+    assert_ne!(temp.path(), temp.path().canonicalize().unwrap());
+    let paths =
+        LibraryPaths::resolve(None, Some(&temp.path().join("library/library.sqlite"))).unwrap();
+    let mut store = LibraryStore::open(paths, true).unwrap();
+    let source = temp.path().join("source.epub");
+    fs::write(&source, b"macOS alias regression").unwrap();
+    store.import(&source, None, false).unwrap();
+    let backup = temp.path().join("backup");
+    store.backup(&backup).unwrap();
+    let restored = temp.path().join("restored");
+    store.restore_backup_copy(&backup, &restored).unwrap();
+    for root in [backup, restored] {
+        let paths = LibraryPaths::resolve(None, Some(&root.join("library.sqlite"))).unwrap();
+        assert_eq!(
+            LibraryStore::open_read_only(paths)
+                .unwrap()
+                .verify()
+                .unwrap()
+                .verified_managed_formats,
+            1
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn recovery_alias_verification_rejects_unrelated_and_symlinked_owned_roots() {
+    let (temp, store, backup) = backup_fixture();
+    let unrelated = temp.path().join("unrelated");
+    fs::create_dir(&unrelated).unwrap();
+    fs::copy(
+        backup.join("library.sqlite"),
+        unrelated.join("library.sqlite"),
+    )
+    .unwrap();
+    let paths = LibraryPaths::resolve(None, Some(&unrelated.join("library.sqlite"))).unwrap();
+    assert!(
+        LibraryStore::open_read_only(paths)
+            .unwrap()
+            .verify()
+            .is_err()
+    );
+    let items = backup.join("items");
+    let external = temp.path().join("external-items");
+    fs::rename(&items, &external).unwrap();
+    std::os::unix::fs::symlink(&external, &items).unwrap();
+    let paths = LibraryPaths::resolve(None, Some(&backup.join("library.sqlite"))).unwrap();
+    assert!(
+        LibraryStore::open_read_only(paths)
+            .unwrap()
+            .verify()
+            .is_err()
+    );
+    assert!(
+        store
+            .restore_backup_copy(&backup, &temp.path().join("rejected"))
+            .is_err()
+    );
+    assert!(!temp.path().join("rejected").exists());
+}
+
+#[test]
+fn startup_preflight_preserves_supported_legacy_migration_and_rejects_corruption() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = LibraryPaths::resolve(None, Some(&temp.path().join("library.sqlite"))).unwrap();
+    let connection = Connection::open(&paths.database).unwrap();
+    connection
+        .execute_batch(include_str!(
+            "../../tests/fixtures/legacy-library-schemas/schema-v1.sql"
+        ))
+        .unwrap();
+    connection.execute("DELETE FROM library_items", []).unwrap();
+    drop(connection);
+    let before = fs::read(&paths.database).unwrap();
+    assert!(LibraryStore::preflight_startup(paths.clone()).unwrap());
+    assert_eq!(fs::read(&paths.database).unwrap(), before);
+    assert!(!paths.root.join("library.sqlite.v1.backup").exists());
+    assert!(!paths.items.exists());
+    let migrated = LibraryStore::open(paths.clone(), true).unwrap();
+    assert_eq!(
+        migrated.verify().unwrap().schema_version,
+        LIBRARY_SCHEMA_VERSION
+    );
+    assert!(!LibraryStore::preflight_startup(paths.clone()).unwrap());
+    assert!(paths.root.join("library.sqlite.v1.backup").is_file());
+    drop(migrated);
+    let mut malformed = fs::read(&paths.database).unwrap();
+    malformed[60..64].copy_from_slice(&1_u32.to_be_bytes());
+    fs::write(&paths.database, &malformed).unwrap();
+    assert!(LibraryStore::preflight_startup(paths.clone()).is_err());
+    assert_eq!(fs::read(&paths.database).unwrap(), malformed);
+}
+
+#[cfg(unix)]
+#[test]
+fn startup_preflight_accepts_parent_alias_but_not_database_symlink() {
+    let (temp, store, _) = fixture();
+    let alias = temp.path().join("alias");
+    std::os::unix::fs::symlink(&store.paths.root, &alias).unwrap();
+    let aliased = LibraryPaths::resolve(None, Some(&alias.join("library.sqlite"))).unwrap();
+    assert!(!LibraryStore::preflight_startup(aliased).unwrap());
+    let redirected = temp.path().join("redirected");
+    fs::create_dir(&redirected).unwrap();
+    std::os::unix::fs::symlink(&store.paths.database, redirected.join("library.sqlite")).unwrap();
+    let paths = LibraryPaths::resolve(None, Some(&redirected.join("library.sqlite"))).unwrap();
+    assert!(LibraryStore::preflight_startup(paths).is_err());
+    assert_eq!(store.verify().unwrap().verified_managed_formats, 1);
+}
+
+#[cfg(unix)]
+#[test]
+fn recovery_reference_only_managed_cover_survives_root_alias_and_rejects_cover_symlink() {
+    let (temp, store, id) = fixture();
+    let cover = store.paths.covers.join("cover.jpg");
+    fs::write(&cover, b"managed cover").unwrap();
+    store
+        .connection
+        .execute(
+            "UPDATE library_items SET cover_path=?1 WHERE id=?2",
+            params![cover.to_string_lossy(), id],
+        )
+        .unwrap();
+    store.connection.execute("UPDATE library_item_formats SET provenance='referenced',source_path=?1,content_bytes=NULL,content_sha256=NULL", [temp.path().join("original.epub").to_string_lossy()]).unwrap();
+    let alias = temp.path().join("library-alias");
+    std::os::unix::fs::symlink(&store.paths.root, &alias).unwrap();
+    let paths = LibraryPaths::resolve(
+        None,
+        Some(&alias.canonicalize().unwrap().join("library.sqlite")),
+    )
+    .unwrap();
+    // Canonical selection differs from the stored /var spelling on macOS; use
+    // an explicit alias as the recorded root on all Unix test runners too.
+    let alias_cover = alias.join("covers/cover.jpg");
+    store
+        .connection
+        .execute(
+            "UPDATE library_items SET cover_path=?1",
+            [alias_cover.to_string_lossy()],
+        )
+        .unwrap();
+    let before = fs::read(&store.paths.database).unwrap();
+    let reopened = LibraryStore::open_existing(paths.clone()).unwrap();
+    let backup = temp.path().join("cover-backup");
+    reopened.backup(&backup).unwrap();
+    let restored = temp.path().join("cover-restored");
+    let report = reopened.restore_backup_copy(&backup, &restored).unwrap();
+    assert_eq!(report.report.referenced_formats, 1);
+    let restored = LibraryStore::open_read_only(
+        LibraryPaths::resolve(None, Some(&report.database_path)).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        fs::read(restored.get(&id).unwrap().unwrap().cover_path.unwrap()).unwrap(),
+        b"managed cover"
+    );
+    assert_eq!(fs::read(&store.paths.database).unwrap(), before);
+    drop(reopened);
+    let outside = temp.path().join("outside-covers");
+    fs::rename(&store.paths.covers, &outside).unwrap();
+    std::os::unix::fs::symlink(&outside, &store.paths.covers).unwrap();
+    assert!(LibraryStore::open_existing(paths).is_err());
+}

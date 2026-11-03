@@ -19,6 +19,9 @@ use crate::candidate_cover::CapturedCover;
 use crate::model::BookAuthor;
 use crate::output::{AppError, AppResult};
 
+mod pdf;
+pub use pdf::embedded_pdf;
+
 const MAX_OPF_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_COVER_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_ZIP_DIRECTORY_BYTES: u64 = 4 * 1024 * 1024;
