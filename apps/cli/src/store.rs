@@ -26,6 +26,8 @@ mod migration;
 mod query;
 mod query_cache;
 mod recovery;
+#[cfg(test)]
+mod safety_tests;
 mod schema;
 
 use schema::{create_schema, has_schema};
@@ -38,7 +40,7 @@ pub(crate) use columns::validate_custom_column_definitions;
 pub use metadata::METADATA_AUDIT_KEY;
 use metadata::{
     normalize_authors, normalize_identifiers, normalize_languages, normalize_published_date,
-    normalize_texts, replace_metadata, required_text, validate_library_patch,
+    normalize_texts, replace_metadata, required_text,
 };
 pub(crate) use metadata::{
     normalize_custom_metadata, user_custom_metadata, validate_candidate_patch,
@@ -54,6 +56,46 @@ pub struct LibraryStore {
     connection: Connection,
     paths: LibraryPaths,
     query_cache: RefCell<query_cache::QueryCache>,
+}
+
+/// A committed catalogue mutation. Cleanup failures never turn a committed
+/// change into an error, and every preserved orphan path is reported here.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MutationResult {
+    pub item: LibraryItem,
+    pub cleanup_pending: bool,
+    pub cleanup_pending_paths: Vec<PathBuf>,
+}
+
+impl MutationResult {
+    fn new(item: LibraryItem) -> Self {
+        Self {
+            item,
+            cleanup_pending: false,
+            cleanup_pending_paths: Vec::new(),
+        }
+    }
+
+    fn pending(&mut self, path: &Path) {
+        self.cleanup_pending = true;
+        self.cleanup_pending_paths.push(path.to_path_buf());
+    }
+}
+
+#[derive(Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ImportStatus {
+    Imported,
+    Duplicate,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportResult {
+    pub item: LibraryItem,
+    pub status: ImportStatus,
+    pub source_preserved: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -334,12 +376,29 @@ impl LibraryStore {
             .transpose()
     }
 
+    /// Imports a new managed copy. `duplicate-source-preserved` means matching
+    /// bytes already exist and the source was not moved or deleted.
     pub fn import(
         &mut self,
         source: &Path,
         title: Option<&str>,
         move_source: bool,
     ) -> AppResult<LibraryItem> {
+        let result = self.import_with_outcome(source, title, move_source)?;
+        match result.status {
+            ImportStatus::Imported => Ok(result.item),
+            ImportStatus::Duplicate => Err(AppError::new("duplicate-source-preserved")),
+        }
+    }
+
+    /// Returns duplicate identity explicitly. Duplicate sources are always
+    /// preserved, including when move mode was requested.
+    pub fn import_with_outcome(
+        &mut self,
+        source: &Path,
+        title: Option<&str>,
+        move_source: bool,
+    ) -> AppResult<ImportResult> {
         let source = canonical_file(source)?;
         let format = detect_format(&source).ok_or_else(|| AppError::new("unsupported-format"))?;
         let (filename_title, filename_authors) = metadata_from_filename(&source);
@@ -381,9 +440,13 @@ impl LibraryStore {
             )
             .optional()?
         {
-            return self
-                .read_item(&id)?
-                .ok_or_else(|| AppError::new("invalid-stored-data"));
+            return Ok(ImportResult {
+                item: self
+                    .read_item(&id)?
+                    .ok_or_else(|| AppError::new("invalid-stored-data"))?,
+                status: ImportStatus::Duplicate,
+                source_preserved: true,
+            });
         }
 
         let id = format!("book_{}", Uuid::new_v4());
@@ -412,8 +475,13 @@ impl LibraryStore {
                 params![source.to_string_lossy(), as_i64(fingerprint.0)?, fingerprint.1],
             )?;
         }
-        self.read_item(&id)?
-            .ok_or_else(|| AppError::new("storage-unavailable"))
+        Ok(ImportResult {
+            item: self
+                .read_item(&id)?
+                .ok_or_else(|| AppError::new("storage-unavailable"))?,
+            status: ImportStatus::Imported,
+            source_preserved: source.exists(),
+        })
     }
 
     /// Every active (not trashed) book with the recorded size and SHA-256 of each managed
@@ -733,7 +801,51 @@ impl LibraryStore {
         Ok(formats + covers > 0)
     }
 
+    fn cleanup_format_after_commit(&self, format: &StoredFormat, result: &mut MutationResult) {
+        if format.provenance != Provenance::Managed {
+            return;
+        }
+        match self.path_is_referenced(&format.path.to_string_lossy()) {
+            Ok(true) => {}
+            Ok(false) => {
+                if cleanup_managed(&self.paths.items, &format.path, format.fingerprint.as_ref())
+                    .is_err()
+                {
+                    result.pending(&format.path);
+                }
+            }
+            Err(_) => result.pending(&format.path),
+        }
+    }
+
+    fn cleanup_cover_after_commit(&self, path: &Path, result: &mut MutationResult) {
+        if !path.starts_with(&self.paths.covers) {
+            return;
+        }
+        match self.path_is_referenced(&path.to_string_lossy()) {
+            Ok(true) => {}
+            Ok(false) => {
+                if let Err(error) = fs::remove_file(path)
+                    && error.kind() != std::io::ErrorKind::NotFound
+                {
+                    result.pending(path);
+                }
+            }
+            Err(_) => result.pending(path),
+        }
+    }
+
+    /// Compatibility API. Use `remove_format_with_cleanup` to display cleanup warnings.
     pub fn remove_format(&mut self, id: &str, format: FormatId) -> AppResult<LibraryItem> {
+        self.remove_format_with_cleanup(id, format)
+            .map(|result| result.item)
+    }
+
+    pub fn remove_format_with_cleanup(
+        &mut self,
+        id: &str,
+        format: FormatId,
+    ) -> AppResult<MutationResult> {
         let item = self
             .read_item(id)?
             .ok_or_else(|| AppError::new("not-found"))?;
@@ -753,16 +865,15 @@ impl LibraryStore {
              WHERE library_item_id = ?1 AND position > ?2",
             params![id, stored.position],
         )?;
+        let updated = hydration::read_item_from(&transaction, id)?
+            .ok_or_else(|| AppError::new("storage-unavailable"))?;
         transaction.commit()?;
-        if stored.provenance == Provenance::Managed
-            && !self.path_is_referenced(&stored.path.to_string_lossy())?
-        {
-            cleanup_managed(&self.paths.items, &stored.path, stored.fingerprint.as_ref())?;
-        }
-        self.read_item(id)?
-            .ok_or_else(|| AppError::new("storage-unavailable"))
+        let mut updated = MutationResult::new(updated);
+        self.cleanup_format_after_commit(&stored, &mut updated);
+        Ok(updated)
     }
 
+    /// Compatibility API. Use `replace_format_with_cleanup` to display cleanup warnings.
     pub fn replace_format(
         &mut self,
         id: &str,
@@ -771,9 +882,21 @@ impl LibraryStore {
         source: &Path,
         managed: bool,
     ) -> AppResult<LibraryItem> {
+        self.replace_format_with_cleanup(id, format, expected, source, managed)
+            .map(|result| result.item)
+    }
+
+    pub fn replace_format_with_cleanup(
+        &mut self,
+        id: &str,
+        format: FormatId,
+        expected: &Value,
+        source: &Path,
+        managed: bool,
+    ) -> AppResult<MutationResult> {
         let current = self
             .read_item(id)?
-            .ok_or_else(|| AppError::new("format-changed"))?
+            .ok_or_else(|| AppError::new("not-found"))?
             .formats
             .into_iter()
             .find(|candidate| candidate.format == format)
@@ -805,64 +928,51 @@ impl LibraryStore {
         } else {
             (source, None)
         };
-        let result = self.connection.execute(
-            "UPDATE library_item_formats SET source_path=?3, added_at=?4, provenance=?5,
+        let result = (|| -> AppResult<LibraryItem> {
+            let transaction = self.connection.transaction()?;
+            transaction.execute(
+                "UPDATE library_item_formats SET source_path=?3, added_at=?4, provenance=?5,
              content_bytes=?6, content_sha256=?7 WHERE library_item_id=?1 AND format=?2",
-            params![
-                id,
-                format.as_str(),
-                stored_path.to_string_lossy(),
-                now,
-                if managed { "managed" } else { "referenced" },
-                fingerprint
-                    .as_ref()
-                    .map(|value| value.0)
-                    .map(as_i64)
-                    .transpose()?,
-                fingerprint.as_ref().map(|value| value.1.as_str())
-            ],
-        );
-        if let Err(error) = result {
-            if managed {
-                let _ = fs::remove_file(&stored_path);
+                params![
+                    id,
+                    format.as_str(),
+                    stored_path.to_string_lossy(),
+                    now,
+                    if managed { "managed" } else { "referenced" },
+                    fingerprint
+                        .as_ref()
+                        .map(|value| value.0)
+                        .map(as_i64)
+                        .transpose()?,
+                    fingerprint.as_ref().map(|value| value.1.as_str())
+                ],
+            )?;
+            let updated = hydration::read_item_from(&transaction, id)?
+                .ok_or_else(|| AppError::new("storage-unavailable"))?;
+            transaction.commit()?;
+            Ok(updated)
+        })();
+        let mut updated = match result {
+            Ok(updated) => MutationResult::new(updated),
+            Err(error) => {
+                if managed {
+                    let _ = fs::remove_file(&stored_path);
+                }
+                return Err(error);
             }
-            return Err(error.into());
+        };
+        if old.path != stored_path {
+            self.cleanup_format_after_commit(&old, &mut updated);
         }
-        if old.provenance == Provenance::Managed
-            && old.path != stored_path
-            && !self.path_is_referenced(&old.path.to_string_lossy())?
-        {
-            cleanup_managed(&self.paths.items, &old.path, old.fingerprint.as_ref())?;
-        }
-        self.read_item(id)?
-            .ok_or_else(|| AppError::new("storage-unavailable"))
+        Ok(updated)
     }
 
+    /// Compatibility entry point for `library remove`: moves the item to trash.
+    /// Permanent deletion is only available through `purge` after trashing.
+    /// Like sibling mutators, unknown IDs return `not-found`. The optional
+    /// result type is retained for existing callers.
     pub fn remove(&mut self, id: &str) -> AppResult<Option<LibraryItem>> {
-        let Some(item) = self.read_item(id)? else {
-            return Ok(None);
-        };
-        let stored = item
-            .formats
-            .iter()
-            .map(|format| self.stored_format(id, format.format))
-            .collect::<AppResult<Vec<_>>>()?;
-        self.connection
-            .execute("DELETE FROM library_items WHERE id=?1", [id])?;
-        for format in stored.into_iter().flatten() {
-            if format.provenance == Provenance::Managed
-                && !self.path_is_referenced(&format.path.to_string_lossy())?
-            {
-                cleanup_managed(&self.paths.items, &format.path, format.fingerprint.as_ref())?;
-            }
-        }
-        if let Some(path) = &item.cover_path
-            && path.starts_with(&self.paths.covers)
-            && !self.path_is_referenced(&path.to_string_lossy())?
-        {
-            let _ = fs::remove_file(path);
-        }
-        Ok(Some(item))
+        self.trash(id).map(Some)
     }
 
     pub fn update(&mut self, id: &str, patch: LibraryPatch) -> AppResult<LibraryItem> {
@@ -892,7 +1002,7 @@ impl LibraryStore {
             .transpose()?;
         let old_cover = self
             .read_item(id)?
-            .ok_or_else(|| AppError::new("item-not-found"))?
+            .ok_or_else(|| AppError::new("not-found"))?
             .cover_path;
         let published = if let Some(claimed) = &claimed {
             let target = self.paths.covers.join(format!(
@@ -933,21 +1043,15 @@ impl LibraryStore {
         Ok(applied)
     }
 
-    fn update_inner(
-        &mut self,
-        id: &str,
+    fn apply_patch_to_item(
+        item: &mut LibraryItem,
         patch: LibraryPatch,
         allow_reserved_metadata: bool,
-        cover_path: Option<&Path>,
-    ) -> AppResult<LibraryItem> {
-        validate_library_patch(&patch, allow_reserved_metadata)?;
-        let mut item = self
-            .read_item(id)?
-            .ok_or_else(|| AppError::new("not-found"))?;
+    ) -> AppResult<()> {
         // Patch semantics, uniform across every nullable field the contract
         // allows: `Missing` leaves the stored value untouched, `Null` clears it
         // to the documented empty value, `Set` replaces it.
-        if patch.is_empty() && cover_path.is_none() {
+        if patch.is_empty() {
             return Err(AppError::new("invalid-arguments"));
         }
         // `title` is non-nullable: an explicit null is a client error.
@@ -966,6 +1070,7 @@ impl LibraryStore {
             Patch::Null => item.author = None,
             Patch::Set(value) => item.author = Some(required_text(value)?),
         }
+        let authors_changed = !matches!(patch.authors, Patch::Missing);
         match patch.authors {
             Patch::Missing => {}
             Patch::Null => item.authors = Vec::new(),
@@ -977,6 +1082,15 @@ impl LibraryStore {
                 }
                 item.authors = normalize_authors(value)?;
             }
+        }
+        if authors_changed {
+            item.author = (!item.authors.is_empty()).then(|| {
+                item.authors
+                    .iter()
+                    .map(|author| author.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            });
         }
         match patch.series {
             Patch::Missing => {}
@@ -1063,6 +1177,20 @@ impl LibraryStore {
             Patch::Null => return Err(AppError::new("invalid-arguments")),
             Patch::Set(value) => item.tags = normalize_texts(value)?,
         }
+        Ok(())
+    }
+
+    fn update_inner(
+        &mut self,
+        id: &str,
+        patch: LibraryPatch,
+        allow_reserved_metadata: bool,
+        cover_path: Option<&Path>,
+    ) -> AppResult<LibraryItem> {
+        let mut item = self
+            .read_item(id)?
+            .ok_or_else(|| AppError::new("not-found"))?;
+        Self::apply_patch_to_item(&mut item, patch, allow_reserved_metadata)?;
         item.updated_at = Some(Utc::now().to_rfc3339());
 
         let transaction = self.connection.transaction()?;
@@ -1093,9 +1221,9 @@ impl LibraryStore {
     }
 
     pub fn set_cover(&mut self, id: &str, source: &Path) -> AppResult<LibraryItem> {
-        if self.read_item(id)?.is_none() {
-            return Err(AppError::new("not-found"));
-        }
+        let mut item = self
+            .read_item(id)?
+            .ok_or_else(|| AppError::new("not-found"))?;
         let source = canonical_file(source)?;
         let extension = source
             .extension()
@@ -1107,44 +1235,48 @@ impl LibraryStore {
             .join(format!("{id}-{}.{extension}", Uuid::new_v4()));
         let fingerprint = hash_file(&source)?;
         publish_copy(&source, &target, &fingerprint)?;
-        let old: Option<String> = self
-            .connection
-            .query_row(
-                "SELECT cover_path FROM library_items WHERE id = ?1",
-                [id],
-                |row| row.get(0),
-            )
-            .optional()?
-            .flatten();
-        self.connection.execute(
+        let old = item.cover_path.clone();
+        let updated_at = Utc::now().to_rfc3339();
+        if let Err(error) = self.connection.execute(
             "UPDATE library_items SET cover_path=?2, updated_at=?3 WHERE id=?1",
-            params![id, target.to_string_lossy(), Utc::now().to_rfc3339()],
-        )?;
-        if let Some(old) = old {
-            let old = PathBuf::from(old);
-            if old != target && old.starts_with(&self.paths.covers) {
-                let _ = fs::remove_file(old);
-            }
+            params![id, target.to_string_lossy(), updated_at],
+        ) {
+            let _ = fs::remove_file(&target);
+            return Err(error.into());
         }
-        self.read_item(id)?
-            .ok_or_else(|| AppError::new("storage-unavailable"))
+        if let Some(old) = old
+            && old != target
+            && old.starts_with(&self.paths.covers)
+            && self
+                .path_is_referenced(&old.to_string_lossy())
+                .is_ok_and(|referenced| !referenced)
+        {
+            let _ = fs::remove_file(old);
+        }
+        item.cover_path = Some(target);
+        item.updated_at = Some(updated_at);
+        Ok(item)
     }
 
     pub fn remove_cover(&mut self, id: &str) -> AppResult<LibraryItem> {
-        let item = self
+        let mut item = self
             .read_item(id)?
             .ok_or_else(|| AppError::new("not-found"))?;
+        let updated_at = Utc::now().to_rfc3339();
         self.connection.execute(
             "UPDATE library_items SET cover_path=NULL, updated_at=?2 WHERE id=?1",
-            params![id, Utc::now().to_rfc3339()],
+            params![id, updated_at],
         )?;
-        if let Some(path) = item.cover_path
+        if let Some(path) = item.cover_path.take()
             && path.starts_with(&self.paths.covers)
+            && self
+                .path_is_referenced(&path.to_string_lossy())
+                .is_ok_and(|referenced| !referenced)
         {
             let _ = fs::remove_file(path);
         }
-        self.read_item(id)?
-            .ok_or_else(|| AppError::new("storage-unavailable"))
+        item.updated_at = Some(updated_at);
+        Ok(item)
     }
 
     pub fn trash(&mut self, id: &str) -> AppResult<LibraryItem> {
@@ -1155,7 +1287,16 @@ impl LibraryStore {
         self.set_trash(id, None)
     }
 
+    /// Compatibility API. Use `purge_with_cleanup` to display cleanup warnings.
     pub fn purge(&mut self, id: &str) -> AppResult<LibraryItem> {
+        self.purge_with_cleanup(id).map(|result| result.item)
+    }
+
+    pub fn purge_with_cleanup(&mut self, id: &str) -> AppResult<MutationResult> {
+        self.purge_trashed(id)
+    }
+
+    fn purge_trashed(&mut self, id: &str) -> AppResult<MutationResult> {
         let item = self
             .read_item(id)?
             .ok_or_else(|| AppError::new("not-found"))?;
@@ -1172,22 +1313,21 @@ impl LibraryStore {
             .iter()
             .map(|format| self.stored_format(id, format.format))
             .collect::<AppResult<Vec<_>>>()?;
-        self.connection
-            .execute("DELETE FROM library_items WHERE id=?1", [id])?;
+        let changed = self.connection.execute(
+            "DELETE FROM library_items WHERE id=?1 AND trashed_at IS NOT NULL",
+            [id],
+        )?;
+        if changed == 0 {
+            return Err(AppError::new("not-trashed"));
+        }
+        let mut result = MutationResult::new(item);
         for format in stored.into_iter().flatten() {
-            if format.provenance == Provenance::Managed
-                && !self.path_is_referenced(&format.path.to_string_lossy())?
-            {
-                cleanup_managed(&self.paths.items, &format.path, format.fingerprint.as_ref())?;
-            }
+            self.cleanup_format_after_commit(&format, &mut result);
         }
-        if let Some(path) = &item.cover_path
-            && path.starts_with(&self.paths.covers)
-            && !self.path_is_referenced(&path.to_string_lossy())?
-        {
-            let _ = fs::remove_file(path);
+        if let Some(path) = result.item.cover_path.clone() {
+            self.cleanup_cover_after_commit(&path, &mut result);
         }
-        Ok(item)
+        Ok(result)
     }
 
     pub fn verify(&self) -> AppResult<VerifyReport> {
@@ -1374,29 +1514,26 @@ impl LibraryStore {
         })
     }
 
+    /// Unknown IDs return `not-found`, as for other mutators. The optional
+    /// result type remains for source compatibility.
     pub fn remove_view(&self, id: &str) -> AppResult<Option<SavedView>> {
         let view = self
-            .list_saved_views()?
-            .into_iter()
-            .find(|view| view.id == id);
-        if view.is_none() {
-            return Ok(None);
-        }
+            .saved_view(id)?
+            .ok_or_else(|| AppError::new("not-found"))?;
         self.connection
-            .execute("DELETE FROM saved_library_views WHERE id=?1", [id])?;
-        Ok(view)
+            .execute("DELETE FROM saved_library_views WHERE id=?1", [&view.id])?;
+        Ok(Some(view))
     }
 
     fn set_trash(&mut self, id: &str, timestamp: Option<String>) -> AppResult<LibraryItem> {
-        if self.read_item(id)?.is_none() {
-            return Err(AppError::new("not-found"));
-        }
+        let item = self
+            .read_item(id)?
+            .ok_or_else(|| AppError::new("not-found"))?;
         self.connection.execute(
             "UPDATE library_items SET trashed_at=?2 WHERE id=?1",
             params![id, timestamp],
         )?;
-        self.read_item(id)?
-            .ok_or_else(|| AppError::new("storage-unavailable"))
+        Ok(item)
     }
 
     fn managed_path(&self, id: &str, format: FormatId) -> PathBuf {
