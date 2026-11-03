@@ -1,6 +1,6 @@
 use super::*;
 use gpui::{TestAppContext, WindowHandle};
-use std::{fs, time::Duration};
+use std::fs;
 use takio::store::LibraryStore;
 
 struct Fixture {
@@ -12,14 +12,10 @@ struct Fixture {
 }
 
 fn settle(view: &Entity<StartupWindow>, cx: &mut TestAppContext) {
-    for _ in 0..200 {
+    crate::test_support::wait_until("startup recovery", || {
         cx.run_until_parked();
-        if view.read_with(cx, |view, _| !view.busy) {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    }
-    panic!("startup recovery did not settle");
+        view.read_with(cx, |view, _| !view.busy)
+    });
 }
 
 fn fixture(cx: &mut TestAppContext) -> Fixture {

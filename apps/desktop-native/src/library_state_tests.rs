@@ -12,14 +12,7 @@ fn switching_candidate(title: &str) -> (tempfile::TempDir, PathBuf) {
 }
 
 fn switching_ready(state: &Entity<LibraryState>, cx: &mut TestAppContext) {
-    for _ in 0..200 {
-        settle(state, cx);
-        if !state.read_with(cx, |state, _| state.refreshing_devices) {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    }
-    panic!("device refresh never settled");
+    settle(state, cx);
 }
 
 #[gpui::test]

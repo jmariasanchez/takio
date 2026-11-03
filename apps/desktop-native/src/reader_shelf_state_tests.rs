@@ -364,7 +364,7 @@ fn reader_shelf_empty_documents_and_generic_drives_are_not_errors(cx: &mut TestA
     let shelves = f
         .state
         .read_with(cx, |state, _| {
-            state.engine.request(|reply| Request::ReaderShelves {
+            state.engine.request(|reply| Request::ScanReaderShelves {
                 destinations: vec![generic],
                 reply,
             })

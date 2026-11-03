@@ -347,7 +347,7 @@ pub enum Request {
         volumes_root: PathBuf,
         reply: Sender<AppResult<Vec<Destination>>>,
     },
-    ReaderShelves {
+    ScanReaderShelves {
         destinations: Vec<Destination>,
         reply: Sender<AppResult<ReaderShelves>>,
     },
@@ -363,12 +363,6 @@ pub enum Request {
     SendReviewed {
         destination: Destination,
         entries: Vec<SendPreviewEntry>,
-        reply: Sender<AppResult<SendReport>>,
-    },
-    #[cfg(test)]
-    SendMany {
-        destination: Destination,
-        item_ids: Vec<String>,
         reply: Sender<AppResult<SendReport>>,
     },
     Eject {
@@ -579,7 +573,7 @@ fn worker_with_reader_scans(
             } => {
                 let _ = reply.send(destinations::list(&volumes_root));
             }
-            Request::ReaderShelves {
+            Request::ScanReaderShelves {
                 destinations,
                 reply,
             } => match (&reader_scans, store.active_fingerprints()) {
@@ -597,11 +591,11 @@ fn worker_with_reader_scans(
                     let _ = reply.send(Err(error));
                 }
                 (None, _) => {
-                    let _ = reply.send(Err(AppError::new("storage-unavailable")));
+                    let _ = reply.send(Err(AppError::new("reader-scan-unavailable")));
                 }
             },
             Request::ImportFromReader { destination, reply } => {
-                let mut reader_hashes = takio::reader_shelf::HashCache::load(&store.paths().root);
+                let mut reader_hashes = takio::reader_shelf::HashCache::default();
                 let result = destination
                     .path
                     .parent()
@@ -630,14 +624,6 @@ fn worker_with_reader_scans(
             } => {
                 let _ = reply.send(send_reviewed(&store, &destination, &entries));
             }
-            #[cfg(test)]
-            Request::SendMany {
-                destination,
-                item_ids,
-                reply,
-            } => {
-                let _ = reply.send(send_many(&store, &destination, &item_ids));
-            }
             Request::Eject { destination, reply } => {
                 // OS reads cannot be safely interrupted. Refuse rather than
                 // unmount beneath an active scan or block the catalogue queue.
@@ -661,19 +647,12 @@ fn each(
     ids.iter().map(|id| (id.clone(), op(id))).collect()
 }
 
-#[cfg(test)]
-fn send_item(
-    store: &LibraryStore,
-    destination: &Destination,
-    item_id: &str,
-) -> AppResult<DeliveryResult> {
-    let item = store
-        .get(item_id)?
-        .ok_or_else(|| AppError::new("not-found"))?;
-    if store.list_trash()?.iter().any(|item| item.id == item_id) {
-        return Err(AppError::new("item-trashed"));
-    }
-    deliver_item(destination, &item, None)
+pub(crate) fn trashed_ids(store: &LibraryStore) -> AppResult<BTreeSet<String>> {
+    Ok(store
+        .list_trash()?
+        .into_iter()
+        .map(|item| item.id)
+        .collect())
 }
 
 fn preview_send(
@@ -689,11 +668,7 @@ fn preview_send(
         .parent()
         .ok_or_else(|| AppError::new("unknown-destination"))?;
     let destination = destinations::authorize(&destination.path, root)?;
-    let trashed: BTreeSet<_> = store
-        .list_trash()?
-        .into_iter()
-        .map(|item| item.id)
-        .collect();
+    let trashed = trashed_ids(store)?;
     let entries = item_ids
         .iter()
         .map(|id| {
@@ -743,16 +718,12 @@ fn send_reviewed(
     if entries.len() > MAX_SEND_ITEMS {
         return Err(AppError::new("invalid-arguments"));
     }
-    let trashed: BTreeSet<_> = store
-        .list_trash()?
-        .into_iter()
-        .map(|item| item.id)
-        .collect();
+    let trashed = trashed_ids(store)?;
     Ok(SendReport {
         entries: entries
             .iter()
             .map(|entry| match &entry.result {
-                Ok(ready) => send_entry(store, destination, &trashed, &entry.item_id, Some(ready)),
+                Ok(ready) => send_entry(store, destination, &trashed, &entry.item_id, ready),
                 Err(error) => SendEntry {
                     item_id: entry.item_id.clone(),
                     title: entry.title.clone(),
@@ -768,7 +739,7 @@ fn send_entry(
     destination: &Destination,
     trashed: &BTreeSet<String>,
     id: &str,
-    reviewed: Option<&ReadyFile>,
+    reviewed: &ReadyFile,
 ) -> SendEntry {
     let mut title = id.to_owned();
     let result = store.get(id).and_then(|item| {
@@ -786,27 +757,6 @@ fn send_entry(
     }
 }
 
-#[cfg(test)]
-fn send_many(
-    store: &LibraryStore,
-    destination: &Destination,
-    item_ids: &[String],
-) -> AppResult<SendReport> {
-    if item_ids.len() > MAX_SEND_ITEMS {
-        return Err(AppError::new("invalid-arguments"));
-    }
-    let trashed: BTreeSet<_> = store
-        .list_trash()?
-        .into_iter()
-        .map(|item| item.id)
-        .collect();
-    let entries = item_ids
-        .iter()
-        .map(|id| send_entry(store, destination, &trashed, id, None))
-        .collect();
-    Ok(SendReport { entries })
-}
-
 fn preferred_format<'a>(
     item: &'a LibraryItem,
     destination: &Destination,
@@ -818,7 +768,7 @@ fn preferred_format<'a>(
 fn deliver_item(
     destination: &Destination,
     item: &LibraryItem,
-    reviewed: Option<&ReadyFile>,
+    reviewed: &ReadyFile,
 ) -> AppResult<DeliveryResult> {
     // Refresh mount detection so a disconnected reader is not recreated as a local folder,
     // and stale caller-provided capabilities cannot permit an incompatible format.
@@ -829,9 +779,7 @@ fn deliver_item(
     let destination = destinations::authorize(&destination.path, root)?;
     let format = preferred_format(item, &destination)
         .ok_or_else(|| AppError::new("no-compatible-format"))?;
-    if reviewed.is_some_and(|ready| {
-        ready.format != format.format || ready.source_path != format.source_path
-    }) {
+    if reviewed.format != format.format || reviewed.source_path != format.source_path {
         return Err(AppError::new("send-review-changed"));
     }
     let author = item
@@ -867,6 +815,58 @@ pub fn resolve_paths() -> AppResult<LibraryPaths> {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn missing_reader_worker_does_not_report_library_failure() {
+        let (_temp, store, _) = delivery_fixture();
+        let (sender, receiver) = mpsc::channel();
+        let worker = thread::spawn(move || worker_with_reader_scans(store, receiver, None, None));
+        let engine = Engine {
+            sender,
+            root: PathBuf::new(),
+        };
+        let error = engine
+            .request(|reply| Request::ScanReaderShelves {
+                destinations: Vec::new(),
+                reply,
+            })
+            .recv()
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(error.code(), "reader-scan-unavailable");
+        assert!(crate::state::humanize_error(error.code()).contains("library is still available"));
+        assert!(
+            engine
+                .request(|reply| Request::Query {
+                    query: String::new(),
+                    filters: Filters::default(),
+                    reply
+                })
+                .recv()
+                .unwrap()
+                .is_ok()
+        );
+        drop(engine);
+        worker.join().unwrap();
+    }
+    fn preview_and_send(
+        store: &LibraryStore,
+        destination: &Destination,
+        ids: &[String],
+    ) -> AppResult<SendReport> {
+        let preview = preview_send(store, destination, ids)?;
+        send_reviewed(store, &preview.destination, &preview.entries)
+    }
+
+    fn preview_and_send_one(
+        store: &LibraryStore,
+        destination: &Destination,
+        id: &str,
+    ) -> AppResult<DeliveryResult> {
+        preview_and_send(store, destination, &[id.to_owned()])?
+            .entries
+            .remove(0)
+            .result
+    }
+    #[test]
     fn blocked_reader_scan_does_not_block_queries_and_pending_scans_are_bounded() {
         use std::time::Duration;
         let (_temp, store, destination) = delivery_fixture();
@@ -885,7 +885,7 @@ mod tests {
             sender,
             root: PathBuf::new(),
         };
-        let first = engine.request(|reply| Request::ReaderShelves {
+        let first = engine.request(|reply| Request::ScanReaderShelves {
             destinations: Vec::new(),
             reply,
         });
@@ -899,11 +899,11 @@ mod tests {
                 .code(),
             "reader-scan-in-progress"
         );
-        let replaced = engine.request(|reply| Request::ReaderShelves {
+        let replaced = engine.request(|reply| Request::ScanReaderShelves {
             destinations: Vec::new(),
             reply,
         });
-        let latest = engine.request(|reply| Request::ReaderShelves {
+        let latest = engine.request(|reply| Request::ScanReaderShelves {
             destinations: Vec::new(),
             reply,
         });
@@ -960,13 +960,13 @@ mod tests {
             sender,
             root: PathBuf::new(),
         };
-        let first = engine.request(|reply| Request::ReaderShelves {
+        let first = engine.request(|reply| Request::ScanReaderShelves {
             destinations: Vec::new(),
             reply,
         });
         let (root, current) = started.recv_timeout(Duration::from_secs(2)).unwrap();
         assert_eq!(root, original_root);
-        let pending = engine.request(|reply| Request::ReaderShelves {
+        let pending = engine.request(|reply| Request::ScanReaderShelves {
             destinations: Vec::new(),
             reply,
         });
@@ -1418,7 +1418,7 @@ mod tests {
             fs::write(&source, extension).unwrap();
             store.attach_format(&item.id, &source, true).unwrap();
         }
-        let result = send_item(&store, &destination, &item.id).unwrap();
+        let result = preview_and_send_one(&store, &destination, &item.id).unwrap();
         assert_eq!(result.path.extension().unwrap(), "azw3");
         assert_eq!(fs::read(&result.path).unwrap(), b"azw3");
         assert_eq!(
@@ -1433,7 +1433,7 @@ mod tests {
         let (temp, mut store, mut destination) = delivery_fixture();
         let item = add_book(&mut store, temp.path(), "Incompatible", "epub");
         destination.features.push("koreader".into());
-        let error = send_item(&store, &destination, &item.id).unwrap_err();
+        let error = preview_and_send_one(&store, &destination, &item.id).unwrap_err();
         assert_eq!(error.code(), "no-compatible-format");
         assert_eq!(
             fs::read_dir(destination.path.join("documents"))
@@ -1448,7 +1448,7 @@ mod tests {
         let (temp, mut store, destination) = delivery_fixture();
         fs::create_dir(destination.path.join("koreader")).unwrap();
         let item = add_book(&mut store, temp.path(), "KOReader", "epub");
-        let result = send_item(&store, &destination, &item.id).unwrap();
+        let result = preview_and_send_one(&store, &destination, &item.id).unwrap();
         assert_eq!(result.path.extension().unwrap(), "epub");
         assert_eq!(
             fs::read(result.path).unwrap(),
@@ -1469,7 +1469,7 @@ mod tests {
             missing_source.id.clone(),
             good.id.clone(),
         ];
-        let report = send_many(&store, &destination, &ids).unwrap();
+        let report = preview_and_send(&store, &destination, &ids).unwrap();
         assert_eq!(report.entries.len(), 4);
         assert_eq!(
             report
@@ -1508,7 +1508,7 @@ mod tests {
                 "Existing", None, "azw3",
             ));
         fs::write(&target, b"keep me").unwrap();
-        let report = send_many(&store, &destination, &[first.id, second.id]).unwrap();
+        let report = preview_and_send(&store, &destination, &[first.id, second.id]).unwrap();
         assert_eq!(
             report.entries[0].result.as_ref().unwrap_err().code(),
             "destination-file-exists"
@@ -1522,7 +1522,7 @@ mod tests {
         let (temp, mut store, destination) = delivery_fixture();
         let item = add_book(&mut store, temp.path(), "Bounded", "azw3");
         let error =
-            send_many(&store, &destination, &vec![item.id; MAX_SEND_ITEMS + 1]).unwrap_err();
+            preview_and_send(&store, &destination, &vec![item.id; MAX_SEND_ITEMS + 1]).unwrap_err();
         assert_eq!(error.code(), "invalid-arguments");
         assert_eq!(
             fs::read_dir(destination.path.join("documents"))
@@ -1531,7 +1531,7 @@ mod tests {
             0
         );
         assert!(
-            send_many(&store, &destination, &[])
+            preview_and_send(&store, &destination, &[])
                 .unwrap()
                 .entries
                 .is_empty()
@@ -1544,7 +1544,7 @@ mod tests {
         let item = add_book(&mut store, temp.path(), "Disconnected", "azw3");
         fs::remove_dir_all(&destination.path).unwrap();
         assert_eq!(
-            send_item(&store, &destination, &item.id)
+            preview_and_send_one(&store, &destination, &item.id)
                 .unwrap_err()
                 .code(),
             "unknown-destination"
@@ -1575,10 +1575,19 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(updated.title, "After");
-        let report = engine
-            .request(|reply| Request::SendMany {
+        let preview = engine
+            .request(|reply| Request::PreviewSend {
                 destination,
                 item_ids: vec![item.id],
+                reply,
+            })
+            .recv()
+            .unwrap()
+            .unwrap();
+        let report = engine
+            .request(|reply| Request::SendReviewed {
+                destination: preview.destination,
+                entries: preview.entries,
                 reply,
             })
             .recv()
@@ -1596,12 +1605,12 @@ mod tests {
         let item = add_book(&mut store, temp.path(), "Trash", "azw3");
         store.trash(&item.id).unwrap();
         assert_eq!(
-            send_item(&store, &destination, &item.id)
+            preview_and_send_one(&store, &destination, &item.id)
                 .unwrap_err()
                 .code(),
             "item-trashed"
         );
-        let report = send_many(&store, &destination, &[item.id]).unwrap();
+        let report = preview_and_send(&store, &destination, &[item.id]).unwrap();
         assert_eq!(report.entries[0].title, "Trash");
         assert_eq!(
             report.entries[0].result.as_ref().unwrap_err().code(),
@@ -1621,7 +1630,7 @@ mod tests {
         fs::remove_dir(destination.path.join("system")).unwrap();
         let item = add_book(&mut store, temp.path(), "Unknown reader", "epub");
         assert_eq!(
-            send_item(&store, &destination, &item.id)
+            preview_and_send_one(&store, &destination, &item.id)
                 .unwrap_err()
                 .code(),
             "no-compatible-format"
@@ -1639,7 +1648,7 @@ mod tests {
         let (temp, mut store, destination) = delivery_fixture();
         for extension in ["mobi", "pdf"] {
             let item = add_book(&mut store, temp.path(), extension, extension);
-            let result = send_item(&store, &destination, &item.id).unwrap();
+            let result = preview_and_send_one(&store, &destination, &item.id).unwrap();
             assert_eq!(result.path.extension().unwrap(), extension);
             assert_eq!(
                 fs::read(result.path).unwrap(),

@@ -13,6 +13,8 @@ mod snapshot;
 mod startup;
 mod startup_window;
 mod state;
+#[cfg(any(test, feature = "snapshot"))]
+mod test_support;
 mod theme;
 mod views;
 

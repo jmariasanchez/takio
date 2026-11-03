@@ -35,7 +35,10 @@ impl Render for Sidebar {
         let available = state.can_mutate();
         let can_send = available && section == Section::Library && selected > 0;
         let refreshing = state.refreshing_devices;
-        let device_error = state.device_error.clone();
+        let device_error = state
+            .device_error
+            .as_ref()
+            .map(|error| crate::state::humanize_error(error.code()));
         let readers: Vec<_> = destinations
             .into_iter()
             .filter(|device| !matches!(device.kind, takio::destinations::DestinationKind::Generic))

@@ -29,7 +29,7 @@ pub struct Config {
 pub struct RunReport {
     pub backup: BackupReport,
     pub config: Config,
-    pub settings_error: Option<String>,
+    pub settings_error: Option<AppError>,
 }
 
 #[derive(Default)]
@@ -238,9 +238,7 @@ pub fn run(store: &LibraryStore, mut config: Config, now: u64) -> AppResult<RunR
         }
     };
     config.last_success = Some(now);
-    let settings_error = save(root, &config)
-        .err()
-        .map(|error| error.code().to_owned());
+    let settings_error = save(root, &config).err();
     // A verified copy is success even when recording its timestamp fails.
     Ok(RunReport {
         backup,

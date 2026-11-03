@@ -8,15 +8,11 @@ fn automatic_backup_action(f: &Fixture, cx: &mut TestAppContext) {
 }
 
 fn automatic_backup_settings_ready(state: &LibraryEntity, cx: &mut TestAppContext) {
-    for _ in 0..200 {
+    crate::test_support::wait_until("automatic backup settings", || {
         cx.run_until_parked();
-        if state.read_with(cx, |state, _| state.automatic_backup.ready) {
-            settle(state, cx);
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    }
-    panic!("automatic backup settings did not load");
+        state.read_with(cx, |state, _| state.automatic_backup.ready)
+    });
+    settle(state, cx);
 }
 
 #[gpui::test]
@@ -193,15 +189,7 @@ fn native_automatic_backup_enable_reload_mutate_restore_and_disable(cx: &mut Tes
 }
 
 fn automatic_backup_due_for_dialog_test(f: &Fixture, cx: &mut TestAppContext) {
-    for _ in 0..200 {
-        cx.run_until_parked();
-        if f.state
-            .read_with(cx, |state, _| state.automatic_backup.ready)
-        {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    }
+    automatic_backup_settings_ready(&f.state, cx);
     f.state.update(cx, |state, _| {
         assert!(state.automatic_backup.ready);
         state.automatic_backup.config = crate::automatic_backup::Config {

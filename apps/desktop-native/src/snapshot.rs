@@ -168,16 +168,8 @@ pub fn run() {
 }
 
 fn settle(cx: &mut VisualTestAppContext, state: &gpui::Entity<LibraryState>) {
-    for _ in 0..400 {
+    crate::test_support::wait_until("snapshot state", || {
         cx.run_until_parked();
-        let busy = cx.read(|cx| {
-            let state = state.read(cx);
-            state.loading || state.busy || state.refreshing_devices || state.scanning_readers
-        });
-        if !busy {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    }
-    crate::fatal("snapshot state did not settle");
+        cx.read(|cx| crate::test_support::is_settled(state.read(cx)))
+    });
 }

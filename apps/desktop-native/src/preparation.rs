@@ -118,7 +118,7 @@ fn validate_review(store: &LibraryStore, reviewed: &PreparationPreview) -> AppRe
 
 fn eligible_item(store: &LibraryStore, id: &str) -> AppResult<LibraryItem> {
     let item = store.get(id)?.ok_or_else(|| AppError::new("not-found"))?;
-    if store.list_trash()?.iter().any(|item| item.id == id) {
+    if crate::engine::trashed_ids(store)?.contains(id) {
         return Err(AppError::new("item-trashed"));
     }
     if item

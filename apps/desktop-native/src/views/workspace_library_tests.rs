@@ -336,7 +336,7 @@ fn library_switch_stale_reader_chooser_never_starts_send_or_eject(cx: &mut TestA
         let device = reader(&f, cx);
         f.window
             .update(cx, |workspace, window, cx| {
-                workspace.choose_reader(send, window, cx)
+                workspace.choose_reader(if send { ReaderAction::Send } else { ReaderAction::Eject }, window, cx)
             })
             .unwrap();
         cx.run_until_parked();

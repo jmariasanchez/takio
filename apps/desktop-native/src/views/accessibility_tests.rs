@@ -9,19 +9,9 @@ use crate::{
 };
 use gpui::Focusable;
 use gpui::{AppContext, Element, TestAppContext};
-use std::time::Duration;
 use takio::paths::LibraryPaths;
 
-fn settle(state: &LibraryEntity, cx: &mut TestAppContext) {
-    for _ in 0..200 {
-        cx.run_until_parked();
-        if state.read_with(cx, |state, _| !state.loading && !state.busy) {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    }
-    panic!("temporary library did not settle");
-}
+use crate::test_support::settle;
 
 pub(crate) fn fixture(cx: &mut TestAppContext) -> (tempfile::TempDir, LibraryEntity) {
     cx.executor().allow_parking();

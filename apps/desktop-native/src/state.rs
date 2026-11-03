@@ -116,7 +116,7 @@ pub struct LibraryState {
     seen_volumes: Option<BTreeSet<String>>,
     volume_watch: Option<Task<()>>,
     pub refreshing_devices: bool,
-    pub device_error: Option<String>,
+    pub device_error: Option<AppError>,
     pub busy: bool,
     pub metadata_editing: bool,
     pub saving_metadata: bool,
@@ -251,7 +251,7 @@ impl LibraryState {
                     let items = receiver
                         .recv()
                         .unwrap_or_else(|_| Err(AppError::new("storage-unavailable")))?;
-                    Ok(prepare_snapshot(items, sort))
+                    Ok(build_snapshot(items, sort))
                 })
             }
             Section::Trash => {
@@ -260,7 +260,7 @@ impl LibraryState {
                     let items = receiver
                         .recv()
                         .unwrap_or_else(|_| Err(AppError::new("storage-unavailable")))?;
-                    Ok(prepare_snapshot(
+                    Ok(build_snapshot(
                         items.into_iter().map(Arc::new).collect(),
                         sort,
                     ))
@@ -315,7 +315,7 @@ impl LibraryState {
                     .map(Arc::new)
                     .collect(),
             };
-            Ok(prepare_snapshot(items, sort))
+            Ok(build_snapshot(items, sort))
         });
         // Do not cancel a completed snapshot on the UI thread. Obsolete replies
         // retain await_snapshot's generation check and background disposal.
@@ -469,6 +469,12 @@ impl LibraryState {
         cx.notify();
     }
 
+    pub fn primary_source_path(&self) -> Option<PathBuf> {
+        self.primary_selected()
+            .and_then(|item| item.formats.first())
+            .map(|format| format.source_path.clone())
+    }
+
     /// Move the anchor by `delta` rows, clamped, replacing the selection.
     pub fn move_selection(&mut self, delta: isize, cx: &mut Context<Self>) {
         if self.switching_library {
@@ -529,7 +535,7 @@ impl LibraryState {
                     });
                     this.set_status(summary, false, cx);
                 }
-                Err(error) => this.set_status(recovery_error(error.code()), true, cx),
+                Err(error) => this.set_status(humanize_recovery_error(error.code()), true, cx),
             }
         }).detach();
     }
@@ -569,7 +575,7 @@ impl LibraryState {
                     });
                     this.set_status(summary, false, cx);
                 }
-                Err(error) => this.set_status(recovery_error(error.code()), true, cx),
+                Err(error) => this.set_status(humanize_recovery_error(error.code()), true, cx),
             }
         }).detach();
     }
@@ -613,37 +619,14 @@ impl LibraryState {
             match result {
                 Ok(scan) => {
                     let counts = scan.counts;
-                    let documents = scan
-                        .outcomes
-                        .iter()
-                        .filter(|outcome| {
-                            matches!(
-                                outcome,
-                                ImportOutcome::Skipped {
-                                    reason: "likely-document",
-                                    ..
-                                }
-                            )
-                        })
-                        .count();
+                    let skipped_for = |wanted| scan.outcomes.iter().filter(|outcome| matches!(outcome, ImportOutcome::Skipped { reason, .. } if *reason == wanted)).count();
+                    let documents = skipped_for("likely-document");
                     let mut skipped = match documents {
                         0 => counts.skipped.to_string(),
                         1 => format!("{} (1 short PDF looked like a document)", counts.skipped),
                         n => format!("{} ({n} short PDFs looked like documents)", counts.skipped),
                     };
-                    let unsupported = scan
-                        .outcomes
-                        .iter()
-                        .filter(|outcome| {
-                            matches!(
-                                outcome,
-                                ImportOutcome::Skipped {
-                                    reason: "unsupported-format",
-                                    ..
-                                }
-                            )
-                        })
-                        .count();
+                    let unsupported = skipped_for("unsupported-format");
                     if unsupported > 0 {
                         skipped.push_str(&format!(
                             " ({unsupported} in a format Takio cannot store, such as Kindle store books)"
@@ -873,7 +856,7 @@ impl LibraryState {
         self.scanning_readers = true;
         let generation = self.reader_scan_generation;
         let failed_destinations = destinations.clone();
-        let receiver = self.engine.request(|reply| Request::ReaderShelves {
+        let receiver = self.engine.request(|reply| Request::ScanReaderShelves {
             destinations,
             reply,
         });
@@ -951,7 +934,7 @@ impl LibraryState {
                 }
                 Err(error) => {
                     this.destinations.clear();
-                    this.device_error = Some(humanize_error(error.code()));
+                    this.device_error = Some(error);
                 }
             }
             cx.notify();
@@ -1408,7 +1391,7 @@ pub fn author_label(item: &LibraryItem) -> String {
     item.author.clone().unwrap_or_default()
 }
 
-fn prepare_snapshot(mut items: Vec<Arc<LibraryItem>>, sort: Sort) -> LibrarySnapshot {
+fn build_snapshot(mut items: Vec<Arc<LibraryItem>>, sort: Sort) -> LibrarySnapshot {
     let facets = Arc::new(Facets::from_item_refs(items.iter().map(Arc::as_ref)));
     sort_items(&mut items, sort);
     LibrarySnapshot { items, facets }
@@ -1436,6 +1419,7 @@ fn sort_items(items: &mut [Arc<LibraryItem>], sort: Sort) {
 pub fn humanize_error(code: &str) -> String {
     match code {
         "operation-in-progress" => "Finish the current operation first".into(),
+        "reader-scan-unavailable" => "Reader scanning could not start. Restart Takio to retry. Your library is still available.".into(),
         "storage-unavailable" => "The library could not be read".into(),
         "unsupported-format" => "That file format is not supported".into(),
         "not-found" | "item-not-found" => "That book is no longer in the library".into(),
@@ -1465,7 +1449,7 @@ pub fn humanize_error(code: &str) -> String {
     }
 }
 
-fn recovery_error(code: &str) -> String {
+fn humanize_recovery_error(code: &str) -> String {
     match code {
         "destination-exists" => "That location already exists. Choose a new folder name. Existing files were not replaced.".into(),
         "invalid-arguments" => "Choose a new folder outside the current library and backup. Do not place recovery copies inside either library.".into(),
@@ -1530,19 +1514,7 @@ mod tests {
         Fixture { _temp: temp, state }
     }
 
-    /// Drive the executor until the state is no longer loading.
-    fn settle(state: &Entity<LibraryState>, cx: &mut TestAppContext) {
-        for _ in 0..200 {
-            cx.run_until_parked();
-            if !state.read_with(cx, |state, _| {
-                state.loading || state.busy || state.refreshing_devices || state.scanning_readers
-            }) {
-                return;
-            }
-            std::thread::sleep(Duration::from_millis(5));
-        }
-        panic!("state never finished loading");
-    }
+    use crate::test_support::settle;
 
     fn titles(state: &Entity<LibraryState>, cx: &mut TestAppContext) -> Vec<String> {
         state.read_with(cx, |state, _| {

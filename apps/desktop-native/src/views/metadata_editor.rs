@@ -492,13 +492,7 @@ mod tests {
         let paths = LibraryPaths::resolve(None, Some(&temp.path().join("library.sqlite"))).unwrap();
         let engine = Engine::open(paths).unwrap();
         let state = cx.new(|cx| LibraryState::new(engine, cx));
-        for _ in 0..200 {
-            cx.run_until_parked();
-            if !state.read_with(cx, |state, _| state.loading) {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
+        crate::test_support::settle(&state, cx);
         state.update(cx, |state, _| {
             state.items = vec![std::sync::Arc::new(item())];
             state.selected.insert(0);
@@ -588,13 +582,10 @@ mod tests {
                 editor.save(window, cx);
             })
             .unwrap();
-        for _ in 0..200 {
+        crate::test_support::wait_until("metadata save", || {
             cx.run_until_parked();
-            if !state.read_with(cx, |state, _| state.saving_metadata) {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
+            !state.read_with(cx, |state, _| state.saving_metadata)
+        });
         cx.run_until_parked();
         window
             .update(cx, |editor, window, cx| {

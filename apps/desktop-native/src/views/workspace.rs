@@ -28,6 +28,12 @@ use crate::{
     ShowLibrary, ShowTrash, TrashSelected,
 };
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ReaderAction {
+    Send,
+    Eject,
+}
+
 pub struct Workspace {
     state: LibraryEntity,
     list: Entity<LibraryList>,
@@ -176,7 +182,8 @@ impl Workspace {
         .detach();
     }
 
-    fn choose_reader(&mut self, send: bool, window: &mut Window, cx: &mut Context<Self>) {
+    fn choose_reader(&mut self, action: ReaderAction, window: &mut Window, cx: &mut Context<Self>) {
+        let send = action == ReaderAction::Send;
         let state = self.state.read(cx);
         if !state.can_mutate() {
             return;
@@ -485,7 +492,7 @@ impl Render for Workspace {
                     .update(cx, |state, cx| state.refresh_destinations(cx));
             }))
             .on_action(cx.listener(|this, _: &crate::SendSelected, window, cx| {
-                this.choose_reader(true, window, cx)
+                this.choose_reader(ReaderAction::Send, window, cx)
             }))
             .on_action(cx.listener(|this, _: &crate::PrepareSelected, _, cx| {
                 this.state
@@ -510,7 +517,7 @@ impl Render for Workspace {
                     .update(cx, |state, cx| state.cancel_preparation(cx));
             }))
             .on_action(cx.listener(|this, _: &crate::EjectReader, window, cx| {
-                this.choose_reader(false, window, cx)
+                this.choose_reader(ReaderAction::Eject, window, cx)
             }))
             // Fallbacks for actions the list handles when it has focus. Menu
             // items and the palette can fire these while Search or the
@@ -525,9 +532,7 @@ impl Render for Workspace {
                 let path = this
                     .state
                     .read(cx)
-                    .primary_selected()
-                    .and_then(|item| item.formats.first())
-                    .map(|format| format.source_path.clone());
+                    .primary_source_path();
                 if let Some(path) = path {
                     cx.open_with_system(&path);
                 }

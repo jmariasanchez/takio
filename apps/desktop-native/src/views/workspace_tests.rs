@@ -20,18 +20,7 @@ struct Fixture {
     books: Vec<LibraryItem>,
 }
 
-fn settle(state: &LibraryEntity, cx: &mut TestAppContext) {
-    for _ in 0..200 {
-        cx.run_until_parked();
-        if state.read_with(cx, |state, _| {
-            !state.loading && !state.busy && !state.refreshing_devices && !state.scanning_readers
-        }) {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    }
-    panic!("native workspace operation did not settle");
-}
+use crate::test_support::settle;
 
 fn fixture(trash: bool, cx: &mut TestAppContext) -> Fixture {
     fixture_with_preparation_backend(trash, None, cx)

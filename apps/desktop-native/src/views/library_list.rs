@@ -251,12 +251,7 @@ impl Render for LibraryList {
                 this.state.update(cx, |state, cx| state.trash_selected(cx));
             }))
             .on_action(cx.listener(|this, _: &OpenSelected, _, cx| {
-                let path = this
-                    .state
-                    .read(cx)
-                    .primary_selected()
-                    .and_then(|item| item.formats.first())
-                    .map(|format| format.source_path.clone());
+                let path = this.state.read(cx).primary_source_path();
                 if let Some(path) = path {
                     cx.open_with_system(&path);
                 }

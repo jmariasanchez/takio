@@ -75,8 +75,8 @@ impl LibraryState {
             .engine
             .request(|reply| Request::AutomaticBackupConfigure { destination, reply });
         self.await_reply(receiver, cx, move |this, result, cx| {
-            if this.automatic_backup.revision != revision { return; }
             this.busy = false;
+            if this.automatic_backup.revision != revision { cx.notify(); return; }
             match result {
                 Ok(config) => {
                     this.automatic_backup.config = config;
