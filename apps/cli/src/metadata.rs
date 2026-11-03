@@ -16,9 +16,9 @@ use sha2::{Digest, Sha256};
 use tempfile::Builder;
 
 use crate::candidate_cover::CapturedCover;
+use crate::error::{AppError, AppResult};
 use crate::executable_discovery::discover_executable;
 use crate::model::BookAuthor;
-use crate::output::{AppError, AppResult};
 
 mod pdf;
 pub use pdf::embedded_pdf;

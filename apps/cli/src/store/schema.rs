@@ -1,6 +1,6 @@
 //! Current catalogue schema creation and nonempty-database detection.
 //! Historical upgrades and compatibility checks remain in migration.
-use crate::output::AppResult;
+use crate::error::AppResult;
 use rusqlite::Connection;
 
 pub(super) fn create_schema(connection: &Connection) -> AppResult<()> {

@@ -11,8 +11,8 @@ use super::{
     LibraryQueryFilters, LibraryQueryScope, LibraryQuerySyntax, LibraryStore, METADATA_AUDIT_KEY,
     as_i64, count,
 };
+use crate::error::{AppError, AppResult};
 use crate::model::LibraryItem;
-use crate::output::{AppError, AppResult};
 
 impl LibraryStore {
     pub fn list(&self, include_trashed: bool) -> AppResult<Vec<LibraryItem>> {

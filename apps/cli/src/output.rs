@@ -1,39 +1,8 @@
 use std::io::{self, Write};
 
+pub use crate::error::{AppError, AppResult};
 use serde::Serialize;
 use serde_json::{Value, json};
-use thiserror::Error;
-
-#[derive(Clone, Debug, Error)]
-#[error("{code}")]
-pub struct AppError {
-    code: &'static str,
-    exit_code: i32,
-}
-
-impl AppError {
-    #[must_use]
-    pub const fn new(code: &'static str) -> Self {
-        Self { code, exit_code: 1 }
-    }
-
-    #[must_use]
-    pub const fn with_exit_code(code: &'static str, exit_code: i32) -> Self {
-        Self { code, exit_code }
-    }
-
-    #[must_use]
-    pub const fn code(&self) -> &'static str {
-        self.code
-    }
-
-    #[must_use]
-    pub const fn exit_code(&self) -> i32 {
-        self.exit_code
-    }
-}
-
-pub type AppResult<T> = Result<T, AppError>;
 
 #[must_use]
 pub fn success_line<T: Serialize>(value: T) -> String {
@@ -61,18 +30,6 @@ pub fn print_json(value: &Value) -> AppResult<()> {
 
 fn write_line(writer: &mut impl Write, line: &str) -> AppResult<()> {
     writeln!(writer, "{line}").map_err(AppError::from)
-}
-
-impl From<rusqlite::Error> for AppError {
-    fn from(_: rusqlite::Error) -> Self {
-        Self::new("storage-unavailable")
-    }
-}
-
-impl From<std::io::Error> for AppError {
-    fn from(_: std::io::Error) -> Self {
-        Self::new("storage-unavailable")
-    }
 }
 
 #[cfg(test)]

@@ -9,7 +9,8 @@ use unicode_normalization::UnicodeNormalization;
 
 use super::{DuplicateCandidate, DuplicateScanSummary, DuplicateSignal};
 use crate::conversion::FormatId;
-use crate::output::{AppError, AppResult};
+use crate::error::{AppError, AppResult};
+use crate::fingerprint::Fingerprint;
 use crate::store::hash_file;
 use crate::store::hydration::read_item_from;
 
@@ -149,11 +150,11 @@ pub(super) fn scan_duplicate_candidates_in(
                 .filter(|value| valid_review_token(value))
                 .ok_or_else(|| AppError::new("invalid-stored-data"))?;
             fingerprints_reused += 1;
-            Some((bytes, sha))
+            Some(Fingerprint { bytes, sha256: sha })
         } else if provenance == "referenced" {
             if let Ok(value) = hash_file(Path::new(&path)) {
                 files_hashed += 1;
-                if value.0 > MAX_SAFE_INTEGER {
+                if value.bytes > MAX_SAFE_INTEGER {
                     return Err(AppError::new("invalid-stored-data"));
                 }
                 Some(value)
@@ -164,7 +165,7 @@ pub(super) fn scan_duplicate_candidates_in(
         } else {
             return Err(AppError::new("invalid-stored-data"));
         };
-        if let Some((bytes, sha)) = fingerprint
+        if let Some(Fingerprint { bytes, sha256: sha }) = fingerprint
             && bytes > 0
         {
             fingerprints

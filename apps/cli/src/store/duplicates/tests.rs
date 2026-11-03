@@ -302,11 +302,7 @@ fn shared_merged_formats_survive_target_remove_and_replace() {
         .replace_format(
             &target.id,
             FormatId::Pdf,
-            &serde_json::json!({
-                "sourcePath":current.source_path,
-                "addedAt":current.added_at,
-                "provenance":current.provenance
-            }),
+            &crate::store::ExpectedFormatSnapshot::from(&current),
             &replacement,
             true,
         )

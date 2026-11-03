@@ -107,7 +107,7 @@ pub fn polish(
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     run_bounded(&mut command, timeout, "polish-failed")?;
-    let (bytes, sha256) = fingerprint(&staged_output)?;
+    let crate::fingerprint::Fingerprint { bytes, sha256 } = fingerprint(&staged_output)?;
     if bytes == 0 {
         return Err(AppError::new("artifact-invalid"));
     }
@@ -300,7 +300,7 @@ fn run_bounded(command: &mut Command, timeout: Duration, failure: &'static str) 
     }
 }
 
-fn fingerprint(path: &Path) -> AppResult<(u64, String)> {
+fn fingerprint(path: &Path) -> AppResult<crate::fingerprint::Fingerprint> {
     crate::fingerprint::hash_file(path).map_err(|_| AppError::new("artifact-invalid"))
 }
 

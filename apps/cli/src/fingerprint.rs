@@ -9,14 +9,32 @@ use std::fs::File;
 use std::io::{self, Read, Write};
 use std::path::Path;
 
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 /// Chunk size used for streaming reads.
 const CHUNK_BYTES: usize = 64 * 1024;
 
 /// A byte count paired with the lowercase hexadecimal SHA-256 digest of those
-/// bytes.
-pub type Fingerprint = (u64, String);
+/// bytes. Serialization retains the historical `[bytes, sha256]` representation.
+#[derive(Clone, Debug, Eq, PartialEq, Hash, Ord, PartialOrd, Deserialize, Serialize)]
+#[serde(from = "(u64, String)", into = "(u64, String)")]
+pub struct Fingerprint {
+    pub bytes: u64,
+    pub sha256: String,
+}
+
+impl From<(u64, String)> for Fingerprint {
+    fn from((bytes, sha256): (u64, String)) -> Self {
+        Self { bytes, sha256 }
+    }
+}
+
+impl From<Fingerprint> for (u64, String) {
+    fn from(value: Fingerprint) -> Self {
+        (value.bytes, value.sha256)
+    }
+}
 
 /// Hash every byte from `reader` until EOF.
 ///
@@ -35,7 +53,10 @@ pub fn hash_reader<R: Read + ?Sized>(reader: &mut R) -> io::Result<Fingerprint> 
         hash.update(&buffer[..read]);
         bytes += read as u64;
     }
-    Ok((bytes, hex::encode(hash.finalize())))
+    Ok(Fingerprint {
+        bytes,
+        sha256: hex::encode(hash.finalize()),
+    })
 }
 
 /// Open `path` and hash its complete contents.
@@ -70,7 +91,10 @@ pub fn copy_and_hash<R: Read + ?Sized, W: Write + ?Sized>(
         hash.update(&buffer[..read]);
         bytes += read as u64;
     }
-    Ok((bytes, hex::encode(hash.finalize())))
+    Ok(Fingerprint {
+        bytes,
+        sha256: hex::encode(hash.finalize()),
+    })
 }
 
 /// Distinguishes which side of a streaming copy failed.
@@ -83,6 +107,20 @@ pub enum CopyError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn named_fingerprint_preserves_tuple_wire_format() {
+        let fingerprint = Fingerprint {
+            bytes: 3,
+            sha256: "abc".into(),
+        };
+        let wire = serde_json::json!([3, "abc"]);
+        assert_eq!(serde_json::to_value(&fingerprint).unwrap(), wire);
+        assert_eq!(
+            serde_json::from_value::<Fingerprint>(wire).unwrap(),
+            fingerprint
+        );
+    }
     use std::io::Cursor;
 
     const EMPTY_SHA256: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
@@ -90,14 +128,20 @@ mod tests {
 
     #[test]
     fn hashes_empty_input() {
-        let (bytes, digest) = hash_reader(&mut Cursor::new(Vec::<u8>::new())).unwrap();
+        let Fingerprint {
+            bytes,
+            sha256: digest,
+        } = hash_reader(&mut Cursor::new(Vec::<u8>::new())).unwrap();
         assert_eq!(bytes, 0);
         assert_eq!(digest, EMPTY_SHA256);
     }
 
     #[test]
     fn hashes_known_vector() {
-        let (bytes, digest) = hash_reader(&mut Cursor::new(b"abc".to_vec())).unwrap();
+        let Fingerprint {
+            bytes,
+            sha256: digest,
+        } = hash_reader(&mut Cursor::new(b"abc".to_vec())).unwrap();
         assert_eq!(bytes, 3);
         assert_eq!(digest, ABC_SHA256);
     }
@@ -105,7 +149,10 @@ mod tests {
     #[test]
     fn hashes_inputs_larger_than_one_chunk() {
         let payload = vec![0x5au8; CHUNK_BYTES * 3 + 17];
-        let (bytes, digest) = hash_reader(&mut Cursor::new(payload.clone())).unwrap();
+        let Fingerprint {
+            bytes,
+            sha256: digest,
+        } = hash_reader(&mut Cursor::new(payload.clone())).unwrap();
         assert_eq!(bytes as usize, payload.len());
         assert_eq!(digest, hex::encode(Sha256::digest(&payload)));
     }
@@ -115,7 +162,13 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("sample.bin");
         std::fs::write(&path, b"abc").unwrap();
-        assert_eq!(hash_file(&path).unwrap(), (3, ABC_SHA256.to_owned()));
+        assert_eq!(
+            hash_file(&path).unwrap(),
+            Fingerprint {
+                bytes: 3,
+                sha256: ABC_SHA256.to_owned()
+            }
+        );
     }
 
     #[test]
@@ -128,8 +181,10 @@ mod tests {
     fn copy_and_hash_streams_every_byte() {
         let payload = vec![0x17u8; CHUNK_BYTES + 1];
         let mut output = Vec::new();
-        let (bytes, digest) =
-            copy_and_hash(&mut Cursor::new(payload.clone()), &mut output).unwrap();
+        let Fingerprint {
+            bytes,
+            sha256: digest,
+        } = copy_and_hash(&mut Cursor::new(payload.clone()), &mut output).unwrap();
         assert_eq!(output, payload);
         assert_eq!(bytes as usize, payload.len());
         assert_eq!(digest, hex::encode(Sha256::digest(&payload)));

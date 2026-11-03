@@ -177,7 +177,14 @@ impl HashCache {
             if valid && let Some(modified) = modified {
                 cache.entries.insert(
                     PathBuf::from(entry.path),
-                    (entry.bytes, Some(modified), (entry.bytes, entry.sha256)),
+                    (
+                        entry.bytes,
+                        Some(modified),
+                        Fingerprint {
+                            bytes: entry.bytes,
+                            sha256: entry.sha256,
+                        },
+                    ),
                 );
             }
         }
@@ -199,7 +206,7 @@ impl HashCache {
         let mut entries: Vec<StoredEntry> = self
             .entries
             .iter()
-            .filter_map(|(path, (bytes, modified, (_, sha256)))| {
+            .filter_map(|(path, (bytes, modified, Fingerprint { sha256, .. }))| {
                 let since = modified.as_ref()?.duration_since(UNIX_EPOCH).ok()?;
                 Some(StoredEntry {
                     path: path.to_str()?.to_owned(),
@@ -251,7 +258,7 @@ impl HashCache {
 
     fn read(&mut self, path: &Path, len: u64, modified: Option<SystemTime>) -> Option<Fingerprint> {
         let fingerprint = crate::fingerprint::hash_file(path).ok()?;
-        self.hashed_bytes += fingerprint.0;
+        self.hashed_bytes += fingerprint.bytes;
         self.remember(path, len, modified, fingerprint.clone());
         Some(fingerprint)
     }
@@ -314,7 +321,7 @@ pub fn scan(
         .collect();
     let mut by_size: HashMap<u64, Vec<(&str, &str)>> = HashMap::new();
     for book in library {
-        if let Some((bytes, sha256)) = &book.fingerprint {
+        if let Some(Fingerprint { bytes, sha256 }) = &book.fingerprint {
             by_size
                 .entry(*bytes)
                 .or_default()
@@ -373,7 +380,8 @@ pub fn scan(
                 .filter(|record| record.bytes == bytes);
             let mut matched = None;
             if (candidates.is_some() || record.is_some())
-                && let Some((_, sha256)) = hash(entry.path()).filter(|(read, _)| *read == bytes)
+                && let Some(Fingerprint { sha256, .. }) =
+                    hash(entry.path()).filter(|read| read.bytes == bytes)
             {
                 matched = candidates
                     .and_then(|candidates| candidates.iter().find(|(known, _)| *known == sha256))
@@ -480,7 +488,7 @@ pub fn import_unmatched(
             .get(&item.id)
             .into_iter()
             .flatten()
-            .filter(|fingerprint| fingerprint.0 == bytes);
+            .filter(|fingerprint| fingerprint.bytes == bytes);
         if let (Some(fingerprint), None) = (same_size.next(), same_size.next())
             && stamp(source_path) == Some((bytes, modified))
         {
@@ -919,7 +927,10 @@ mod tests {
             &path,
             13,
             Some(std::time::SystemTime::now()),
-            (13, "b".repeat(64)),
+            Fingerprint {
+                bytes: 13,
+                sha256: "b".repeat(64),
+            },
         );
         cache.save(&missing).unwrap();
         assert!(!missing.exists());
@@ -1001,7 +1012,15 @@ mod tests {
         let now = Some(std::time::SystemTime::now());
         for index in 0..MAX_CACHE_ENTRIES {
             let other = PathBuf::from(format!("/Volumes/Old Reader/{index}.epub"));
-            cache.remember(&other, 1, now, (1, "c".repeat(64)));
+            cache.remember(
+                &other,
+                1,
+                now,
+                Fingerprint {
+                    bytes: 1,
+                    sha256: "c".repeat(64),
+                },
+            );
         }
         scan_cached(&destination, &library, &mut cache).unwrap();
         assert_eq!(cache.entries.len(), 1, "only the connected reader is kept");

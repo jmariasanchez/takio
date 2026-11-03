@@ -1,4 +1,5 @@
 use super::*;
+use serde_json::Value;
 
 fn fixture() -> (tempfile::TempDir, LibraryStore, String) {
     let temp = tempfile::tempdir().unwrap();

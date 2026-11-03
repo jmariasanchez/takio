@@ -78,7 +78,7 @@ fn replace_format_reports_cleanup_failure_after_committed_change() {
     fs::write(&replacement, b"replacement").unwrap();
     let changed = item.formats[0].source_path.clone();
     fs::write(&changed, b"user changed bytes").unwrap();
-    let expected = serde_json::to_value(&item.formats[0]).unwrap();
+    let expected = ExpectedFormatSnapshot::from(&item.formats[0]);
     let result = store
         .replace_format(&item.id, FormatId::Epub, &expected, &replacement, true)
         .unwrap();
@@ -117,7 +117,7 @@ fn format_mutations_roll_back_if_result_hydration_fails() {
                 .replace_format(
                     &item.id,
                     FormatId::Epub,
-                    &serde_json::to_value(&item.formats[0]).unwrap(),
+                    &ExpectedFormatSnapshot::from(&item.formats[0]),
                     &replacement,
                     true,
                 )
@@ -190,7 +190,7 @@ fn replacing_and_removing_shared_cover_preserves_other_item_reference() {
 fn remove_view_ignores_unrelated_corrupt_definition() {
     let (_temp, store, _item) = fixture();
     store
-        .save_view(&serde_json::json!({"id":"good","name":"Good","definition":{"version":1,"query":"hello","filters":{"authors":[],"tags":[],"series":[],"languages":[],"formats":[]},"sort":{"field":"title","direction":"ascending"}}}))
+        .save_view(&serde_json::from_value(serde_json::json!({"id":"good","name":"Good","definition":{"version":1,"query":"hello","filters":{"authors":[],"tags":[],"series":[],"languages":[],"formats":[]},"sort":{"field":"title","direction":"ascending"}}})).unwrap())
         .unwrap();
     store
         .connection
@@ -260,7 +260,22 @@ fn typed_patch_rejections_leave_stored_metadata_unchanged() {
 
 #[test]
 fn sibling_mutators_report_not_found() {
-    let (_temp, mut store, _item) = fixture();
+    let (_temp, mut store, item) = fixture();
+    assert!(store.get("missing").unwrap().is_none());
+    assert!(store.saved_view("missing").unwrap().is_none());
+    assert_eq!(
+        store
+            .replace_format(
+                "missing",
+                FormatId::Epub,
+                &ExpectedFormatSnapshot::from(&item.formats[0]),
+                &item.formats[0].source_path,
+                true,
+            )
+            .unwrap_err()
+            .code(),
+        "not-found"
+    );
     assert_eq!(store.remove("missing").unwrap_err().code(), "not-found");
     assert_eq!(
         store.remove_view("missing").unwrap_err().code(),

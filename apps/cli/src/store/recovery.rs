@@ -237,7 +237,7 @@ fn verify_copy(
         let path = copied.items.join(relative_owned(&stored, &original.items)?);
         regular_file(&path)?;
         let actual = hash_file(&path)?;
-        if u64::try_from(bytes).ok() != Some(actual.0) || hash != actual.1 {
+        if u64::try_from(bytes).ok() != Some(actual.bytes) || hash != actual.sha256 {
             return Err(AppError::new("integrity-failed"));
         }
     }
@@ -345,6 +345,7 @@ pub(super) fn restore(
     if manifest_bytes.len() > MAX_MANIFEST_BYTES {
         return Err(AppError::new("source-invalid"));
     }
+    use serde_json::Value;
     let manifest: Value =
         serde_json::from_slice(&manifest_bytes).map_err(|_| AppError::new("source-invalid"))?;
     let original_root = manifest

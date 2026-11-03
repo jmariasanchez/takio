@@ -2,8 +2,8 @@
 use rusqlite::{Transaction, params};
 use serde_json::Value;
 
+use crate::error::{AppError, AppResult};
 use crate::model::{LibraryItem, LibraryPatch};
-use crate::output::{AppError, AppResult};
 use crate::store::{LibraryStore, metadata::replace_metadata};
 
 pub(super) fn apply_duplicate_metadata(item: &mut LibraryItem, metadata: &Value) -> AppResult<()> {

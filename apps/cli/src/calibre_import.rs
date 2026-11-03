@@ -8,8 +8,8 @@ use serde::Serialize;
 use serde_json::{Value, json};
 
 use crate::conversion::detect_format;
+use crate::error::{AppError, AppResult};
 use crate::model::{BookAuthor, LibraryPatch, Patch};
-use crate::output::{AppError, AppResult};
 use crate::paths::LibraryPaths;
 use crate::store::LibraryStore;
 

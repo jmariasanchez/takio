@@ -6,8 +6,8 @@ use chrono::NaiveDate;
 use rusqlite::{Transaction, params};
 
 use super::as_i64;
+use crate::error::{AppError, AppResult};
 use crate::model::{BookAuthor, LibraryItem, LibraryPatch, Patch};
-use crate::output::{AppError, AppResult};
 
 pub const METADATA_AUDIT_KEY: &str = "takio_metadata_audit";
 const MAX_CUSTOM_METADATA_USER_ENTRIES: usize = 64;
@@ -57,11 +57,11 @@ pub(super) fn validate_library_patch(
         return Err(AppError::new("invalid-arguments"));
     }
     for value in [
-        patch.title.set(),
-        patch.author.set(),
-        patch.series.set(),
-        patch.publisher.set(),
-        patch.description.set(),
+        patch.title.as_set(),
+        patch.author.as_set(),
+        patch.series.as_set(),
+        patch.publisher.as_set(),
+        patch.description.as_set(),
     ]
     .into_iter()
     .flatten()
@@ -76,11 +76,11 @@ pub(super) fn validate_library_patch(
     }
     if patch
         .series_index
-        .set()
+        .as_set()
         .is_some_and(|value| !value.is_finite())
         || patch
             .rating
-            .set()
+            .as_set()
             .is_some_and(|value| !value.is_finite() || !(0.0..=10.0).contains(value))
     {
         return Err(AppError::new("invalid-arguments"));
@@ -100,7 +100,7 @@ pub(super) fn validate_library_patch(
         }
         normalize_custom_metadata(values.clone())?;
     }
-    if let Some(value) = patch.published_date.set() {
+    if let Some(value) = patch.published_date.as_set() {
         normalize_published_date(value.clone())?;
     }
     if let Patch::Set(values) = &patch.tags {

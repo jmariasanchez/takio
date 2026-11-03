@@ -6,19 +6,20 @@ use std::path::{Path, PathBuf};
 #[cfg(test)]
 use std::cell::Cell;
 
+use crate::fingerprint::Fingerprint;
 use chrono::Utc;
 use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, params};
-use serde::Serialize;
-use serde_json::Value;
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::candidate_cover::{self, CandidateCoverDescriptor};
 use crate::conversion::{FormatId, detect_format};
+use crate::error::{AppError, AppResult};
 use crate::model::{BookAuthor, LibraryItem, LibraryPatch, Patch, Provenance};
-use crate::output::{AppError, AppResult};
 use crate::paths::LibraryPaths;
 
 mod columns;
+mod contracts;
 mod duplicates;
 mod hydration;
 mod item_id;
@@ -31,6 +32,11 @@ mod recovery;
 mod safety_tests;
 mod schema;
 
+use contracts::validate_saved_view_definition;
+pub use contracts::{
+    ExpectedFormatSnapshot, SaveViewRequest, SavedViewDefinition, SavedViewFilters, SavedViewSort,
+    SavedViewSortDirection, SavedViewSortField,
+};
 pub(crate) use item_id::valid_item_id;
 use schema::{create_schema, has_schema};
 
@@ -54,6 +60,11 @@ thread_local! {
     static POST_COMMIT_READ_FAULT: Cell<bool> = const { Cell::new(false) };
 }
 
+/// A catalogue and its managed files.
+///
+/// Lookup methods such as `get` and `saved_view` return `Ok(None)` for an absent
+/// identifier. Mutations targeting an existing item or saved view return an
+/// error with code `not-found` when that identifier does not exist.
 pub struct LibraryStore {
     connection: Connection,
     paths: LibraryPaths,
@@ -115,9 +126,11 @@ pub struct LibraryQueryFilters<'a> {
     pub formats: &'a [String],
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 pub enum LibraryQuerySyntax {
+    #[serde(rename = "literal")]
     Literal,
+    #[serde(rename = "structured-v1")]
     StructuredV1,
 }
 
@@ -140,7 +153,7 @@ pub struct ImportWatchObservation {
 pub struct ActiveFingerprint {
     pub item_id: String,
     pub title: String,
-    pub fingerprint: Option<(u64, String)>,
+    pub fingerprint: Option<Fingerprint>,
 }
 
 #[derive(Debug, Serialize)]
@@ -176,7 +189,7 @@ pub struct RestoreReport {
 pub struct SavedView {
     pub id: String,
     pub name: String,
-    pub definition: Value,
+    pub definition: SavedViewDefinition,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -443,7 +456,7 @@ impl LibraryStore {
             .query_row(
                 "SELECT library_item_id FROM library_item_formats
              WHERE provenance = 'managed' AND content_bytes = ?1 AND content_sha256 = ?2 LIMIT 1",
-                params![as_i64(fingerprint.0)?, fingerprint.1],
+                params![as_i64(fingerprint.bytes)?, fingerprint.sha256],
                 |row| row.get::<_, String>(0),
             )
             .optional()?
@@ -473,14 +486,14 @@ impl LibraryStore {
             "INSERT INTO library_item_formats
              (library_item_id, format, source_path, added_at, provenance, position, content_bytes, content_sha256)
              VALUES (?1, ?2, ?3, ?4, 'managed', 0, ?5, ?6)",
-            params![id, format.as_str(), target.to_string_lossy(), now, as_i64(fingerprint.0)?, fingerprint.1],
+            params![id, format.as_str(), target.to_string_lossy(), now, as_i64(fingerprint.bytes)?, fingerprint.sha256],
         )?;
         transaction.commit()?;
         if move_source && fs::remove_file(&source).is_err() {
             self.connection.execute(
                 "INSERT OR REPLACE INTO source_file_cleanup (source_path, content_bytes, content_sha256)
                  VALUES (?1, ?2, ?3)",
-                params![source.to_string_lossy(), as_i64(fingerprint.0)?, fingerprint.1],
+                params![source.to_string_lossy(), as_i64(fingerprint.bytes)?, fingerprint.sha256],
             )?;
         }
         Ok(ImportResult {
@@ -513,10 +526,11 @@ impl LibraryStore {
         rows.map(|row| {
             let (item_id, title, bytes, sha256) = row?;
             let fingerprint = match (bytes, sha256) {
-                (Some(bytes), Some(sha256)) => Some((
-                    u64::try_from(bytes).map_err(|_| AppError::new("invalid-stored-data"))?,
+                (Some(bytes), Some(sha256)) => Some(Fingerprint {
+                    bytes: u64::try_from(bytes)
+                        .map_err(|_| AppError::new("invalid-stored-data"))?,
                     sha256,
-                )),
+                }),
                 _ => None,
             };
             Ok(ActiveFingerprint {
@@ -541,7 +555,7 @@ impl LibraryStore {
                  WHERE provenance = 'managed' AND content_bytes = ?1 AND content_sha256 = ?2
                  ORDER BY library_item_id,position
                  LIMIT 1",
-                params![as_i64(fingerprint.0)?, fingerprint.1],
+                params![as_i64(fingerprint.bytes)?, fingerprint.sha256],
                 |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
             )
             .optional()?;
@@ -561,7 +575,7 @@ impl LibraryStore {
     pub fn import_watch_accounted(
         &self,
         canonical_source_path: &Path,
-        fingerprint: &(u64, String),
+        fingerprint: &Fingerprint,
     ) -> AppResult<bool> {
         self.connection
             .query_row(
@@ -572,8 +586,8 @@ impl LibraryStore {
                  )",
                 params![
                     canonical_source_path.to_string_lossy(),
-                    as_i64(fingerprint.0)?,
-                    fingerprint.1
+                    as_i64(fingerprint.bytes)?,
+                    fingerprint.sha256
                 ],
                 |row| row.get(0),
             )
@@ -641,7 +655,7 @@ impl LibraryStore {
                 "INSERT INTO library_item_formats
                  (library_item_id, format, source_path, added_at, provenance, position, content_bytes, content_sha256)
                  VALUES (?1, ?2, ?3, ?4, 'managed', ?5, ?6, ?7)",
-                params![id, format.as_str(), target.to_string_lossy(), now, position, as_i64(fingerprint.0)?, fingerprint.1],
+                params![id, format.as_str(), target.to_string_lossy(), now, position, as_i64(fingerprint.bytes)?, fingerprint.sha256],
             )?;
         } else {
             self.connection.execute(
@@ -666,7 +680,10 @@ impl LibraryStore {
         let item = self
             .read_item(id)?
             .ok_or_else(|| AppError::new("not-found"))?;
-        let expected = (expected_bytes, expected_sha256.to_owned());
+        let expected = Fingerprint {
+            bytes: expected_bytes,
+            sha256: expected_sha256.to_owned(),
+        };
         if let Some(existing) = read_stored_format(&self.connection, id, format)? {
             if existing.provenance == Provenance::Managed
                 && existing.fingerprint.as_ref() == Some(&expected)
@@ -771,7 +788,7 @@ impl LibraryStore {
                      (library_item_id,format,source_path,added_at,provenance,position,content_bytes,content_sha256)
                      VALUES (?1,?2,?3,?4,'managed',?5,?6,?7)",
                     params![item.id,format.as_str(),target.to_string_lossy(),original.added_at,
-                        as_i64(position as u64)?,as_i64(fingerprint.0)?,fingerprint.1],
+                        as_i64(position as u64)?,as_i64(fingerprint.bytes)?,fingerprint.sha256],
                 )?;
             }
             replace_metadata(&transaction, item)?;
@@ -870,11 +887,16 @@ impl LibraryStore {
     }
 
     /// Returns the committed item and any managed paths that could not be cleaned up.
+    /// Replace a format only when its recorded identity still matches `expected`.
+    ///
+    /// # Errors
+    /// Returns `not-found` for an absent item and `format-changed` for an absent
+    /// or stale format. Post-commit cleanup failures are returned in the outcome.
     pub fn replace_format(
         &mut self,
         id: &str,
         format: FormatId,
-        expected: &Value,
+        expected: &ExpectedFormatSnapshot,
         source: &Path,
         managed: bool,
     ) -> AppResult<MutationResult> {
@@ -885,10 +907,9 @@ impl LibraryStore {
             .into_iter()
             .find(|candidate| candidate.format == format)
             .ok_or_else(|| AppError::new("format-changed"))?;
-        if expected.get("sourcePath").and_then(Value::as_str) != current.source_path.to_str()
-            || expected.get("addedAt").and_then(Value::as_str) != Some(&current.added_at)
-            || expected.get("provenance").and_then(Value::as_str)
-                != Some(current.provenance.as_str())
+        if expected.source_path != current.source_path
+            || expected.added_at != current.added_at
+            || expected.provenance != current.provenance
         {
             return Err(AppError::new("format-changed"));
         }
@@ -925,10 +946,10 @@ impl LibraryStore {
                     if managed { "managed" } else { "referenced" },
                     fingerprint
                         .as_ref()
-                        .map(|value| value.0)
+                        .map(|value| value.bytes)
                         .map(as_i64)
                         .transpose()?,
-                    fingerprint.as_ref().map(|value| value.1.as_str())
+                    fingerprint.as_ref().map(|value| value.sha256.as_str())
                 ],
             )?;
             let updated = hydration::read_item_from(&transaction, id)?
@@ -1364,8 +1385,9 @@ impl LibraryStore {
             let (path, bytes, sha256) = row?;
             let actual =
                 hash_file(Path::new(&path)).map_err(|_| AppError::new("integrity-failed"))?;
-            if actual.0 != u64::try_from(bytes).map_err(|_| AppError::new("integrity-failed"))?
-                || actual.1 != sha256
+            if actual.bytes
+                != u64::try_from(bytes).map_err(|_| AppError::new("integrity-failed"))?
+                || actual.sha256 != sha256
             {
                 return Err(AppError::new("integrity-failed"));
             }
@@ -1418,7 +1440,7 @@ impl LibraryStore {
             .collect::<Result<Vec<_>, _>>()?;
         rows.into_iter()
             .map(|(id, name, definition, created_at, updated_at)| {
-                let definition: Value = serde_json::from_str(&definition)
+                let definition: SavedViewDefinition = serde_json::from_str(&definition)
                     .map_err(|_| AppError::new("invalid-stored-data"))?;
                 validate_saved_view_definition(&definition)
                     .map_err(|_| AppError::new("invalid-stored-data"))?;
@@ -1433,31 +1455,13 @@ impl LibraryStore {
             .collect()
     }
 
-    pub fn save_view(&self, request: &Value) -> AppResult<SavedView> {
-        let request_object = request
-            .as_object()
-            .filter(|object| {
-                object.len() == 3
-                    && object.contains_key("id")
-                    && object.contains_key("name")
-                    && object.contains_key("definition")
-            })
-            .ok_or_else(|| AppError::new("invalid-arguments"))?;
-        let id = request
-            .get("id")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty() && value.encode_utf16().count() <= 256)
-            .ok_or_else(|| AppError::new("invalid-arguments"))?;
-        let name = request
-            .get("name")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty() && value.len() <= 120)
-            .ok_or_else(|| AppError::new("invalid-arguments"))?;
-        let definition = request_object
-            .get("definition")
-            .ok_or_else(|| AppError::new("invalid-arguments"))?;
+    pub fn save_view(&self, request: &SaveViewRequest) -> AppResult<SavedView> {
+        let id = request.id.trim();
+        let name = request.name.trim();
+        if id.is_empty() || id.encode_utf16().count() > 256 || name.is_empty() || name.len() > 120 {
+            return Err(AppError::new("invalid-arguments"));
+        }
+        let definition = &request.definition;
         validate_saved_view_definition(definition)?;
         let now = Utc::now().to_rfc3339();
         let definition_json =
@@ -1540,7 +1544,7 @@ struct StoredFormat {
     path: PathBuf,
     provenance: Provenance,
     position: i64,
-    fingerprint: Option<(u64, String)>,
+    fingerprint: Option<Fingerprint>,
 }
 
 fn read_stored_format(
@@ -1567,9 +1571,10 @@ fn read_stored_format(
                         row.get::<_, Option<i64>>(3)?,
                         row.get::<_, Option<String>>(4)?,
                     ) {
-                        (Some(bytes), Some(sha256)) => {
-                            Some((u64::try_from(bytes).unwrap_or_default(), sha256))
-                        }
+                        (Some(bytes), Some(sha256)) => Some(Fingerprint {
+                            bytes: u64::try_from(bytes).unwrap_or_default(),
+                            sha256,
+                        }),
                         _ => None,
                     },
                 })
@@ -1666,11 +1671,11 @@ fn metadata_from_filename(path: &Path) -> (String, Vec<BookAuthor>) {
     (captures[1].to_owned(), authors)
 }
 
-fn hash_file(path: &Path) -> AppResult<(u64, String)> {
+fn hash_file(path: &Path) -> AppResult<Fingerprint> {
     crate::fingerprint::hash_file(path).map_err(|_| AppError::new("source-unavailable"))
 }
 
-fn publish_copy(source: &Path, target: &Path, expected: &(u64, String)) -> AppResult<()> {
+fn publish_copy(source: &Path, target: &Path, expected: &Fingerprint) -> AppResult<()> {
     let parent = target
         .parent()
         .ok_or_else(|| AppError::new("storage-unavailable"))?;
@@ -1694,7 +1699,7 @@ fn publish_copy(source: &Path, target: &Path, expected: &(u64, String)) -> AppRe
     Ok(())
 }
 
-fn cleanup_managed(root: &Path, path: &Path, expected: Option<&(u64, String)>) -> AppResult<()> {
+fn cleanup_managed(root: &Path, path: &Path, expected: Option<&Fingerprint>) -> AppResult<()> {
     if !path.starts_with(root) {
         return Err(AppError::new("invalid-stored-data"));
     }
@@ -1705,104 +1710,6 @@ fn cleanup_managed(root: &Path, path: &Path, expected: Option<&(u64, String)>) -
     }
     if path.exists() {
         fs::remove_file(path)?;
-    }
-    Ok(())
-}
-
-fn validate_saved_view_definition(definition: &Value) -> AppResult<()> {
-    let object = definition
-        .as_object()
-        .filter(|object| {
-            (object.len() == 4 || object.len() == 5)
-                && object.contains_key("version")
-                && object.contains_key("query")
-                && object.contains_key("filters")
-                && object.contains_key("sort")
-                && object.keys().all(|key| {
-                    matches!(
-                        key.as_str(),
-                        "version" | "querySyntax" | "query" | "filters" | "sort"
-                    )
-                })
-        })
-        .ok_or_else(|| AppError::new("invalid-arguments"))?;
-    let query_syntax_valid = match object.get("querySyntax") {
-        None => true,
-        Some(Value::String(value)) => matches!(value.as_str(), "literal" | "structured-v1"),
-        Some(_) => false,
-    };
-    if object.get("version").and_then(Value::as_u64) != Some(1)
-        || object
-            .get("query")
-            .and_then(Value::as_str)
-            .is_none_or(|query| query.encode_utf16().count() > 1024)
-        || !query_syntax_valid
-    {
-        return Err(AppError::new("invalid-arguments"));
-    }
-    if object.get("querySyntax").and_then(Value::as_str) == Some("structured-v1") {
-        parse_structured_query(
-            object
-                .get("query")
-                .and_then(Value::as_str)
-                .ok_or_else(|| AppError::new("invalid-arguments"))?,
-        )?;
-    }
-    let filters = object
-        .get("filters")
-        .and_then(Value::as_object)
-        .filter(|filters| {
-            filters.len() == 5
-                && filters.contains_key("authors")
-                && filters.contains_key("tags")
-                && filters.contains_key("series")
-                && filters.contains_key("languages")
-                && filters.contains_key("formats")
-        })
-        .ok_or_else(|| AppError::new("invalid-arguments"))?;
-    for key in ["authors", "tags", "series", "languages"] {
-        let values = filters
-            .get(key)
-            .and_then(Value::as_array)
-            .ok_or_else(|| AppError::new("invalid-arguments"))?;
-        let mut seen = std::collections::HashSet::new();
-        if values.iter().any(|value| {
-            value
-                .as_str()
-                .map(str::trim)
-                .is_none_or(|value| value.is_empty() || !seen.insert(value.to_ascii_lowercase()))
-        }) {
-            return Err(AppError::new("invalid-arguments"));
-        }
-    }
-    let formats = filters
-        .get("formats")
-        .and_then(Value::as_array)
-        .ok_or_else(|| AppError::new("invalid-arguments"))?;
-    let mut seen_formats = std::collections::HashSet::new();
-    if formats.iter().any(|value| {
-        value
-            .as_str()
-            .and_then(|value| value.parse::<FormatId>().ok())
-            .is_none_or(|format| !seen_formats.insert(format.as_str()))
-    }) {
-        return Err(AppError::new("invalid-arguments"));
-    }
-    let sort = object
-        .get("sort")
-        .and_then(Value::as_object)
-        .filter(|sort| {
-            sort.len() == 2 && sort.contains_key("field") && sort.contains_key("direction")
-        })
-        .ok_or_else(|| AppError::new("invalid-arguments"))?;
-    let field = sort.get("field").and_then(Value::as_str);
-    let direction = sort.get("direction").and_then(Value::as_str);
-    if !matches!(
-        field,
-        Some("title" | "author" | "series" | "publishedDate" | "rating" | "addedAt" | "updatedAt")
-    ) || !matches!(direction, Some("ascending" | "descending"))
-    {
-        return Err(AppError::new("invalid-arguments"));
     }
     Ok(())
 }
@@ -2482,19 +2389,37 @@ mod tests {
 
         fs::write(&artifact, b"mutated pdf").unwrap();
         let error = store
-            .attach_verified_artifact(&item.id, &artifact, FormatId::Pdf, expected.0, &expected.1)
+            .attach_verified_artifact(
+                &item.id,
+                &artifact,
+                FormatId::Pdf,
+                expected.bytes,
+                &expected.sha256,
+            )
             .unwrap_err();
         assert_eq!(error.code(), "artifact-invalid");
 
         fs::write(&artifact, b"verified pdf").unwrap();
         let attached = store
-            .attach_verified_artifact(&item.id, &artifact, FormatId::Pdf, expected.0, &expected.1)
+            .attach_verified_artifact(
+                &item.id,
+                &artifact,
+                FormatId::Pdf,
+                expected.bytes,
+                &expected.sha256,
+            )
             .unwrap();
         assert_eq!(attached.formats.len(), 2);
 
         fs::write(&artifact, b"changed after attachment").unwrap();
         let retried = store
-            .attach_verified_artifact(&item.id, &artifact, FormatId::Pdf, expected.0, &expected.1)
+            .attach_verified_artifact(
+                &item.id,
+                &artifact,
+                FormatId::Pdf,
+                expected.bytes,
+                &expected.sha256,
+            )
             .unwrap();
         assert_eq!(retried.formats.len(), 2);
     }
@@ -2522,7 +2447,13 @@ mod tests {
         let target = store.managed_path(&item.id, FormatId::Pdf);
 
         let error = store
-            .attach_verified_artifact(&item.id, &artifact, FormatId::Pdf, expected.0, &expected.1)
+            .attach_verified_artifact(
+                &item.id,
+                &artifact,
+                FormatId::Pdf,
+                expected.bytes,
+                &expected.sha256,
+            )
             .unwrap_err();
 
         assert_eq!(error.code(), "storage-unavailable");
@@ -2562,8 +2493,8 @@ mod tests {
                     &item_id,
                     &artifact,
                     FormatId::Pdf,
-                    expected.0,
-                    &expected.1,
+                    expected.bytes,
+                    &expected.sha256,
                 )
             }));
         }

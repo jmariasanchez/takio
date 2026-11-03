@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::conversion::{Artifact, FormatId, convert, detect_format};
-use crate::output::{AppError, AppResult};
+use crate::error::{AppError, AppResult};
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]

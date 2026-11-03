@@ -716,8 +716,9 @@ fn copy_artifact(source: &Path, destination: &Path, relative: &str) -> AppResult
         .create_new(true)
         .open(destination)
         .map_err(|_| AppError::new("storage-unavailable"))?;
-    let (bytes, sha256) = crate::fingerprint::copy_and_hash(&mut input, &mut output)
-        .map_err(|_| AppError::new("storage-unavailable"))?;
+    let crate::fingerprint::Fingerprint { bytes, sha256 } =
+        crate::fingerprint::copy_and_hash(&mut input, &mut output)
+            .map_err(|_| AppError::new("storage-unavailable"))?;
     output
         .sync_all()
         .map_err(|_| AppError::new("storage-unavailable"))?;
@@ -740,7 +741,7 @@ fn fingerprint(path: &Path, relative: &str) -> AppResult<PortableArtifact> {
     {
         return Err(AppError::new("source-invalid"));
     }
-    let (bytes, sha256) =
+    let crate::fingerprint::Fingerprint { bytes, sha256 } =
         crate::fingerprint::hash_file(path).map_err(|_| AppError::new("source-invalid"))?;
     if bytes > MAX_SAFE_INTEGER {
         return Err(AppError::new("source-invalid"));

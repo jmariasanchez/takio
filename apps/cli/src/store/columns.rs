@@ -2,8 +2,8 @@
 use rusqlite::{OptionalExtension, TransactionBehavior, params};
 
 use super::{LibraryStore, METADATA_AUDIT_KEY};
+use crate::error::{AppError, AppResult};
 use crate::model::CustomColumnDefinition;
-use crate::output::{AppError, AppResult};
 
 const MAX_CUSTOM_COLUMN_DEFINITIONS: usize = 64;
 

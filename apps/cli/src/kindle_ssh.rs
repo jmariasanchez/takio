@@ -99,7 +99,7 @@ fn send_with_programs(
         hash.args([&target, "sha256sum", &remote_partial]);
         let hash_output = run(&mut hash, destination.timeout)?;
         let verification = if hash_output.status == 0 {
-            if hash_output.stdout.split_whitespace().next() != Some(expected.1.as_str()) {
+            if hash_output.stdout.split_whitespace().next() != Some(expected.sha256.as_str()) {
                 return Err(AppError::new("verification-failed"));
             }
             "sha256"
@@ -111,7 +111,7 @@ fn send_with_programs(
             size.args([&target, "wc", "-c", &remote_partial]);
             let output = checked(&mut size, destination.timeout, "verification-failed")?;
             let actual = output.stdout.split_whitespace().next().unwrap_or_default();
-            if actual != expected.0.to_string() {
+            if actual != expected.bytes.to_string() {
                 return Err(AppError::new("verification-failed"));
             }
             "size"
@@ -144,8 +144,8 @@ fn send_with_programs(
         item_id: item_id.to_owned(),
         transport: "kindle-ssh",
         path: remote_final,
-        bytes: expected.0,
-        sha256: expected.1,
+        bytes: expected.bytes,
+        sha256: expected.sha256,
         verification,
     })
 }
@@ -270,7 +270,7 @@ fn run(command: &mut Command, timeout: Duration) -> AppResult<CommandOutput> {
     })
 }
 
-fn fingerprint(path: &Path) -> AppResult<(u64, String)> {
+fn fingerprint(path: &Path) -> AppResult<crate::fingerprint::Fingerprint> {
     crate::fingerprint::hash_file(path).map_err(|_| AppError::new("source-unavailable"))
 }
 
@@ -304,7 +304,7 @@ mod tests {
         fs::write(&source, b"book bytes").unwrap();
         let identity = root.join("identity");
         fs::write(&identity, b"fake identity").unwrap();
-        let hash = fingerprint(&source).unwrap().1;
+        let hash = fingerprint(&source).unwrap().sha256;
         if mode == "exists" {
             fs::write(root.join("final"), b"original").unwrap();
         }

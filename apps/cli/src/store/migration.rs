@@ -6,7 +6,7 @@ use std::time::Duration;
 use rusqlite::{Connection, Transaction, TransactionBehavior, backup::Backup, params};
 use sha2::{Digest, Sha256};
 
-use crate::output::{AppError, AppResult};
+use crate::error::{AppError, AppResult};
 use crate::paths::LibraryPaths;
 
 use super::LIBRARY_SCHEMA_VERSION;
@@ -1079,7 +1079,10 @@ pub(super) fn verify_current(connection: &Connection, paths: &LibraryPaths) -> A
 }
 
 fn file_fingerprint(path: &Path) -> std::io::Result<(i64, String)> {
-    let (bytes, digest) = crate::fingerprint::hash_file(path)?;
+    let crate::fingerprint::Fingerprint {
+        bytes,
+        sha256: digest,
+    } = crate::fingerprint::hash_file(path)?;
     let size = i64::try_from(bytes).map_err(|_| std::io::Error::other("file too large"))?;
     Ok((size, digest))
 }
@@ -1497,7 +1500,10 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("large.epub");
         fs::write(&path, vec![42_u8; 256 * 1024 + 7]).unwrap();
-        let (size, digest) = crate::fingerprint::hash_file(&path).unwrap();
+        let crate::fingerprint::Fingerprint {
+            bytes: size,
+            sha256: digest,
+        } = crate::fingerprint::hash_file(&path).unwrap();
         assert_eq!(
             file_fingerprint(&path).unwrap(),
             (i64::try_from(size).unwrap(), digest)
