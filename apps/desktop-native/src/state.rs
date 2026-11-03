@@ -107,10 +107,7 @@ pub struct LibraryState {
     pub recovery_outcome: Option<RecoveryOutcome>,
     pub destinations: Vec<Destination>,
     pub volumes_root: PathBuf,
-    pub reader_shelves: Vec<(
-        Destination,
-        Result<takio::reader_shelf::ReaderShelf, String>,
-    )>,
+    pub reader_shelves: crate::engine::ReaderShelves,
     pub on_reader: HashMap<String, Vec<String>>,
     pub reading: HashMap<String, (String, takio::koreader::ReadingState)>,
     pub scanning_readers: bool,
@@ -123,7 +120,7 @@ pub struct LibraryState {
     pub busy: bool,
     pub metadata_editing: bool,
     pub saving_metadata: bool,
-    pub metadata_save_result: Option<Result<String, String>>,
+    pub metadata_save_result: Option<AppResult<String>>,
     pub delivery_report: Option<SendReport>,
     pub send_preview: Option<SendPreview>,
     pub preparation_preview: Option<PreparationPreview>,
@@ -702,7 +699,7 @@ impl LibraryState {
             || self.preparation_preview.is_some()
             || self.section != Section::Library
         {
-            self.metadata_save_result = Some(Err("Finish the current operation first".into()));
+            self.metadata_save_result = Some(Err(AppError::new("operation-in-progress")));
             cx.notify();
             return;
         }
@@ -723,8 +720,8 @@ impl LibraryState {
                     this.reload(cx);
                 }
                 Err(error) => {
-                    this.metadata_save_result = Some(Err(humanize_error(error.code())));
                     this.set_error(error.code(), cx);
+                    this.metadata_save_result = Some(Err(error));
                 }
             }
             cx.notify();
@@ -850,18 +847,10 @@ impl LibraryState {
             }
             this.scanning_readers = false;
             this.reader_shelves = match result {
-                Ok(shelves) => shelves
-                    .into_iter()
-                    .map(|(destination, shelf)| {
-                        (
-                            destination,
-                            shelf.map_err(|error| humanize_error(error.code())),
-                        )
-                    })
-                    .collect(),
+                Ok(shelves) => shelves,
                 Err(error) => failed_destinations
                     .into_iter()
-                    .map(|destination| (destination, Err(humanize_error(error.code()))))
+                    .map(|destination| (destination, Err(error.clone())))
                     .collect(),
             };
             for (destination, shelf) in &this.reader_shelves {
@@ -1382,6 +1371,7 @@ fn sort_items(items: &mut [Arc<LibraryItem>], sort: Sort) {
 
 pub fn humanize_error(code: &str) -> String {
     match code {
+        "operation-in-progress" => "Finish the current operation first".into(),
         "storage-unavailable" => "The library could not be read".into(),
         "unsupported-format" => "That file format is not supported".into(),
         "not-found" | "item-not-found" => "That book is no longer in the library".into(),
@@ -2158,6 +2148,50 @@ mod tests {
     }
 
     #[gpui::test]
+    fn blocked_metadata_save_retains_reason_and_writes_nothing(cx: &mut TestAppContext) {
+        let f = fixture(cx);
+        f.state.update(cx, |state, cx| {
+            state.busy = true;
+            state.update_metadata(
+                state.items[0].id.clone(),
+                LibraryPatch {
+                    title: takio::model::Patch::Set("Never saved".into()),
+                    ..LibraryPatch::default()
+                },
+                cx,
+            );
+            let error = state
+                .metadata_save_result
+                .as_ref()
+                .unwrap()
+                .as_ref()
+                .unwrap_err();
+            assert_eq!(error.code(), "operation-in-progress");
+            assert_eq!(error.exit_code(), 1);
+            assert_eq!(
+                humanize_error(error.code()),
+                "Finish the current operation first"
+            );
+            assert!(!state.saving_metadata);
+            state.busy = false;
+        });
+        let matches = f
+            .state
+            .read_with(cx, |state, _| {
+                state.engine.request(|reply| Request::Query {
+                    query: "Never saved".into(),
+                    filters: Filters::default(),
+                    reply,
+                })
+            })
+            .recv()
+            .unwrap()
+            .unwrap();
+        assert!(matches.is_empty());
+        assert_eq!(titles(&f.state, cx), ["Alpha", "Beta", "Gamma"]);
+    }
+
+    #[gpui::test]
     fn metadata_persists_and_reconciles_selection_after_sort(cx: &mut TestAppContext) {
         use takio::model::Patch;
         let f = fixture(cx);
@@ -2178,7 +2212,10 @@ mod tests {
         assert_eq!(titles(&f.state, cx), ["Beta", "Gamma", "Zulu"]);
         f.state.read_with(cx, |s, _| {
             assert_eq!(s.primary_selected().unwrap().id, id);
-            assert_eq!(s.metadata_save_result, Some(Ok(id.clone())));
+            assert_eq!(
+                s.metadata_save_result.as_ref().unwrap().as_ref().unwrap(),
+                &id
+            );
             assert_eq!(s.facets.tags.get("To read"), Some(&1));
         });
         let paths =

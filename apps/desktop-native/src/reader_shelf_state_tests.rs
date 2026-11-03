@@ -1,4 +1,37 @@
 // Included in state::tests. Every reader and library is disposable.
+#[gpui::test]
+fn reader_scan_failures_retain_typed_error_status(cx: &mut TestAppContext) {
+    for whole_request in [false, true] {
+        let f = fixture(cx);
+        let reader = shelf_reader(&f, cx);
+        let error = AppError::with_exit_code("destination-unavailable", 74);
+        let result: AppResult<crate::engine::ReaderShelves> = if whole_request {
+            Err(error)
+        } else {
+            Ok(vec![(reader.clone(), Err(error))])
+        };
+        let (sender, receiver) = std::sync::mpsc::channel();
+        sender.send(result).unwrap();
+        f.state.update(cx, |state, cx| {
+            state.scanning_readers = true;
+            state.await_reader_scan(receiver, state.reader_scan_generation, vec![reader], cx);
+        });
+        settle(&f.state, cx);
+        f.state.read_with(cx, |state, _| {
+            assert_eq!(state.reader_shelves.len(), 1);
+            let error = state.reader_shelves[0].1.as_ref().unwrap_err();
+            assert_eq!(error.code(), "destination-unavailable");
+            assert_eq!(error.exit_code(), 74);
+            assert!(!state.scanning_readers);
+            assert!(state.on_reader.is_empty());
+            assert!(state.reading.is_empty());
+            let summary = crate::views::sidebar::shelf_summary(Some(&state.reader_shelves[0].1));
+            assert!(summary.contains("Reconnect"));
+            assert!(!summary.contains("destination-unavailable"));
+        });
+    }
+}
+
 fn check_reader_progress(cx: &mut TestAppContext, koreader: bool, status: &str) {
     let f = fixture(cx);
     let reader = shelf_reader(&f, cx);

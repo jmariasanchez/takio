@@ -3,7 +3,7 @@ use std::collections::HashSet;
 
 use gpui::{Context, IntoElement, Render, Window, div, prelude::*, px};
 
-use crate::state::{FilterDimension, LibraryEntity, Section};
+use crate::state::{FilterDimension, LibraryEntity, Section, humanize_error};
 use crate::theme::{Theme, metrics};
 
 pub struct Sidebar {
@@ -428,11 +428,13 @@ impl Render for Sidebar {
 
 /// The text under a reader in the sidebar, from its last scan.
 pub(crate) fn shelf_summary(
-    shelf: Option<&Result<takio::reader_shelf::ReaderShelf, String>>,
+    shelf: Option<&takio::output::AppResult<takio::reader_shelf::ReaderShelf>>,
 ) -> String {
     let shelf = match shelf {
         Some(Ok(shelf)) => shelf,
-        Some(Err(error)) => return format!("Could not check books. {error}"),
+        Some(Err(error)) => {
+            return format!("Could not check books. {}", humanize_error(error.code()));
+        }
         None => return "Refresh to check books".to_owned(),
     };
     let mut text = match shelf.in_library {
@@ -496,8 +498,10 @@ mod tests {
         assert!(!shelf_summary(Some(&Ok(shelf(true, 0, 0)))).contains("finished"));
         assert!(!shelf_summary(Some(&Ok(shelf(false, 1, 2)))).contains("finished"));
         assert_eq!(
-            shelf_summary(Some(&Err("The reader is gone".into()))),
-            "Could not check books. The reader is gone"
+            shelf_summary(Some(&Err(takio::output::AppError::new(
+                "storage-unavailable"
+            )))),
+            "Could not check books. The library could not be read"
         );
         assert_eq!(shelf_summary(None), "Refresh to check books");
     }

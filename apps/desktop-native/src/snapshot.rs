@@ -143,7 +143,11 @@ pub fn run() {
                     "{}: in_library={} other={} importable={}",
                     reader.name, shelf.in_library, shelf.not_in_library, shelf.importable
                 ),
-                Err(error) => format!("{}: error {error}", reader.name),
+                Err(error) => format!(
+                    "{}: error {}",
+                    reader.name,
+                    crate::state::humanize_error(error.code())
+                ),
             })
             .collect();
         format!(

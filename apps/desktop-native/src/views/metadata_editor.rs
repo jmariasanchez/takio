@@ -6,7 +6,7 @@ use gpui::{
 use takio::model::{BookAuthor, LibraryItem, LibraryPatch, Patch};
 
 use super::search::Search;
-use crate::state::LibraryEntity;
+use crate::state::{LibraryEntity, humanize_error};
 use crate::theme::{Theme, metrics};
 
 actions!(
@@ -157,7 +157,7 @@ impl MetadataEditor {
                     }
                     Some(Err(error)) => {
                         this.submitted = false;
-                        this.error = Some(error);
+                        this.error = Some(humanize_error(error.code()));
                         for field in &this.fields {
                             field.update(cx, |field, cx| field.set_read_only(false, cx));
                         }
@@ -599,7 +599,22 @@ mod tests {
         window
             .update(cx, |editor, window, cx| {
                 assert!(!editor.submitted);
-                assert!(editor.error.is_some());
+                assert_eq!(
+                    editor.error.as_deref(),
+                    Some("That book is no longer in the library")
+                );
+                assert_eq!(
+                    editor
+                        .state
+                        .read(cx)
+                        .metadata_save_result
+                        .as_ref()
+                        .unwrap()
+                        .as_ref()
+                        .unwrap_err()
+                        .code(),
+                    "not-found"
+                );
                 assert!(editor.state.read(cx).metadata_editing);
                 assert_eq!(editor.draft(cx).title, "Keep this draft");
                 editor.fields[0].update(cx, |field, cx| {
