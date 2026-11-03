@@ -20,13 +20,13 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Tabs, Wrap};
 use serde_json::Value;
 
-use crate::cli::{
-    apply_prepared_metadata_candidate, metadata_candidates_for_item_at_cancellable,
-    prepare_metadata_candidate, prepare_metadata_candidate_with_cover,
-    release_metadata_candidate_covers,
-};
 use crate::destinations;
 use crate::jobs::JobStore;
+use crate::metadata_candidates::{
+    CandidateCoverDescriptor, CandidateSelection, MetadataCandidate,
+    apply_prepared_metadata_candidate, metadata_candidates_for_item_at_cancellable,
+    prepare_metadata_candidate, release_metadata_candidate_covers,
+};
 use crate::model::LibraryItem;
 use crate::output::{AppError, AppResult};
 use crate::paths::LibraryPaths;
@@ -90,7 +90,7 @@ enum CandidateFocus {
 struct CandidateReview {
     item_id: String,
     item_title: String,
-    candidates: Vec<Value>,
+    candidates: Vec<MetadataCandidate>,
     selected_candidate: usize,
     fields: Vec<String>,
     selected_field: usize,
@@ -101,7 +101,7 @@ struct CandidateReview {
     loading: bool,
 }
 
-type CandidateLoadResult = (u64, String, Result<Vec<Value>, String>);
+type CandidateLoadResult = (u64, String, Result<Vec<MetadataCandidate>, String>);
 
 struct App {
     paths: LibraryPaths,
@@ -357,7 +357,9 @@ impl App {
 
     fn load_candidate_review_with<F>(&mut self, item: LibraryItem, include_online: bool, load: F)
     where
-        F: FnOnce(&LibraryItem, bool, &AtomicBool) -> AppResult<Vec<Value>> + Send + 'static,
+        F: FnOnce(&LibraryItem, bool, &AtomicBool) -> AppResult<Vec<MetadataCandidate>>
+            + Send
+            + 'static,
     {
         self.cancel_candidate_loader();
         self.release_review_covers();
@@ -473,7 +475,7 @@ impl App {
         }
     }
 
-    fn accept_candidate_results(&mut self, candidates: Vec<Value>) {
+    fn accept_candidate_results(&mut self, candidates: Vec<MetadataCandidate>) {
         let count = candidates.len();
         if let Some(review) = self.candidate_review.as_mut() {
             review.loading = false;
@@ -495,9 +497,7 @@ impl App {
         review.fields = review
             .candidates
             .get(review.selected_candidate)
-            .and_then(|candidate| candidate.get("patch"))
-            .and_then(Value::as_object)
-            .map(|patch| patch.keys().cloned().collect())
+            .map(|candidate| candidate.patch.keys().cloned().collect())
             .unwrap_or_default();
         review.selected_field = 0;
         review.selected_fields = review.fields.iter().cloned().collect();
@@ -544,8 +544,7 @@ impl App {
         let has_cover = review
             .candidates
             .get(review.selected_candidate)
-            .and_then(|candidate| candidate.get("cover"))
-            .is_some_and(Value::is_object);
+            .is_some_and(|candidate| candidate.cover.is_some());
         if has_cover {
             review.selected_cover = !review.selected_cover;
         } else {
@@ -609,22 +608,15 @@ impl App {
         let item_id = review.item_id.clone();
         let selected_fields = review.selected_fields.clone();
         let selected_cover = review.selected_cover;
-        let prepared = if selected_cover {
-            prepare_metadata_candidate_with_cover(
-                candidate,
-                &item_id,
-                Some(&selected_fields),
-                "tui-candidate-review",
-                true,
-            )
-        } else {
-            prepare_metadata_candidate(
-                candidate,
-                &item_id,
-                Some(&selected_fields),
-                "tui-candidate-review",
-            )
-        };
+        let prepared = prepare_metadata_candidate(
+            candidate,
+            &item_id,
+            CandidateSelection {
+                fields: Some(&selected_fields),
+                include_cover: selected_cover,
+            },
+            "tui-candidate-review",
+        );
         let result = prepared.and_then(|prepared| {
             let fields = prepared.fields.clone();
             apply_prepared_metadata_candidate(&mut self.store, &item_id, &prepared)
@@ -1405,22 +1397,13 @@ fn draw_candidate_review(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) 
             .candidates
             .iter()
             .map(|candidate| {
-                let source = candidate
-                    .get("source")
-                    .and_then(Value::as_str)
-                    .unwrap_or("unknown");
-                let confidence = candidate
-                    .get("confidence")
-                    .and_then(Value::as_str)
-                    .unwrap_or("unknown");
+                let source = candidate.source.as_str();
+                let confidence = candidate.confidence.as_str();
                 let backend = candidate
-                    .pointer("/provenance/backend")
-                    .and_then(Value::as_str)
-                    .or_else(|| {
-                        candidate
-                            .pointer("/provenance/pattern")
-                            .and_then(Value::as_str)
-                    })
+                    .provenance
+                    .backend
+                    .as_deref()
+                    .or(candidate.provenance.pattern.as_deref())
                     .unwrap_or("Takio");
                 if compact {
                     ListItem::new(Line::from(vec![
@@ -1477,11 +1460,11 @@ fn draw_candidate_review(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) 
     let patch = review
         .candidates
         .get(review.selected_candidate)
-        .and_then(|candidate| candidate.get("patch"));
+        .map(|candidate| &candidate.patch);
     let cover = review
         .candidates
         .get(review.selected_candidate)
-        .and_then(|candidate| candidate.get("cover"));
+        .and_then(|candidate| candidate.cover.as_ref());
     let mut field_items = if review.fields.is_empty() {
         vec![ListItem::new(Line::styled(
             if review.loading {
@@ -1635,19 +1618,10 @@ fn value_summary(value: &Value) -> String {
     }
 }
 
-fn cover_summary(cover: &Value) -> String {
-    let media_type = cover.get("mediaType").and_then(Value::as_str).map_or_else(
-        || "unknown type".to_owned(),
-        |value| terminal_text(value, 24),
-    );
-    let bytes = cover
-        .get("bytes")
-        .and_then(Value::as_u64)
-        .map_or_else(|| "size unavailable".to_owned(), format_byte_size);
-    let sha = cover.get("sha256").and_then(Value::as_str).map_or_else(
-        || "unavailable".to_owned(),
-        |value| terminal_text(value, 12),
-    );
+fn cover_summary(cover: &CandidateCoverDescriptor) -> String {
+    let media_type = terminal_text(&cover.media_type, 24);
+    let bytes = format_byte_size(cover.bytes);
+    let sha = terminal_text(&cover.sha256, 12);
     format!("{media_type}, dimensions unavailable, {bytes}, SHA {sha}")
 }
 
@@ -1754,8 +1728,8 @@ mod tests {
         (temp, app, item)
     }
 
-    fn candidate_for(item: &LibraryItem) -> Value {
-        json!({
+    fn candidate_for(item: &LibraryItem) -> MetadataCandidate {
+        serde_json::from_value(json!({
             "schemaVersion": 1,
             "id": "filename:1",
             "source": "filename",
@@ -1770,7 +1744,8 @@ mod tests {
                 "sourcePath": item.source_path,
                 "pattern": "author-title"
             }
-        })
+        }))
+        .unwrap()
     }
 
     fn install_candidate_review(app: &mut App, item: &LibraryItem) {
@@ -1791,7 +1766,7 @@ mod tests {
         app.accept_candidate_results(vec![candidate_for(item)]);
     }
 
-    fn candidate_with_cover(app: &App, item: &LibraryItem, patch: Value) -> Value {
+    fn candidate_with_cover(app: &App, item: &LibraryItem, patch: Value) -> MetadataCandidate {
         let provenance = json!({
             "generatedAt": "1970-01-01T00:00:00.000Z",
             "itemId": item.id,
@@ -1816,7 +1791,7 @@ mod tests {
             },
         )
         .expect("stage candidate cover");
-        json!({
+        serde_json::from_value(json!({
             "schemaVersion": 1,
             "id": "embedded:1",
             "source": "embedded",
@@ -1824,7 +1799,8 @@ mod tests {
             "patch": patch,
             "provenance": provenance,
             "cover": cover
-        })
+        }))
+        .unwrap()
     }
 
     fn rendered_text(app: &App, width: u16, height: u16) -> String {
@@ -2161,11 +2137,13 @@ mod tests {
         assert!(rendered.contains("13 B"));
         assert!(rendered.contains("SHA "));
 
-        let unsafe_cover = json!({
-            "mediaType": "image/png\u{1b}]0;unsafe\u{7}",
-            "bytes": 12,
-            "sha256": "abc\n123"
-        });
+        let unsafe_cover = CandidateCoverDescriptor {
+            artifact_id: "fixture".into(),
+            extension: ".png".into(),
+            media_type: "image/png\u{1b}]0;unsafe\u{7}".into(),
+            bytes: 12,
+            sha256: "abc\n123".into(),
+        };
         assert!(!cover_summary(&unsafe_cover).chars().any(char::is_control));
     }
 
@@ -2242,7 +2220,7 @@ mod tests {
         install_candidate_review(&mut app, &item);
         let first = candidate_with_cover(&app, &item, json!({"title": "First"}));
         let mut second = candidate_with_cover(&app, &item, json!({"title": "Second"}));
-        second["id"] = json!("embedded:2");
+        second.id = "embedded:2".into();
         app.accept_candidate_results(vec![first, second]);
         app.handle_key(KeyCode::Char('c'), KeyModifiers::NONE);
         assert!(

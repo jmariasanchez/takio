@@ -1,7 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{BufRead, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use clap::{CommandFactory, Parser, Subcommand};
@@ -20,16 +19,19 @@ use crate::jobs::{JobStatus, JobStore};
 use crate::kindle_ssh::{self, KindleSshDestination};
 use crate::maintenance::{self, discover_ebook_polish};
 use crate::metadata::{self, discover_ebook_meta, discover_fetch_ebook_metadata};
+use crate::metadata_candidates::{
+    CandidateSelection, apply_prepared_metadata_candidate, filename_candidates,
+    metadata_candidates_for_item_at, metadata_candidates_for_reconcile, prepare_metadata_candidate,
+};
 use crate::metadata_reconcile::{CancellationSignals, ReconcileRequest, reconcile};
-use crate::model::{LibraryPatch, Patch};
+use crate::model::LibraryPatch;
 use crate::output::{AppError, AppResult, print_success};
 use crate::paths::{LibraryPaths, absolute};
 use crate::portable_library;
 use crate::reader_shelf;
 use crate::store::{
     DuplicatePairReviewRequest, LIBRARY_SCHEMA_VERSION, LibraryStore,
-    ListDuplicateCandidatesRequest, METADATA_AUDIT_KEY, MergeDuplicatePairRequest, VerifyReport,
-    user_custom_metadata, validate_candidate_patch,
+    ListDuplicateCandidatesRequest, MergeDuplicatePairRequest, VerifyReport, user_custom_metadata,
 };
 
 #[derive(Parser)]
@@ -1063,7 +1065,13 @@ fn metadata_candidates(command: MetadataCandidatesCommand, library: Option<&str>
                         timeout,
                         canceled,
                         &candidate_root,
-                    )
+                    )?
+                    .into_iter()
+                    .map(|candidate| {
+                        serde_json::to_value(candidate)
+                            .map_err(|_| AppError::new("metadata-invalid"))
+                    })
+                    .collect()
                 },
             );
             print_success(response)
@@ -1105,12 +1113,14 @@ fn metadata_candidates(command: MetadataCandidatesCommand, library: Option<&str>
             // The engine validates the candidate independently of any client,
             // and fully before opening or mutating a library, so malformed or
             // cross-item input has no side effect at all.
-            let prepared = prepare_metadata_candidate_with_cover(
-                read_json(&candidate_input)?,
+            let prepared = prepare_metadata_candidate(
+                decode_request(&read_json(&candidate_input)?)?,
                 &id,
-                None,
+                CandidateSelection {
+                    fields: None,
+                    include_cover: cover,
+                },
                 &provenance,
-                cover,
             )?;
 
             let paths = LibraryPaths::resolve(library, db.as_deref())?;
@@ -1137,451 +1147,6 @@ fn metadata_candidates(command: MetadataCandidatesCommand, library: Option<&str>
     }
 }
 
-pub(crate) struct PreparedMetadataCandidate {
-    pub candidate_id: String,
-    pub source: String,
-    pub fields: Vec<String>,
-    patch: LibraryPatch,
-    audit: Value,
-    cover: Option<crate::candidate_cover::CandidateCoverDescriptor>,
-    candidate_provenance: String,
-}
-
-struct CandidateCoverStages<'a> {
-    library_root: &'a Path,
-    artifact_ids: Vec<String>,
-    retain: bool,
-}
-
-impl<'a> CandidateCoverStages<'a> {
-    fn new(library_root: &'a Path) -> Self {
-        Self {
-            library_root,
-            artifact_ids: Vec::new(),
-            retain: false,
-        }
-    }
-
-    fn track(
-        &mut self,
-        descriptor: crate::candidate_cover::CandidateCoverDescriptor,
-    ) -> crate::candidate_cover::CandidateCoverDescriptor {
-        self.artifact_ids.push(descriptor.artifact_id.clone());
-        descriptor
-    }
-
-    fn retain(&mut self) {
-        self.retain = true;
-    }
-
-    fn candidate(
-        &mut self,
-        item_id: &str,
-        origin: (&str, &str, &str),
-        data: (Value, Option<crate::candidate_cover::CapturedCover>),
-        provenance: Value,
-        canceled: &AtomicBool,
-    ) -> AppResult<Option<Value>> {
-        if canceled.load(Ordering::Acquire) {
-            return Err(AppError::new("operation-canceled"));
-        }
-        let (id, source, confidence) = origin;
-        let (metadata, cover_data) = data;
-        let cover = cover_data
-            .as_ref()
-            .map(|cover| {
-                crate::candidate_cover::stage(
-                    self.library_root,
-                    item_id,
-                    id,
-                    source,
-                    &canonical_candidate_provenance(&provenance)?,
-                    cover,
-                )
-                .map(|cover| self.track(cover))
-            })
-            .transpose()?;
-        Ok(metadata_candidate(
-            id, source, confidence, metadata, provenance, cover,
-        ))
-    }
-}
-
-impl Drop for CandidateCoverStages<'_> {
-    fn drop(&mut self) {
-        if self.retain {
-            return;
-        }
-        for artifact_id in &self.artifact_ids {
-            crate::candidate_cover::consume(self.library_root, artifact_id);
-        }
-    }
-}
-
-pub(crate) fn metadata_candidates_for_item_at(
-    item: &crate::model::LibraryItem,
-    include_online: bool,
-    timeout_seconds: u64,
-    library_root: &Path,
-) -> AppResult<Vec<Value>> {
-    let canceled = AtomicBool::new(false);
-    metadata_candidates_for_item_with_policy(
-        item,
-        include_online,
-        timeout_seconds,
-        &canceled,
-        false,
-        library_root,
-    )
-}
-
-pub(crate) fn metadata_candidates_for_item_at_cancellable(
-    item: &crate::model::LibraryItem,
-    include_online: bool,
-    timeout_seconds: u64,
-    library_root: &Path,
-    canceled: &AtomicBool,
-) -> AppResult<Vec<Value>> {
-    metadata_candidates_for_item_with_policy(
-        item,
-        include_online,
-        timeout_seconds,
-        canceled,
-        false,
-        library_root,
-    )
-}
-
-pub(crate) fn release_metadata_candidate_covers(library_root: &Path, candidates: &[Value]) {
-    for artifact_id in candidates.iter().filter_map(|candidate| {
-        candidate
-            .pointer("/cover/artifactId")
-            .and_then(Value::as_str)
-    }) {
-        crate::candidate_cover::consume(library_root, artifact_id);
-    }
-}
-
-fn metadata_candidates_for_reconcile(
-    item: &crate::model::LibraryItem,
-    include_online: bool,
-    timeout_seconds: u64,
-    canceled: &AtomicBool,
-    library_root: &Path,
-) -> AppResult<Vec<Value>> {
-    metadata_candidates_for_item_with_policy(
-        item,
-        include_online,
-        timeout_seconds,
-        canceled,
-        true,
-        library_root,
-    )
-}
-
-fn metadata_candidates_for_item_with_policy(
-    item: &crate::model::LibraryItem,
-    include_online: bool,
-    timeout_seconds: u64,
-    canceled: &AtomicBool,
-    require_requested_sources: bool,
-    library_root: &Path,
-) -> AppResult<Vec<Value>> {
-    if timeout_seconds == 0 {
-        return Err(AppError::new("invalid-arguments"));
-    }
-    let mut candidates =
-        filename_candidates_for_stem(&item.title, &item.source_path, Some(&item.id), &[])?;
-    let mut cover_stages = CandidateCoverStages::new(library_root);
-    if canceled.load(Ordering::Acquire) {
-        return Err(AppError::new("operation-canceled"));
-    }
-    if discover_ebook_meta().is_some() {
-        let extracted = metadata::extract_cancellable(
-            &item.source_path,
-            Duration::from_secs(timeout_seconds),
-            canceled,
-        );
-        match extracted {
-            Ok(extracted) => {
-                let provenance = json!({"generatedAt":"1970-01-01T00:00:00.000Z","itemId":item.id,"sourcePath":extracted.source_path,"backend":"ebook-meta"});
-                if let Some(candidate) = cover_stages.candidate(
-                    &item.id,
-                    ("embedded:1", "embedded", "high"),
-                    (extracted.metadata, extracted.cover_data),
-                    provenance,
-                    canceled,
-                )? {
-                    candidates.push(candidate);
-                }
-            }
-            Err(error) if require_requested_sources => return Err(error),
-            Err(_) => {}
-        }
-    }
-    if canceled.load(Ordering::Acquire) {
-        return Err(AppError::new("operation-canceled"));
-    }
-    if include_online && discover_fetch_ebook_metadata().is_some() {
-        let authors = item.author_names().map(str::to_owned).collect::<Vec<_>>();
-        let fetched = metadata::fetch_candidate_cancellable(
-            Some(&item.title),
-            &authors,
-            &item.identifiers,
-            Duration::from_secs(timeout_seconds),
-            canceled,
-        );
-        match fetched {
-            Ok(fetched) => {
-                let provenance = json!({"generatedAt":"1970-01-01T00:00:00.000Z","itemId":item.id,"backend":"fetch-ebook-metadata"});
-                if let Some(candidate) = cover_stages.candidate(
-                    &item.id,
-                    ("online:1", "online", "medium"),
-                    (fetched.metadata, fetched.cover_data),
-                    provenance,
-                    canceled,
-                )? {
-                    candidates.push(candidate);
-                }
-            }
-            Err(error) if require_requested_sources => return Err(error),
-            Err(_) => {}
-        }
-    }
-    if canceled.load(Ordering::Acquire) {
-        return Err(AppError::new("operation-canceled"));
-    }
-    candidates.truncate(8);
-    if canceled.load(Ordering::Acquire) {
-        return Err(AppError::new("operation-canceled"));
-    }
-    cover_stages.retain();
-    Ok(candidates)
-}
-
-pub(crate) fn prepare_metadata_candidate(
-    candidate_input: Value,
-    item_id: &str,
-    selected_fields: Option<&BTreeSet<String>>,
-    provenance: &str,
-) -> AppResult<PreparedMetadataCandidate> {
-    prepare_metadata_candidate_with_cover(
-        candidate_input,
-        item_id,
-        selected_fields,
-        provenance,
-        false,
-    )
-}
-
-pub(crate) fn prepare_metadata_candidate_with_cover(
-    candidate_input: Value,
-    item_id: &str,
-    selected_fields: Option<&BTreeSet<String>>,
-    provenance: &str,
-    apply_cover: bool,
-) -> AppResult<PreparedMetadataCandidate> {
-    if item_id.trim().is_empty() || provenance.trim().is_empty() {
-        return Err(AppError::new("invalid-arguments"));
-    }
-    let candidate: WireCandidate =
-        serde_json::from_value(candidate_input).map_err(|_| AppError::new("invalid-arguments"))?;
-    let all_fields = candidate.validated_fields(item_id)?;
-    let fields = if let Some(selected_fields) = selected_fields {
-        if (selected_fields.is_empty() && !(apply_cover && candidate.cover.is_some()))
-            || selected_fields
-                .iter()
-                .any(|field| !all_fields.contains(field))
-        {
-            return Err(AppError::new("invalid-arguments"));
-        }
-        all_fields
-            .into_iter()
-            .filter(|field| selected_fields.contains(field))
-            .collect::<Vec<_>>()
-    } else {
-        all_fields
-    };
-    let source_patch = candidate
-        .patch
-        .as_object()
-        .ok_or_else(|| AppError::new("invalid-arguments"))?;
-    let filtered_patch = fields
-        .iter()
-        .filter_map(|field| {
-            source_patch
-                .get(field)
-                .cloned()
-                .map(|value| (field.clone(), value))
-        })
-        .collect::<serde_json::Map<_, _>>();
-    let patch: LibraryPatch = serde_json::from_value(Value::Object(filtered_patch))
-        .map_err(|_| AppError::new("invalid-arguments"))?;
-    if patch.is_empty() && !(apply_cover && candidate.cover.is_some()) {
-        return Err(AppError::new("invalid-arguments"));
-    }
-    if !patch.is_empty() {
-        validate_candidate_patch(&patch)?;
-    }
-    let audit = json!({
-        "schemaVersion": METADATA_AUDIT_SCHEMA_VERSION,
-        "candidateId": candidate.id,
-        "source": candidate.source,
-        "confidence": candidate.confidence,
-        "candidateProvenance": candidate.provenance,
-        "selectedFields": fields,
-        "applicationProvenance": provenance.trim(),
-        "cover": apply_cover.then(|| candidate.cover.as_ref().map(|cover| json!({
-            "mediaType": cover.media_type,
-            "extension": cover.extension,
-            "bytes": cover.bytes,
-            "sha256": cover.sha256,
-        }))).flatten(),
-    });
-    let candidate_provenance = serde_json::to_string(&candidate.provenance)
-        .map_err(|_| AppError::new("invalid-arguments"))?;
-    Ok(PreparedMetadataCandidate {
-        candidate_id: candidate.id,
-        source: candidate.source,
-        fields,
-        patch,
-        audit,
-        cover: apply_cover.then_some(candidate.cover).flatten(),
-        candidate_provenance,
-    })
-}
-
-pub(crate) fn apply_prepared_metadata_candidate(
-    store: &mut LibraryStore,
-    item_id: &str,
-    prepared: &PreparedMetadataCandidate,
-) -> AppResult<crate::model::LibraryItem> {
-    let current = store
-        .get(item_id)?
-        .ok_or_else(|| AppError::new("not-found"))?;
-    let mut patch = prepared.patch.clone();
-    patch.custom_metadata = Patch::Set(merge_metadata_audit(
-        &current.custom_metadata,
-        &patch.custom_metadata,
-        &prepared.audit,
-    )?);
-    store.apply_metadata_candidate(
-        item_id,
-        patch,
-        prepared.cover.as_ref(),
-        &prepared.candidate_id,
-        &prepared.source,
-        &prepared.candidate_provenance,
-    )
-}
-
-const METADATA_AUDIT_SCHEMA_VERSION: u64 = 1;
-const MAX_CUSTOM_METADATA_ENTRIES: usize = 64;
-const MAX_CUSTOM_METADATA_VALUE_BYTES: usize = 16 * 1024;
-
-#[derive(serde::Deserialize, serde::Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct WireCandidateProvenance {
-    generated_at: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    item_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    source_path: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pattern: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    backend: Option<String>,
-}
-
-fn canonical_candidate_provenance(value: &Value) -> AppResult<String> {
-    let provenance: WireCandidateProvenance =
-        serde_json::from_value(value.clone()).map_err(|_| AppError::new("metadata-invalid"))?;
-    serde_json::to_string(&provenance).map_err(|_| AppError::new("metadata-invalid"))
-}
-
-#[derive(serde::Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct WireCandidate {
-    schema_version: u64,
-    id: String,
-    source: String,
-    confidence: String,
-    patch: Value,
-    provenance: WireCandidateProvenance,
-    #[serde(default)]
-    cover: Option<crate::candidate_cover::CandidateCoverDescriptor>,
-}
-
-impl WireCandidate {
-    /// Validates every advertised candidate bound and the exact item identity,
-    /// returning the selected patch field names in stable order.
-    fn validated_fields(&self, item_id: &str) -> AppResult<Vec<String>> {
-        let invalid = || AppError::new("invalid-arguments");
-        if self.schema_version != 1
-            || self.id.trim().is_empty()
-            || self.id.len() > 120
-            || !["filename", "embedded", "online"].contains(&self.source.as_str())
-            || !["low", "medium", "high"].contains(&self.confidence.as_str())
-        {
-            return Err(invalid());
-        }
-        let provenance = &self.provenance;
-        if provenance.item_id.as_deref() != Some(item_id)
-            || chrono::DateTime::parse_from_rfc3339(&provenance.generated_at).is_err()
-            || provenance
-                .source_path
-                .as_ref()
-                .is_some_and(|value| value.is_empty() || value.len() > 4096)
-            || provenance
-                .pattern
-                .as_ref()
-                .is_some_and(|value| value.is_empty() || value.len() > 240)
-            || provenance.backend.as_ref().is_some_and(|value| {
-                !["ebook-meta", "fetch-ebook-metadata"].contains(&value.as_str())
-            })
-        {
-            return Err(invalid());
-        }
-        if let Some(cover) = &self.cover {
-            crate::candidate_cover::validate_descriptor(cover).map_err(|_| invalid())?;
-        }
-        self.patch
-            .as_object()
-            .filter(|object| !object.is_empty() || self.cover.is_some())
-            .map(|object| object.keys().cloned().collect())
-            .ok_or_else(invalid)
-    }
-}
-
-/// Builds the effective custom metadata for a candidate application, honouring
-/// the patch's own semantics for the field: `Missing` preserves the stored
-/// entries, `Null` clears them, and `Set` replaces them. The durable audit
-/// entry is added last, so candidate-selected custom metadata cannot erase it.
-fn merge_metadata_audit(
-    existing: &BTreeMap<String, String>,
-    selected: &Patch<BTreeMap<String, String>>,
-    audit: &Value,
-) -> AppResult<BTreeMap<String, String>> {
-    let mut merged = match selected {
-        Patch::Missing => existing.clone(),
-        Patch::Null => BTreeMap::new(),
-        Patch::Set(value) => value.clone(),
-    };
-    let encoded = serde_json::to_string(audit).map_err(|_| AppError::new("storage-unavailable"))?;
-    if encoded.len() > MAX_CUSTOM_METADATA_VALUE_BYTES {
-        return Err(AppError::new("invalid-arguments"));
-    }
-    let user_entries = merged
-        .keys()
-        .filter(|key| key.as_str() != METADATA_AUDIT_KEY)
-        .count();
-    if user_entries > MAX_CUSTOM_METADATA_ENTRIES {
-        return Err(AppError::new("invalid-arguments"));
-    }
-    merged.insert(METADATA_AUDIT_KEY.to_owned(), encoded);
-    Ok(merged)
-}
-
 fn parse_identifiers(inputs: &[String]) -> AppResult<BTreeMap<String, String>> {
     let mut values = BTreeMap::new();
     for input in inputs {
@@ -1597,110 +1162,6 @@ fn parse_identifiers(inputs: &[String]) -> AppResult<BTreeMap<String, String>> {
     Ok(values)
 }
 
-fn filename_candidates(
-    source: &Path,
-    item_id: Option<&str>,
-    custom_patterns: &[String],
-) -> AppResult<Vec<Value>> {
-    let stem = source
-        .file_stem()
-        .and_then(|value| value.to_str())
-        .ok_or_else(|| AppError::new("invalid-arguments"))?;
-    filename_candidates_for_stem(stem, source, item_id, custom_patterns)
-}
-
-fn filename_candidates_for_stem(
-    stem: &str,
-    provenance_path: &Path,
-    item_id: Option<&str>,
-    custom_patterns: &[String],
-) -> AppResult<Vec<Value>> {
-    const BUILTINS: [&str; 4] = [
-        r"^(?<author>.+?) - (?<series>.+?) (?<seriesIndex>\d+(?:\.\d+)?) - (?<title>.+)$",
-        r"^(?<author>.+?) - (?<title>.+?) \((?<series>.+?) #(?<seriesIndex>\d+(?:\.\d+)?)\)$",
-        r"^(?<author>.+?) - (?<title>.+)$",
-        r"^(?<title>.+?) - (?<author>.+)$",
-    ];
-    if custom_patterns
-        .iter()
-        .any(|pattern| pattern.is_empty() || pattern.len() > 240)
-    {
-        return Err(AppError::new("invalid-arguments"));
-    }
-    let patterns = custom_patterns
-        .iter()
-        .map(String::as_str)
-        .chain(BUILTINS)
-        .collect::<Vec<_>>();
-    let mut candidates = Vec::new();
-    for pattern in patterns {
-        let expression =
-            regex::Regex::new(pattern).map_err(|_| AppError::new("invalid-arguments"))?;
-        let Some(captures) = expression.captures(stem) else {
-            continue;
-        };
-        let clean = |name: &str| {
-            captures.name(name).and_then(|value| {
-                let value = value
-                    .as_str()
-                    .replace(['.', '_'], " ")
-                    .split_whitespace()
-                    .collect::<Vec<_>>()
-                    .join(" ");
-                (!value.is_empty()).then_some(value)
-            })
-        };
-        let Some(title) = clean("title") else {
-            continue;
-        };
-        let author = clean("author");
-        let series = clean("series");
-        let series_index = clean("seriesIndex").and_then(|value| value.parse::<f64>().ok());
-        let mut patch = json!({"title":title});
-        if let Some(object) = patch.as_object_mut() {
-            if let Some(author) = author {
-                object.insert("author".to_owned(), json!(author));
-                object.insert("authors".to_owned(), json!([{"name":author}]));
-            }
-            if let Some(series) = series {
-                object.insert("series".to_owned(), json!(series));
-            }
-            if let Some(series_index) = series_index {
-                object.insert("seriesIndex".to_owned(), json!(series_index));
-            }
-        }
-        let id = format!("filename:{}", candidates.len() + 1);
-        candidates.push(json!({
-            "schemaVersion":1,
-            "id":id,
-            "source":"filename",
-            "confidence":if custom_patterns.first().is_some_and(|value|value==pattern){"high"}else{"medium"},
-            "patch":patch,
-            "provenance":{"generatedAt":"1970-01-01T00:00:00.000Z","itemId":item_id,"sourcePath":provenance_path,"pattern":pattern}
-        }));
-        if candidates.len() == 8 {
-            break;
-        }
-    }
-    Ok(candidates)
-}
-
-fn metadata_candidate(
-    id: &str,
-    source: &str,
-    confidence: &str,
-    patch: Value,
-    provenance: Value,
-    cover: Option<crate::candidate_cover::CandidateCoverDescriptor>,
-) -> Option<Value> {
-    (patch.as_object().is_some_and(|object| !object.is_empty()) || cover.is_some()).then(|| {
-        let mut candidate = json!({"schemaVersion":1,"id":id,"source":source,"confidence":confidence,"patch":patch,"provenance":provenance});
-        if let Some(cover) = cover {
-            candidate["cover"] = json!(cover);
-        }
-        candidate
-    })
-}
 fn devices(as_json: bool) -> AppResult<()> {
     let backend = discover_ebook_convert();
     let capabilities = if backend.available {

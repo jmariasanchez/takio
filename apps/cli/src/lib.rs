@@ -29,6 +29,7 @@ pub mod koreader;
 pub mod library_query;
 pub mod maintenance;
 pub mod metadata;
+pub mod metadata_candidates;
 mod metadata_reconcile;
 pub mod model;
 pub mod output;
