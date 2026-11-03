@@ -1,11 +1,12 @@
 # Takio Native Desktop (GPUI)
 
-Status: in progress. Supersedes the Electron desktop in `apps/desktop` once
-the acceptance gates below pass.
+Status: primary and only desktop. The Electron application was removed at the
+user's request on November 3, 2026. Current completion work and its measured
+gates are recorded in `../plans/2026-11-03-native-completion.md`.
 
 ## Why
 
-The library engine is already one Rust crate. The Electron desktop reaches it
+The library engine is one Rust crate. The former Electron desktop reached it
 through a JSON sidecar, IPC, a context-isolated preload, and a Chromium
 renderer: four process boundaries and ~250 MB of runtime to show a table of
 books. A GPUI app links the engine directly. There is no serialization, no
@@ -22,7 +23,8 @@ renders in under 100 ms from launch.
 2. **The UI thread never touches SQLite.** A dedicated engine thread owns the
    `LibraryStore`. The UI sends typed requests and receives typed results over
    channels. Every interaction remains responsive during imports, verifies,
-   and large queries.
+   and large queries. A separate bounded reader-scan worker keeps slow USB reads
+   off the catalogue request queue.
 3. **Virtualized by default.** Lists use `uniform_list`; only visible rows are
    rendered. A 100k-item library scrolls at frame rate.
 4. **Minimal surface, complete behavior.** Apple-style restraint: one window,
@@ -67,7 +69,11 @@ One `std::thread` owns `LibraryStore` and drains an `mpsc::Receiver<Request>`.
 Replies arrive on per-request oneshot channels; the UI polls them with
 `cx.spawn` + `background_executor` so results land on the main thread via
 `cx.update`. Mutations are serialized naturally by the single worker, which
-is the same guarantee the Electron `library service` loop provided.
+is the same guarantee the former Electron `library service` loop provided.
+Reader scanning has one running and at most one pending request, owned fingerprint
+snapshots rather than a SQLite connection, and library-generation guards. Switching
+invalidates old scans. Eject reports an active scan rather than unmounting beneath
+an uninterruptible OS read.
 
 ### State
 
@@ -92,7 +98,9 @@ values of expanded groups, not every facet on each selection notification.
 ### Performance gates and remaining goals
 
 `scripts/bench-desktop-native.sh` measures five real GUI starts against a
-generated 10,000-item catalogue. It enforces these median startup budgets:
+generated 10,000-item catalogue. It opens the engine/workspace directly, excluding
+remembered-library lookup and the production startup-recovery wrapper. It enforces
+these median harness startup budgets:
 
 - First paint: at most 150 ms from process startup.
 - Initial full-list query completion: at most 400 ms from startup.
@@ -101,15 +109,15 @@ generated 10,000-item catalogue. It enforces these median startup budgets:
 The following are design goals, not measurements or gates satisfied by that
 script: 120 Hz scrolling with no frame over 8 ms, search keystroke-to-list update
 below 80 ms p95, and steady-state idle memory. Scrolling and interactive search
-require separate sampling. The existing 60 ms search debounce must be included
-in any future end-to-end input measurement, not subtracted from it.
+require separate sampling. Search uses an 8 ms debounce, included in interaction
+measurements rather than subtracted.
 
 `bash scripts/bench-desktop-native.sh --interactions` additionally exercises the
 production state in a real GUI against the same deterministic 10,000-book library.
 Each of five processes runs five cycles of matching search, clearing search,
 sorting, and select-all/reload. The script validates counts, sort order, search
 matches, and retained selections before reporting median and nearest-rank p95
-from 25 samples per operation. Search timing includes the 60 ms debounce.
+from 25 samples per operation. Search timing includes the 8 ms debounce.
 `dispatchMs` measures only the initiating UI call. `settledMs` ends at the result
 notification. Neither measures actual keyboard-to-display latency or scrolling,
 and low dispatch time alone does not prove result application meets a frame budget.
@@ -118,6 +126,19 @@ select-all/reload settled p95 at most 200 ms. Sort samples retain zero selected
 books on the first cycle and 5,000 search matches on later cycles. The reload
 samples select and retain all 10,000 books. These gates do not certify the
 separate below-80-ms search goal.
+
+`--render-interactions` additionally injects text through the production Search
+input handler and measures the next frame after settled workspace paint submission.
+It also scrolls the virtualized list programmatically to the first and last rows
+and checks the visible index. These are not physical keystrokes, wheel events,
+GPU completion or display-scanout measurements. `TAKIO_BENCH_REQUIRE_SEARCH_TARGET=1`
+makes the reported search p95 target a hard gate for the selected scope.
+
+November 3, 2026 acceptance: startup/state budgets passed, but matching/clearing
+search in the rendered probe reached 97.521/84.182 ms p95, above the 80 ms goal.
+The executable also exceeds the unchanged 12,000,000-byte gate at 12,504,400 bytes.
+Native CI is not green. See the completion plan for sample counts, baseline
+comparisons, artifact hashes, and remaining platform/hardware validation.
 
 ## Scope for the first cut (v1)
 
@@ -169,13 +190,21 @@ In:
   mutations and closing. This is not automatic backup, a complete installation
   snapshot or in-place replacement. Opening the restored copy is a separate
   explicit Open Library action.
+- Opt-in automatic recovery copies: choose an existing disjoint destination,
+  create a verified whole-library copy now and every 24 hours while the app is
+  open, and keep all copies. No service or automatic deletion. Missing drives
+  are not recreated. Failure retries are throttled and successful copies survive
+  preference-save failures. Modal workflows pause scheduling.
+- Startup recovery: corrupt or incompatible defaults show a usable recovery
+  window. Open an existing library or restore to a new disjoint folder without
+  replacing the original. Supported legacy defaults retain verified migration.
 - Command palette (Cmd-K) over every action.
 - Native menu bar with the same actions and accelerators.
 - Light and dark appearance following the system.
 
 Out (remain in CLI/TUI or later cuts): advanced metadata editing, candidate review,
 duplicates, general conversion-job management, custom columns, saved views, export dialogs,
-automatic backups and multi-window library sessions. Existing CLI operations remain
+multi-window library sessions. Existing CLI operations remain
 available through `takio`.
 
 ## Acceptance
@@ -189,13 +218,15 @@ available through `takio`.
 4. `scripts/package-desktop-native.sh` yields a launchable `Takio.app` with
    Info.plist, icon, and ad-hoc signature that opens a library at
    `TAKIO_DATA_DIR`.
-5. The Electron app is removed from the default `bun run build` and `check`
-   scripts once 1 to 4 pass; its directory is deleted in a follow-up commit.
+5. Build, check, package, release and version-verification entry points target the
+   native app, not a removed Electron workspace. Local ad-hoc packaging must not
+   be represented as notarized distribution. Signing and publishing require
+   separate authorization and credentials.
 
 ## Measured result
 
-`scripts/compare-desktops.sh` launches both desktops five times against one
-deterministic 10,000-book library on the same machine and reports medians.
+The retired `scripts/compare-desktops.sh` launched both desktops five times against one
+deterministic 10,000-book library on the same machine and reported medians.
 On an Apple Silicon laptop (2026-10-22):
 
 | | Electron | Native GPUI |

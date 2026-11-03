@@ -2,6 +2,11 @@
 
 Date: 2026-10-22
 
+Current follow-through: `2026-11-03-native-completion.md` records the user's
+November 3 request to close the reliability/quality gaps and remove Electron,
+with acceptance targets and new evidence. The dated observations below remain
+historical evidence, not a claim that every earlier limitation is still open.
+
 ## Product decision
 
 Takio helps a person manage the ebook files they already have and get a readable

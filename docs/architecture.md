@@ -2,16 +2,18 @@
 
 ## Product surfaces
 
-Takio has three user-facing surfaces backed by one native Rust executable:
+Takio has three user-facing surfaces backed by one shared Rust library engine:
 
-1. **Electron desktop** for the full graphical library workflow.
+1. **GPUI native desktop** for the focused graphical library workflow.
 2. **Ratatui terminal UI** for keyboard-first human use.
 3. **JSON CLI** for agents, scripts, skills, and power users.
 
-The Electron renderer remains a Bun and TypeScript workspace. It packages the
-Rust `takio` binary as `takio-library-engine` and communicates with it through a
-strict process boundary. The desktop never imports Rust internals and the Rust
-binary never launches Bun as a fallback.
+The `takio-desktop` executable links the `takio` library in process. A dedicated
+engine thread owns SQLite and serializes mutations. Typed requests and results
+cross the UI/engine boundary, with library identities and generations preventing
+stale replies from replacing newer views. The desktop has no JavaScript runtime,
+JSON sidecar, preload bridge, or Chromium renderer. The Electron application was
+removed in the November 3, 2026 native-only completion work.
 
 ## Workspace boundaries
 
@@ -19,10 +21,9 @@ binary never launches Bun as a fallback.
 | --- | --- |
 | `apps/cli` | Rust CLI, Ratatui interface, SQLite library, conversion queue, Calibre adapters, content server, and verified delivery |
 | `apps/desktop-native` | GPUI desktop that links `apps/cli` as a library: engine thread, state entity, virtualized views, native menus and dialogs |
-| `apps/desktop` | Electron shell, context-isolated preload, React renderer, native dialogs, and Rust sidecar packaging |
-| `packages/core` | Renderer-side ebook domain schemas and format vocabulary |
-| `packages/library-contract` | Runtime-neutral desktop wire schemas |
-| `packages/library-store-bun` | TypeScript reference and contract implementation retained for renderer tests and future migration work |
+| `packages/core` | Reusable ebook domain schemas and format vocabulary |
+| `packages/library-contract` | Runtime-neutral automation wire schemas |
+| `packages/library-store-bun` | TypeScript reference and contract implementation, independent of the native desktop |
 | `packages/epub-transform` | Independent TypeScript EPUB transformation library, not a Rust CLI conversion backend |
 | `scripts/` | Release packaging, bundle verification, and performance gates |
 
@@ -32,14 +33,14 @@ The `takio` crate is split by responsibility:
 
 | Module | Responsibility |
 | --- | --- |
-| `cli` | Clap command tree, stable envelopes, desktop-compatible request mapping, and persistent service mode |
+| `cli` | Clap command tree, stable envelopes, structured request mapping, and persistent service mode |
 | `store` | Schema-v12 SQLite catalogue and owned-file transactions |
 | `fingerprint` | Shared streaming SHA-256 byte-count and digest helpers used by every owned-file operation |
 | `jobs` | Independent schema-v4 foreground conversion ledger |
 | `conversion` | Format detection, Calibre discovery, planning, execution, and artifact verification |
 | `destinations` | Mounted-volume authorization, verified copy, inventory, removal, and eject |
 | `kindle_ssh` | Explicit rooted Kindle SSH/SCP validation, upload, remote verification, and publication |
-| `metadata` | Bounded Calibre metadata extraction/fetching, OPF parsing, and cover publication |
+| `metadata` | Native embedded metadata recognition, bounded Calibre extraction/fetching, OPF parsing, and cover publication |
 | `maintenance` | Ebook polishing and bounded text extraction for content search and validation |
 | `server` | Authenticated loopback-only read-only catalogue and format delivery |
 | `tui` | Ratatui application state, keyboard handling, responsive rendering, and terminal restoration |
@@ -67,14 +68,10 @@ Machine commands keep stderr empty. Structured request values are limited to 16
 KiB and can be supplied inline, through stdin with `-`, or from a file with
 `@path`.
 
-The Electron bridge uses two execution modes:
-
-- Read operations and independent commands spawn one short-lived sidecar.
-- Mutating library operations reuse `takio library service`, a newline-delimited
-  request loop that correlates every response with the caller's request ID.
-
-The bridge caps output, validates the process exit code against the JSON
-envelope, and rejects unexpected command names before spawning anything.
+Automation clients can use short-lived CLI commands or `takio library service`,
+a newline-delimited request loop that correlates every response with the caller's
+request ID. This protocol remains supported independently of the removed desktop
+bridge. The native desktop does not use it.
 
 ## Library storage
 
@@ -98,7 +95,7 @@ ownership, references, list/get/search, filtered and paged queries with facets,
 metadata updates, cover lifecycle, format lifecycle, trash/restore/purge, bulk
 export, catalogue publication, content search, format validation, saved views,
 integrity verification, complete snapshot backup, and path-rebased restore.
-Native workflows also include Calibre-library import, watched import, duplicate
+Shared-engine workflows also include Calibre-library import, watched import, duplicate
 review and merge, portable OPF export/rebuild, bounded structured queries, and
 library-defined custom text columns. Portable v2 preserves column definitions;
 rebuild also accepts v1 sources.
@@ -170,5 +167,6 @@ deleted Bun CLI.
 - Verify bytes and SHA-256 at ownership and transfer boundaries.
 - Keep caller-owned references outside deletion paths.
 - Restore terminal state even after rendering or input failures.
-- Package the same validated Rust executable as the standalone CLI and Electron
-  sidecar.
+- Package the native `takio-desktop` app and standalone `takio` CLI separately,
+  both built from the same validated shared engine. Native distribution signing
+  and notarization are separate from local ad-hoc signature verification.

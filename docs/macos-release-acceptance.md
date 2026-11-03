@@ -1,50 +1,117 @@
-# macOS Release Acceptance
+# Native macOS release acceptance
 
-Takio does not currently ship a live update service. A macOS release is accepted by publishing a notarized DMG and its SHA-256 sidecar from the GitHub release workflow. Rollback is therefore a release-management action: withdraw the bad draft or published release asset, re-publish the last known-good DMG and checksum, and keep the SemVer tag history immutable.
+Release acceptance concerns the Rust/GPUI app, not the retired Electron shell.
+A local ad-hoc bundle or a fake-tool test is not proof of Developer ID trust,
+notarization, clean-Mac installation, accessibility, or physical Kindle reading.
 
-## Native build gate
+## Reproducible automated gates
 
-Run on macOS:
+On Apple Silicon macOS with Xcode's Metal toolchain:
 
 ```sh
 bun install --frozen-lockfile
 bun run check:native:macos
-```
-
-`check:native:macos` runs the Rust CLI tests, checks the Electron workspace, and
-builds the native Rust sidecar through Cargo before the desktop bundle is
-assembled. The sidecar has no Bun runtime dependency.
-
-## Bundle acceptance gate
-
-Local unsigned app:
-
-```sh
+bash scripts/verify-release-version.sh v0.1.0
 bun run package:macos
+bash scripts/verify-macos-bundle.sh dist/Takio.app
+bash scripts/verify-macos-dmg.sh dist/releases/Takio-0.1.0-macos-arm64-local.dmg
+(cd dist/releases && shasum -a 256 --check Takio-0.1.0-macos-arm64-local.dmg.sha256)
 ```
 
-`package:macos` builds the `.app` and DMG with Electron Builder, verifies the app bundle, verifies the DMG with `hdiutil imageinfo`, `hdiutil verify`, a read-only attach, and mounted bundle checks, then writes the `.sha256` sidecar.
+Substitute the intended version after a version bump. Root `bun run build`,
+`check`, and `test` include native GPUI on macOS and retained Bun packages.
+`check:native:macos` runs workspace formatting, strict Clippy, tests, release
+build and release-script self-tests. Performance gates are separate:
+`bash scripts/bench-desktop-native.sh` and its supported interaction modes.
 
-Distribution app with Apple credentials available:
+Required bundle shape is `Contents/MacOS/takio-desktop`, Info.plist and icon,
+without Frameworks or sidecar directories. The verifier checks arm64, both
+bundle version fields, minimum-OS load commands, only system dynamic-library
+references, and strict code-signature integrity, including in local mode.
+The package smoke launches with a disposable library/profile and requires valid
+native first-paint/query/RSS metrics. It does not touch the user's library.
+
+DMG verification requires a compressed read-only image, embedded checksum,
+read-only mounting, the expected app and `/Applications` shortcut, and passing
+mounted-bundle verification. The SHA-256 sidecar is generated after all mutations,
+including stapling in distribution mode.
+
+## Distribution gates, only with existing credentials and authorization
 
 ```sh
-bash scripts/verify-macos-bundle.sh --distribution apps/desktop/release/mac-arm64/Takio.app
-xcrun stapler validate apps/desktop/release/*.dmg
-(cd apps/desktop/release && shasum -a 256 ./*.dmg > Takio.dmg.sha256)
+bash scripts/package-macos-release.sh --distribution
+bash scripts/verify-macos-dmg.sh --distribution dist/releases/Takio-0.1.0-macos-arm64-distribution.dmg
+(cd dist/releases && shasum -a 256 --check Takio-0.1.0-macos-arm64-distribution.dmg.sha256)
 ```
 
-The verifier rejects architecture mismatches, executable minimum-macOS drift above the bundle declaration, non-system absolute dynamic-library dependencies such as `/nix/store`, and invalid signatures. Distribution mode additionally requires a signing team, hardened runtime, matching team IDs, and a Gatekeeper assessment.
+The explicit distribution path must pass Developer ID signing, hardened runtime,
+matching signing teams, accepted Apple notarization for app and DMG, stapler
+validation for both, and Gatekeeper assessment of the enclosed app. Missing
+credentials never silently downgrade this request to a local success. Ordinary
+packaging never uses Apple credentials or attempts account setup.
 
-## Update and rollback acceptance
+The Release artifacts workflow defaults to local artifacts. A manual authorized
+run can request distribution. Draft creation additionally requires `publish=true`,
+a version-matching annotated mainline tag, both CLI archives and the notarized
+native DMG, exactly three matching sidecars, and verified hashes. Only the draft
+job has repository write permission. No local artifact is eligible for a draft.
 
-Because there is no live updater, acceptance is file based:
+## End-user acceptance before publishing
 
-1. The tag must match `package.json` and `apps/desktop/package.json` via `scripts/verify-release-version.sh`.
-2. The release workflow must upload exactly the CLI archives, DMG, and matching `.sha256` files, then verify every checksum before creating the draft release.
-3. A user can update by downloading the new DMG, verifying the published checksum, and replacing the installed app.
-4. A user can roll back by downloading the previous release DMG, verifying its checksum, and replacing the installed app. User data is outside the app bundle, so app replacement does not intentionally modify libraries or preferences.
-5. If Apple signing or notarization credentials are absent, CI must say so explicitly and only run local bundle gates. It must not claim distribution readiness.
+Use disposable fixtures and a separate profile, not personal books:
 
-## Remaining interactive gate
+1. Download the distribution DMG on a clean supported Mac, verify its checksum,
+   install the app and open it through Finder with normal Gatekeeper checks.
+   Do not strip quarantine or use an override as acceptance evidence.
+2. Import files/folders by native controls and drag/drop, verify originals are
+   unchanged, search/filter, edit details with Save/Cancel and relaunch for
+   persistence. Exercise Trash, restore and exact-selection purge confirmation.
+3. Back up the complete fixture library, restore into a new disjoint folder,
+   verify the restored catalogue/files through the public CLI, and open that
+   separate library in the native app. Never replace the current library.
+4. With explicit hardware authorization, connect a supported physical reader,
+   review/send a compatible format, verify no overwrite, eject, then open the
+   book on the device. Simulated mounted directories do not satisfy this gate.
+5. Test replacing the app with a higher patch release using a compatible fixture
+   library and record the forward rollback exercise described in
+   `docs/release-macos.md`. Do not treat a binary downgrade as schema recovery.
+6. Record exact commit, OS/hardware, artifact hashes, gate results, and unresolved
+   limitations before a maintainer publishes the existing draft.
 
-The strongest non-interactive native smoke test is `open -W -n Takio.app` with an isolated data directory plus `scripts/verify-macos-bundle.sh`. Full desktop acceptance still requires a human or unblocked browser/GUI automation to import a document, relaunch, confirm persistence, and test rollback by reinstalling the previous DMG. Do not describe that as completed unless it was actually exercised.
+## November 3, 2026 implementation evidence
+
+- Electron application, exclusive dependencies, commands, legacy CI lane and
+  obsolete startup/comparison scripts removed. Reusable Bun packages and CLI/TUI
+  retained. Frozen lockfile installation passes after regeneration. All four
+  retained Bun packages build/typecheck and pass 216 tests (38 core, 3 EPUB,
+  41 contract, 134 store). Local checks used Bun 1.4.4; CI pins 1.3.14.
+- Native bundle self-tests pass, including rejected wrong executable/version/
+  architecture/minimum OS/dependencies, invalid local/distribution signatures,
+  missing team/runtime, mismatched team, Gatekeeper rejection, and stale
+  Frameworks/sidecars. These use fake platform tools, not Apple approval.
+- Release orchestration self-tests pass for CLI/native version drift, malformed
+  tags, missing explicit credentials, default local mode despite credentials,
+  explicit distribution routing, rejected notarization/signing/stapling, and
+  refusing to emit new distribution artifacts after those failures. These use
+  synthetic tools and are not real notarization evidence.
+- ShellCheck passes on the nine changed/new release/check scripts. Workflow YAML
+  and every embedded Bash command parse successfully. Version verification passes
+  with an empty disposable Cargo cache. Active scripts, workflows, package.json
+  and lockfile no longer reference the removed desktop paths.
+- Actual production packaging exposed a benchmark accessor that was available
+  only with GPUI test support. It was replaced with the applied production scroll
+  offset. Fresh local packaging then passed native launch metrics, strict ad-hoc
+  signature verification, DMG checksum/read-only mounting, mounted-bundle checks,
+  ejection and SHA-256 sidecar verification at implementation commit `a0151ff`.
+  Artifact identity is recorded in `plans/2026-11-03-native-completion.md`.
+- The resulting executable is 12,504,400 bytes. This exceeds the unchanged strict
+  12,000,000-byte budget, so `check:native:macos` and native CI are **not green**.
+  Local packaging success does not waive that gate. Rendered-search p95 also
+  remains above the separate 80 ms target. Failed size-profile experiments were
+  reverted, and the original release profile is retained.
+
+Still external gates: real Developer ID/notarization/stapler/Gatekeeper approval,
+clean-Mac quarantined install, a completed GitHub workflow on the exact release
+commit, physical-reader acceptance, and exercised forward rollback. No Apple
+account, signing credentials, release upload, or publication was accessed by this
+implementation session.
