@@ -78,7 +78,7 @@ impl StartupWindow {
                     Ok((engine, warning)) => {
                         let state = cx.new(|cx| {
                             let mut state = LibraryState::new(engine, cx);
-                            state.preference_path = this.preference.clone();
+                            state.set_preference_path(this.preference.clone());
                             if let Some(warning) = warning {
                                 state.set_status(warning, true, cx);
                             }

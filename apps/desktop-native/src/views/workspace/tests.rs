@@ -518,7 +518,7 @@ fn reader(f: &Fixture, cx: &mut TestAppContext) -> takio::destinations::Destinat
     }
     let reader = takio::destinations::authorize(&mount, &volumes).unwrap();
     f.state.update(cx, |state, cx| {
-        state.destinations = vec![reader.clone()];
+        state.set_test_destinations(vec![reader.clone()]);
         cx.notify();
     });
     reader
@@ -636,7 +636,7 @@ fn rendered_koreader_reader_shows_label_progress_summary_and_inspector_row(
     )
     .unwrap();
     f.state.update(cx, |state, cx| {
-        state.volumes_root = f._temp.path().join("Volumes");
+        state.set_test_volumes_root(f._temp.path().join("Volumes"));
         state.refresh_destinations(cx);
     });
     settle(&f.state, cx);
@@ -706,7 +706,7 @@ fn amazon_guidance_only_appears_for_connected_stock_kindle(cx: &mut TestAppConte
         (vec![koreader, stock], true),
     ] {
         f.state.update(cx, |state, cx| {
-            state.destinations = destinations;
+            state.set_test_destinations(destinations);
             cx.notify();
         });
         cx.run_until_parked();
@@ -731,7 +731,7 @@ fn sidebar_pointer_imports_reader_only_book(cx: &mut TestAppContext) {
     std::fs::write(&source, bytes).unwrap();
     std::fs::write(reader.path.join("documents/store.azw"), b"store format").unwrap();
     f.state.update(cx, |state, cx| {
-        state.volumes_root = f._temp.path().join("Volumes");
+        state.set_test_volumes_root(f._temp.path().join("Volumes"));
         state.refresh_destinations(cx);
     });
     settle(&f.state, cx);
@@ -1095,7 +1095,8 @@ fn confirm_send_rechecks_source_reader_capabilities_disconnect_and_collision(
 #[gpui::test]
 fn send_without_devices_explains_how_to_connect(cx: &mut TestAppContext) {
     let f = fixture(false, cx);
-    f.state.update(cx, |state, _| state.destinations.clear());
+    f.state
+        .update(cx, |state, _| state.set_test_destinations(Vec::new()));
     f.window
         .update(cx, |_, window, cx| {
             window.dispatch_action(Box::new(crate::SendSelected), cx);

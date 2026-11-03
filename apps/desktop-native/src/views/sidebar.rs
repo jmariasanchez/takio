@@ -28,13 +28,13 @@ impl Render for Sidebar {
         let theme = *cx.global::<Theme>();
         let state = self.state.read(cx);
         let section = state.section;
-        let destinations = state.destinations.clone();
+        let destinations = state.destinations().clone();
         let facets = state.facets.clone();
         let filters = state.filters.clone();
         let selected = state.selected.len();
         let available = state.can_mutate();
         let can_send = available && section == Section::Library && selected > 0;
-        let refreshing = state.refreshing_devices;
+        let refreshing = state.refreshing_devices();
         let device_error = state
             .device_error
             .as_ref()
@@ -107,7 +107,7 @@ impl Render for Sidebar {
                         .text_color(theme.accent)
                         .child(if refreshing { "Checking..." } else { "Refresh" })
                         .on_click(cx.listener(|this, _, _, cx| {
-                            if this.state.read(cx).refreshing_devices {
+                            if this.state.read(cx).refreshing_devices() {
                                 return;
                             }
                             this.state

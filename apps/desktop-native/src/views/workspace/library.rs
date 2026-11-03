@@ -13,8 +13,8 @@ impl Workspace {
             return;
         }
         self.library_picker_open = true;
-        let epoch = self.state.read(cx).library_epoch;
-        let pause = self.state.read(cx).automatic_backup.pause();
+        let epoch = self.state.read(cx).library_epoch();
+        let pause = self.state.read(cx).automatic_backup().pause();
         let receiver = cx.prompt_for_paths(PathPromptOptions {
             files: false,
             directories: true,
@@ -27,7 +27,7 @@ impl Workspace {
             drop(pause);
             let _ = this.update(cx, |this, cx| {
                 this.library_picker_open = false;
-                if this.state.read(cx).library_epoch != epoch {
+                if this.state.read(cx).library_epoch() != epoch {
                     cx.notify();
                     return;
                 }
@@ -46,7 +46,7 @@ impl Workspace {
     }
 
     pub(super) fn reset_library_views(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let epoch = self.state.read(cx).library_epoch;
+        let epoch = self.state.read(cx).library_epoch();
         if epoch == self.library_epoch {
             return;
         }

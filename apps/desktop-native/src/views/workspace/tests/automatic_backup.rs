@@ -14,7 +14,7 @@ fn automatic_backup_action(f: &Fixture, cx: &mut TestAppContext) {
 fn automatic_backup_settings_ready(state: &LibraryEntity, cx: &mut TestAppContext) {
     crate::test_support::wait_until("automatic backup settings", || {
         cx.run_until_parked();
-        state.read_with(cx, |state, _| state.automatic_backup.ready)
+        state.read_with(cx, |state, _| state.automatic_backup().ready)
     });
     settle(state, cx);
 }
@@ -25,11 +25,11 @@ fn native_automatic_backup_enable_reload_mutate_restore_and_disable(cx: &mut Tes
     let output = tempfile::tempdir().unwrap();
     let restored_output = tempfile::tempdir().unwrap();
     let restored = restored_output.path().join("restored");
-    let original_root = f.state.read_with(cx, |state, _| state.library_root.clone());
+    let original_root = f.state.read_with(cx, |state, _| state.library_root());
     automatic_backup_settings_ready(&f.state, cx);
     assert_eq!(
         f.state
-            .read_with(cx, |state, _| state.automatic_backup.config.clone()),
+            .read_with(cx, |state, _| state.automatic_backup().config.clone()),
         crate::automatic_backup::Config::default()
     );
 
@@ -51,10 +51,13 @@ fn native_automatic_backup_enable_reload_mutate_restore_and_disable(cx: &mut Tes
     recovery_no_dialogs(cx);
     let (backup, config) = f.state.read_with(cx, |state, _| {
         assert!(!state.status.as_ref().unwrap().is_error);
-        assert!(state.automatic_backup.config.enabled);
+        assert!(state.automatic_backup().config.enabled);
         let outcome = state.recovery_outcome().as_ref().unwrap();
         assert!(outcome.summary.contains("verified"));
-        (outcome.path.clone(), state.automatic_backup.config.clone())
+        (
+            outcome.path.clone(),
+            state.automatic_backup().config.clone(),
+        )
     });
     assert_eq!(
         config.destination,
@@ -70,11 +73,11 @@ fn native_automatic_backup_enable_reload_mutate_restore_and_disable(cx: &mut Tes
     let reopened = cx.new(|cx| LibraryState::new(f.engine.clone(), cx));
     automatic_backup_settings_ready(&reopened, cx);
     reopened.update(cx, |state, cx| {
-        assert_eq!(state.automatic_backup.config, config);
-        assert!(state.automatic_backup.last_attempt.is_none());
+        assert_eq!(state.automatic_backup().config, config);
+        assert!(state.automatic_backup().last_attempt.is_none());
         assert!(
             !state
-                .automatic_backup
+                .automatic_backup()
                 .due(last_success + crate::automatic_backup::DAILY_SECONDS - 1)
         );
         state.check_automatic_backup(
@@ -82,7 +85,7 @@ fn native_automatic_backup_enable_reload_mutate_restore_and_disable(cx: &mut Tes
             cx,
         );
         assert!(!state.busy());
-        assert!(state.automatic_backup.last_attempt.is_none());
+        assert!(state.automatic_backup().last_attempt.is_none());
     });
     settle(&reopened, cx);
     assert_eq!(std::fs::read_dir(output.path()).unwrap().count(), 1);
@@ -117,7 +120,7 @@ fn native_automatic_backup_enable_reload_mutate_restore_and_disable(cx: &mut Tes
     recovery_no_dialogs(cx);
     f.state.read_with(cx, |state, _| {
         assert!(!state.status.as_ref().unwrap().is_error);
-        assert_eq!(state.library_root, original_root);
+        assert_eq!(state.library_root(), original_root);
         assert_eq!(
             state.recovery_outcome().as_ref().unwrap().path,
             restored.canonicalize().unwrap()
@@ -131,7 +134,7 @@ fn native_automatic_backup_enable_reload_mutate_restore_and_disable(cx: &mut Tes
     settle(&f.state, cx);
     automatic_backup_settings_ready(&f.state, cx);
     f.state.update(cx, |state, cx| {
-        assert_eq!(state.library_root, restored.canonicalize().unwrap());
+        assert_eq!(state.library_root(), restored.canonicalize().unwrap());
         assert_eq!(state.items.len(), f.books.len());
         for original in &f.books {
             let book = state
@@ -142,12 +145,12 @@ fn native_automatic_backup_enable_reload_mutate_restore_and_disable(cx: &mut Tes
             assert_eq!(book.title, original.title);
         }
         assert_eq!(
-            state.automatic_backup.config,
+            state.automatic_backup().config,
             crate::automatic_backup::Config::default()
         );
         state.check_automatic_backup(u64::MAX, cx);
         assert!(!state.busy());
-        assert!(state.automatic_backup.last_attempt.is_none());
+        assert!(state.automatic_backup().last_attempt.is_none());
     });
     assert!(trash_ids(&f.engine).is_empty());
     assert!(!restored.join(".takio-automatic-backup").exists());
@@ -157,7 +160,7 @@ fn native_automatic_backup_enable_reload_mutate_restore_and_disable(cx: &mut Tes
     assert_eq!(recovery_snapshot(&f), mutated);
     assert_eq!(
         f.state
-            .read_with(cx, |state, _| state.automatic_backup.config.clone()),
+            .read_with(cx, |state, _| state.automatic_backup().config.clone()),
         config
     );
     f.window
@@ -168,7 +171,7 @@ fn native_automatic_backup_enable_reload_mutate_restore_and_disable(cx: &mut Tes
     settle(&f.state, cx);
     f.state.update(cx, |state, cx| {
         assert!(!state.status.as_ref().unwrap().is_error);
-        assert!(!state.automatic_backup.config.enabled);
+        assert!(!state.automatic_backup().config.enabled);
         state.check_automatic_backup(u64::MAX, cx);
         assert!(!state.busy());
     });
@@ -195,21 +198,21 @@ fn native_automatic_backup_enable_reload_mutate_restore_and_disable(cx: &mut Tes
 fn automatic_backup_due_for_dialog_test(f: &Fixture, cx: &mut TestAppContext) {
     automatic_backup_settings_ready(&f.state, cx);
     f.state.update(cx, |state, _| {
-        assert!(state.automatic_backup.ready);
-        state.automatic_backup.config = crate::automatic_backup::Config {
+        assert!(state.automatic_backup().ready);
+        state.set_test_automatic_backup_config(crate::automatic_backup::Config {
             enabled: true,
             destination: Some(f._temp.path().join("unused")),
             last_success: None,
-        };
+        });
     });
 }
 
 fn automatic_backup_assert_dialog_paused(f: &Fixture, cx: &mut TestAppContext) {
     f.state.update(cx, |state, cx| {
-        assert!(!state.automatic_backup.due(1));
+        assert!(!state.automatic_backup().due(1));
         state.check_automatic_backup(1, cx);
         assert!(!state.busy());
-        assert!(state.automatic_backup.last_attempt.is_none());
+        assert!(state.automatic_backup().last_attempt.is_none());
     });
 }
 
@@ -237,7 +240,7 @@ fn native_automatic_backup_defers_through_manual_recovery_dialog_chain(cx: &mut 
         settle(&f.state, cx);
         assert!(
             f.state
-                .read_with(cx, |state, _| state.automatic_backup.due(1))
+                .read_with(cx, |state, _| state.automatic_backup().due(1))
         );
         assert_eq!(std::fs::read_dir(output.path()).unwrap().count(), 0);
     }
@@ -274,7 +277,7 @@ fn native_automatic_backup_defers_for_library_import_move_and_purge_dialogs(
         settle(&f.state, cx);
         assert!(
             f.state
-                .read_with(cx, |state, _| state.automatic_backup.due(1))
+                .read_with(cx, |state, _| state.automatic_backup().due(1))
         );
     }
 }
@@ -318,7 +321,7 @@ fn native_automatic_backup_consent_and_destination_cancel_write_nothing(cx: &mut
         settle(&f.state, cx);
         assert!(
             !f.state
-                .read_with(cx, |s, _| s.automatic_backup.config.enabled
+                .read_with(cx, |s, _| s.automatic_backup().config.enabled
                     || s.automatic_backup_prompt_open())
         );
         assert_eq!(recovery_snapshot(&f), before);
@@ -341,7 +344,7 @@ fn native_automatic_backup_enable_and_disable_keep_verified_copy(cx: &mut TestAp
     cx.simulate_path_prompt_response(|_| Some(vec![output.path().into()]));
     settle(&f.state, cx);
     let copy = f.state.read_with(cx, |s, _| {
-        assert!(s.automatic_backup.config.enabled);
+        assert!(s.automatic_backup().config.enabled);
         s.recovery_outcome().as_ref().unwrap().path.clone()
     });
     recovery_assert_copied_books(&f, &copy, 2);
@@ -353,7 +356,7 @@ fn native_automatic_backup_enable_and_disable_keep_verified_copy(cx: &mut TestAp
     settle(&f.state, cx);
     assert!(
         !f.state
-            .read_with(cx, |s, _| s.automatic_backup.config.enabled)
+            .read_with(cx, |s, _| s.automatic_backup().config.enabled)
     );
     assert!(copy.join("manifest.json").is_file());
     assert_eq!(std::fs::read_dir(output.path()).unwrap().count(), 1);
@@ -369,7 +372,7 @@ fn native_automatic_backup_stale_picker_and_late_edit_do_not_enable(cx: &mut Tes
         cx.run_until_parked();
         f.state.update(cx, |s, cx| {
             if switch_epoch {
-                s.library_epoch += 1;
+                s.invalidate_test_library();
             } else {
                 assert!(s.begin_metadata_editing(cx));
             }
@@ -378,7 +381,7 @@ fn native_automatic_backup_stale_picker_and_late_edit_do_not_enable(cx: &mut Tes
         settle(&f.state, cx);
         assert!(
             !f.state
-                .read_with(cx, |s, _| s.automatic_backup.config.enabled)
+                .read_with(cx, |s, _| s.automatic_backup().config.enabled)
         );
         assert_eq!(std::fs::read_dir(output.path()).unwrap().count(), 0);
         assert!(

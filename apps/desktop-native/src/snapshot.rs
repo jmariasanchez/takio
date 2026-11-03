@@ -43,7 +43,7 @@ pub fn run() {
             let found = cx.read(|cx| {
                 let state = state.read(cx);
                 !state.scanning_readers
-                    && !state.refreshing_devices
+                    && !state.refreshing_devices()
                     && state
                         .reader_shelves
                         .iter()

@@ -91,19 +91,19 @@ impl Drop for PendingQuery {
 
 pub struct LibraryState {
     session: LibrarySession,
-    pub automatic_backup: crate::automatic_backup::Schedule,
+    automatic_backup: crate::automatic_backup::Schedule,
     automatic_backup_timer: Option<Task<()>>,
     engine: Engine,
-    pub library_root: PathBuf,
-    pub library_epoch: u64,
-    pub preference_path: Option<PathBuf>,
-    pub destinations: Vec<Destination>,
-    pub volumes_root: PathBuf,
+    library_root: PathBuf,
+    library_epoch: u64,
+    preference_path: Option<PathBuf>,
+    destinations: Vec<Destination>,
+    volumes_root: PathBuf,
     reader_scan_generation: Generation,
     /// Volume names seen at the last refresh, so polling only acts on a change.
     seen_volumes: Option<BTreeSet<String>>,
     volume_watch: Option<Task<()>>,
-    pub refreshing_devices: bool,
+    refreshing_devices: bool,
     preparation_generation: Generation,
     send_preview_generation: Generation,
     generation: Generation,
@@ -120,6 +120,53 @@ impl std::ops::Deref for LibraryState {
 }
 
 impl LibraryState {
+    pub fn automatic_backup(&self) -> &crate::automatic_backup::Schedule {
+        &self.automatic_backup
+    }
+
+    pub fn library_root(&self) -> PathBuf {
+        self.library_root.clone()
+    }
+
+    pub fn library_epoch(&self) -> u64 {
+        self.library_epoch
+    }
+
+    pub fn destinations(&self) -> &Vec<Destination> {
+        &self.destinations
+    }
+
+    pub fn refreshing_devices(&self) -> bool {
+        self.refreshing_devices
+    }
+
+    pub fn set_preference_path(&mut self, path: Option<PathBuf>) {
+        self.preference_path = path;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_test_destinations(&mut self, destinations: Vec<Destination>) {
+        self.destinations = destinations;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_test_volumes_root(&mut self, root: PathBuf) {
+        self.volumes_root = root;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_test_automatic_backup_config(
+        &mut self,
+        config: crate::automatic_backup::Config,
+    ) {
+        self.automatic_backup.config = config;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn invalidate_test_library(&mut self) {
+        self.library_epoch = self.library_epoch.wrapping_add(1);
+    }
+
     pub fn new(engine: Engine, cx: &mut Context<Self>) -> Self {
         // Native tests must never discover or scan the user's mounted devices.
         let volumes_root = if cfg!(test) {

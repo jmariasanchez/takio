@@ -16,7 +16,7 @@ impl Workspace {
             return;
         }
         self.recovery_prompt_open = true;
-        let epoch = self.state.read(cx).library_epoch;
+        let epoch = self.state.read(cx).library_epoch();
         let (title, detail, proceed) = if restore {
             (
                 "Restore a backup to a new folder?",
@@ -30,7 +30,7 @@ impl Workspace {
                 "Choose location",
             )
         };
-        let pause = self.state.read(cx).automatic_backup.pause();
+        let pause = self.state.read(cx).automatic_backup().pause();
         let answer = window.prompt(
             PromptLevel::Info,
             title,
@@ -43,7 +43,7 @@ impl Workspace {
             drop(pause);
             let _ = this.update(cx, |this, cx| {
                 if !accepted
-                    || this.state.read(cx).library_epoch != epoch
+                    || this.state.read(cx).library_epoch() != epoch
                     || !this.state.read(cx).can_mutate()
                 {
                     this.recovery_prompt_open = false;
@@ -58,8 +58,8 @@ impl Workspace {
     }
 
     fn choose_backup_source(&mut self, cx: &mut Context<Self>) {
-        let epoch = self.state.read(cx).library_epoch;
-        let pause = self.state.read(cx).automatic_backup.pause();
+        let epoch = self.state.read(cx).library_epoch();
+        let pause = self.state.read(cx).automatic_backup().pause();
         let receiver = cx.prompt_for_paths(PathPromptOptions {
             files: false,
             directories: true,
@@ -72,7 +72,7 @@ impl Workspace {
             let _ = this.update(cx, |this, cx| match response {
                 Ok(Ok(Some(paths)))
                     if paths.len() == 1
-                        && this.state.read(cx).library_epoch == epoch
+                        && this.state.read(cx).library_epoch() == epoch
                         && this.state.read(cx).can_mutate() =>
                 {
                     this.choose_recovery_destination(paths.into_iter().next(), cx);
@@ -85,8 +85,8 @@ impl Workspace {
     }
 
     fn choose_recovery_destination(&mut self, source: Option<PathBuf>, cx: &mut Context<Self>) {
-        let epoch = self.state.read(cx).library_epoch;
-        let pause = self.state.read(cx).automatic_backup.pause();
+        let epoch = self.state.read(cx).library_epoch();
+        let pause = self.state.read(cx).automatic_backup().pause();
         let home = std::env::var_os("HOME")
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("."));
@@ -103,7 +103,7 @@ impl Workspace {
             drop(pause);
             let _ = this.update(cx, |this, cx| {
                 this.recovery_prompt_open = false;
-                if this.state.read(cx).library_epoch != epoch {
+                if this.state.read(cx).library_epoch() != epoch {
                     return;
                 }
                 match response {

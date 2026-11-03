@@ -26,13 +26,13 @@ fn switch_copy(f: &Fixture) -> (tempfile::TempDir, PathBuf) {
 }
 
 pub(super) fn switch_to(f: &Fixture, root: &std::path::Path, cx: &mut TestAppContext) {
-    let epoch = f.state.read_with(cx, |state, _| state.library_epoch);
+    let epoch = f.state.read_with(cx, |state, _| state.library_epoch());
     f.state
         .update(cx, |state, cx| state.open_library(root.to_path_buf(), cx));
     settle(&f.state, cx);
     f.state.read_with(cx, |state, _| {
-        assert_eq!(state.library_epoch, epoch + 1);
-        assert_eq!(state.library_root, root.canonicalize().unwrap());
+        assert_eq!(state.library_epoch(), epoch + 1);
+        assert_eq!(state.library_root(), root.canonicalize().unwrap());
         assert!(!state.switching_library());
     });
     cx.update_window(f.window.into(), |_, window, cx| window.draw(cx).clear(cx))
@@ -58,9 +58,9 @@ pub(super) fn switch_prompt(f: &Fixture, cx: &mut TestAppContext) {
 #[gpui::test]
 fn library_switch_header_pointer_cancel_preserves_current_library(cx: &mut TestAppContext) {
     let f = fixture(false, cx);
-    let before = f.state.read_with(cx, |state, _| {
-        (state.library_root.clone(), state.library_epoch)
-    });
+    let before = f
+        .state
+        .read_with(cx, |state, _| (state.library_root(), state.library_epoch()));
     click_control(&f, "open-library", cx);
     assert!(cx.did_prompt_for_paths());
     cx.simulate_path_prompt_response(|options| {
@@ -69,7 +69,7 @@ fn library_switch_header_pointer_cancel_preserves_current_library(cx: &mut TestA
     });
     settle(&f.state, cx);
     f.state.read_with(cx, |state, _| {
-        assert_eq!((state.library_root.clone(), state.library_epoch), before);
+        assert_eq!((state.library_root(), state.library_epoch()), before);
         assert!(!state.switching_library());
     });
     assert_eq!(switch_old_catalogue(&f).len(), 2);
@@ -80,9 +80,9 @@ fn library_switch_header_pointer_cancel_preserves_current_library(cx: &mut TestA
 fn library_switch_picker_cancel_duplicate_and_late_edit_are_safe(cx: &mut TestAppContext) {
     let f = fixture(false, cx);
     let (_copy, restored) = switch_copy(&f);
-    let before = f.state.read_with(cx, |state, _| {
-        (state.library_root.clone(), state.library_epoch)
-    });
+    let before = f
+        .state
+        .read_with(cx, |state, _| (state.library_root(), state.library_epoch()));
     switch_prompt(&f, cx);
     assert!(cx.did_prompt_for_paths());
     switch_prompt(&f, cx);
@@ -101,7 +101,7 @@ fn library_switch_picker_cancel_duplicate_and_late_edit_are_safe(cx: &mut TestAp
     cx.simulate_path_prompt_response(|_| Some(vec![restored]));
     settle(&f.state, cx);
     f.state.read_with(cx, |state, _| {
-        assert_eq!((state.library_root.clone(), state.library_epoch), before);
+        assert_eq!((state.library_root(), state.library_epoch()), before);
         assert!(state.metadata_editing());
         assert_eq!(state.items.len(), 2);
     });
@@ -241,8 +241,8 @@ fn library_switch_failed_folder_keeps_current_native_view(cx: &mut TestAppContex
     let invalid = tempfile::tempdir().unwrap();
     let before = f.state.read_with(cx, |state, _| {
         (
-            state.library_root.clone(),
-            state.library_epoch,
+            state.library_root(),
+            state.library_epoch(),
             state.selected.clone(),
         )
     });
@@ -259,8 +259,8 @@ fn library_switch_failed_folder_keeps_current_native_view(cx: &mut TestAppContex
     f.state.read_with(cx, |state, _| {
         assert_eq!(
             (
-                state.library_root.clone(),
-                state.library_epoch,
+                state.library_root(),
+                state.library_epoch(),
                 state.selected.clone()
             ),
             before
@@ -394,12 +394,12 @@ fn library_switch_stale_open_picker_cannot_switch_back(cx: &mut TestAppContext) 
     let old_root = f._temp.path().join("library");
     switch_prompt(&f, cx);
     switch_to(&f, &restored, cx);
-    let epoch = f.state.read_with(cx, |state, _| state.library_epoch);
+    let epoch = f.state.read_with(cx, |state, _| state.library_epoch());
     cx.simulate_path_prompt_response(|_| Some(vec![old_root]));
     settle(&f.state, cx);
     f.state.read_with(cx, |state, _| {
-        assert_eq!(state.library_epoch, epoch);
-        assert_eq!(state.library_root, restored.canonicalize().unwrap());
+        assert_eq!(state.library_epoch(), epoch);
+        assert_eq!(state.library_root(), restored.canonicalize().unwrap());
     });
     assert!(
         !f.window

@@ -66,7 +66,7 @@ impl Workspace {
         let focus = list.read(cx).focus_handle(cx);
         window.focus(&focus, cx);
         let palette = cx.new(|cx| crate::views::palette::Palette::new(focus.clone(), cx));
-        let library_epoch = state.read(cx).library_epoch;
+        let library_epoch = state.read(cx).library_epoch();
         Self {
             state,
             list,
@@ -89,8 +89,8 @@ impl Workspace {
             self.choose_import_paths(mode, cx);
             return;
         }
-        let epoch = self.state.read(cx).library_epoch;
-        let pause = self.state.read(cx).automatic_backup.pause();
+        let epoch = self.state.read(cx).library_epoch();
+        let pause = self.state.read(cx).automatic_backup().pause();
         let answer = window.prompt(
             PromptLevel::Warning,
             "Move originals into Takio?",
@@ -103,7 +103,7 @@ impl Workspace {
             drop(pause);
             if accepted {
                 let _ = this.update(cx, |this, cx| {
-                    if this.state.read(cx).library_epoch == epoch
+                    if this.state.read(cx).library_epoch() == epoch
                         && this.state.read(cx).can_mutate()
                     {
                         this.choose_import_paths(mode, cx);
@@ -115,8 +115,8 @@ impl Workspace {
     }
 
     fn choose_import_paths(&mut self, mode: ImportMode, cx: &mut Context<Self>) {
-        let epoch = self.state.read(cx).library_epoch;
-        let pause = self.state.read(cx).automatic_backup.pause();
+        let epoch = self.state.read(cx).library_epoch();
+        let pause = self.state.read(cx).automatic_backup().pause();
         let receiver = cx.prompt_for_paths(PathPromptOptions {
             files: true,
             directories: true,
@@ -136,7 +136,7 @@ impl Workspace {
             drop(pause);
             if let Ok(Ok(Some(paths))) = response {
                 state.update(cx, |state, cx| {
-                    if state.library_epoch == epoch {
+                    if state.library_epoch() == epoch {
                         state.import(paths, mode, cx);
                     }
                 });
@@ -154,8 +154,8 @@ impl Workspace {
         if ids.is_empty() {
             return;
         }
-        let epoch = state.library_epoch;
-        let pause = state.automatic_backup.pause();
+        let epoch = state.library_epoch();
+        let pause = state.automatic_backup().pause();
         let answer = window.prompt(
             PromptLevel::Warning,
             &format!("Permanently delete {} book(s)?", ids.len()),
@@ -169,7 +169,7 @@ impl Workspace {
             drop(pause);
             if accepted {
                 state.update(cx, |state, cx| {
-                    if state.library_epoch == epoch {
+                    if state.library_epoch() == epoch {
                         state.purge_confirmed(ids, cx);
                     }
                 });
@@ -184,7 +184,7 @@ impl Workspace {
         if !state.can_mutate() {
             return;
         }
-        let epoch = state.library_epoch;
+        let epoch = state.library_epoch();
         let ids = state.selected_ids();
         if send && (state.section != Section::Library || ids.is_empty()) {
             self.state.update(cx, |state, cx| {
@@ -193,7 +193,7 @@ impl Workspace {
             return;
         }
         let readers: Vec<_> = state
-            .destinations
+            .destinations()
             .iter()
             .filter(|device| !matches!(device.kind, takio::destinations::DestinationKind::Generic))
             .cloned()
@@ -222,7 +222,7 @@ impl Workspace {
         } else {
             "Eject which reader?".to_owned()
         };
-        let pause = self.state.read(cx).automatic_backup.pause();
+        let pause = self.state.read(cx).automatic_backup().pause();
         let answer = window.prompt(PromptLevel::Info, &message,
             Some(if send { "Next, review compatible formats and any blocked books. Nothing is sent until you confirm Send ready." } else { "Wait for a successful eject before unplugging the USB cable." }),
             &buttons, cx);
@@ -237,7 +237,7 @@ impl Workspace {
                     .cloned()
             {
                 state.update(cx, |state, cx| {
-                    if state.library_epoch != epoch || state.switching_library() {
+                    if state.library_epoch() != epoch || state.switching_library() {
                         return;
                     }
                     if send {
@@ -361,11 +361,11 @@ impl Render for Workspace {
         let preparation = read.preparation_preview().cloned();
         let recovery = read.recovery_outcome().clone();
         let exclusions = read.delivery_exclusions.clone();
-        let library_root = read.library_root.display().to_string();
-        let library_name = read
-            .library_root
+        let library_path = read.library_root();
+        let library_root = library_path.display().to_string();
+        let library_name = library_path
             .file_name()
-            .unwrap_or(read.library_root.as_os_str())
+            .unwrap_or(library_path.as_os_str())
             .to_string_lossy();
         let library_label = format!("Library: {library_name}");
         let can_switch =
@@ -428,7 +428,7 @@ impl Render for Workspace {
                 this.prompt_open_library(cx);
             }))
             .on_action(cx.listener(|this, _: &crate::RevealLibrary, _, cx| {
-                cx.reveal_path(&this.state.read(cx).library_root);
+                cx.reveal_path(&this.state.read(cx).library_root());
             }))
             .on_action(cx.listener(|this, _: &crate::FocusSearch, window, cx| {
                 this.search
