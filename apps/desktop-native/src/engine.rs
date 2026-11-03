@@ -176,6 +176,10 @@ pub struct Facets {
 
 impl Facets {
     pub fn from_items(items: &[LibraryItem]) -> Self {
+        Self::from_item_refs(items.iter())
+    }
+
+    pub fn from_item_refs<'a>(items: impl IntoIterator<Item = &'a LibraryItem>) -> Self {
         let mut facets = Self::default();
         for item in items {
             for author in &item.authors {
@@ -309,7 +313,7 @@ pub enum Request {
     Query {
         query: String,
         filters: Filters,
-        reply: Sender<AppResult<Vec<LibraryItem>>>,
+        reply: Sender<AppResult<Vec<Arc<LibraryItem>>>>,
     },
     ListTrash {
         reply: Sender<AppResult<Vec<LibraryItem>>>,
@@ -532,7 +536,7 @@ fn worker_with_reader_scans(
                 filters,
                 reply,
             } => {
-                let result = store.query_items(
+                let result = store.query_items_shared(
                     &query,
                     LibraryQueryFilters {
                         authors: &filters.authors,
@@ -1685,7 +1689,7 @@ mod tests {
             .recv()
             .unwrap()
             .unwrap();
-        let facets = Facets::from_items(&items);
+        let facets = Facets::from_item_refs(items.iter().map(Arc::as_ref));
         assert_eq!(facets.formats.get("epub"), Some(&1));
     }
 

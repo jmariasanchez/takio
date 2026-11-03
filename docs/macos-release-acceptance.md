@@ -104,11 +104,19 @@ Use disposable fixtures and a separate profile, not personal books:
   signature verification, DMG checksum/read-only mounting, mounted-bundle checks,
   ejection and SHA-256 sidecar verification at implementation commit `a0151ff`.
   Artifact identity is recorded in `plans/2026-11-03-native-completion.md`.
-- The resulting executable is 12,504,400 bytes. This exceeds the unchanged strict
-  12,000,000-byte budget, so `check:native:macos` and native CI are **not green**.
-  Local packaging success does not waive that gate. Rendered-search p95 also
-  remains above the separate 80 ms target. Failed size-profile experiments were
-  reverted, and the original release profile is retained.
+- That initial executable was 12,504,400 bytes and failed the unchanged strict
+  12,000,000-byte gate. Subsequent work retained unwinding and parser/cover format
+  support, using whole-program opt-level 2 and `lopdf` opt-level `z`. The final
+  executable is 11,927,760 bytes and the actual `check:native:macos` script passes.
+  All 494 workspace tests pass, plus 235 snapshot-feature native tests and strict
+  workspace/snapshot Clippy. Three release-profile PDF tests, including the
+  independent Poppler oracle, also pass.
+- Bounded immutable hydration reuse and background debounce dispatch pass two
+  independent rendered-search runs with the existing below-80-ms p95 gate enabled.
+  Matching/clearing p95: 63.216/49.969 ms and 63.273/49.956 ms. These are production
+  input-handler to next-frame-after-paint measurements, not physical keystrokes,
+  GPU completion, 120 Hz scrolling or display scanout. See the completion plan for
+  adverse intermediate results, first-query outliers and final artifact identity.
 
 Still external gates: real Developer ID/notarization/stapler/Gatekeeper approval,
 clean-Mac quarantined install, a completed GitHub workflow on the exact release

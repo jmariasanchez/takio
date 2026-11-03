@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
 use std::fs::{self, File, OpenOptions};
 use std::path::{Path, PathBuf};
@@ -26,6 +27,7 @@ use crate::output::{AppError, AppResult};
 use crate::paths::LibraryPaths;
 
 mod migration;
+mod query_cache;
 mod recovery;
 
 pub const LIBRARY_SCHEMA_VERSION: i64 = 12;
@@ -44,6 +46,7 @@ thread_local! {
 pub struct LibraryStore {
     connection: Connection,
     paths: LibraryPaths,
+    query_cache: RefCell<query_cache::QueryCache>,
 }
 
 #[derive(Clone, Copy)]
@@ -341,7 +344,11 @@ impl LibraryStore {
             return Err(AppError::new("incompatible-schema"));
         }
         migration::verify_schema_version(&connection, version)?;
-        Ok(Self { connection, paths })
+        Ok(Self {
+            connection,
+            paths,
+            query_cache: RefCell::default(),
+        })
     }
 
     /// Validate an existing default before writable startup opening. Returns true
@@ -372,7 +379,11 @@ impl LibraryStore {
         if !(1..=LIBRARY_SCHEMA_VERSION).contains(&version) {
             return Err(AppError::new("incompatible-schema"));
         }
-        let mut store = Self { connection, paths };
+        let mut store = Self {
+            connection,
+            paths,
+            query_cache: RefCell::default(),
+        };
         if version == LIBRARY_SCHEMA_VERSION {
             store.validate_catalogue()?;
             return Ok(false);
@@ -407,6 +418,7 @@ impl LibraryStore {
         let mut preflight = Self {
             connection,
             paths: paths.clone(),
+            query_cache: RefCell::default(),
         };
         preflight.validate_catalogue()?;
         let paths = preflight.paths.clone();
@@ -419,7 +431,11 @@ impl LibraryStore {
         )?;
         connection.busy_timeout(std::time::Duration::from_secs(5))?;
         connection.pragma_update(None, "foreign_keys", "ON")?;
-        let mut store = Self { connection, paths };
+        let mut store = Self {
+            connection,
+            paths,
+            query_cache: RefCell::default(),
+        };
         // Validate the actual writable handle too, in case the candidate changed.
         store.validate_catalogue()?;
         Ok(store)
@@ -467,7 +483,11 @@ impl LibraryStore {
         } else {
             migration::verify_schema_version(&connection, version)?;
         }
-        Ok(Self { connection, paths })
+        Ok(Self {
+            connection,
+            paths,
+            query_cache: RefCell::default(),
+        })
     }
 
     #[must_use]
@@ -550,20 +570,7 @@ impl LibraryStore {
         &self,
         scopes: &[LibraryQueryScope<'_>],
     ) -> AppResult<Vec<LibraryItem>> {
-        let mut sql =
-            String::from("SELECT li.id FROM library_items li WHERE li.trashed_at IS NULL");
-        let mut values = Vec::<SqlValue>::new();
-        for scope in scopes {
-            append_query_scope(&mut sql, &mut values, *scope)?;
-        }
-        sql.push_str(" ORDER BY li.title COLLATE NOCASE, li.id");
-
-        let mut statement = self.connection.prepare(&sql)?;
-        let ids = statement
-            .query_map(params_from_iter(values.iter()), |row| {
-                row.get::<_, String>(0)
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
+        let ids = query_item_ids(&self.connection, scopes)?;
         read_items_bulk(&self.connection, &ids)
     }
 
@@ -1954,6 +1961,24 @@ fn read_items_required(connection: &Connection, ids: &[String]) -> AppResult<Vec
         return Err(AppError::new("invalid-stored-data"));
     }
     Ok(items)
+}
+
+fn query_item_ids(
+    connection: &Connection,
+    scopes: &[LibraryQueryScope<'_>],
+) -> AppResult<Vec<String>> {
+    let mut sql = String::from("SELECT li.id FROM library_items li WHERE li.trashed_at IS NULL");
+    let mut values = Vec::<SqlValue>::new();
+    for scope in scopes {
+        append_query_scope(&mut sql, &mut values, *scope)?;
+    }
+    sql.push_str(" ORDER BY li.title COLLATE NOCASE, li.id");
+    let mut statement = connection.prepare(&sql)?;
+    Ok(statement
+        .query_map(params_from_iter(values.iter()), |row| {
+            row.get::<_, String>(0)
+        })?
+        .collect::<Result<Vec<_>, _>>()?)
 }
 
 /// Hydrate many items with one query per child table instead of seven
@@ -3706,7 +3731,7 @@ fn rebase_owned_paths(
 mod tests {
     use super::*;
 
-    fn seed_hydration_books(store: &mut LibraryStore, count: usize) {
+    pub(super) fn seed_hydration_books(store: &mut LibraryStore, count: usize) {
         let transaction = store.connection.transaction().unwrap();
         transaction
             .execute(

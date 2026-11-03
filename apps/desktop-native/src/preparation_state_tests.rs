@@ -77,7 +77,7 @@ fn preparation_section_round_trip_invalidates_pending_preview(cx: &mut TestAppCo
         _ => panic!("expected trash query"),
     }
     match requests.try_recv().unwrap() {
-        Request::Query { reply, .. } => reply.send(Ok(vec![(*item).clone()])).unwrap(),
+        Request::Query { reply, .. } => reply.send(Ok(vec![item.clone()])).unwrap(),
         _ => panic!("expected library query"),
     }
     settle(&f.state, cx);
@@ -128,7 +128,7 @@ fn preparation_confirmation_captures_id_and_success_reloads_without_sending(
     }
     let query_reply = std::thread::spawn(move || {
         match requests.recv_timeout(Duration::from_secs(2)).unwrap() {
-            Request::Query { reply, .. } => reply.send(Ok(vec![(*item).clone()])).unwrap(),
+            Request::Query { reply, .. } => reply.send(Ok(vec![item.clone()])).unwrap(),
             _ => panic!("success must reload, not send"),
         }
         requests

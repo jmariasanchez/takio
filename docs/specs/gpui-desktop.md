@@ -56,7 +56,7 @@ apps/desktop-native/
 
 ```rust
 enum Request {
-    Query { query: String, filters: Filters, reply: Sender<Result<Vec<LibraryItem>>> },
+    Query { query: String, filters: Filters, reply: Sender<Result<Vec<Arc<LibraryItem>>>> },
     Get(String, Sender<Result<Option<LibraryItem>>>),
     Import { paths: Vec<PathBuf>, mode: ImportMode, reply: Sender<Result<ImportReport>> },
     Trash(String, ..), Restore(String, ..), Remove(String, ..),
@@ -74,6 +74,15 @@ Reader scanning has one running and at most one pending request, owned fingerpri
 snapshots rather than a SQLite connection, and library-generation guards. Switching
 invalidates old scans. Eject reports an active scan rather than unmounting beneath
 an uninterruptible OS read.
+
+Native queries reuse immutable hydrated records in a per-store cache, while still
+running the existing literal SQL selection and filters every time. The cache holds
+at most 10,000 items and an estimated 32 MiB of record/container/key allocations.
+Oversized records are returned uncached. SQLite read transactions keep IDs,
+revision checks and missing-record hydration in one snapshot. Same-connection
+writes, external commits and schema changes invalidate retained records. Existing
+caller transactions bypass retention. This cache never substitutes for filesystem,
+fingerprint, reader availability or send-authorization checks.
 
 ### State
 
@@ -110,7 +119,10 @@ The following are design goals, not measurements or gates satisfied by that
 script: 120 Hz scrolling with no frame over 8 ms, search keystroke-to-list update
 below 80 ms p95, and steady-state idle memory. Scrolling and interactive search
 require separate sampling. Search uses an 8 ms debounce, included in interaction
-measurements rather than subtracted.
+measurements rather than subtracted. Its deadline starts at input and dispatches
+the read on the background executor, without waiting for another foreground turn.
+Superseded pending inputs are cancelled, while in-flight results retain generation
+checks and background disposal.
 
 `bash scripts/bench-desktop-native.sh --interactions` additionally exercises the
 production state in a real GUI against the same deterministic 10,000-book library.
@@ -134,11 +146,14 @@ and checks the visible index. These are not physical keystrokes, wheel events,
 GPU completion or display-scanout measurements. `TAKIO_BENCH_REQUIRE_SEARCH_TARGET=1`
 makes the reported search p95 target a hard gate for the selected scope.
 
-November 3, 2026 acceptance: startup/state budgets passed, but matching/clearing
-search in the rendered probe reached 97.521/84.182 ms p95, above the 80 ms goal.
-The executable also exceeds the unchanged 12,000,000-byte gate at 12,504,400 bytes.
-Native CI is not green. See the completion plan for sample counts, baseline
-comparisons, artifact hashes, and remaining platform/hardware validation.
+November 3, 2026 final local acceptance: the native gate passes with an
+11,927,760-byte executable, below the unchanged 12,000,000-byte limit. Two separate
+25-sample-per-operation rendered probes passed matching/clearing search at
+63.216/49.969 ms and 63.273/49.956 ms p95, including first queries after startup.
+One first-query outlier reached 81.776 ms, so this is a p95 result, not a maximum
+latency guarantee. Startup/state budgets also pass. The completion plan records
+failed intermediate runs, exact scope and remaining platform/hardware gates.
+A completed hosted CI workflow on the final commit remains unverified.
 
 ## Scope for the first cut (v1)
 

@@ -16,8 +16,14 @@ all = "warn"
 
 # Release builds favour a small, fast standalone binary. Unwinding is kept so
 # Drop guards (terminal restoration, partial-file cleanup) still run on panic.
+# Level 2 avoids level 3's measured code growth. Size and latency gates still apply.
 [profile.release]
 codegen-units = 1
 lto = "fat"
-opt-level = 3
+opt-level = 2
 strip = "symbols"
+
+# PDF metadata parsing is off the interactive query path. Keep its general-purpose
+# parser compact without removing supported inputs or changing allocation limits.
+[profile.release.package.lopdf]
+opt-level = "z"

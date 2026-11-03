@@ -60,6 +60,13 @@ file hashes, rendered snapshots and temporary reader directories cannot prove it
 
 ## Results
 
+Final follow-up checks on November 3: **494 Rust tests pass**, as do strict
+workspace/snapshot Clippy, 235 snapshot native tests and the unchanged native
+size gate at **11,927,760 bytes**. Two independent enforced rendered-search runs
+pass at approximately **63 ms matching / 50 ms clearing p95**. Detailed final
+evidence follows the historical results below. Platform VoiceOver, physical
+reading, distribution signing and clean-Mac acceptance remain separate gates.
+
 ### Implemented and checked
 
 - Removed `apps/desktop` completely, its exclusive lockfile dependencies and
@@ -97,7 +104,7 @@ file hashes, rendered snapshots and temporary reader directories cannot prove it
   and keyboard behavior. Light/dark text-token contrast passes 4.5:1 tests across
   selection, stripe and hover backgrounds. These are not a full accessibility audit.
 
-### Validation observed by the coordinator
+### Initial validation observed by the coordinator
 
 - `cargo test --offline --workspace`, also rerun with
   `TMPDIR="$(getconf DARWIN_USER_TEMP_DIR)"`: 477 tests passed (180 shared library,
@@ -173,7 +180,7 @@ binary/script. Package logs and final default-temp workspace logs are in the
 scratch root with the `takio-...-20261103.log` names. These disposable local logs
 are not bundled or committed. Final artifact identity is recorded below.
 
-### Final local artifact
+### Earlier local artifact (18:02 UTC)
 
 Built from implementation commit `a0151ff` with the unchanged release profile.
 `bash scripts/package-macos-release.sh` completed on November 3, 2026 at 18:02 UTC.
@@ -215,3 +222,108 @@ Its idle 25-sample rendered probe passed startup/state budgets but still missed
 search at 103.086 ms matching and 83.338 ms clearing. This is preliminary evidence,
 not completion of the latency or final integrated packaging gate. Further query
 work is in progress, and all final measurements must use the integrated source.
+
+### Follow-up acceptance: repeated-query hydration
+
+The next latency slice may reuse immutable hydrated records, but must continue to
+run the existing literal SQL selection and filters for every query. Acceptance:
+
+- Bound retained item count and payload/container capacity, not only string lengths.
+  Oversized records must still appear in results without being retained.
+- Invalidate on same-connection mutations and commits from another connection.
+  Test metadata, formats, Trash/restore, external WAL writes and rollback paths.
+- Pin IDs, revision and missing-record hydration to one SQLite read snapshot.
+  Bypass retention inside an existing caller transaction, preserving its normal
+  uncached read semantics without leaking uncommitted records into later queries.
+- Never cache filesystem existence, device availability, byte fingerprints or send
+  authorization. Keep library-switch and stale-query generation protections.
+- Run native/shared/CLI regressions and strict Clippy, then the unchanged 10k
+  input-handler/render probe with the below-80-ms target enabled as a hard gate.
+  Include first queries after startup, not only warmed-cache samples.
+- Recheck the native executable size, startup RSS and actual packaged app/DMG.
+
+### Follow-up acceptance: settled startup failure text
+
+The recovery screenshot showed an idle error screen still headed by "Opening your
+library..." in its status body. Label the attempted operation explicitly as failed,
+retain its path and actionable error, and keep recovery controls usable. Native
+startup tests cover the initial corrupt default and a failed selected-library open,
+including unchanged original bytes and cancellation. This is wording, not repair
+or replacement of the corrupt fixture.
+
+### Follow-up diagnosis: first-query scheduling
+
+Hydration reuse alone passed one enforced rendered-search run (78.705 ms matching,
+50.215 ms clearing) but failed an independent repeat at 86.130 ms matching. Do not
+select only the passing run. Temporary phase tracing showed first-query SQL plus
+hydration around 6-7 ms and snapshot preparation around 1-2 ms, but the foreground
+debounce continuation could take 18-76 ms before dispatch. Those probes were removed
+after diagnosis. Starting the timer at input rather than first foreground polling
+was insufficient: matching p95 was 61.276 ms in one run and 98.250 ms on repeat.
+
+The next change dispatches the read on the background executor after the same 8 ms
+deadline. Explicit cancellation prevents superseded pending inputs from submitting
+queries. Existing generation checks and background disposal still own completed
+snapshots. Acceptance includes an observed request-channel test for coalescing,
+no dispatch before the deadline, unchanged stale-action/library-switch guards,
+full native tests and strict Clippy, followed by two independent enforced render
+runs. No benchmark delay, warm-up exclusion or relaxed target is allowed.
+
+### Final follow-up validation (18:53 UTC)
+
+The per-store cache retains at most 10,000 immutable records and an estimated
+32 MiB of record/container/key allocations. Eleven shared-store regressions cover
+literal/facet equivalence across hydration batches, local/external/schema changes,
+WAL commits interleaved between selection and hydration, nested transactions and
+rollback, corrupt stored records, independent libraries, actual oversized records
+and spare vector capacity. Native tests use the same production `Request::Query`
+as the app. Selection, stale replies and switching remain guarded.
+
+The query deadline and read dispatch now run in the background. A request-channel
+test observes no request before 8 ms and only the newest coalesced query afterward.
+Cancellation does not drop completed catalogues on the UI thread. Both final runs
+use the unchanged script, fixture and timing boundaries:
+
+```sh
+TAKIO_BENCH_REQUIRE_SEARCH_TARGET=1 bash scripts/bench-desktop-native.sh --render-interactions
+```
+
+| Final measurement | Run 1 | Independent repeat |
+| --- | ---: | ---: |
+| Matching-search rendered p95 | 63.216 ms | 63.273 ms |
+| Clearing-search rendered p95 | 49.969 ms | 49.956 ms |
+| Matching-search state p95 | 49.208 ms | 46.678 ms |
+| Clearing-search state p95 | 21.663 ms | 21.240 ms |
+| First matching query maximum | 64.182 ms | 81.776 ms |
+| Startup first-paint median | 98.013 ms | 94.622 ms |
+| Startup first-query median | 155.921 ms | 153.233 ms |
+| Startup RSS median | 126,208 KiB | 126,064 KiB |
+
+Each run includes five GUI processes and 25 samples per operation, with all first
+queries included. Counts, matching titles, order, selection and scroll destinations
+pass. Both enforce the below-80-ms p95 target, not a maximum-latency guarantee.
+Scroll p95 remains about 16.7 ms, not certified 120 Hz or physical wheel scrolling.
+The probe still excludes physical input, GPU completion and scanout. Startup
+metrics still exclude remembered-library lookup and the production recovery wrapper.
+
+Full `check-native-macos.sh` passes under the real macOS alias temp root, including
+formatting, strict Clippy, **494 tests** (191 shared, 64 CLI, two custom-field,
+two PDF import, 235 native), production release size and release-script self-tests.
+Snapshot-feature native tests (235) and strict all-target snapshot Clippy pass.
+All three PDF integration tests pass in the release profile, including the explicit
+Poppler oracle. The retained Bun packages were unchanged by this follow-up and
+their earlier 216 passing tests remain applicable.
+
+The release profile uses opt-level 2 plus `lopdf` opt-level `z`, preserving unwind
+cleanup, supported inputs and resource limits. Whole-program level 2 with the cache
+alone measured 12,009,152 bytes and still failed the gate. Compact PDF code then
+crossed the threshold. The final integrated executable is **11,927,760 bytes**.
+No size or latency threshold was weakened. Actual hosted CI and distribution trust
+are not inferred from local gate success.
+
+Raw evidence: `takio-native-check-delivery-20261103.log`,
+`takio-snapshot-tests-delivery-20261103.log`,
+`takio-snapshot-clippy-delivery-20261103.log`, `takio-pdf-release-final-20261103.log`
+in the scratch root, and `background-final-render.log` / `background-repeat-render.log`
+under `takio-latency-20261103`. Failed cache/deadline runs and temporary phase traces
+are retained alongside them rather than discarded.

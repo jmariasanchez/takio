@@ -8,6 +8,7 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Receiver;
 use std::time::Duration;
 
@@ -76,6 +77,14 @@ struct LibrarySnapshot {
     facets: Arc<Facets>,
 }
 
+struct PendingQuery(Arc<AtomicBool>);
+
+impl Drop for PendingQuery {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Release);
+    }
+}
+
 pub struct LibraryState {
     pub automatic_backup: crate::automatic_backup::Schedule,
     automatic_backup_timer: Option<Task<()>>,
@@ -124,7 +133,7 @@ pub struct LibraryState {
     send_preview_generation: u64,
     generation: u64,
     sorting: bool,
-    debounce: Option<Task<()>>,
+    debounce: Option<PendingQuery>,
 }
 
 impl LibraryState {
@@ -232,27 +241,35 @@ impl LibraryState {
         let sort = self.sort;
         self.loading = true;
         self.sorting = false;
-        let receiver = match self.section {
+        let task = match self.section {
             Section::Library => {
                 let query = self.query.clone();
                 let filters = self.filters.clone();
-                self.engine.request(|reply| Request::Query {
+                let receiver = self.engine.request(|reply| Request::Query {
                     query,
                     filters,
                     reply,
+                });
+                cx.background_executor().spawn(async move {
+                    let items = receiver
+                        .recv()
+                        .unwrap_or_else(|_| Err(AppError::new("storage-unavailable")))?;
+                    Ok(prepare_snapshot(items, sort))
                 })
             }
-            Section::Trash => self.engine.request(|reply| Request::ListTrash { reply }),
+            Section::Trash => {
+                let receiver = self.engine.request(|reply| Request::ListTrash { reply });
+                cx.background_executor().spawn(async move {
+                    let items = receiver
+                        .recv()
+                        .unwrap_or_else(|_| Err(AppError::new("storage-unavailable")))?;
+                    Ok(prepare_snapshot(
+                        items.into_iter().map(Arc::new).collect(),
+                        sort,
+                    ))
+                })
+            }
         };
-        let task = cx.background_executor().spawn(async move {
-            let items = receiver
-                .recv()
-                .unwrap_or_else(|_| Err(AppError::new("storage-unavailable")))?;
-            let facets = Arc::new(Facets::from_items(&items));
-            let mut items: Vec<_> = items.into_iter().map(Arc::new).collect();
-            sort_items(&mut items, sort);
-            Ok(LibrarySnapshot { items, facets })
-        });
         self.await_snapshot(task, generation, cx).detach();
         cx.notify();
     }
@@ -268,12 +285,44 @@ impl LibraryState {
         self.generation = self.generation.wrapping_add(1);
         self.loading = true;
         self.sorting = false;
-        self.debounce = Some(cx.spawn(async move |this, cx| {
-            cx.background_executor()
-                .timer(Duration::from_millis(8))
-                .await;
-            let _ = this.update(cx, |this, cx| this.reload(cx));
-        }));
+        // Queue the read after the input deadline without a foreground round trip.
+        // A busy first paint can overlap the query instead of delaying its start.
+        let cancelled = Arc::new(AtomicBool::new(false));
+        self.debounce = Some(PendingQuery(cancelled.clone()));
+        let engine = self.engine.clone();
+        let section = self.section;
+        let query = self.query.clone();
+        let filters = self.filters.clone();
+        let sort = self.sort;
+        let generation = self.generation;
+        let timer = cx.background_executor().timer(Duration::from_millis(8));
+        let task = cx.background_executor().spawn(async move {
+            timer.await;
+            if cancelled.load(Ordering::Acquire) {
+                return Err(AppError::new("query-cancelled"));
+            }
+            let items = match section {
+                Section::Library => engine
+                    .request(|reply| Request::Query {
+                        query,
+                        filters,
+                        reply,
+                    })
+                    .recv()
+                    .unwrap_or_else(|_| Err(AppError::new("storage-unavailable")))?,
+                Section::Trash => engine
+                    .request(|reply| Request::ListTrash { reply })
+                    .recv()
+                    .unwrap_or_else(|_| Err(AppError::new("storage-unavailable")))?
+                    .into_iter()
+                    .map(Arc::new)
+                    .collect(),
+            };
+            Ok(prepare_snapshot(items, sort))
+        });
+        // Do not cancel a completed snapshot on the UI thread. Obsolete replies
+        // retain await_snapshot's generation check and background disposal.
+        self.await_snapshot(task, generation, cx).detach();
         cx.notify();
     }
 
@@ -1306,6 +1355,12 @@ pub fn author_label(item: &LibraryItem) -> String {
     item.author.clone().unwrap_or_default()
 }
 
+fn prepare_snapshot(mut items: Vec<Arc<LibraryItem>>, sort: Sort) -> LibrarySnapshot {
+    let facets = Arc::new(Facets::from_item_refs(items.iter().map(Arc::as_ref)));
+    sort_items(&mut items, sort);
+    LibrarySnapshot { items, facets }
+}
+
 fn sort_items(items: &mut [Arc<LibraryItem>], sort: Sort) {
     let key = |item: &Arc<LibraryItem>| -> String {
         match sort.column {
@@ -1532,16 +1587,104 @@ mod tests {
         assert_eq!(titles(&f.state, cx).len(), 3);
         cx.executor().advance_clock(Duration::from_millis(1));
         settle(&f.state, cx);
-        assert_eq!(
-            f.state.read_with(cx, |s, _| s.generation),
-            generation.wrapping_add(1)
-        );
+        assert_eq!(f.state.read_with(cx, |s, _| s.generation), generation);
         assert_eq!(titles(&f.state, cx), ["Alpha"]);
 
         f.state.update(cx, |s, cx| s.set_query(String::new(), cx));
         cx.executor().advance_clock(Duration::from_millis(100));
         settle(&f.state, cx);
         assert_eq!(titles(&f.state, cx).len(), 3);
+    }
+
+    #[gpui::test]
+    fn background_debounce_sends_only_latest_query_after_deadline(cx: &mut TestAppContext) {
+        let f = fixture(cx);
+        let item = f.state.read_with(cx, |s, _| s.items[0].clone());
+        let (engine, requests) = Engine::test_channel();
+        f.state.update(cx, |s, _| s.engine = engine);
+        let received = Arc::new(AtomicBool::new(false));
+        let observed = received.clone();
+        let responder = std::thread::spawn(move || {
+            match requests.recv_timeout(Duration::from_secs(2)).unwrap() {
+                Request::Query { query, reply, .. } => {
+                    assert_eq!(query, "Alpha");
+                    observed.store(true, Ordering::Release);
+                    reply.send(Ok(vec![item])).unwrap();
+                }
+                _ => panic!("expected the latest debounced query"),
+            }
+            assert!(matches!(
+                requests.recv_timeout(Duration::from_millis(20)),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+            ));
+        });
+        f.state.update(cx, |s, cx| {
+            s.set_query("A".into(), cx);
+            s.set_query("Al".into(), cx);
+            s.set_query("Alpha".into(), cx);
+        });
+        cx.executor().advance_clock(Duration::from_millis(7));
+        cx.run_until_parked();
+        assert!(!received.load(Ordering::Acquire));
+        assert!(f.state.read_with(cx, |s, _| s.loading && !s.can_mutate()));
+        cx.executor().advance_clock(Duration::from_millis(1));
+        settle(&f.state, cx);
+        responder.join().unwrap();
+        assert_eq!(titles(&f.state, cx), ["Alpha"]);
+        assert!(!f.state.read_with(cx, |s, _| {
+            s.status.as_ref().is_some_and(|status| status.is_error)
+        }));
+    }
+
+    #[gpui::test]
+    fn debounce_deadline_starts_before_foreground_task_is_polled(cx: &mut TestAppContext) {
+        let f = fixture(cx);
+        f.state.update(cx, |s, cx| s.set_query("Alpha".into(), cx));
+        let generation = f.state.read_with(cx, |s, _| s.generation);
+        // Deliberately do not poll the foreground task until the input deadline.
+        cx.executor().advance_clock(Duration::from_millis(8));
+        cx.run_until_parked();
+        assert_eq!(f.state.read_with(cx, |s, _| s.generation), generation);
+        settle(&f.state, cx);
+        assert_eq!(titles(&f.state, cx), ["Alpha"]);
+    }
+
+    #[gpui::test]
+    fn searches_share_unchanged_records_but_refresh_after_mutation(cx: &mut TestAppContext) {
+        let f = fixture(cx);
+        let initial = f.state.read_with(cx, |s, _| s.items[0].clone());
+        f.state.update(cx, |s, cx| {
+            s.select_all(cx);
+            s.set_query("Alpha".into(), cx);
+        });
+        cx.executor().advance_clock(Duration::from_millis(100));
+        settle(&f.state, cx);
+        f.state.read_with(cx, |s, _| {
+            assert_eq!(s.items.len(), 1);
+            assert!(Arc::ptr_eq(&initial, &s.items[0]));
+            assert_eq!(s.selected_ids(), vec![initial.id.clone()]);
+        });
+        let engine = f.state.read_with(cx, |s, _| s.engine.clone());
+        engine
+            .request(|reply| Request::Update {
+                id: initial.id.clone(),
+                patch: LibraryPatch {
+                    title: takio::model::Patch::Set("Alpha revised".into()),
+                    ..LibraryPatch::default()
+                },
+                reply,
+            })
+            .recv()
+            .unwrap()
+            .unwrap();
+        f.state.update(cx, |s, cx| s.reload(cx));
+        settle(&f.state, cx);
+        f.state.read_with(cx, |s, _| {
+            assert_eq!(s.items[0].title, "Alpha revised");
+            assert!(!Arc::ptr_eq(&initial, &s.items[0]));
+            assert_eq!(initial.title, "Alpha");
+            assert_eq!(s.selected_ids(), vec![initial.id.clone()]);
+        });
     }
 
     #[gpui::test]

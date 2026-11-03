@@ -76,6 +76,9 @@ mod tests {
             .recv()
             .unwrap()
             .unwrap()
+            .into_iter()
+            .map(|item| (*item).clone())
+            .collect()
     }
 
     #[test]

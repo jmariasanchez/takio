@@ -125,7 +125,7 @@ fn fixture_with_preparation_backend(
         state,
         window,
         originals,
-        books,
+        books: books.into_iter().map(|item| (*item).clone()).collect(),
     }
 }
 
@@ -139,6 +139,9 @@ fn preparation_catalogue(f: &Fixture) -> Vec<LibraryItem> {
         .recv()
         .unwrap()
         .unwrap()
+        .into_iter()
+        .map(|item| (*item).clone())
+        .collect()
 }
 
 fn preparation_files(f: &Fixture) -> std::collections::BTreeMap<PathBuf, Vec<u8>> {
