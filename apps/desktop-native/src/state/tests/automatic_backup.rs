@@ -69,10 +69,10 @@ fn automatic_backup_state_opt_in_roundtrip_disable_and_daily_clock(cx: &mut Test
     }
     f.state.update(cx, |s, cx| {
         s.check_automatic_backup(last + crate::automatic_backup::DAILY_SECONDS - 1, cx);
-        assert!(!s.busy);
+        assert!(!s.busy());
         assert!(s.can_close(cx));
         s.check_automatic_backup(last + crate::automatic_backup::DAILY_SECONDS, cx);
-        assert!(s.busy);
+        assert!(s.busy());
         assert!(!s.can_close(cx));
     });
     settle(&f.state, cx);
@@ -82,7 +82,7 @@ fn automatic_backup_state_opt_in_roundtrip_disable_and_daily_clock(cx: &mut Test
     settle(&f.state, cx);
     f.state.update(cx, |s, cx| {
         s.check_automatic_backup(u64::MAX, cx);
-        assert!(!s.busy);
+        assert!(!s.busy());
     });
     assert_eq!(fs::read_dir(output.path()).unwrap().count(), 3);
     assert!(
@@ -106,22 +106,23 @@ fn automatic_backup_state_defers_for_edits_reviews_busy_loading_and_switch(
             last_success: None,
         };
         for blocked in 0..8 {
-            s.busy = blocked == 0;
+            s.activity = match blocked {
+                0 => Activity::Running(Operation::Mutation),
+                3 => Activity::SwitchingLibrary,
+                5 => Activity::Running(Operation::PreviewingPreparation),
+                7 => Activity::ReviewingPreparation(preparation_review(&s.items[0], true)),
+                _ => Activity::Idle,
+            };
             s.metadata_editing = blocked == 1;
             s.loading = blocked == 2;
-            s.switching_library = blocked == 3;
             s.refreshing_devices = blocked == 4;
-            s.preparation_pending = blocked == 5;
             s.automatic_backup_prompt_open = blocked == 6;
-            if blocked == 7 {
-                s.preparation_preview = Some(preparation_review(&s.items[0], true));
-            }
             s.check_automatic_backup(10, cx);
             assert!(s.automatic_backup.last_attempt.is_none());
         }
-        s.preparation_preview = None;
+        s.activity = Activity::Idle;
         s.check_automatic_backup(10, cx);
-        assert!(s.busy);
+        assert!(s.busy());
         assert!(!s.can_mutate());
         assert!(!s.can_close(cx));
     });
@@ -139,9 +140,9 @@ fn automatic_backup_state_defers_for_edits_reviews_busy_loading_and_switch(
         assert!(s.status.as_ref().unwrap().is_error);
         assert!(s.status.as_ref().unwrap().text.contains("one hour"));
         s.check_automatic_backup(10 + crate::automatic_backup::FAILURE_RETRY_SECONDS - 1, cx);
-        assert!(!s.busy);
+        assert!(!s.busy());
         s.check_automatic_backup(10 + crate::automatic_backup::FAILURE_RETRY_SECONDS, cx);
-        assert!(s.busy);
+        assert!(s.busy());
     });
     match requests.try_recv().unwrap() {
         Request::AutomaticBackupRun { reply, .. } => {
@@ -179,7 +180,7 @@ fn automatic_backup_state_switch_cancels_old_config_and_restored_library_default
         assert!(!s.automatic_backup.config.enabled);
         assert!(s.automatic_backup.last_attempt.is_none());
         s.check_automatic_backup(u64::MAX, cx);
-        assert!(!s.busy);
+        assert!(!s.busy());
     });
     cx.executor().advance_clock(Duration::from_secs(60));
     settle(&f.state, cx);
@@ -214,7 +215,7 @@ fn automatic_backup_state_disable_save_failure_still_stops_session(cx: &mut Test
                 .contains("previous setting may return")
         );
         s.check_automatic_backup(u64::MAX, cx);
-        assert!(!s.busy);
+        assert!(!s.busy());
     });
     assert!(requests.try_recv().is_err());
 }
@@ -242,7 +243,7 @@ fn automatic_backup_state_keeps_success_and_daily_throttle_when_timestamp_save_f
         assert!(s.status.as_ref().unwrap().text.contains("Copy kept"));
         assert_eq!(s.automatic_backup.config.last_success, Some(100));
         s.check_automatic_backup(100 + crate::automatic_backup::FAILURE_RETRY_SECONDS, cx);
-        assert!(!s.busy);
+        assert!(!s.busy());
         s.recovery_outcome.as_ref().unwrap().path.clone()
     });
     assert!(backup.join("manifest.json").is_file());
@@ -309,7 +310,7 @@ fn automatic_backup_state_bad_settings_remain_disabled_and_visible_without_rewri
                 .contains("settings could not be read")
         );
         s.check_automatic_backup(u64::MAX, cx);
-        assert!(!s.busy);
+        assert!(!s.busy());
         assert!(s.can_close(cx));
     });
     assert_eq!(fs::read(settings).unwrap(), b"invalid settings marker");

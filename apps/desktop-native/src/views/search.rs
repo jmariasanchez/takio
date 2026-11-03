@@ -165,7 +165,7 @@ impl Search {
             || self
                 .state
                 .as_ref()
-                .is_some_and(|state| state.read(cx).switching_library)
+                .is_some_and(|state| state.read(cx).switching_library())
         {
             return self.selection.end..self.selection.end;
         }
@@ -308,7 +308,7 @@ impl Render for Search {
             || self
                 .state
                 .as_ref()
-                .is_some_and(|state| state.read(cx).switching_library);
+                .is_some_and(|state| state.read(cx).switching_library());
         div()
             .id("text-input")
             .role(gpui::Role::TextInput)

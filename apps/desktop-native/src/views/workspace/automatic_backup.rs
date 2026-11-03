@@ -11,7 +11,7 @@ impl Workspace {
         }
         self.recovery_prompt_open = true;
         self.state
-            .update(cx, |state, _| state.automatic_backup_prompt_open = true);
+            .update(cx, |state, cx| state.set_automatic_backup_prompt(true, cx));
         let epoch = self.state.read(cx).library_epoch;
         let config = &self.state.read(cx).automatic_backup.config;
         let current = if config.enabled {
@@ -69,7 +69,7 @@ impl Workspace {
     fn finish_automatic_backup_prompt(&mut self, cx: &mut Context<Self>) {
         self.recovery_prompt_open = false;
         self.state
-            .update(cx, |state, _| state.automatic_backup_prompt_open = false);
+            .update(cx, |state, cx| state.set_automatic_backup_prompt(false, cx));
     }
 
     pub(super) fn disable_automatic_backup(&mut self, cx: &mut Context<Self>) {

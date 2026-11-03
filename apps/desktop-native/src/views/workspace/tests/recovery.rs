@@ -15,7 +15,7 @@ fn native_backup_result_pointer_dismiss_preserves_recovery_copy(cx: &mut TestApp
 
     assert!(
         f.state
-            .read_with(cx, |state, _| state.recovery_outcome.is_none())
+            .read_with(cx, |state, _| state.recovery_outcome().is_none())
     );
     assert_eq!(recovery_snapshot(&f), before);
     assert_eq!(
@@ -49,7 +49,8 @@ fn native_recovery_accepted_destination_after_editing_starts_writes_nothing(
             recovery_source(&backup, cx);
         }
         assert!(cx.did_prompt_for_new_path());
-        f.state.update(cx, |state, _| state.metadata_editing = true);
+        f.state
+            .update(cx, |state, cx| state.begin_metadata_editing(cx));
         let destination = output.path().join(if restore {
             "blocked-restore"
         } else {
@@ -72,8 +73,8 @@ fn native_recovery_accepted_destination_after_editing_starts_writes_nothing(
         );
         recovery_no_dialogs(cx);
         f.state.read_with(cx, |state, _| {
-            assert!(state.metadata_editing);
-            assert!(!state.busy);
+            assert!(state.metadata_editing());
+            assert!(!state.busy());
             let status = state.status.as_ref().unwrap();
             assert!(status.is_error);
             assert!(status.text.contains("save/cancel your edits"));
@@ -83,17 +84,17 @@ fn native_recovery_accepted_destination_after_editing_starts_writes_nothing(
                 "No new backup was started."
             }));
             assert_eq!(
-                state.recovery_outcome.as_ref().unwrap().path,
+                state.recovery_outcome().as_ref().unwrap().path,
                 backup.canonicalize().unwrap()
             );
         });
         f.state
-            .update(cx, |state, _| state.metadata_editing = false);
+            .update(cx, |state, cx| state.end_metadata_editing(cx));
     }
     recovery_assert_copied_books(&f, &backup, 0);
 }
 
-fn recovery_action(f: &Fixture, restore: bool, cx: &mut TestAppContext) {
+pub(super) fn recovery_action(f: &Fixture, restore: bool, cx: &mut TestAppContext) {
     f.window
         .update(cx, |_, window, cx| {
             if restore {
@@ -185,14 +186,14 @@ fn recovery_make_backup(f: &Fixture, output: &std::path::Path, cx: &mut TestAppC
     f.state.read_with(cx, |state, _| {
         assert!(!state.status.as_ref().unwrap().is_error);
         assert_eq!(
-            state.recovery_outcome.as_ref().unwrap().path,
+            state.recovery_outcome().as_ref().unwrap().path,
             output.canonicalize().unwrap()
         );
     });
     recovery_no_dialogs(cx);
 }
 
-fn recovery_assert_copied_books(f: &Fixture, output: &std::path::Path, trashed: usize) {
+pub(super) fn recovery_assert_copied_books(f: &Fixture, output: &std::path::Path, trashed: usize) {
     let paths = LibraryPaths::resolve(None, Some(&output.join("library.sqlite"))).unwrap();
     let store = takio::store::LibraryStore::open_read_only(paths).unwrap();
     let copied = store.list(true).unwrap();
@@ -244,7 +245,7 @@ fn native_backup_confirmation_cancel_is_read_only(cx: &mut TestAppContext) {
     assert_eq!(std::fs::read_dir(output.path()).unwrap().count(), 0);
     assert!(
         f.state
-            .read_with(cx, |state, _| state.recovery_outcome.is_none())
+            .read_with(cx, |state, _| state.recovery_outcome().is_none())
     );
 }
 
@@ -383,7 +384,7 @@ fn native_restore_copies_verified_bytes_without_switching_current_library(cx: &m
     );
     f.state.read_with(cx, |state, _| {
         assert!(!state.status.as_ref().unwrap().is_error);
-        let outcome = state.recovery_outcome.as_ref().unwrap();
+        let outcome = state.recovery_outcome().as_ref().unwrap();
         assert_eq!(outcome.path, restored.canonicalize().unwrap());
         assert!(outcome.detail.contains("current library is unchanged"));
     });
@@ -404,7 +405,7 @@ fn native_backup_existing_destination_preserves_marker(cx: &mut TestAppContext) 
     assert_eq!(recovery_snapshot(&f), before);
     f.state.read_with(cx, |state, _| {
         assert!(state.status.as_ref().unwrap().is_error);
-        assert!(state.recovery_outcome.is_none());
+        assert!(state.recovery_outcome().is_none());
     });
     recovery_no_dialogs(cx);
 }
@@ -430,7 +431,7 @@ fn native_restore_existing_destination_preserves_marker(cx: &mut TestAppContext)
     recovery_assert_copied_books(&f, &backup, 0);
     f.state.read_with(cx, |state, _| {
         assert!(state.status.as_ref().unwrap().is_error);
-        assert!(state.recovery_outcome.is_none());
+        assert!(state.recovery_outcome().is_none());
     });
     recovery_no_dialogs(cx);
 }
@@ -440,9 +441,11 @@ fn native_recovery_actions_are_blocked_while_busy_or_editing(cx: &mut TestAppCon
     let f = fixture(false, cx);
     let before = recovery_snapshot(&f);
     for editing in [false, true] {
-        f.state.update(cx, |state, _| {
-            state.busy = !editing;
-            state.metadata_editing = editing;
+        f.state.update(cx, |state, cx| {
+            state.simulate_busy(!editing);
+            if editing {
+                assert!(state.begin_metadata_editing(cx));
+            }
         });
         for restore in [false, true] {
             recovery_action(&f, restore, cx);
@@ -450,9 +453,9 @@ fn native_recovery_actions_are_blocked_while_busy_or_editing(cx: &mut TestAppCon
         }
         assert_eq!(recovery_snapshot(&f), before);
     }
-    f.state.update(cx, |state, _| {
-        state.busy = false;
-        state.metadata_editing = false;
+    f.state.update(cx, |state, cx| {
+        state.simulate_busy(false);
+        state.end_metadata_editing(cx);
     });
     recovery_action(&f, false, cx);
     assert!(cx.has_pending_prompt());

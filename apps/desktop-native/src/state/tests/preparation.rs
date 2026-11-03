@@ -54,7 +54,7 @@ fn preparation_cancel_pending_and_ready_never_converts(cx: &mut TestAppContext) 
             settle(&f.state, cx);
         }
         f.state.read_with(cx, |s, _| {
-            assert!(s.preparation_preview.is_none());
+            assert!(s.preparation_preview().is_none());
             assert!(s.can_mutate());
             assert!(s.status.as_ref().unwrap().text.contains("cancelled"));
         });
@@ -84,7 +84,7 @@ fn preparation_section_round_trip_invalidates_pending_preview(cx: &mut TestAppCo
     }
     settle(&f.state, cx);
     f.state.read_with(cx, |s, _| {
-        assert!(s.preparation_preview.is_none());
+        assert!(s.preparation_preview().is_none());
         assert!(s.can_mutate());
     });
     assert!(requests.try_recv().is_err());
@@ -115,10 +115,10 @@ fn preparation_confirmation_captures_id_and_success_reloads_without_sending(
     f.state.update(cx, |s, cx| {
         s.confirm_preparation(cx);
         s.confirm_preparation(cx);
-        assert!(s.busy);
+        assert!(s.busy());
         assert!(!s.can_close(cx));
         s.cancel_preparation(cx);
-        assert!(s.busy);
+        assert!(s.busy());
     });
     match requests.try_recv().unwrap() {
         Request::PrepareReviewed { preview, reply } => {
@@ -162,7 +162,7 @@ fn preparation_review_and_running_conversion_block_overlapping_actions(cx: &mut 
         let destination = takio::destinations::authorize(&mount, &volumes).unwrap();
         f.state.update(cx, |s, cx| {
             s.select_only(0, cx);
-            s.preparation_preview = Some(preparation_review(&item, true));
+            s.activity = Activity::ReviewingPreparation(preparation_review(&item, true));
             if running {
                 s.confirm_preparation(cx);
             }
@@ -212,8 +212,8 @@ fn preparation_unavailable_backend_and_invalid_selection_never_execute(cx: &mut 
     f.state.update(cx, |s, cx| {
         s.confirm_preparation(cx);
         s.confirm_preparation(cx);
-        assert!(!s.busy);
-        assert!(s.preparation_preview.is_some());
+        assert!(!s.busy());
+        assert!(s.preparation_preview().is_some());
         assert!(s.status.as_ref().unwrap().text.contains("Install Calibre"));
     });
     assert!(requests.try_recv().is_err());
@@ -238,7 +238,7 @@ fn preparation_failure_preserves_sources_and_never_claims_success(cx: &mut TestA
         let requests = preparation_channel(&f, cx);
         let item = f.state.read_with(cx, |s, _| s.items[0].clone());
         f.state.update(cx, |s, cx| {
-            s.preparation_preview = Some(preparation_review(&item, true));
+            s.activity = Activity::ReviewingPreparation(preparation_review(&item, true));
             s.confirm_preparation(cx);
         });
         match requests.try_recv().unwrap() {

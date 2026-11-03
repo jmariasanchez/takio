@@ -65,7 +65,7 @@ impl LibraryState {
         if disabling {
             self.automatic_backup.config.enabled = false;
         }
-        self.busy = true;
+        self.activity = Activity::Running(Operation::Mutation);
         self.set_status(
             "Saving automatic recovery-copy settings...".into(),
             false,
@@ -75,7 +75,7 @@ impl LibraryState {
             .engine
             .request(|reply| Request::AutomaticBackupConfigure { destination, reply });
         self.await_reply(receiver, cx, move |this, result, cx| {
-            this.busy = false;
+            this.activity = Activity::Idle;
             if this.automatic_backup.revision != revision { cx.notify(); return; }
             match result {
                 Ok(config) => {
@@ -106,13 +106,13 @@ impl LibraryState {
         if !self.automatic_backup.due(now)
             || !self.can_mutate()
             || self.refreshing_devices
-            || self.preparation_pending
-            || self.automatic_backup_prompt_open
+            || self.preparation_pending()
+            || self.automatic_backup_prompt_open()
         {
             return;
         }
         self.automatic_backup.last_attempt = Some(now);
-        self.busy = true;
+        self.activity = Activity::Running(Operation::Mutation);
         self.set_status(
             "Creating and verifying automatic recovery copy...".into(),
             false,
@@ -123,7 +123,7 @@ impl LibraryState {
             self.engine
                 .request(|reply| Request::AutomaticBackupRun { config, now, reply });
         self.await_reply(receiver, cx, |this, result, cx| {
-            this.busy = false;
+            this.activity = Activity::Idle;
             match result {
                 Ok(report) => {
                     this.automatic_backup.config = report.config;

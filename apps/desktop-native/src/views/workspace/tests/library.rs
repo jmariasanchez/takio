@@ -33,7 +33,7 @@ pub(super) fn switch_to(f: &Fixture, root: &std::path::Path, cx: &mut TestAppCon
     f.state.read_with(cx, |state, _| {
         assert_eq!(state.library_epoch, epoch + 1);
         assert_eq!(state.library_root, root.canonicalize().unwrap());
-        assert!(!state.switching_library);
+        assert!(!state.switching_library());
     });
     cx.update_window(f.window.into(), |_, window, cx| window.draw(cx).clear(cx))
         .unwrap();
@@ -70,7 +70,7 @@ fn library_switch_header_pointer_cancel_preserves_current_library(cx: &mut TestA
     settle(&f.state, cx);
     f.state.read_with(cx, |state, _| {
         assert_eq!((state.library_root.clone(), state.library_epoch), before);
-        assert!(!state.switching_library);
+        assert!(!state.switching_library());
     });
     assert_eq!(switch_old_catalogue(&f).len(), 2);
     assert_files_unchanged(&f);
@@ -96,12 +96,13 @@ fn library_switch_picker_cancel_duplicate_and_late_edit_are_safe(cx: &mut TestAp
         "duplicate must not queue another chooser"
     );
     switch_prompt(&f, cx);
-    f.state.update(cx, |state, _| state.metadata_editing = true);
+    f.state
+        .update(cx, |state, cx| state.begin_metadata_editing(cx));
     cx.simulate_path_prompt_response(|_| Some(vec![restored]));
     settle(&f.state, cx);
     f.state.read_with(cx, |state, _| {
         assert_eq!((state.library_root.clone(), state.library_epoch), before);
-        assert!(state.metadata_editing);
+        assert!(state.metadata_editing());
         assert_eq!(state.items.len(), 2);
     });
     assert_eq!(switch_old_catalogue(&f).len(), 2);
@@ -319,7 +320,7 @@ fn library_switch_stale_recovery_destination_never_writes(cx: &mut TestAppContex
         assert!(!destination.exists());
         f.state.read_with(cx, |state, _| {
             assert_eq!(state.status, status);
-            assert!(state.recovery_outcome.is_none());
+            assert!(state.recovery_outcome().is_none());
         });
         assert!(
             !f.window
@@ -355,8 +356,8 @@ fn library_switch_stale_reader_chooser_never_starts_send_or_eject(cx: &mut TestA
         settle(&f.state, cx);
         f.state.read_with(cx, |state, _| {
             assert_eq!(state.status, status);
-            assert!(state.send_preview.is_none());
-            assert!(state.delivery_report.is_none());
+            assert!(state.send_preview().is_none());
+            assert!(state.delivery_report().is_none());
         });
         assert!(f._temp.path().join("Volumes/Kindle").exists());
     }

@@ -165,7 +165,7 @@ fn disabled_sidebar_and_cross_focus_key_release_never_activate(cx: &mut TestAppC
     state.read_with(cx, |state, _| assert_eq!(state.section, Section::Library));
 
     state.update(cx, |state, cx| {
-        state.busy = true;
+        state.simulate_busy(true);
         cx.notify();
     });
     cx.run_until_parked();

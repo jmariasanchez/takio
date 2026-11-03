@@ -237,7 +237,7 @@ impl Workspace {
                     .cloned()
             {
                 state.update(cx, |state, cx| {
-                    if state.library_epoch != epoch || state.switching_library {
+                    if state.library_epoch != epoch || state.switching_library() {
                         return;
                     }
                     if send {
@@ -356,10 +356,10 @@ impl Render for Workspace {
         let loading = read.loading;
         let section = read.section;
         let can_mutate = read.can_mutate();
-        let report = read.delivery_report.clone();
-        let preview = read.send_preview.clone();
-        let preparation = read.preparation_preview.clone();
-        let recovery = read.recovery_outcome.clone();
+        let report = read.delivery_report().clone();
+        let preview = read.send_preview().cloned();
+        let preparation = read.preparation_preview().cloned();
+        let recovery = read.recovery_outcome().clone();
         let exclusions = read.delivery_exclusions.clone();
         let library_root = read.library_root.display().to_string();
         let library_name = read
@@ -730,8 +730,7 @@ impl Render for Workspace {
                                                 )
                                                 .on_click(cx.listener(|this, _, _, cx| {
                                                     this.state.update(cx, |state, cx| {
-                                                        state.recovery_outcome = None;
-                                                        cx.notify();
+                                                        state.dismiss_recovery_outcome(cx);
                                                     });
                                                 })),
                                             ),
@@ -788,9 +787,7 @@ impl Render for Workspace {
                                                     .child("Dismiss")
                                                     .on_click(cx.listener(|this, _, _, cx| {
                                                         this.state.update(cx, |state, cx| {
-                                                            state.delivery_report = None;
-                                                            state.delivery_exclusions.clear();
-                                                            cx.notify();
+                                                            state.dismiss_delivery_report(cx);
                                                         })
                                                     })),
                                             ),

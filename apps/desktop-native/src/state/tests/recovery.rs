@@ -138,7 +138,7 @@ fn recovery_blocks_overlap_and_close_until_reply(cx: &mut TestAppContext) {
             } else {
                 s.back_up_library(destination.clone(), cx);
             }
-            assert!(s.busy);
+            assert!(s.busy());
             assert!(!s.can_close(cx));
             s.back_up_library(destination.clone(), cx);
             s.restore_backup_copy(source.clone(), destination.clone(), cx);

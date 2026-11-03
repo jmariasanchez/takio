@@ -15,8 +15,7 @@ impl LibraryState {
             );
             return;
         }
-        self.busy = true;
-        self.switching_library = true;
+        self.activity = Activity::SwitchingLibrary;
         self.debounce = None;
         self.generation = self.generation.wrapping_add(1);
         self.set_status("Opening existing library...".into(), false, cx);
@@ -42,8 +41,7 @@ impl LibraryState {
         cx.spawn(async move |this, cx| {
             let mut result = Some(task.await);
             let _ = this.update(cx, |this, cx| {
-                this.busy = false;
-                this.switching_library = false;
+                this.activity = Activity::Idle;
                 match result.take().expect("library reply handled once") {
                     Ok((root, snapshot, remember_failed)) => {
                         this.library_epoch = this.library_epoch.wrapping_add(1);
@@ -63,8 +61,7 @@ impl LibraryState {
                         this.recovery_outcome = None;
                         this.delivery_report = None;
                         this.delivery_exclusions.clear();
-                        this.send_preview = None;
-                        this.preparation_preview = None;
+                        this.activity = Activity::Idle;
                         this.send_preview_generation = this.send_preview_generation.wrapping_add(1);
                         this.preparation_generation = this.preparation_generation.wrapping_add(1);
                         let old_items = std::mem::replace(&mut this.items, snapshot.items);

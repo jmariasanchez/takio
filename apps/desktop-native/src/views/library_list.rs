@@ -96,7 +96,7 @@ impl LibraryList {
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<Div> {
         let sort = self.state.read(cx).sort;
-        let enabled = !self.state.read(cx).switching_library;
+        let enabled = !self.state.read(cx).switching_library();
         let active = sort.column == column;
         let indicator = if active {
             if sort.ascending { " ↑" } else { " ↓" }

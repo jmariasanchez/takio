@@ -39,11 +39,12 @@ impl Inspector {
         let Some(item) = state.primary_selected().cloned() else {
             return;
         };
-        self.state.update(cx, |state, cx| {
-            state.metadata_save_result = None;
-            state.metadata_editing = true;
-            cx.notify();
-        });
+        if !self
+            .state
+            .update(cx, |state, cx| state.begin_metadata_editing(cx))
+        {
+            return;
+        }
         let editor = cx.new(|cx| MetadataEditor::new(self.state.clone(), item, window, cx));
         cx.subscribe(&editor, |this, editor, _: &Closed, cx| {
             this.editor = None;
@@ -118,7 +119,7 @@ impl Inspector {
                             .py_2()
                             .rounded(px(metrics::RADIUS))
                             .bg(theme.row_selected_inactive)
-                            .opacity(if self.state.read(cx).busy { 0.5 } else { 1.0 })
+                            .opacity(if self.state.read(cx).busy() { 0.5 } else { 1.0 })
                             .cursor_pointer()
                             .hover(|style| style.bg(theme.row_hover))
                             .child("Edit details")

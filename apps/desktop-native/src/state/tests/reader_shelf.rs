@@ -159,7 +159,7 @@ fn reader_import_copies_unmatched_and_rescans_without_reader_writes(cx: &mut Tes
     let before = reader_tree_snapshot(&reader.path);
     f.state.update(cx, |state, cx| {
         state.import_from_reader(reader.clone(), cx);
-        assert!(state.busy);
+        assert!(state.busy());
         assert_eq!(
             state.status.as_ref().unwrap().text,
             "Adding books from Kindle..."
@@ -200,14 +200,18 @@ fn reader_import_respects_mutation_and_section_guards(cx: &mut TestAppContext) {
     });
     settle(&f.state, cx);
     f.state.update(cx, |state, cx| {
-        assert!(state.send_preview.is_some());
+        assert!(state.send_preview().is_some());
         let status = state.status.clone();
         state.import_from_reader(reader.clone(), cx);
         assert_eq!(state.status, status);
-        assert!(!state.busy);
-        state.send_preview = None;
+        assert!(!state.busy());
+        state.activity = Activity::Idle;
         for guard in 0..3 {
-            state.busy = guard == 0;
+            state.activity = if guard == 0 {
+                Activity::Running(Operation::Mutation)
+            } else {
+                Activity::Idle
+            };
             state.metadata_editing = guard == 1;
             state.section = if guard == 2 {
                 Section::Trash
@@ -217,7 +221,7 @@ fn reader_import_respects_mutation_and_section_guards(cx: &mut TestAppContext) {
             state.import_from_reader(reader.clone(), cx);
             assert_eq!(state.status, status);
         }
-        state.busy = false;
+        state.activity = Activity::Idle;
         state.metadata_editing = false;
         state.section = Section::Library;
         state.reload(cx);
@@ -240,7 +244,7 @@ fn reader_import_unplugged_reader_reports_reconnect_without_import(cx: &mut Test
         let status = state.status.as_ref().unwrap();
         assert!(status.text.contains("Reconnect"));
         assert!(status.text.contains("Refresh readers"));
-        assert!(!state.busy);
+        assert!(!state.busy());
     });
 }
 
@@ -272,7 +276,7 @@ fn reader_shelf_matches_bytes_counts_unknown_and_trash_removes_mark(cx: &mut Tes
     fs::write(reader.path.join("documents/unknown.epub"), "another book").unwrap();
     f.state.update(cx, |state, cx| {
         state.refresh_destinations(cx);
-        assert!(!state.busy);
+        assert!(!state.busy());
     });
     settle(&f.state, cx);
     f.state.read_with(cx, |state, _| {
@@ -610,7 +614,7 @@ fn unchanged_volumes_do_not_rescan_and_changes_wait_for_open_reviews(cx: &mut Te
     kindle_at(&volumes, "Second");
     poll_volumes(&f, cx);
     f.state.read_with(cx, |state, _| {
-        assert!(state.send_preview.is_some(), "review left intact");
+        assert!(state.send_preview().is_some(), "review left intact");
         assert_eq!(
             state.destinations.len(),
             1,

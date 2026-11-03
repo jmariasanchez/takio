@@ -145,13 +145,12 @@ impl MetadataEditor {
         let return_focus = window.focused(cx);
         fields[0].update(cx, |field, cx| field.focus(window, cx));
         cx.observe(&state, |this, _, cx| {
-            if this.submitted && !this.state.read(cx).saving_metadata {
-                match this.state.read(cx).metadata_save_result.clone() {
+            if this.submitted && !this.state.read(cx).saving_metadata() {
+                match this.state.read(cx).metadata_save_result().clone() {
                     Some(Ok(id)) if id == this.original.id => {
                         this.submitted = false;
                         this.state.update(cx, |state, cx| {
-                            state.metadata_editing = false;
-                            cx.notify();
+                            state.end_metadata_editing(cx);
                         });
                         cx.emit(Closed);
                     }
@@ -196,7 +195,7 @@ impl MetadataEditor {
     }
 
     fn save(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.submitted || self.state.read(cx).saving_metadata {
+        if self.submitted || self.state.read(cx).saving_metadata() {
             return;
         }
         let patch = match self.draft(cx).patch(&self.original) {
@@ -214,7 +213,6 @@ impl MetadataEditor {
             field.update(cx, |field, cx| field.set_read_only(true, cx));
         }
         self.state.update(cx, |state, cx| {
-            state.metadata_save_result = None;
             state.update_metadata(self.original.id.clone(), patch, cx);
         });
         cx.notify();
@@ -225,8 +223,7 @@ impl MetadataEditor {
             return;
         }
         self.state.update(cx, |state, cx| {
-            state.metadata_editing = false;
-            cx.notify();
+            state.end_metadata_editing(cx);
         });
         self.restore_focus(window, cx);
         cx.emit(Closed);
@@ -493,10 +490,10 @@ mod tests {
         let engine = Engine::open(paths).unwrap();
         let state = cx.new(|cx| LibraryState::new(engine, cx));
         crate::test_support::settle(&state, cx);
-        state.update(cx, |state, _| {
+        state.update(cx, |state, cx| {
             state.items = vec![std::sync::Arc::new(item())];
             state.selected.insert(0);
-            state.metadata_editing = true;
+            assert!(state.begin_metadata_editing(cx));
         });
         (temp, state)
     }
@@ -523,9 +520,9 @@ mod tests {
             })
             .unwrap();
         state.read_with(cx, |state, _| {
-            assert!(!state.metadata_editing);
-            assert!(!state.saving_metadata);
-            assert!(state.metadata_save_result.is_none());
+            assert!(!state.metadata_editing());
+            assert!(!state.saving_metadata());
+            assert!(state.metadata_save_result().is_none());
             assert_eq!(state.items[0].title, "Original title");
             assert!(state.query.is_empty());
         });
@@ -558,7 +555,7 @@ mod tests {
             .unwrap();
         cx.simulate_keystrokes(window.into(), "escape");
         state.read_with(cx, |state, _| {
-            assert!(!state.metadata_editing);
+            assert!(!state.metadata_editing());
             assert_eq!(state.items[0].title, "Original title");
         });
     }
@@ -584,7 +581,7 @@ mod tests {
             .unwrap();
         crate::test_support::wait_until("metadata save", || {
             cx.run_until_parked();
-            !state.read_with(cx, |state, _| state.saving_metadata)
+            !state.read_with(cx, |state, _| state.saving_metadata())
         });
         cx.run_until_parked();
         window
@@ -598,7 +595,7 @@ mod tests {
                     editor
                         .state
                         .read(cx)
-                        .metadata_save_result
+                        .metadata_save_result()
                         .as_ref()
                         .unwrap()
                         .as_ref()
@@ -606,7 +603,7 @@ mod tests {
                         .code(),
                     "not-found"
                 );
-                assert!(editor.state.read(cx).metadata_editing);
+                assert!(editor.state.read(cx).metadata_editing());
                 assert_eq!(editor.draft(cx).title, "Keep this draft");
                 editor.fields[0].update(cx, |field, cx| {
                     field.replace_text_in_range(None, "!", window, cx)

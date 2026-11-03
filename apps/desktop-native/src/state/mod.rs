@@ -25,7 +25,9 @@ use crate::preparation::PreparationPreview;
 
 mod library;
 
+mod activity;
 mod automatic_backup;
+use activity::{Activity, Operation};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Section {
@@ -86,11 +88,10 @@ impl Drop for PendingQuery {
 pub struct LibraryState {
     pub automatic_backup: crate::automatic_backup::Schedule,
     automatic_backup_timer: Option<Task<()>>,
-    pub automatic_backup_prompt_open: bool,
+    automatic_backup_prompt_open: bool,
     engine: Engine,
     pub library_root: PathBuf,
     pub library_epoch: u64,
-    pub switching_library: bool,
     pub preference_path: Option<PathBuf>,
     pub section: Section,
     pub items: Vec<Arc<LibraryItem>>,
@@ -102,7 +103,7 @@ pub struct LibraryState {
     pub sort: Sort,
     pub loading: bool,
     pub status: Option<Status>,
-    pub recovery_outcome: Option<RecoveryOutcome>,
+    recovery_outcome: Option<RecoveryOutcome>,
     pub destinations: Vec<Destination>,
     pub volumes_root: PathBuf,
     pub reader_shelves: crate::engine::ReaderShelves,
@@ -115,15 +116,11 @@ pub struct LibraryState {
     volume_watch: Option<Task<()>>,
     pub refreshing_devices: bool,
     pub device_error: Option<AppError>,
-    pub busy: bool,
-    pub metadata_editing: bool,
-    pub saving_metadata: bool,
-    pub metadata_save_result: Option<AppResult<String>>,
-    pub delivery_report: Option<SendReport>,
-    pub send_preview: Option<SendPreview>,
-    pub preparation_preview: Option<PreparationPreview>,
+    activity: Activity,
+    metadata_editing: bool,
+    metadata_save_result: Option<AppResult<String>>,
+    delivery_report: Option<SendReport>,
     preparation_generation: u64,
-    preparation_pending: bool,
     pub delivery_exclusions: Vec<SendPreviewEntry>,
     send_preview_generation: u64,
     generation: u64,
@@ -154,7 +151,6 @@ impl LibraryState {
             volumes_root,
             library_root: engine.root().to_path_buf(),
             library_epoch: 0,
-            switching_library: false,
             preference_path: None,
             engine,
             section: Section::Library,
@@ -178,15 +174,11 @@ impl LibraryState {
             volume_watch: None,
             refreshing_devices: false,
             device_error: None,
-            busy: false,
+            activity: Activity::Idle,
             metadata_editing: false,
-            saving_metadata: false,
             metadata_save_result: None,
             delivery_report: None,
-            send_preview: None,
-            preparation_preview: None,
             preparation_generation: 0,
-            preparation_pending: false,
             delivery_exclusions: Vec::new(),
             send_preview_generation: 0,
             generation: 0,
@@ -227,7 +219,7 @@ impl LibraryState {
 
     /// Issue a fresh query for the current section, query text, and filters.
     pub fn reload(&mut self, cx: &mut Context<Self>) {
-        if self.switching_library {
+        if self.switching_library() {
             return;
         }
         self.debounce = None;
@@ -273,7 +265,7 @@ impl LibraryState {
     /// Eight milliseconds leaves room in the 80ms target for query and rendering,
     /// unlike the former 60ms floor. Generation guards still block stale actions.
     pub fn set_query(&mut self, query: String, cx: &mut Context<Self>) {
-        if self.switching_library || self.query == query {
+        if self.switching_library() || self.query == query {
             return;
         }
         self.query = query;
@@ -322,7 +314,7 @@ impl LibraryState {
     }
 
     pub fn set_section(&mut self, section: Section, cx: &mut Context<Self>) {
-        if self.switching_library {
+        if self.switching_library() {
             return;
         }
         if self.metadata_editing {
@@ -344,7 +336,7 @@ impl LibraryState {
     }
 
     pub fn set_sort(&mut self, column: SortColumn, cx: &mut Context<Self>) {
-        if self.switching_library {
+        if self.switching_library() {
             return;
         }
         if self.sort.column == column {
@@ -381,7 +373,7 @@ impl LibraryState {
         value: &str,
         cx: &mut Context<Self>,
     ) {
-        if self.switching_library {
+        if self.switching_library() {
             return;
         }
         let list = match dimension {
@@ -401,7 +393,7 @@ impl LibraryState {
     }
 
     pub fn clear_filters(&mut self, cx: &mut Context<Self>) {
-        if self.switching_library || self.filters.is_empty() {
+        if self.switching_library() || self.filters.is_empty() {
             return;
         }
         self.filters = Filters::default();
@@ -416,7 +408,7 @@ impl LibraryState {
     }
 
     pub fn select_only(&mut self, index: usize, cx: &mut Context<Self>) {
-        if self.switching_library {
+        if self.switching_library() {
             return;
         }
         self.selected.clear();
@@ -429,7 +421,7 @@ impl LibraryState {
     }
 
     pub fn toggle_select(&mut self, index: usize, cx: &mut Context<Self>) {
-        if self.switching_library {
+        if self.switching_library() {
             return;
         }
         if index >= self.items.len() {
@@ -443,7 +435,7 @@ impl LibraryState {
     }
 
     pub fn select_range_to(&mut self, index: usize, cx: &mut Context<Self>) {
-        if self.switching_library {
+        if self.switching_library() {
             return;
         }
         if index >= self.items.len() {
@@ -460,7 +452,7 @@ impl LibraryState {
     }
 
     pub fn select_all(&mut self, cx: &mut Context<Self>) {
-        if self.switching_library {
+        if self.switching_library() {
             return;
         }
         self.selected = (0..self.items.len()).collect();
@@ -475,7 +467,7 @@ impl LibraryState {
 
     /// Move the anchor by `delta` rows, clamped, replacing the selection.
     pub fn move_selection(&mut self, delta: isize, cx: &mut Context<Self>) {
-        if self.switching_library {
+        if self.switching_library() {
             return;
         }
         if self.items.is_empty() {
@@ -515,14 +507,14 @@ impl LibraryState {
             self.set_status("Finish the current operation or save/cancel your edits, then choose Back Up Library again. No new backup was started.".into(), true, cx);
             return;
         }
-        self.busy = true;
+        self.activity = Activity::Running(Operation::Mutation);
         self.recovery_outcome = None;
         self.set_status("Copying and verifying library backup...".into(), false, cx);
         let receiver = self
             .engine
             .request(|reply| Request::Backup { destination, reply });
         self.await_reply(receiver, cx, |this, result, cx| {
-            this.busy = false;
+            this.activity = Activity::Idle;
             match result {
                 Ok(report) => {
                     let summary = format!("Backup verified: {} managed format(s)", report.managed_files);
@@ -548,7 +540,7 @@ impl LibraryState {
             self.set_status("Finish the current operation or save/cancel your edits, then choose Restore Backup again. No restore was started.".into(), true, cx);
             return;
         }
-        self.busy = true;
+        self.activity = Activity::Running(Operation::Mutation);
         self.recovery_outcome = None;
         self.set_status(
             "Restoring and verifying a separate library copy...".into(),
@@ -561,7 +553,7 @@ impl LibraryState {
             reply,
         });
         self.await_reply(receiver, cx, |this, result, cx| {
-            this.busy = false;
+            this.activity = Activity::Idle;
             match result {
                 Ok(report) => {
                     let summary = format!("Restore verified: {} book(s), {} in Trash, {} managed format(s)",
@@ -582,7 +574,7 @@ impl LibraryState {
         if roots.is_empty() || !self.can_mutate() {
             return;
         }
-        self.busy = true;
+        self.activity = Activity::Running(Operation::Mutation);
         let count = roots.len();
         self.set_status(format!("Importing {count} item(s)..."), false, cx);
         let receiver = self
@@ -595,7 +587,7 @@ impl LibraryState {
         if self.section != Section::Library || !self.can_mutate() {
             return;
         }
-        self.busy = true;
+        self.activity = Activity::Running(Operation::Mutation);
         self.set_status(
             format!("Adding books from {}...", destination.name),
             false,
@@ -613,7 +605,7 @@ impl LibraryState {
         cx: &mut Context<Self>,
     ) {
         self.await_reply(receiver, cx, |this, result, cx| {
-            this.busy = false;
+            this.activity = Activity::Idle;
             match result {
                 Ok(scan) => {
                     let counts = scan.counts;
@@ -648,16 +640,40 @@ impl LibraryState {
     }
 
     pub fn can_mutate(&self) -> bool {
-        !self.busy
-            && !self.switching_library
-            && !self.metadata_editing
-            && !self.loading
-            && self.send_preview.is_none()
-            && self.preparation_preview.is_none()
+        self.activity.is_idle() && !self.metadata_editing() && !self.loading
+    }
+
+    pub fn busy(&self) -> bool {
+        self.activity.is_running()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn simulate_busy(&mut self, busy: bool) {
+        self.activity = if busy {
+            Activity::Running(Operation::Mutation)
+        } else {
+            Activity::Idle
+        };
+    }
+
+    pub fn switching_library(&self) -> bool {
+        matches!(self.activity, Activity::SwitchingLibrary)
+    }
+
+    fn preparation_pending(&self) -> bool {
+        self.activity.is_operation(Operation::PreviewingPreparation)
+    }
+
+    pub fn send_preview(&self) -> Option<&SendPreview> {
+        self.activity.send_preview()
+    }
+
+    pub fn preparation_preview(&self) -> Option<&PreparationPreview> {
+        self.activity.preparation_preview()
     }
 
     pub fn can_close(&mut self, cx: &mut Context<Self>) -> bool {
-        if self.busy || self.switching_library {
+        if self.busy() || self.switching_library() {
             self.set_status(
                 "Wait for the current operation to finish before closing Takio".into(),
                 true,
@@ -676,26 +692,79 @@ impl LibraryState {
         true
     }
 
+    pub fn recovery_outcome(&self) -> &Option<RecoveryOutcome> {
+        &self.recovery_outcome
+    }
+
+    pub fn delivery_report(&self) -> &Option<SendReport> {
+        &self.delivery_report
+    }
+
+    pub fn automatic_backup_prompt_open(&self) -> bool {
+        self.automatic_backup_prompt_open
+    }
+
+    pub fn metadata_editing(&self) -> bool {
+        self.metadata_editing
+    }
+
+    pub fn saving_metadata(&self) -> bool {
+        self.activity.is_operation(Operation::SavingMetadata)
+    }
+
+    pub fn metadata_save_result(&self) -> &Option<AppResult<String>> {
+        &self.metadata_save_result
+    }
+
+    pub fn dismiss_recovery_outcome(&mut self, cx: &mut Context<Self>) {
+        self.recovery_outcome = None;
+        cx.notify();
+    }
+
+    pub fn dismiss_delivery_report(&mut self, cx: &mut Context<Self>) {
+        self.delivery_report = None;
+        self.delivery_exclusions.clear();
+        cx.notify();
+    }
+
+    pub fn set_automatic_backup_prompt(&mut self, open: bool, cx: &mut Context<Self>) {
+        self.automatic_backup_prompt_open = open;
+        cx.notify();
+    }
+
+    pub fn begin_metadata_editing(&mut self, cx: &mut Context<Self>) -> bool {
+        if !self.can_mutate() || self.section != Section::Library {
+            return false;
+        }
+        self.metadata_save_result = None;
+        self.metadata_editing = true;
+        cx.notify();
+        true
+    }
+
+    pub fn end_metadata_editing(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.saving_metadata() {
+            return false;
+        }
+        self.metadata_editing = false;
+        cx.notify();
+        true
+    }
+
     pub fn update_metadata(&mut self, id: String, patch: LibraryPatch, cx: &mut Context<Self>) {
-        if self.busy
-            || self.send_preview.is_some()
-            || self.preparation_preview.is_some()
-            || self.section != Section::Library
-        {
+        if !self.activity.is_idle() || self.loading || self.section != Section::Library {
             self.metadata_save_result = Some(Err(AppError::new("operation-in-progress")));
             cx.notify();
             return;
         }
-        self.busy = true;
-        self.saving_metadata = true;
+        self.activity = Activity::Running(Operation::SavingMetadata);
         self.metadata_save_result = None;
         self.set_status("Saving book details...".into(), false, cx);
         let receiver = self
             .engine
             .request(|reply| Request::Update { id, patch, reply });
         self.await_reply(receiver, cx, |this, result, cx| {
-            this.busy = false;
-            this.saving_metadata = false;
+            this.activity = Activity::Idle;
             match result {
                 Ok(item) => {
                     this.metadata_save_result = Some(Ok(item.id));
@@ -769,12 +838,12 @@ impl LibraryState {
         if ids.is_empty() || !self.can_mutate() {
             return;
         }
-        self.busy = true;
+        self.activity = Activity::Running(Operation::Mutation);
         let count = ids.len();
         self.set_status("Updating library...".into(), false, cx);
         let receiver = self.engine.request(|reply| build(ids, reply));
         self.await_reply(receiver, cx, move |this, result, cx| {
-            this.busy = false;
+            this.activity = Activity::Idle;
             match result {
                 Ok(report) => {
                     let changed = report.iter().filter(|(_, result)| result.is_ok()).count();
@@ -911,7 +980,7 @@ impl LibraryState {
     }
 
     pub fn refresh_destinations(&mut self, cx: &mut Context<Self>) {
-        if self.refreshing_devices || self.busy {
+        if self.refreshing_devices || self.busy() {
             return;
         }
         self.refreshing_devices = true;
@@ -975,11 +1044,7 @@ impl LibraryState {
     /// A detected change is applied only between operations so it never cancels a
     /// review or races a send, import or library switch. The next tick retries.
     fn can_auto_refresh(&self) -> bool {
-        !self.refreshing_devices
-            && !self.busy
-            && !self.switching_library
-            && self.send_preview.is_none()
-            && self.preparation_preview.is_none()
+        !self.refreshing_devices && self.activity.is_idle()
     }
 
     pub fn send_ids_to(
@@ -1005,7 +1070,7 @@ impl LibraryState {
             );
             return;
         }
-        self.busy = true;
+        self.activity = Activity::Running(Operation::Mutation);
         self.delivery_report = None;
         self.delivery_exclusions.clear();
         self.send_preview_generation = self.send_preview_generation.wrapping_add(1);
@@ -1025,7 +1090,7 @@ impl LibraryState {
             reply,
         });
         self.await_reply(receiver, cx, move |this, result, cx| {
-            this.busy = false;
+            this.activity = Activity::Idle;
             if this.send_preview_generation != generation || this.section != Section::Library {
                 this.set_status("Send review cancelled. Nothing was sent.".into(), false, cx);
                 return;
@@ -1034,7 +1099,7 @@ impl LibraryState {
                 Ok(preview) => {
                     let ready = preview.ready_count();
                     let blocked = preview.entries.len() - ready;
-                    this.send_preview = Some(preview);
+                    this.activity = Activity::ReviewingSend(preview);
                     this.set_status(format!("Review send: {ready} ready, {blocked} need attention. Nothing sent yet."), false, cx);
                 }
                 Err(error) => this.set_error(error.code(), cx),
@@ -1044,27 +1109,25 @@ impl LibraryState {
 
     pub fn cancel_send_preview(&mut self, cx: &mut Context<Self>) {
         self.send_preview_generation = self.send_preview_generation.wrapping_add(1);
-        if self.send_preview.take().is_some() {
+        if matches!(self.activity, Activity::ReviewingSend(_)) {
+            self.activity = Activity::Idle;
             self.set_status("Send review cancelled. Nothing was sent.".into(), false, cx);
         }
     }
 
     pub fn confirm_send_preview(&mut self, cx: &mut Context<Self>) {
-        if self.busy
-            || self.loading
-            || self.metadata_editing
-            || self.preparation_preview.is_some()
-            || self.section != Section::Library
-        {
+        if self.loading || self.metadata_editing || self.section != Section::Library {
             return;
         }
-        let Some(preview) = self.send_preview.as_ref() else {
+        let Some(preview) = self.send_preview() else {
             return;
         };
         if preview.ready_count() == 0 {
             return;
         }
-        let preview = self.send_preview.take().expect("checked preview");
+        let Activity::ReviewingSend(preview) = std::mem::take(&mut self.activity) else {
+            unreachable!("checked send review")
+        };
         let (ready, excluded) = preview
             .entries
             .into_iter()
@@ -1079,7 +1142,7 @@ impl LibraryState {
         entries: Vec<SendPreviewEntry>,
         cx: &mut Context<Self>,
     ) {
-        self.busy = true;
+        self.activity = Activity::Running(Operation::Mutation);
         self.delivery_report = None;
         let excluded = self.delivery_exclusions.len();
         let name = destination.name.clone();
@@ -1094,7 +1157,7 @@ impl LibraryState {
             reply,
         });
         self.await_reply(receiver, cx, move |this, result, cx| {
-            this.busy = false;
+            this.activity = Activity::Idle;
             match result {
                 Ok(report) => {
                     let sent = report
@@ -1139,14 +1202,14 @@ impl LibraryState {
         if !self.can_mutate() {
             return;
         }
-        self.busy = true;
+        self.activity = Activity::Running(Operation::Mutation);
         let name = destination.name.clone();
         self.set_status(format!("Ejecting {name}..."), false, cx);
         let receiver = self
             .engine
             .request(|reply| Request::Eject { destination, reply });
         self.await_reply(receiver, cx, move |this, result, cx| {
-            this.busy = false;
+            this.activity = Activity::Idle;
             match result {
                 Ok(()) => this.set_status(format!("Ejected {name}"), false, cx),
                 Err(error) => this.set_error(error.code(), cx),
@@ -1174,8 +1237,7 @@ impl LibraryState {
         if !self.can_mutate() || self.section != Section::Library {
             return;
         }
-        self.busy = true;
-        self.preparation_pending = true;
+        self.activity = Activity::Running(Operation::PreviewingPreparation);
         self.delivery_report = None;
         self.delivery_exclusions.clear();
         self.preparation_generation = self.preparation_generation.wrapping_add(1);
@@ -1189,8 +1251,7 @@ impl LibraryState {
             .engine
             .request(|reply| Request::PreviewPrepare { item_id, reply });
         self.await_reply(receiver, cx, move |this, result, cx| {
-            this.busy = false;
-            this.preparation_pending = false;
+            this.activity = Activity::Idle;
             if this.preparation_generation != generation || this.section != Section::Library {
                 this.set_status(
                     "Preparation cancelled. No copy was prepared.".into(),
@@ -1202,7 +1263,7 @@ impl LibraryState {
             match result {
                 Ok(preview) => {
                     let available = preview.backend.available;
-                    this.preparation_preview = Some(preview);
+                    this.activity = Activity::ReviewingPreparation(preview);
                     if available {
                         this.set_status(
                             "Review AZW3 preparation. The EPUB will be kept. Nothing sent.".into(),
@@ -1221,9 +1282,11 @@ impl LibraryState {
 
     pub fn cancel_preparation(&mut self, cx: &mut Context<Self>) {
         // A running conversion cannot be cancelled by dismissing its review.
-        if self.preparation_pending || self.preparation_preview.is_some() {
+        if self.preparation_pending() || self.preparation_preview().is_some() {
             self.preparation_generation = self.preparation_generation.wrapping_add(1);
-            self.preparation_preview = None;
+            if matches!(self.activity, Activity::ReviewingPreparation(_)) {
+                self.activity = Activity::Idle;
+            }
             self.set_status(
                 "Preparation cancelled. No copy was prepared.".into(),
                 false,
@@ -1233,32 +1296,26 @@ impl LibraryState {
     }
 
     pub fn confirm_preparation(&mut self, cx: &mut Context<Self>) {
-        if self.busy
-            || self.loading
-            || self.metadata_editing
-            || self.send_preview.is_some()
-            || self.section != Section::Library
-        {
+        if self.loading || self.metadata_editing || self.section != Section::Library {
             return;
         }
-        let Some(preview) = self.preparation_preview.as_ref() else {
+        let Some(preview) = self.preparation_preview() else {
             return;
         };
         if !preview.backend.available {
             self.set_error("backend-unavailable", cx);
             return;
         }
-        let preview = self
-            .preparation_preview
-            .take()
-            .expect("checked preparation preview");
-        self.busy = true;
+        let Activity::ReviewingPreparation(preview) = std::mem::take(&mut self.activity) else {
+            unreachable!("checked preparation review")
+        };
+        self.activity = Activity::Running(Operation::Mutation);
         self.set_status("Preparing an AZW3 copy locally (120-second conversion limit). EPUB kept. Nothing sent.".into(), false, cx);
         let receiver = self
             .engine
             .request(|reply| Request::PrepareReviewed { preview, reply });
         self.await_reply(receiver, cx, |this, result, cx| {
-            this.busy = false;
+            this.activity = Activity::Idle;
             match result {
                 Ok(_) => {
                     this.set_status(
@@ -1530,6 +1587,84 @@ mod tests {
                 .read_with(cx, |s, _| s.facets.formats.get("epub").copied()),
             Some(3)
         );
+    }
+
+    #[gpui::test]
+    fn metadata_editing_lifecycle_guards_entry_and_pending_save(cx: &mut TestAppContext) {
+        let f = fixture(cx);
+        settle(&f.state, cx);
+        f.state.update(cx, |state, cx| {
+            state.metadata_save_result = Some(Err(AppError::new("old-error")));
+            assert!(state.begin_metadata_editing(cx));
+            assert!(state.metadata_save_result.is_none());
+            assert!(!state.can_mutate());
+            assert!(!state.begin_metadata_editing(cx));
+            state.activity = Activity::Running(Operation::SavingMetadata);
+            assert!(!state.end_metadata_editing(cx));
+            assert!(state.metadata_editing);
+            state.activity = Activity::Idle;
+            assert!(state.end_metadata_editing(cx));
+            assert!(state.can_mutate());
+            state.loading = true;
+            assert!(!state.begin_metadata_editing(cx));
+            state.loading = false;
+            state.section = Section::Trash;
+            assert!(!state.begin_metadata_editing(cx));
+        });
+    }
+
+    #[gpui::test]
+    fn exclusive_activity_guards_metadata_and_review_dispatch(cx: &mut TestAppContext) {
+        let f = fixture(cx);
+        settle(&f.state, cx);
+        let requests = preparation::preparation_channel(&f, cx);
+        f.state.update(cx, |state, cx| {
+            let item = state.items[0].clone();
+            let destination = Destination {
+                id: "unused".into(),
+                name: "unused".into(),
+                path: "/unused".into(),
+                kind: takio::destinations::DestinationKind::Generic,
+                features: Vec::new(),
+            };
+            let activities = [
+                Activity::Running(Operation::Mutation),
+                Activity::Running(Operation::SavingMetadata),
+                Activity::Running(Operation::PreviewingPreparation),
+                Activity::SwitchingLibrary,
+                Activity::ReviewingSend(SendPreview {
+                    destination,
+                    entries: Vec::new(),
+                }),
+                Activity::ReviewingPreparation(preparation::preparation_review(&item, false)),
+            ];
+            for activity in activities {
+                let running = activity.is_running();
+                state.activity = activity;
+                assert!(!state.can_mutate());
+                assert_eq!(state.can_close(cx), !running);
+                state.update_metadata(item.id.clone(), LibraryPatch::default(), cx);
+                assert_eq!(
+                    state
+                        .metadata_save_result
+                        .as_ref()
+                        .unwrap()
+                        .as_ref()
+                        .unwrap_err()
+                        .code(),
+                    "operation-in-progress"
+                );
+                state.confirm_send_preview(cx);
+                state.confirm_preparation(cx);
+                assert!(requests.try_recv().is_err());
+            }
+            state.activity = Activity::Idle;
+            state.loading = true;
+            state.update_metadata(item.id.clone(), LibraryPatch::default(), cx);
+            assert!(requests.try_recv().is_err());
+            state.loading = false;
+            assert!(state.can_mutate());
+        });
     }
 
     #[gpui::test]
@@ -1883,7 +2018,7 @@ mod tests {
             assert!(s.loading);
             assert!(!s.can_mutate());
             s.trash_selected(cx);
-            assert!(!s.busy);
+            assert!(!s.busy());
         });
         cx.executor().advance_clock(Duration::from_millis(100));
         settle(&f.state, cx);
@@ -2051,7 +2186,7 @@ mod tests {
         let extra = epub(f._temp.path(), "Delta");
         f.state.update(cx, |s, cx| {
             s.import(vec![extra.clone()], ImportMode::Copy, cx);
-            assert!(s.busy);
+            assert!(s.busy());
             s.import(vec![extra], ImportMode::Copy, cx);
             s.reload(cx);
             s.set_section(Section::Trash, cx);
@@ -2136,7 +2271,7 @@ mod tests {
                 assert!(status.is_error);
                 assert!(status.text.contains("Updated 2 of 3 item(s)"));
                 assert!(status.text.contains("absent-item"));
-                assert!(!s.busy);
+                assert!(!s.busy());
             });
             assert!(f._temp.path().join("Alpha.epub").exists());
             assert_eq!(last.source_path.exists(), operation != "purge");
@@ -2178,7 +2313,7 @@ mod tests {
         settle(&f.state, cx);
         f.state.read_with(cx, |s, _| {
             assert!(s.delivery_report.is_none());
-            assert!(s.send_preview.is_none());
+            assert!(s.send_preview().is_none());
             let message = &s.status.as_ref().unwrap().text;
             assert!(message.contains("Reconnect"));
             assert!(message.contains("Refresh readers"));
@@ -2222,7 +2357,7 @@ mod tests {
     fn blocked_metadata_save_retains_reason_and_writes_nothing(cx: &mut TestAppContext) {
         let f = fixture(cx);
         f.state.update(cx, |state, cx| {
-            state.busy = true;
+            state.activity = Activity::Running(Operation::Mutation);
             state.update_metadata(
                 state.items[0].id.clone(),
                 LibraryPatch {
@@ -2243,8 +2378,8 @@ mod tests {
                 humanize_error(error.code()),
                 "Finish the current operation first"
             );
-            assert!(!state.saving_metadata);
-            state.busy = false;
+            assert!(!state.saving_metadata());
+            state.activity = Activity::Idle;
         });
         let matches = f
             .state
@@ -2321,7 +2456,7 @@ mod tests {
         });
         settle(&f.state, cx);
         assert_eq!(titles(&f.state, cx), ["Alpha", "Beta", "Gamma"]);
-        assert!(!f.state.read_with(cx, |s, _| s.busy));
+        assert!(!f.state.read_with(cx, |s, _| s.busy()));
     }
 
     #[gpui::test]
@@ -2378,11 +2513,11 @@ mod tests {
             });
             settle(&f.state, cx);
             f.state.update(cx, |s, cx| {
-                assert!(s.send_preview.is_none());
+                assert!(s.send_preview().is_none());
                 assert!(s.delivery_report.is_none());
                 assert!(s.can_mutate());
                 s.confirm_send_preview(cx);
-                assert!(!s.busy);
+                assert!(!s.busy());
                 assert!(s.status.as_ref().unwrap().text.contains("Nothing was sent"));
             });
             assert_eq!(fs::read_dir(mount.join("documents")).unwrap().count(), 0);
@@ -2410,8 +2545,8 @@ mod tests {
             s.eject(destination.clone(), cx);
             s.send_selected_to(destination, cx);
             s.update_metadata(s.items[0].id.clone(), LibraryPatch::default(), cx);
-            assert!(!s.busy);
-            assert_eq!(s.send_preview.as_ref().unwrap().entries.len(), 3);
+            assert!(!s.busy());
+            assert_eq!(s.send_preview().unwrap().entries.len(), 3);
             s.cancel_send_preview(cx);
             assert!(s.can_mutate());
         });
@@ -2445,7 +2580,7 @@ mod tests {
         });
         settle(&f.state, cx);
         f.state.update(cx, |s, cx| {
-            let preview = s.send_preview.as_ref().unwrap();
+            let preview = s.send_preview().unwrap();
             assert_eq!(preview.entries.len(), 4);
             assert_eq!(preview.ready_count(), 1);
             assert!(s.delivery_report.is_none());

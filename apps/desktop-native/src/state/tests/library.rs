@@ -36,7 +36,7 @@ fn library_switch_resets_view_and_routes_mutation_to_new_catalogue(cx: &mut Test
         });
         state.delivery_report = Some(SendReport::default());
         state.open_library(b.clone(), cx);
-        assert!(state.switching_library && state.busy);
+        assert!(state.switching_library() && state.busy());
     });
     settle(&f.state, cx);
     f.state.read_with(cx, |state, _| {
@@ -152,23 +152,29 @@ fn library_switch_guards_edits_operations_loading_and_reviews(cx: &mut TestAppCo
         state.engine = engine;
         for guard in 0..5 {
             state.metadata_editing = guard == 0;
-            state.busy = guard == 1;
+            state.activity = if guard == 1 {
+                Activity::Running(Operation::Mutation)
+            } else {
+                Activity::Idle
+            };
             state.loading = guard == 2;
             state.refreshing_devices = guard == 3;
-            state.send_preview = (guard == 4).then(|| SendPreview {
-                destination: takio::destinations::Destination {
-                    id: "test".into(),
-                    name: "test".into(),
-                    path: "/unused".into(),
-                    kind: takio::destinations::DestinationKind::Generic,
-                    features: Vec::new(),
-                },
-                entries: Vec::new(),
-            });
+            if guard == 4 {
+                state.activity = Activity::ReviewingSend(SendPreview {
+                    destination: takio::destinations::Destination {
+                        id: "test".into(),
+                        name: "test".into(),
+                        path: "/unused".into(),
+                        kind: takio::destinations::DestinationKind::Generic,
+                        features: Vec::new(),
+                    },
+                    entries: Vec::new(),
+                });
+            }
             state.open_library("/unused".into(), cx);
-            assert!(!state.switching_library);
+            assert!(!state.switching_library());
         }
-        state.send_preview = None;
+        state.activity = Activity::Idle;
     });
     assert!(requests.try_recv().is_err());
 }
