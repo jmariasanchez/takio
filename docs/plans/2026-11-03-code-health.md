@@ -69,9 +69,9 @@ cargo test --offline -p takio
 cargo test --offline --workspace
 cargo clippy --offline --workspace --all-targets -- -D warnings
 cargo doc --offline -p takio --no-deps
-# After resolving the active implementation queue:
-desloppify scan --path .
-desloppify next
+# Pin Rust explicitly in this mixed Rust/TypeScript repository:
+desloppify --lang rust scan --path .
+desloppify --lang rust next
 git diff --check
 ```
 
@@ -85,3 +85,146 @@ git diff --check
   alone is not sufficient evidence for the standalone CLI crate.
 - Concurrent implementation can temporarily leave module imports incomplete.
   Only final integrated test runs count as acceptance evidence.
+
+## Verified implementation slices
+
+- `8d37225`: CLI output returns write errors instead of panicking on closed
+  stdout and exits through `ExitCode`. Six direct output tests and two actual
+  executable tests pass, including physical JSON line boundaries and both success
+  and failure responses with a closed output socket.
+- `5ab202f`: fetched cover metadata owns its strings, removing the two leaked
+  allocations. Publication preserves JSON fields, fingerprints, collision refusal
+  and live/dangling symlink targets. Eight metadata tests, four discovery tests,
+  maintenance validation and a real CLI fetch against an isolated fake backend pass.
+  The fake backend proves process/serialization behavior, not Calibre compatibility.
+- The same commit replaces the duplicated public catalog serializer with a typed
+  field allowlist. Sparse/rich metadata, absent versus null fields, nonfinite
+  floats, legacy authors, JSON/CSV export and an actual ephemeral-loopback HTTP
+  request pass. The HTTP test checks authentication failure, response envelopes,
+  no-store headers and omission of private paths, sort names and audit metadata.
+- `ae35c9e`: path resolution and diagnostics now document actual errors and side
+  effects, including a possible sync failure after publication. Diagnostic
+  verification uses the existing read-only open API, avoiding unnecessary write
+  access and creation capability. Four path tests and four diagnostic tests pass,
+  including unchanged current/legacy/corrupt database bytes and directory entries.
+  This is least-privilege hardening, not a claim that the old code always migrated
+  a library: its `create=false` argument already prevented migration.
+
+Strict CLI Clippy and `cargo doc --offline -p takio --no-deps` pass after these
+changes. All four retained Bun packages pass their typechecks and tests on local
+Bun 1.4.4. At that intermediate checkpoint, integrated native and rescan evidence
+was still pending. The final results and remaining work are recorded below.
+
+## Follow-through discovered during review
+
+- `89d9a72`: shared backend discovery now pins the checked executable to its
+  canonical path before metadata or maintenance changes the child working
+  directory. Five discovery tests and six real CLI metadata tests pass, including
+  bare/nested relative overrides, relative/empty PATH components, same-name PATH
+  impostors and invalid authoritative overrides. Existing conversion regression
+  tests also pass. A concrete findings-only review was imported and resolved
+  after testing, without importing subjective assessments.
+- `50765e5`: a real native subprocess with a removed disposable working directory
+  reproduced a closed-stderr panic, exit 101 instead of the intended failure 1.
+  Production startup now returns `ExitCode`, and diagnostic writes are fallible.
+  Two executable tests cover exact messages and status with open/closed stderr
+  for production startup and benchmark startup. The optional snapshot feature
+  still compiles. No GUI or personal library is opened by these error tests.
+- The remaining native `process::exit` is deliberately retained only for opt-in
+  acceptance-probe failures. Inspection of the installed GPUI macOS implementation
+  shows `quit` invokes Cocoa `terminate:`, not an event-loop return that could
+  carry a failure back to `main`. Replacing it with `cx.quit()` would risk false
+  success. This residual Desloppify finding is temporarily deferred with evidence,
+  not marked fixed or false-positive.
+
+`6d8eba1` preserves `AppError` in send-preview and delivery outcomes instead of
+reducing errors to strings at the engine boundary. Clone regressions verify both
+application codes and non-default exit statuses, including redacted underlying
+errors. Existing native preview, partial-success, changed-review, collision and
+rendered-workspace tests pass with unchanged user-visible reasons.
+
+After rescanning and running `next`, `885f14b` follows the next state-boundary
+finding: reader-shelf and metadata-save failures now remain typed until sidebar,
+editor or snapshot presentation. Native state tests exercise per-reader and
+whole-request failures retaining status 74, and a blocked metadata save verifies
+no database write with the unchanged busy message. The actual editor test checks
+the exact missing-book message, retained draft and editable fields after failure.
+All 241 native tests, strict workspace Clippy and snapshot-feature compilation
+pass for this slice. Synthetic reader directories do not establish physical-reader
+compatibility.
+
+## Store decomposition
+
+`1d5ba62` separates private query compilation, bulk hydration, duplicate discovery
+and transactional review/merge, metadata normalization, custom-column definitions,
+and current-schema creation. Public store types retain their original import paths
+through explicit reexports. Transaction boundaries, rollback, file ownership,
+cache invalidation and SQL predicates are unchanged.
+
+The root shrank from **5,073 to 2,618 lines**. A read-only AST comparison found
+137 of its 139 original function bodies token-identical across the new subtree.
+The other two are relocated duplicate-merge rollback tests whose multiline SQL
+strings changed only indentation. The standalone migration byte comparison uses
+an unambiguous slice dereference, preserving the original assertion. The new
+duplicate test file has an explicit test-zone classification, not an exclusion.
+
+The structural finding remains open: the rescan reports root complexity **604**,
+down from **1,008**, but import/file lifecycle, mutations, saved views and their
+tests still make the root large. This is a tested architectural improvement, not
+a claim that moving code automatically finishes all structural work.
+
+## Final checkpoint: November 3, 21:23 UTC
+
+- `CARGO_NET_OFFLINE=true bash scripts/check-native-macos.sh` passes after the
+  final code commit. **529 Rust tests pass**, with three existing ignored tests:
+  288 engine/CLI tests and 241 native tests. Formatting and strict workspace
+  all-target Clippy pass. The release binary is **11,927,744 bytes**, below the
+  unchanged 12,000,000-byte limit. Bundle-verifier and release-script self-tests
+  pass. These self-tests are not distribution signing or notarization.
+- Standalone `cargo test --offline -p takio` passes, covering the feature graph
+  that exposed the migration-test ambiguity. `cargo doc --offline -p takio
+  --no-deps` and native snapshot-feature compilation pass. The pre-existing
+  dependency future-incompatibility notice for `block 0.1.6` remains.
+- All retained TypeScript packages passed typechecks and **216 Bun tests**:
+  core 38, epub-transform 3, library-contract 41, library-store-bun 134. They were
+  not modified. This is not a separate TypeScript Desloppify assessment.
+- The final release executable passes `scripts/bench-desktop-native.sh
+  --interactions` in five real GUI processes against a disposable 10,000-book
+  catalogue, with 100 correct state interactions. Median paint/query/RSS are
+  92.643 ms / 147.556 ms / 125,808 KiB. Matching/clearing search settlement p95
+  is 62.766 / 27.473 ms, sort dispatch p95 0.157 ms, and select-all/reload
+  settlement p95 8.315 ms. These are state-to-notification timings including
+  debounce, not physical input-to-paint, scrolling or reader compatibility.
+
+Final logs are under `$JCODE_SCRATCH_DIR`:
+`takio-desloppify-native-final.log`, `takio-desloppify-cli-gate.log`,
+`takio-desloppify-scan-final.log`, and `takio-desloppify-interactions-final.log`.
+
+### Score and remaining work
+
+The fresh Rust scan reports **strict 21.9/100**, below the initial **22.1**.
+The configured 85 target has **not** been reached. Do not describe this as a
+strict-score improvement. New/moved modules change detector findings and checks;
+tested source improvements are not equivalent to a higher aggregate score.
+Twenty subjective dimensions remain unassessed, accounting for the unfilled
+75% subjective scoring pool. No invented assessments or blanket suppressions
+were imported.
+
+Two mid-cycle rescans used the tool's explicit `--force-rescan` attestation to
+refresh findings after substantial moves and subsequent typed-state fixes, while
+leaving incomplete work open. The tool reports 316 queued items and 21 temporary
+deferrals, and labels the score frozen pending queue completion. No claim is made
+that the living plan is drained. Automatic language selection attempted JavaScript
+on one rescan, so the successful comparative scans explicitly use `--lang rust`.
+
+Resume with:
+
+```sh
+desloppify --lang rust next
+```
+
+At this checkpoint the next item is
+`smells::apps/cli/src/cli.rs::string_error`. The store structural finding is also
+still open. Read actual code and validate changes before resolving either.
+No work is scheduled beyond this session, no commits are pushed, and no personal
+book library or physical reader was modified.
