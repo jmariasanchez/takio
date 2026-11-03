@@ -870,14 +870,6 @@ impl LibraryStore {
         Ok(updated)
     }
 
-    pub fn remove_format_with_cleanup(
-        &mut self,
-        id: &str,
-        format: FormatId,
-    ) -> AppResult<MutationResult> {
-        self.remove_format(id, format)
-    }
-
     /// Returns the committed item and any managed paths that could not be cleaned up.
     pub fn replace_format(
         &mut self,
@@ -958,17 +950,6 @@ impl LibraryStore {
             self.cleanup_format_after_commit(&old, &mut updated);
         }
         Ok(updated)
-    }
-
-    pub fn replace_format_with_cleanup(
-        &mut self,
-        id: &str,
-        format: FormatId,
-        expected: &Value,
-        source: &Path,
-        managed: bool,
-    ) -> AppResult<MutationResult> {
-        self.replace_format(id, format, expected, source, managed)
     }
 
     /// Compatibility entry point for `library remove`: moves the item to trash.
@@ -1294,10 +1275,6 @@ impl LibraryStore {
     /// Unknown IDs return `not-found`; active items return `not-trashed`.
     pub fn purge(&mut self, id: &str) -> AppResult<MutationResult> {
         self.purge_trashed(id)
-    }
-
-    pub fn purge_with_cleanup(&mut self, id: &str) -> AppResult<MutationResult> {
-        self.purge(id)
     }
 
     fn purge_trashed(&mut self, id: &str) -> AppResult<MutationResult> {
