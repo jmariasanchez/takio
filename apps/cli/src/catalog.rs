@@ -1,5 +1,5 @@
-//! Public JSON catalog projection shared by file exports and the read-only server.
-//! CSV and HTML have separate schemas and deliberately do not serialize this type.
+//! Catalog projection and atomic JSON, CSV, and HTML catalog publication.
+//! CSV and HTML have separate schemas and deliberately do not serialize the JSON record.
 
 use std::collections::BTreeMap;
 
@@ -59,6 +59,176 @@ pub(crate) fn catalog_record(item: &LibraryItem) -> Value {
         identifiers: &item.identifiers,
         custom_metadata: user_custom_metadata(&item.custom_metadata),
     })
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CatalogReport {
+    pub path: std::path::PathBuf,
+    pub books: usize,
+    pub bytes: usize,
+    pub sha256: String,
+    pub format: String,
+}
+
+pub fn write_catalog(
+    items: &[LibraryItem],
+    format: &str,
+    output: &std::path::Path,
+) -> crate::output::AppResult<CatalogReport> {
+    use crate::output::{AppError, AppResult};
+    use sha2::{Digest, Sha256};
+    use std::io::Write;
+    if output.exists()
+        || output.parent().is_none_or(|parent| !parent.is_dir())
+        || !matches!(format, "json" | "csv" | "html")
+        || output
+            .extension()
+            .and_then(|value| value.to_str())
+            .is_none_or(|value| !value.eq_ignore_ascii_case(format))
+    {
+        return Err(AppError::new(if output.exists() {
+            "output-file-exists"
+        } else {
+            "invalid-arguments"
+        }));
+    }
+    let body = match format {
+        "json" => format!(
+            "{}\n",
+            serde_json::to_string_pretty(
+                &json!({"version":1,"books":items.iter().map(catalog_record).collect::<Vec<_>>()})
+            )
+            .map_err(|_| AppError::new("write-failed"))?
+        ),
+        "csv" => render_catalog_csv(items),
+        "html" => render_catalog_html(items),
+        _ => return Err(AppError::new("invalid-arguments")),
+    };
+    if body.len() > 64 * 1024 * 1024 {
+        return Err(AppError::new("write-failed"));
+    }
+    let absolute_output = crate::paths::absolute(output)?;
+    let parent = output
+        .parent()
+        .ok_or_else(|| AppError::new("invalid-arguments"))?;
+    let temporary = parent.join(format!(".takio-catalog-{}.tmp", uuid::Uuid::new_v4()));
+    #[cfg(unix)]
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+    let publication = (|| -> AppResult<()> {
+        let mut file = options
+            .open(&temporary)
+            .map_err(|_| AppError::new("write-failed"))?;
+        file.write_all(body.as_bytes())
+            .and_then(|_| file.flush())
+            .and_then(|_| file.sync_all())
+            .map_err(|_| AppError::new("write-failed"))?;
+        if !temporary.is_file() {
+            return Err(AppError::new("write-failed"));
+        }
+        std::fs::hard_link(&temporary, output).map_err(|_| AppError::new("write-failed"))?;
+        Ok(())
+    })();
+    let _ = std::fs::remove_file(&temporary);
+    publication?;
+    Ok(CatalogReport {
+        path: absolute_output,
+        books: items.len(),
+        bytes: body.len(),
+        sha256: hex::encode(Sha256::digest(body.as_bytes())),
+        format: format.to_owned(),
+    })
+}
+
+fn render_catalog_csv(items: &[LibraryItem]) -> String {
+    let mut output = "id,title,authors,series,seriesIndex,publisher,publishedDate,languages,tags,formats,rating,identifiers,customMetadata,description\n".to_owned();
+    for item in items {
+        let values = [
+            item.id.clone(),
+            item.title.clone(),
+            item.author_names().collect::<Vec<_>>().join("; "),
+            item.series.clone().unwrap_or_default(),
+            item.series_index
+                .map(|value| value.to_string())
+                .unwrap_or_default(),
+            item.publisher.clone().unwrap_or_default(),
+            item.published_date.clone().unwrap_or_default(),
+            item.languages.join("; "),
+            item.tags.join("; "),
+            item.formats
+                .iter()
+                .map(|format| format.format.as_str())
+                .collect::<Vec<_>>()
+                .join("; "),
+            item.rating
+                .map(|value| value.to_string())
+                .unwrap_or_default(),
+            serde_json::to_string(&item.identifiers).unwrap_or_else(|_| "{}".to_owned()),
+            serde_json::to_string(&user_custom_metadata(&item.custom_metadata))
+                .unwrap_or_else(|_| "{}".to_owned()),
+            item.description.clone().unwrap_or_default(),
+        ];
+        output.push_str(
+            &values
+                .iter()
+                .map(|value| csv_cell(value))
+                .collect::<Vec<_>>()
+                .join(","),
+        );
+        output.push('\n');
+    }
+    output
+}
+
+fn csv_cell(value: &str) -> String {
+    let passive = if value
+        .trim_start_matches(|value: char| value.is_whitespace() || value.is_control())
+        .starts_with(['=', '+', '-', '@'])
+    {
+        format!("'{value}")
+    } else {
+        value.to_owned()
+    };
+    format!("\"{}\"", passive.replace('"', "\"\""))
+}
+
+fn render_catalog_html(items: &[LibraryItem]) -> String {
+    let rows = items
+        .iter()
+        .map(|item| {
+            format!(
+                "      <tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
+                html_escape(&item.title),
+                html_escape(&item.author_names().collect::<Vec<_>>().join(", ")),
+                html_escape(item.series.as_deref().unwrap_or_default()),
+                html_escape(&item.tags.join(", ")),
+                html_escape(
+                    &item
+                        .formats
+                        .iter()
+                        .map(|format| format.format.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            )
+        })
+        .collect::<String>();
+    format!(
+        "<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width\"><title>Takio catalog</title><style>body{{font:16px system-ui;margin:2rem}}table{{border-collapse:collapse;width:100%}}th,td{{border-bottom:1px solid #ccc;padding:.5rem;text-align:left}}</style></head><body><h1>Takio catalog</h1><table><thead><tr><th>Title</th><th>Authors</th><th>Series</th><th>Tags</th><th>Formats</th></tr></thead><tbody>\n{rows}\n    </tbody></table></body></html>\n"
+    )
+}
+
+fn html_escape(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
 }
 
 #[cfg(test)]
@@ -138,5 +308,16 @@ pub(crate) mod tests {
         expected["seriesIndex"] = Value::Null;
         expected["rating"] = Value::Null;
         assert_eq!(catalog_record(&item), expected);
+    }
+
+    #[test]
+    fn every_catalog_format_uses_shared_legacy_author_policy() {
+        let mut item = sparse_book();
+        item.author = Some("Legacy <author>".into());
+        assert!(render_catalog_csv(std::slice::from_ref(&item)).contains("\"Legacy <author>\""));
+        assert!(
+            render_catalog_html(std::slice::from_ref(&item))
+                .contains("<td>Legacy &lt;author&gt;</td>")
+        );
     }
 }

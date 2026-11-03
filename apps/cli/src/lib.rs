@@ -20,6 +20,7 @@ pub mod destinations;
 pub mod diagnostics;
 pub mod error;
 mod executable_discovery;
+pub mod export;
 pub mod fingerprint;
 pub mod format;
 pub mod import_scan;
