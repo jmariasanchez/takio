@@ -48,13 +48,15 @@ pub fn open(
             Ok(engine) => engine,
             Err(error)
                 if error.kind() == takio::error::ErrorCode::IncompatibleSchema
-                    && LibraryStore::preflight_startup(default.clone())? =>
+                    && LibraryStore::requires_verified_migration(default.clone())? =>
             {
-                Engine::open(default)?
+                Engine::create_or_migrate(default)?
             }
             Err(error) => return Err(error),
         },
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Engine::open(default)?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            Engine::create_or_migrate(default)?
+        }
         Err(error) => return Err(error.into()),
     };
     let report = ActivationReport::startup(engine.root().to_path_buf(), warning);

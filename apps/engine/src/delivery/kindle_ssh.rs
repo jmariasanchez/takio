@@ -1,4 +1,4 @@
-use std::io::Read;
+use std::io::{Read, Seek};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread;
@@ -32,9 +32,9 @@ pub struct KindleSshResult {
 }
 
 pub fn send(
+    destination: &KindleSshDestination,
     item_id: &str,
     source: &Path,
-    destination: &KindleSshDestination,
 ) -> AppResult<KindleSshResult> {
     send_with_programs(item_id, source, destination, "ssh", "scp")
 }
@@ -163,14 +163,18 @@ fn send_with_programs(
 }
 
 fn validate_destination(destination: &KindleSshDestination) -> AppResult<()> {
-    let host = Regex::new(
+    static HOST: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+        Regex::new(
         r"^(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)*[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$|^\[(?:[0-9A-Fa-f:.]+)\]$",
     )
-    .map_err(|_| crate::app_error!("invalid-arguments"))?;
-    let user = Regex::new(r"^[A-Za-z0-9._-]{1,64}$")
-        .map_err(|_| crate::app_error!("invalid-arguments"))?;
-    let segment = Regex::new(r"^[A-Za-z0-9._-]{1,120}$")
-        .map_err(|_| crate::app_error!("invalid-arguments"))?;
+    .expect("valid host regex")
+    });
+    static USER: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+        Regex::new(r"^[A-Za-z0-9._-]{1,64}$").expect("valid user regex")
+    });
+    static SEGMENT: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+        Regex::new(r"^[A-Za-z0-9._-]{1,120}$").expect("valid path segment regex")
+    });
     let root = &destination.remote_root;
     let root_segments = root
         .split('/')
@@ -179,9 +183,9 @@ fn validate_destination(destination: &KindleSshDestination) -> AppResult<()> {
     let has_allowed_library = root_segments.iter().any(|value| {
         value.eq_ignore_ascii_case("documents") || value.eq_ignore_ascii_case("koreader")
     });
-    if !host.is_match(&destination.host)
+    if !HOST.is_match(&destination.host)
         || destination.host.starts_with('-')
-        || !user.is_match(&destination.user)
+        || !USER.is_match(&destination.user)
         || destination.user.starts_with('-')
         || destination.port == 0
         || !root.starts_with("/mnt/us/")
@@ -189,7 +193,7 @@ fn validate_destination(destination: &KindleSshDestination) -> AppResult<()> {
         || !has_allowed_library
         || root_segments
             .into_iter()
-            .any(|value| matches!(value, "." | "..") || !segment.is_match(value))
+            .any(|value| matches!(value, "." | "..") || !SEGMENT.is_match(value))
         || !destination.identity_file.is_absolute()
         || !destination.identity_file.is_file()
         || destination
@@ -256,18 +260,30 @@ fn checked(
 }
 
 fn run(command: &mut Command, timeout: Duration) -> AppResult<CommandOutput> {
+    const MAX_OUTPUT_BYTES: u64 = 64 * 1024;
+    // File-backed capture cannot block a child on a full pipe. Check its size
+    // while polling and bound the final read, including output from descendants.
+    let mut output = tempfile::tempfile()?;
+    command.stdout(Stdio::from(output.try_clone()?));
     let mut child = command
         .spawn()
         .map_err(|_| crate::app_error!("backend-unavailable"))?;
     let started = Instant::now();
     let status = loop {
-        if let Some(status) = child
-            .try_wait()
-            .map_err(|_| crate::app_error!("copy-failed"))?
-        {
-            break status;
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => {}
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(crate::app_error!("copy-failed"));
+            }
         }
-        if started.elapsed() >= timeout {
+        if started.elapsed() >= timeout
+            || output
+                .metadata()
+                .map_or(true, |metadata| metadata.len() > MAX_OUTPUT_BYTES)
+        {
             let _ = child.kill();
             let _ = child.wait();
             return Err(crate::app_error!("copy-failed"));
@@ -275,9 +291,15 @@ fn run(command: &mut Command, timeout: Duration) -> AppResult<CommandOutput> {
         thread::sleep(Duration::from_millis(25));
     };
     let mut stdout = String::new();
-    if let Some(mut pipe) = child.stdout.take() {
-        pipe.read_to_string(&mut stdout)
-            .map_err(|_| crate::app_error!("copy-failed"))?;
+    output
+        .rewind()
+        .map_err(|_| crate::app_error!("copy-failed"))?;
+    output
+        .take(MAX_OUTPUT_BYTES + 1)
+        .read_to_string(&mut stdout)
+        .map_err(|_| crate::app_error!("copy-failed"))?;
+    if stdout.len() as u64 > MAX_OUTPUT_BYTES {
+        return Err(crate::app_error!("copy-failed"));
     }
     Ok(CommandOutput {
         status: status.code().unwrap_or(1),
@@ -308,6 +330,38 @@ fn sanitize_file_name(value: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn command_capture_drains_large_output_and_reaps_timeouts() {
+        let mut large = Command::new("sh");
+        large.args([
+            "-c",
+            "i=0; while [ $i -lt 20000 ]; do printf 0123456789; i=$((i+1)); done",
+        ]);
+        assert_eq!(
+            run(&mut large, Duration::from_secs(2))
+                .err()
+                .unwrap()
+                .code(),
+            "copy-failed"
+        );
+        let mut small = Command::new("sh");
+        small.args(["-c", "printf verified"]);
+        assert_eq!(
+            run(&mut small, Duration::from_secs(2)).unwrap().stdout,
+            "verified"
+        );
+        let mut timeout = Command::new("sh");
+        timeout.args(["-c", "exec sleep 2"]);
+        assert_eq!(
+            run(&mut timeout, Duration::from_millis(30))
+                .err()
+                .unwrap()
+                .code(),
+            "copy-failed"
+        );
+    }
 
     #[cfg(unix)]
     fn fake_publish(mode: &str) -> (AppResult<KindleSshResult>, tempfile::TempDir) {

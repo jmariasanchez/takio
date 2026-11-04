@@ -102,7 +102,7 @@ fn library_switch_picker_cancel_duplicate_and_late_edit_are_safe(cx: &mut TestAp
     settle(&f.state, cx);
     f.state.read_with(cx, |state, _| {
         assert_eq!((state.library_root(), state.library_epoch()), before);
-        assert!(state.metadata_editing());
+        assert!(state.metadata_editing);
         assert_eq!(state.items.len(), 2);
     });
     assert_eq!(switch_old_catalogue(&f).len(), 2);
@@ -320,7 +320,7 @@ fn library_switch_stale_recovery_destination_never_writes(cx: &mut TestAppContex
         assert!(!destination.exists());
         f.state.read_with(cx, |state, _| {
             assert_eq!(state.status, status);
-            assert!(state.recovery_outcome().is_none());
+            assert!(state.recovery_outcome.is_none());
         });
         assert!(
             !f.window
@@ -357,7 +357,7 @@ fn library_switch_stale_reader_chooser_never_starts_send_or_eject(cx: &mut TestA
         f.state.read_with(cx, |state, _| {
             assert_eq!(state.status, status);
             assert!(state.send_preview().is_none());
-            assert!(state.delivery_report().is_none());
+            assert!(state.delivery_report.is_none());
         });
         assert!(f._temp.path().join("Volumes/Kindle").exists());
     }

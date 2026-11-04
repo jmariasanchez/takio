@@ -45,7 +45,7 @@ apps/desktop-native/
   src/theme.rs         light/dark tokens (system appearance aware)
   src/views/
     workspace.rs       three-pane layout, focus routing
-    sidebar.rs         sections: Library, Trash, Devices; facets
+    sidebar.rs         sections: Library, Trash, Readers; facets
     library_list.rs    uniform_list table, columns, sort, selection
     inspector.rs       cover, metadata, formats, actions
     search.rs          query field with debounce
@@ -215,7 +215,10 @@ In:
   window. Open an existing library or restore to a new disjoint folder without
   replacing the original. Supported legacy defaults retain verified migration.
 - Command palette (Cmd-K) over every action.
-- Native menu bar with the same actions and accelerators.
+- Native menu bar with the same actions and accelerators, generated together with
+  the palette from one command registry. Connected hardware is called a **reader**
+  throughout menus, palette and status copy. **Destination** denotes a filesystem
+  target, including backup folders, or the engine's typed transport target.
 - Light and dark appearance following the system.
 
 Out (remain in CLI/TUI or later cuts): advanced metadata editing, candidate review,

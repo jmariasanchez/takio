@@ -52,7 +52,7 @@ fn native_automatic_backup_enable_reload_mutate_restore_and_disable(cx: &mut Tes
     let (backup, config) = f.state.read_with(cx, |state, _| {
         assert!(!state.status.as_ref().unwrap().is_error);
         assert!(state.automatic_backup().config.enabled);
-        let outcome = state.recovery_outcome().as_ref().unwrap();
+        let outcome = state.recovery_outcome.as_ref().unwrap();
         assert!(outcome.summary.contains("verified"));
         (
             outcome.path.clone(),
@@ -122,7 +122,7 @@ fn native_automatic_backup_enable_reload_mutate_restore_and_disable(cx: &mut Tes
         assert!(!state.status.as_ref().unwrap().is_error);
         assert_eq!(state.library_root(), original_root);
         assert_eq!(
-            state.recovery_outcome().as_ref().unwrap().path,
+            state.recovery_outcome.as_ref().unwrap().path,
             restored.canonicalize().unwrap()
         );
     });
@@ -303,7 +303,7 @@ fn native_automatic_backup_consent_and_destination_cancel_write_nothing(cx: &mut
         }
         assert!(
             f.state
-                .read_with(cx, |s, _| s.automatic_backup_prompt_open() && !s.busy())
+                .read_with(cx, |s, _| s.automatic_backup_prompt_open && !s.busy())
         );
         cx.simulate_prompt_answer(if accept_explanation {
             "Choose existing folder"
@@ -322,7 +322,7 @@ fn native_automatic_backup_consent_and_destination_cancel_write_nothing(cx: &mut
         assert!(
             !f.state
                 .read_with(cx, |s, _| s.automatic_backup().config.enabled
-                    || s.automatic_backup_prompt_open())
+                    || s.automatic_backup_prompt_open)
         );
         assert_eq!(recovery_snapshot(&f), before);
         assert!(
@@ -345,7 +345,7 @@ fn native_automatic_backup_enable_and_disable_keep_verified_copy(cx: &mut TestAp
     settle(&f.state, cx);
     let copy = f.state.read_with(cx, |s, _| {
         assert!(s.automatic_backup().config.enabled);
-        s.recovery_outcome().as_ref().unwrap().path.clone()
+        s.recovery_outcome.as_ref().unwrap().path.clone()
     });
     recovery_assert_copied_books(&f, &copy, 2);
     f.window

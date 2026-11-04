@@ -13,7 +13,7 @@ pub fn humanize_error(code: takio::error::ErrorCode) -> String {
         SourceUnavailable => "The book's file is unavailable. Check that its drive is connected and the file still exists, then try again.".into(),
         CopyFailed => "The copy could not be completed. Check the reader connection, available space, and write permissions before retrying.".into(),
         VerificationFailed => "The copied book could not be verified. Do not rely on this transfer. Check the reader connection and try again.".into(),
-        DestinationFileExists => "A file with that name already exists on the device".into(),
+        DestinationFileExists => "A file with that name already exists on the reader".into(),
         SendReviewChanged => "The compatible attachment changed after review. Review the send again before copying.".into(),
         PrepareSourceUnavailable => "The EPUB source cannot be read. Reconnect its drive and check file permissions, then review preparation again.".into(),
         PrepareSourceChanged => "The EPUB changed after review. Review preparation again before creating a copy.".into(),
@@ -30,7 +30,7 @@ pub fn humanize_error(code: takio::error::ErrorCode) -> String {
         NoCompatibleFormat => "No file this reader can open. KOReader reads EPUB, PDF, MOBI, AZW3, TXT and CBZ. A stock Kindle needs AZW3, MOBI, PDF or TXT.".into(),
         InvalidArguments => "Check the book details and selection, then try again".into(),
         ReaderScanInProgress => "Reader scan is still finishing. Wait for it to stop, then try Eject again.".into(),
-        EjectFailed => "The device could not be ejected".into(),
+        EjectFailed => "The reader could not be ejected".into(),
         AutomaticBackupDestinationOverlap | AutomaticBackupDestinationUnavailable
         | AutomaticBackupDisabled | AutomaticBackupInvalidSettings | AutomaticBackupUnsafeSettings
         | BackupFailed | CandidateCoverChanged | CandidateCoverInvalid | CandidateCoverUnavailable

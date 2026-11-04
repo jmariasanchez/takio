@@ -17,14 +17,15 @@ use takio::delivery::reader_shelf;
 use takio::error::{AppResult, ErrorCode};
 use takio::format::{FormatId, detect_format};
 use takio::import::calibre::import_calibre_library;
-use takio::import::scan::{ImportCounts, ImportOutcome, scan_imports, validate_import_sources};
+use takio::import::scan::{ImportCounts, ImportOutcome, scan_imports};
 use takio::library::catalog::write_catalog;
+use takio::library::diagnostics::integrity_value;
 use takio::library::model::LibraryPatch;
-use takio::library::paths::{LibraryPaths, absolute};
+use takio::library::paths::{LibraryPaths, absolute, validate_import_sources};
 use takio::library::portable;
 use takio::library::store::{
     DuplicatePairReviewRequest, LIBRARY_SCHEMA_VERSION, LibraryStore,
-    ListDuplicateCandidatesRequest, MergeDuplicatePairRequest, VerifyReport,
+    ListDuplicateCandidatesRequest, MergeDuplicatePairRequest,
 };
 use takio::metadata::candidates::{
     CandidateSelection, apply_prepared_metadata_candidate, filename_candidates,
@@ -237,8 +238,8 @@ enum LibraryCommand {
         source_path: PathBuf,
         #[arg(long)]
         title: Option<String>,
-        #[arg(long, default_value = "copy", value_parser = ["copy", "move"])]
-        mode: String,
+        #[arg(long, default_value = "copy", value_enum)]
+        mode: CliImportMode,
     },
     #[command(about = "List every active book")]
     List {
@@ -318,10 +319,10 @@ enum LibraryCommand {
     ImportMany {
         #[arg(long)]
         db: Option<PathBuf>,
-        #[arg(long = "source-path", required = true, num_args = 1..=256)]
+        #[arg(long = "source-path", required = true, num_args = 1..=MAX_BATCH)]
         source_paths: Vec<PathBuf>,
-        #[arg(long, default_value = "copy", value_parser = ["copy", "move"])]
-        mode: String,
+        #[arg(long, default_value = "copy", value_enum)]
+        mode: CliImportMode,
     },
     #[command(about = "Copy and verify selected formats into a destination directory")]
     ExportMany {
@@ -348,12 +349,14 @@ enum LibraryCommand {
     ImportWatch {
         #[arg(long)]
         db: Option<PathBuf>,
-        #[arg(long = "source-path", required = true, num_args = 1..=256)]
+        #[arg(long = "source-path", required = true, num_args = 1..=MAX_BATCH)]
         source_paths: Vec<PathBuf>,
         #[arg(long, default_value_t = 30, value_parser = clap::value_parser!(u64).range(1..=86_400))]
         interval_seconds: u64,
         #[arg(long, value_parser = clap::value_parser!(u64).range(1..=10_000))]
         max_cycles: Option<u64>,
+        #[arg(long, help = "Write completed watch cycles as NDJSON to stderr")]
+        progress: bool,
     },
     #[command(about = "Publish a JSON, CSV, or HTML catalogue of the library")]
     Catalog {
@@ -372,7 +375,7 @@ enum LibraryCommand {
         query: String,
         #[arg(long = "id")]
         ids: Vec<String>,
-        #[arg(long, default_value_t = 256)]
+        #[arg(long, default_value_t = MAX_BATCH)]
         limit: usize,
         #[arg(long, default_value_t = 60)]
         timeout_seconds: u64,
@@ -383,7 +386,7 @@ enum LibraryCommand {
         db: Option<PathBuf>,
         #[arg(long = "id")]
         ids: Vec<String>,
-        #[arg(long, default_value_t = 256)]
+        #[arg(long, default_value_t = MAX_BATCH)]
         limit: usize,
         #[arg(long, default_value_t = 60)]
         timeout_seconds: u64,
@@ -728,7 +731,7 @@ enum JobsCommand {
     Drain {
         #[arg(long)]
         db: Option<PathBuf>,
-        #[arg(long, default_value_t = 256)]
+        #[arg(long, default_value_t = MAX_BATCH)]
         max_jobs: usize,
         #[arg(long, default_value = "default")]
         profile: String,
@@ -1083,8 +1086,8 @@ fn metadata_candidates(command: MetadataCandidatesCommand, library: Option<&str>
                         item,
                         online,
                         timeout,
-                        canceled,
                         &candidate_root,
+                        canceled,
                     )?
                     .into_iter()
                     .map(|candidate| {
@@ -1276,11 +1279,7 @@ fn library(command: LibraryCommand, library: Option<&str>) -> AppResult<()> {
             title,
             mode,
         } => {
-            let mode = match mode.as_str() {
-                "copy" => takio::library::model::ImportMode::Copy,
-                "move" => takio::library::model::ImportMode::Move,
-                _ => return Err(takio::app_error!("invalid-arguments")),
-            };
+            let mode = mode.into();
             let paths = LibraryPaths::resolve(library, db.as_deref())?;
             let mut store = LibraryStore::create_or_migrate(paths)?;
             print_success(store.import_with_outcome(&source_path, title.as_deref(), mode)?)
@@ -1325,11 +1324,7 @@ fn library(command: LibraryCommand, library: Option<&str>) -> AppResult<()> {
             ids,
             patch_json,
         } => {
-            if ids.is_empty()
-                || ids.len() > 256
-                || ids.iter().any(|id| id.trim().is_empty())
-                || ids.iter().collect::<std::collections::HashSet<_>>().len() != ids.len()
-            {
+            if ids.is_empty() || !valid_selection(&ids, MAX_BATCH) {
                 return Err(takio::app_error!("invalid-arguments"));
             }
             let patch: LibraryPatch = serde_json::from_value(read_json(&patch_json)?)
@@ -1402,18 +1397,13 @@ fn library(command: LibraryCommand, library: Option<&str>) -> AppResult<()> {
             source_paths,
             mode,
         } => {
-            if source_paths.is_empty() || source_paths.len() > 256 {
+            if source_paths.is_empty() || source_paths.len() > MAX_BATCH {
                 return Err(takio::app_error!("invalid-arguments"));
             }
-            let mode = match mode.as_str() {
-                "copy" => takio::library::model::ImportMode::Copy,
-                "move" => takio::library::model::ImportMode::Move,
-                _ => return Err(takio::app_error!("invalid-arguments")),
-            };
+            let mode = mode.into();
             let paths = LibraryPaths::resolve(library, db.as_deref())?;
             validate_import_sources(&paths, &source_paths)?;
-            let mut store = LibraryStore::create_or_migrate(paths.clone())?;
-            validate_import_sources(&paths, &source_paths)?;
+            let mut store = LibraryStore::create_or_migrate(paths)?;
             print_success(scan_imports(
                 &mut store,
                 &source_paths,
@@ -1431,7 +1421,10 @@ fn library(command: LibraryCommand, library: Option<&str>) -> AppResult<()> {
         LibraryCommand::Remove { db, id } => {
             let paths = LibraryPaths::resolve(library, db.as_deref())?;
             let mut store = LibraryStore::create_or_migrate(paths)?;
-            print_success(store.remove(&id)?)
+            // Keep the historical library-remove wire envelope at the adapter boundary.
+            print_success(
+                json!({"item":store.trash(&id)?,"cleanupPending":false,"cleanupPendingPaths":[]}),
+            )
         }
         LibraryCommand::ImportCalibre { db, library_root } => {
             let paths = LibraryPaths::resolve(library, db.as_deref())?;
@@ -1502,8 +1495,9 @@ fn library(command: LibraryCommand, library: Option<&str>) -> AppResult<()> {
             source_paths,
             interval_seconds,
             max_cycles,
+            progress,
         } => {
-            if source_paths.is_empty() || source_paths.len() > 256 {
+            if source_paths.is_empty() || source_paths.len() > MAX_BATCH {
                 return Err(takio::app_error!("invalid-arguments"));
             }
             import_watch(
@@ -1512,6 +1506,7 @@ fn library(command: LibraryCommand, library: Option<&str>) -> AppResult<()> {
                 &source_paths,
                 interval_seconds,
                 max_cycles,
+                progress,
             )
         }
     }
@@ -1525,11 +1520,11 @@ fn custom_columns(command: CustomColumnsCommand, library: Option<&str>) -> AppRe
         | CustomColumnsCommand::Remove { db, .. } => db.as_deref(),
     };
     let paths = LibraryPaths::resolve(library, database)?;
-    let mut store = if matches!(command, CustomColumnsCommand::List { .. }) {
-        LibraryStore::open_read_only(paths)?
-    } else {
-        LibraryStore::create_or_migrate(paths)?
-    };
+    if matches!(command, CustomColumnsCommand::List { .. }) {
+        let store = LibraryStore::open_read_only(paths)?;
+        return print_success(json!({"definitions":store.list_custom_column_definitions()?}));
+    }
+    let mut store = LibraryStore::create_or_migrate(paths)?;
     match command {
         CustomColumnsCommand::List { .. } => {
             print_success(json!({"definitions":store.list_custom_column_definitions()?}))
@@ -1623,9 +1618,26 @@ fn library_duplicates(command: DuplicateCommand, library: Option<&str>) -> AppRe
     }
 }
 
+const MAX_BATCH: usize = 256;
+
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum CliImportMode {
+    Copy,
+    Move,
+}
+
+impl From<CliImportMode> for takio::library::model::ImportMode {
+    fn from(mode: CliImportMode) -> Self {
+        match mode {
+            CliImportMode::Copy => Self::Copy,
+            CliImportMode::Move => Self::Move,
+        }
+    }
+}
+
 fn valid_selection(ids: &[String], limit: usize) -> bool {
     limit > 0
-        && limit <= 256
+        && limit <= MAX_BATCH
         && ids.len() <= limit
         && ids.iter().all(|id| !id.trim().is_empty())
         && ids.iter().collect::<std::collections::HashSet<_>>().len() == ids.len()
@@ -1673,19 +1685,11 @@ fn content_search(
             outcomes.push(json!({"status":"missing","itemId":item_id}));
             continue;
         };
-        let Some(format) = item.formats.iter().find(|format| {
-            matches!(
-                format.format,
-                FormatId::Kepub
-                    | FormatId::Epub
-                    | FormatId::Pdf
-                    | FormatId::Mobi
-                    | FormatId::Azw3
-                    | FormatId::Docx
-                    | FormatId::Html
-                    | FormatId::Txt
-            )
-        }) else {
+        let Some(format) = item
+            .formats
+            .iter()
+            .find(|format| format.format.is_text_extractable())
+        else {
             outcomes.push(
                 json!({"status":"skipped","itemId":item_id,"code":ErrorCode::UnsupportedFormat}),
             );
@@ -1733,17 +1737,7 @@ fn validate_library_formats(
         };
         for format in item.formats {
             let result = metadata::extract(&format.source_path, timeout).and_then(|_| {
-                if matches!(
-                    format.format,
-                    FormatId::Kepub
-                        | FormatId::Epub
-                        | FormatId::Pdf
-                        | FormatId::Mobi
-                        | FormatId::Azw3
-                        | FormatId::Docx
-                        | FormatId::Html
-                        | FormatId::Txt
-                ) {
+                if format.format.is_text_extractable() {
                     maintenance::extract_text(&format.source_path, timeout).map(|_| "checked")
                 } else {
                     Ok("not-applicable")
@@ -1822,6 +1816,46 @@ fn decode_request<T: DeserializeOwned>(value: &Value) -> AppResult<T> {
     serde_json::from_value(value.clone()).map_err(|_| takio::app_error!("invalid-arguments"))
 }
 
+fn encode_response(value: impl serde::Serialize) -> AppResult<Value> {
+    serde_json::to_value(value).map_err(|_| takio::app_error!("storage-unavailable"))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ItemIdRequest {
+    #[serde(deserialize_with = "nonempty_item_id")]
+    id: String,
+}
+
+fn nonempty_item_id<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<String, D::Error> {
+    let id = String::deserialize(deserializer)?;
+    if id.is_empty() {
+        return Err(serde::de::Error::custom("item id must not be empty"));
+    }
+    Ok(id)
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct UpdateRequest {
+    id: String,
+    patch: LibraryPatch,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RemoveFormatRequest {
+    id: String,
+    format: FormatId,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CoverSetRequest {
+    id: String,
+    source_path: PathBuf,
+}
+
 fn replace_format_request(
     store: &mut LibraryStore,
     request: ReplaceFormatRequest,
@@ -1888,12 +1922,12 @@ fn library_cover(command: CoverCommand, library: Option<&str>) -> AppResult<()> 
         } => {
             let paths = LibraryPaths::resolve(library, db.as_deref())?;
             let mut store = LibraryStore::create_or_migrate(paths)?;
-            print_success(json!({"item":store.set_cover(&id, &source_path)?}))
+            print_success(store.set_cover(&id, &source_path)?)
         }
         CoverCommand::Remove { db, id } => {
             let paths = LibraryPaths::resolve(library, db.as_deref())?;
             let mut store = LibraryStore::create_or_migrate(paths)?;
-            print_success(json!({"item":store.remove_cover(&id)?}))
+            print_success(store.remove_cover(&id)?)
         }
     }
 }
@@ -1925,22 +1959,22 @@ fn library_trash(command: TrashCommand, library: Option<&str>) -> AppResult<()> 
             )
         }
         TrashCommand::Move { db, request_json } => {
-            let request = read_json(&request_json)?;
-            let id = request_id(&request)?;
+            let request: ItemIdRequest = decode_request(&read_json(&request_json)?)?;
+            let id = &request.id;
             let paths = LibraryPaths::resolve(library, db.as_deref())?;
             let mut store = LibraryStore::create_or_migrate(paths)?;
             print_success(json!({"item":store.trash(id)?}))
         }
         TrashCommand::Restore { db, request_json } => {
-            let request = read_json(&request_json)?;
-            let id = request_id(&request)?;
+            let request: ItemIdRequest = decode_request(&read_json(&request_json)?)?;
+            let id = &request.id;
             let paths = LibraryPaths::resolve(library, db.as_deref())?;
             let mut store = LibraryStore::create_or_migrate(paths)?;
             print_success(json!({"item":store.restore(id)?}))
         }
         TrashCommand::Purge { db, request_json } => {
-            let request = read_json(&request_json)?;
-            let id = request_id(&request)?;
+            let request: ItemIdRequest = decode_request(&read_json(&request_json)?)?;
+            let id = &request.id;
             let paths = LibraryPaths::resolve(library, db.as_deref())?;
             let mut store = LibraryStore::create_or_migrate(paths)?;
             print_success(store.purge(id)?)
@@ -2002,61 +2036,41 @@ fn service_request(store: &mut LibraryStore, request: &Value) -> AppResult<Value
             if args.as_object().is_none_or(|args| !args.is_empty()) {
                 return Err(takio::app_error!("invalid-arguments"));
             }
-            serde_json::to_value(store.list_custom_column_definitions()?)
-                .map_err(|_| takio::app_error!("storage-unavailable"))
+            encode_response(store.list_custom_column_definitions()?)
         }
         "library_custom_columns_create" => {
             let request: ColumnLabelRequest = decode_request(args)?;
-            serde_json::to_value(
-                store.create_custom_column_definition(&request.key, &request.label)?,
-            )
-            .map_err(|_| takio::app_error!("storage-unavailable"))
+            encode_response(store.create_custom_column_definition(&request.key, &request.label)?)
         }
         "library_custom_columns_rename" => {
             let request: ColumnLabelRequest = decode_request(args)?;
-            serde_json::to_value(
-                store.rename_custom_column_definition(&request.key, &request.label)?,
-            )
-            .map_err(|_| takio::app_error!("storage-unavailable"))
+            encode_response(store.rename_custom_column_definition(&request.key, &request.label)?)
         }
         "library_custom_columns_remove" => {
             let request: ColumnKeyRequest = decode_request(args)?;
-            serde_json::to_value(store.remove_custom_column_definition(&request.key)?)
-                .map_err(|_| takio::app_error!("storage-unavailable"))
+            encode_response(store.remove_custom_column_definition(&request.key)?)
         }
         "library_duplicates_list" => {
-            let request = serde_json::from_value::<ListDuplicateCandidatesRequest>(args.clone())
-                .map_err(|_| takio::app_error!("invalid-arguments"))?;
-            serde_json::to_value(store.list_duplicate_candidates(&request)?)
-                .map_err(|_| takio::app_error!("storage-unavailable"))
+            let request: ListDuplicateCandidatesRequest = decode_request(args)?;
+            encode_response(store.list_duplicate_candidates(&request)?)
         }
         "library_duplicates_keep" => {
-            let request = serde_json::from_value::<DuplicatePairReviewRequest>(args.clone())
-                .map_err(|_| takio::app_error!("invalid-arguments"))?;
+            let request: DuplicatePairReviewRequest = decode_request(args)?;
             store.keep_duplicate_pair(&request)?;
             Ok(Value::Null)
         }
         "library_duplicates_reopen" => {
-            let request = serde_json::from_value::<DuplicatePairReviewRequest>(args.clone())
-                .map_err(|_| takio::app_error!("invalid-arguments"))?;
+            let request: DuplicatePairReviewRequest = decode_request(args)?;
             store.reopen_duplicate_pair(&request)?;
             Ok(Value::Null)
         }
         "library_duplicates_merge" => {
-            let request = serde_json::from_value::<MergeDuplicatePairRequest>(args.clone())
-                .map_err(|_| takio::app_error!("invalid-arguments"))?;
-            serde_json::to_value(store.merge_duplicate_pair(&request)?)
-                .map_err(|_| takio::app_error!("storage-unavailable"))
+            let request: MergeDuplicatePairRequest = decode_request(args)?;
+            encode_response(store.merge_duplicate_pair(&request)?)
         }
         "library_update" => {
-            let id = request_id(args)?;
-            let patch = serde_json::from_value::<LibraryPatch>(
-                args.get("patch")
-                    .cloned()
-                    .ok_or_else(|| takio::app_error!("invalid-arguments"))?,
-            )
-            .map_err(|_| takio::app_error!("invalid-arguments"))?;
-            Ok(json!({"item":store.update(id, patch)?}))
+            let request: UpdateRequest = decode_request(args)?;
+            Ok(json!({"item":store.update(&request.id, request.patch)?}))
         }
         "library_attach_format" => {
             let request: AttachFormatRequest = decode_request(args)?;
@@ -2068,60 +2082,36 @@ fn service_request(store: &mut LibraryStore, request: &Value) -> AppResult<Value
             )
         }
         "library_remove_format" => {
-            let id = request_id(args)?;
-            let format = serde_json::from_value::<FormatId>(
-                args.get("format")
-                    .cloned()
-                    .ok_or_else(|| takio::app_error!("invalid-arguments"))?,
-            )
-            .map_err(|_| takio::app_error!("invalid-arguments"))?;
-            serde_json::to_value(store.remove_format(id, format)?)
-                .map_err(|_| takio::app_error!("storage-unavailable"))
+            let request: RemoveFormatRequest = decode_request(args)?;
+            encode_response(store.remove_format(&request.id, request.format)?)
         }
         "library_cover_set" => {
-            let id = request_id(args)?;
-            let path = args
-                .get("sourcePath")
-                .and_then(Value::as_str)
-                .ok_or_else(|| takio::app_error!("invalid-arguments"))?;
-            Ok(json!({"item":store.set_cover(id, Path::new(path))?}))
+            let request: CoverSetRequest = decode_request(args)?;
+            encode_response(store.set_cover(&request.id, &request.source_path)?)
         }
         "library_cover_remove" => {
-            let id = request_id(args)?;
-            Ok(json!({"item":store.remove_cover(id)?}))
+            let request: ItemIdRequest = decode_request(args)?;
+            let id = &request.id;
+            encode_response(store.remove_cover(id)?)
         }
         "library_trash" => {
-            let id = request_id(args)?;
+            let request: ItemIdRequest = decode_request(args)?;
+            let id = &request.id;
             Ok(json!({"item":store.trash(id)?}))
         }
         "library_restore" => {
-            let id = request_id(args)?;
+            let request: ItemIdRequest = decode_request(args)?;
+            let id = &request.id;
             Ok(json!({"item":store.restore(id)?}))
         }
         "library_purge" => {
-            let id = request_id(args)?;
-            serde_json::to_value(store.purge(id)?)
-                .map_err(|_| takio::app_error!("storage-unavailable"))
+            let request: ItemIdRequest = decode_request(args)?;
+            let id = &request.id;
+            encode_response(store.purge(id)?)
         }
         "library_replace_format" => replace_format_request(store, decode_request(args)?),
         _ => Err(takio::app_error!("invalid-arguments")),
     }
-}
-
-fn integrity_value(report: &VerifyReport) -> Value {
-    json!({
-        "schemaVersion":report.schema_version,
-        "items":{
-            "total":report.active_items + report.trashed_items,
-            "active":report.active_items,
-            "trashed":report.trashed_items
-        },
-        "formats":{
-            "total":report.managed_formats + report.referenced_formats,
-            "managed":report.managed_formats,
-            "referenced":report.referenced_formats
-        }
-    })
 }
 
 fn import_watch(
@@ -2130,58 +2120,80 @@ fn import_watch(
     source_paths: &[PathBuf],
     interval_seconds: u64,
     max_cycles: Option<u64>,
+    progress: bool,
 ) -> AppResult<()> {
-    use signal_hook::consts::signal::{SIGINT, SIGTERM};
-    use signal_hook::iterator::Signals;
-    use std::sync::mpsc;
-
     let paths = LibraryPaths::resolve(library, db)?;
     validate_import_sources(&paths, source_paths)?;
-    let mut store = LibraryStore::create_or_migrate(paths.clone())?;
-    let mut signals = Signals::new([SIGINT, SIGTERM])?;
-    let handle = signals.handle();
-    let (sender, receiver) = mpsc::sync_channel(1);
-    let signal_thread = std::thread::spawn(move || {
-        if signals.forever().next().is_some() {
-            let _ = sender.try_send(());
-        }
-    });
+    let mut store = LibraryStore::create_or_migrate(paths)?;
+    let signals = takio::metadata::reconcile::CancellationSignals::install()?;
+    let canceled = signals.flag();
+    let result = watch_cycles(
+        &mut store,
+        source_paths,
+        max_cycles,
+        &canceled,
+        |cycles, counts| {
+            if progress {
+                let mut output = std::io::stderr().lock();
+                writeln!(
+                    output,
+                    "{}",
+                    json!({"event":"watch-cycle-complete","cycles":cycles,"counts":counts})
+                )?;
+                output.flush()?;
+            }
+            if max_cycles.is_some_and(|maximum| cycles >= maximum) {
+                return Ok(());
+            }
+            let deadline = std::time::Instant::now() + Duration::from_secs(interval_seconds);
+            while !canceled.load(std::sync::atomic::Ordering::Acquire) {
+                let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+                if remaining.is_zero() {
+                    break;
+                }
+                std::thread::sleep(remaining.min(Duration::from_millis(20)));
+            }
+            Ok(())
+        },
+    )?;
+    print_success(result)
+}
 
+fn watch_cycles(
+    store: &mut LibraryStore,
+    source_paths: &[PathBuf],
+    max_cycles: Option<u64>,
+    canceled: &std::sync::atomic::AtomicBool,
+    mut between_cycles: impl FnMut(u64, &ImportCounts) -> AppResult<()>,
+) -> AppResult<Value> {
+    let is_canceled = || canceled.load(std::sync::atomic::Ordering::Acquire);
     let mut cycles = 0_u64;
     let mut counts = ImportCounts::default();
     let mut stopped = false;
     loop {
-        validate_import_sources(&paths, source_paths)?;
         let scan = scan_imports(
-            &mut store,
+            store,
             source_paths,
             takio::library::model::ImportMode::Copy,
             takio::import::scan::ImportObservation::Watch,
-            || receiver.try_recv().is_ok(),
+            is_canceled,
         )?;
         cycles += 1;
         counts.add(scan.counts);
-        if scan.stopped || receiver.try_recv().is_ok() {
+        if scan.stopped || is_canceled() {
+            stopped = true;
+            break;
+        }
+        between_cycles(cycles, &counts)?;
+        if is_canceled() {
             stopped = true;
             break;
         }
         if max_cycles.is_some_and(|maximum| cycles >= maximum) {
             break;
         }
-        match receiver.recv_timeout(Duration::from_secs(interval_seconds)) {
-            Ok(()) => {
-                stopped = true;
-                break;
-            }
-            Err(mpsc::RecvTimeoutError::Timeout) => {}
-            Err(mpsc::RecvTimeoutError::Disconnected) => break,
-        }
     }
-    handle.close();
-    signal_thread
-        .join()
-        .map_err(|_| takio::app_error!("storage-unavailable"))?;
-    print_success(json!({"cycles":cycles,"stopped":stopped,"counts":counts}))
+    Ok(json!({"cycles":cycles,"stopped":stopped,"counts":counts}))
 }
 
 fn export_many(
@@ -2254,7 +2266,7 @@ fn jobs(command: JobsCommand, library: Option<&str>) -> AppResult<()> {
             let mut store = JobStore::open(&path)?;
             let job = store.run_next(profile.parse()?, Duration::from_secs(timeout_seconds))?;
             let job = job
-                .map(|job| reconcile_job_attachment(&store, library, job))
+                .map(|job| reconcile_job_attachment(&mut store, library, job))
                 .transpose()?;
             print_success(json!({"job":job}))
         }
@@ -2273,7 +2285,7 @@ fn jobs(command: JobsCommand, library: Option<&str>) -> AppResult<()> {
             )?;
             let values = values
                 .into_iter()
-                .map(|job| reconcile_job_attachment(&store, library, job))
+                .map(|job| reconcile_job_attachment(&mut store, library, job))
                 .collect::<AppResult<Vec<_>>>()?;
             print_success(json!({"jobs":values,"counts":{"processed":values.len()}}))
         }
@@ -2282,39 +2294,24 @@ fn jobs(command: JobsCommand, library: Option<&str>) -> AppResult<()> {
                 return Err(takio::app_error!("invalid-arguments"));
             }
             let path = job_path(library, None)?;
-            let store = JobStore::open(&path)?;
+            let mut store = JobStore::open(&path)?;
             let job = store.retry_attachment(&id)?;
-            print_success(json!({"job":reconcile_job_attachment(&store, library, job)?}))
+            print_success(json!({"job":reconcile_job_attachment(&mut store, library, job)?}))
         }
     }
 }
 
 fn reconcile_job_attachment(
-    jobs: &JobStore,
+    jobs: &mut JobStore,
     library: Option<&str>,
     job: takio::conversion::jobs::ConversionJob,
 ) -> AppResult<takio::conversion::jobs::ConversionJob> {
     if job.attachment.as_ref().map(|value| value.status) != Some(JobAttachmentStatus::Pending) {
         return Ok(job);
     }
-    let Some(item_id) = job.library_item_id.as_deref() else {
-        return jobs.finish_attachment(&job.id, Some(ErrorCode::InvalidAttachment));
-    };
-    let Some(artifact) = job.artifact.as_ref() else {
-        return jobs.finish_attachment(&job.id, Some(ErrorCode::ArtifactInvalid));
-    };
     let paths = LibraryPaths::resolve(library, None)?;
-    let result = LibraryStore::create_or_migrate(paths).and_then(|mut store| {
-        store.attach_verified_artifact(
-            item_id,
-            &artifact.path,
-            job.output_format,
-            artifact.bytes,
-            &artifact.sha256,
-        )
-    });
-    match result {
-        Ok(_) => jobs.finish_attachment(&job.id, None),
+    match LibraryStore::create_or_migrate(paths) {
+        Ok(mut store) => jobs.reconcile_attachment(&mut store, job),
         Err(error) => jobs.finish_attachment(&job.id, Some(error.kind())),
     }
 }
@@ -2476,7 +2473,7 @@ fn destination(command: DestinationCommand, library: Option<&str>) -> AppResult<
                 identity_file,
                 timeout: Duration::from_millis(timeout_ms),
             };
-            print_success(kindle_ssh::send(&id, &source.source_path, &destination)?)
+            print_success(kindle_ssh::send(&destination, &id, &source.source_path)?)
         }
     }
 }
@@ -2524,13 +2521,6 @@ fn read_json(input: &str) -> AppResult<Value> {
         return Err(takio::app_error!("invalid-arguments"));
     }
     serde_json::from_slice(&bytes).map_err(|_| takio::app_error!("invalid-arguments"))
-}
-fn request_id(value: &Value) -> AppResult<&str> {
-    value
-        .get("id")
-        .and_then(Value::as_str)
-        .filter(|id| !id.is_empty())
-        .ok_or_else(|| takio::app_error!("invalid-arguments"))
 }
 fn job_path(library: Option<&str>, db: Option<&Path>) -> AppResult<PathBuf> {
     if db.is_some() && library.is_some() {
@@ -2776,6 +2766,82 @@ mod tests {
     use super::*;
 
     #[test]
+    fn batch_selection_and_import_modes_have_one_validation_contract() {
+        let ids = (0..MAX_BATCH)
+            .map(|index| format!("book-{index}"))
+            .collect::<Vec<_>>();
+        assert!(valid_selection(&ids, MAX_BATCH));
+        assert!(!valid_selection(&ids, MAX_BATCH - 1));
+        assert!(!valid_selection(&ids, MAX_BATCH + 1));
+        assert!(!valid_selection(&["book".into(), "book".into()], MAX_BATCH));
+        assert!(!valid_selection(&[" ".into()], MAX_BATCH));
+        assert!(!valid_selection(&[], 0));
+        for command in ["import", "import-many"] {
+            for mode in ["copy", "move"] {
+                assert!(
+                    Cli::try_parse_from([
+                        "takio",
+                        "library",
+                        command,
+                        "--source-path",
+                        "book.txt",
+                        "--mode",
+                        mode
+                    ])
+                    .is_ok()
+                );
+            }
+            assert!(
+                Cli::try_parse_from([
+                    "takio",
+                    "library",
+                    command,
+                    "--source-path",
+                    "book.txt",
+                    "--mode",
+                    "reference"
+                ])
+                .is_err()
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn import_watch_revalidates_sources_between_cycles() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths =
+            LibraryPaths::resolve(None, Some(&temp.path().join("library/library.sqlite"))).unwrap();
+        let mut store = LibraryStore::create_or_migrate(paths.clone()).unwrap();
+        let source = temp.path().join("watch");
+        std::fs::create_dir(&source).unwrap();
+        std::fs::write(source.join("book.txt"), "book").unwrap();
+        let canceled = std::sync::atomic::AtomicBool::new(false);
+        let error = watch_cycles(
+            &mut store,
+            std::slice::from_ref(&source),
+            Some(3),
+            &canceled,
+            |cycle, counts| {
+                assert_eq!(cycle, 1);
+                assert_eq!(counts.imported, 1);
+                std::fs::remove_dir_all(&source).unwrap();
+                std::os::unix::fs::symlink(&paths.items, &source).unwrap();
+                Ok(())
+            },
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), ErrorCode::InvalidArguments);
+        let items = store.list(false).unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].formats.len(), 1);
+        assert_eq!(
+            std::fs::read_to_string(&items[0].formats[0].source_path).unwrap(),
+            "book"
+        );
+    }
+
+    #[test]
     fn typed_query_rejects_unknown_missing_null_and_out_of_range_fields() {
         let temp = tempfile::tempdir().unwrap();
         let paths = LibraryPaths::resolve(None, Some(&temp.path().join("library.sqlite"))).unwrap();
@@ -2858,6 +2924,111 @@ mod tests {
             );
         }
         assert!(store.list_custom_column_definitions().unwrap().is_empty());
+    }
+
+    #[test]
+    fn destructive_requests_reject_typos_without_mutating_books_or_files() {
+        let temp = tempfile::tempdir().unwrap();
+        let database = temp.path().join("library/library.sqlite");
+        let paths = LibraryPaths::resolve(None, Some(&database)).unwrap();
+        let mut store = LibraryStore::create_or_migrate(paths).unwrap();
+        let source = temp.path().join("book.txt");
+        std::fs::write(&source, "preserve me").unwrap();
+        let item = store
+            .import(&source, None, takio::library::model::ImportMode::Copy)
+            .unwrap();
+        for trashed in [false, true] {
+            if trashed {
+                store.trash(&item.id).unwrap();
+            }
+            let before = serde_json::to_value(store.get(&item.id).unwrap()).unwrap();
+            for (command, args) in [
+                ("library_trash", json!({"id":item.id,"dryRnu":true})),
+                ("library_restore", json!({"id":item.id,"dryRnu":true})),
+                ("library_purge", json!({"id":item.id,"confrim":false})),
+                ("library_cover_remove", json!({"id":item.id,"dryRnu":true})),
+                (
+                    "library_cover_set",
+                    json!({"id":item.id,"sourcePath":source,"dryRnu":true}),
+                ),
+                (
+                    "library_remove_format",
+                    json!({"id":item.id,"format":"txt","dryRnu":true}),
+                ),
+                (
+                    "library_update",
+                    json!({"id":item.id,"patch":{"title":"changed"},"dryRnu":true}),
+                ),
+            ] {
+                assert_eq!(
+                    service_request(&mut store, &json!({"command":command,"args":args}))
+                        .unwrap_err()
+                        .kind(),
+                    ErrorCode::InvalidArguments,
+                    "{command}"
+                );
+                assert_eq!(
+                    serde_json::to_value(store.get(&item.id).unwrap()).unwrap(),
+                    before
+                );
+            }
+            for command in [
+                TrashCommand::Move {
+                    db: Some(database.clone()),
+                    request_json: json!({"id":item.id,"dryRnu":true}).to_string(),
+                },
+                TrashCommand::Restore {
+                    db: Some(database.clone()),
+                    request_json: json!({"id":item.id,"dryRnu":true}).to_string(),
+                },
+                TrashCommand::Purge {
+                    db: Some(database.clone()),
+                    request_json: json!({"id":item.id,"confrim":false}).to_string(),
+                },
+            ] {
+                assert_eq!(
+                    library_trash(command, None).unwrap_err().kind(),
+                    ErrorCode::InvalidArguments
+                );
+                assert_eq!(
+                    serde_json::to_value(store.get(&item.id).unwrap()).unwrap(),
+                    before
+                );
+            }
+            let current = store.get(&item.id).unwrap().unwrap();
+            assert_eq!(
+                std::fs::read_to_string(&current.formats[0].source_path).unwrap(),
+                "preserve me"
+            );
+        }
+    }
+
+    #[test]
+    fn invalid_trash_requests_do_not_create_a_library() {
+        let temp = tempfile::tempdir().unwrap();
+        let database = temp.path().join("missing/library.sqlite");
+        for request in [json!({"id":""}), json!({"id":"book","dryRnu":true})] {
+            for command in [
+                TrashCommand::Move {
+                    db: Some(database.clone()),
+                    request_json: request.to_string(),
+                },
+                TrashCommand::Restore {
+                    db: Some(database.clone()),
+                    request_json: request.to_string(),
+                },
+                TrashCommand::Purge {
+                    db: Some(database.clone()),
+                    request_json: request.to_string(),
+                },
+            ] {
+                assert_eq!(
+                    library_trash(command, None).unwrap_err().kind(),
+                    ErrorCode::InvalidArguments
+                );
+                assert!(!database.parent().unwrap().exists());
+            }
+        }
     }
 
     #[test]

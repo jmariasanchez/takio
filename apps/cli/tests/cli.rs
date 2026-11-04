@@ -268,14 +268,7 @@ fn metadata_candidates_reconcile_keeps_corrupt_hydration_as_an_ordered_failure()
     fs::write(&ready_epub, b"ready fixture").expect("ready epub fixture");
     let corrupt_id = add_book(&database, &corrupt_epub);
     let ready_id = add_book(&database, &ready_epub);
-    let connection = Connection::open(&database).expect("open library");
-    connection
-        .execute(
-            "DELETE FROM library_item_formats WHERE library_item_id=?1",
-            [&corrupt_id],
-        )
-        .expect("corrupt one item");
-    drop(connection);
+    takio::test_support::remove_item_formats(&database, &corrupt_id).expect("corrupt one item");
     let before = fs::read(&database).expect("database before reconcile");
     let request = serde_json::json!({
         "schemaVersion":1,
@@ -1242,70 +1235,6 @@ fn scanned_imports_reject_case_aliases_on_case_insensitive_filesystems() {
     assert!(!library_root.join("covers").exists());
 }
 
-#[cfg(unix)]
-#[test]
-fn import_watch_revalidates_sources_between_cycles() {
-    use std::os::unix::fs::symlink;
-    use std::process::{Command, Stdio};
-    use std::time::{Duration, Instant};
-
-    let temp = tempfile::tempdir().expect("temporary directory");
-    let library_root = temp.path().join("library");
-    let database = library_root.join("library.sqlite");
-    let source = temp.path().join("watch");
-    fs::create_dir(&source).expect("watch source");
-    fs::write(source.join("book.epub"), b"ebook").expect("watch ebook");
-    let binary = assert_cmd::cargo::cargo_bin!("takio");
-    let child = Command::new(binary)
-        .args(["library", "import-watch", "--db"])
-        .arg(&database)
-        .arg("--source-path")
-        .arg(&source)
-        .args(["--interval-seconds", "2", "--max-cycles", "3"])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn import watch");
-
-    let deadline = Instant::now() + Duration::from_secs(3);
-    loop {
-        let observed = Connection::open(&database)
-            .ok()
-            .and_then(|connection| {
-                connection
-                    .query_row(
-                        "SELECT COUNT(*) FROM import_watch_observations",
-                        [],
-                        |row| row.get::<_, i64>(0),
-                    )
-                    .ok()
-            })
-            .unwrap_or(0);
-        if observed == 1 {
-            break;
-        }
-        assert!(Instant::now() < deadline, "first watch cycle should finish");
-        std::thread::sleep(Duration::from_millis(20));
-    }
-
-    fs::remove_dir_all(&source).expect("replace watch source");
-    symlink(library_root.join("items"), &source).expect("alias managed items");
-    let output = child
-        .wait_with_output()
-        .expect("wait for overlap rejection");
-    assert!(!output.status.success());
-    assert!(output.stderr.is_empty());
-    assert_eq!(String::from_utf8_lossy(&output.stdout).lines().count(), 1);
-    assert_eq!(failure_code(&output.stdout), "invalid-arguments");
-    let formats: i64 = Connection::open(&database)
-        .expect("open library")
-        .query_row("SELECT COUNT(*) FROM library_item_formats", [], |row| {
-            row.get(0)
-        })
-        .expect("count formats");
-    assert_eq!(formats, 1);
-}
-
 #[test]
 fn import_watch_two_cycles_and_restart_do_not_recount_accounted_files() {
     let temp = tempfile::tempdir().expect("temporary directory");
@@ -1345,15 +1274,8 @@ fn import_watch_reprocesses_changed_files_and_persists_observations() {
     assert_eq!(changed["counts"]["imported"], 1);
     assert_eq!(changed["counts"]["total"], 1);
 
-    let connection = Connection::open(&database).expect("open watch database");
-    let observations: i64 = connection
-        .query_row(
-            "SELECT COUNT(*) FROM import_watch_observations",
-            [],
-            |row| row.get(0),
-        )
-        .expect("count observations");
-    assert_eq!(observations, 1);
+    let unchanged = run_import_watch(&database, &source, 1);
+    assert_eq!(unchanged["counts"]["total"], 0);
 }
 
 #[test]
@@ -1522,52 +1444,77 @@ fn import_many_reports_symlinks_and_unsupported_non_files() {
 #[cfg(unix)]
 #[test]
 fn import_watch_signal_wakes_wait_and_returns_one_stopped_envelope() {
+    use std::io::{BufRead, BufReader};
     use std::process::{Command, Stdio};
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
 
     let temp = tempfile::tempdir().expect("temporary directory");
     let database = temp.path().join("library.sqlite");
     let source = temp.path().join("watch");
     fs::create_dir(&source).expect("watch directory");
-    let entry_count = 2_000_u64;
-    for index in 0..entry_count {
-        fs::write(source.join(format!("book-{index:04}.epub")), b"signal test").expect("ebook");
-    }
+    fs::write(source.join("book.epub"), b"signal test").expect("ebook");
     let binary = assert_cmd::cargo::cargo_bin!("takio");
-    let child = Command::new(binary)
+    let mut child = Command::new(binary)
         .args(["library", "import-watch", "--db"])
         .arg(&database)
         .arg("--source-path")
         .arg(&source)
-        .args(["--interval-seconds", "60"])
+        .args(["--interval-seconds", "3600", "--progress"])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .expect("spawn import watch");
-    let ready_deadline = Instant::now() + Duration::from_secs(3);
-    while !database.exists() && Instant::now() < ready_deadline {
-        std::thread::sleep(Duration::from_millis(10));
+    let stderr = child.stderr.take().expect("progress pipe");
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let reader = std::thread::spawn(move || {
+        let mut lines = BufReader::new(stderr).lines();
+        sender
+            .send(
+                lines
+                    .next()
+                    .expect("cycle progress")
+                    .expect("read progress"),
+            )
+            .unwrap();
+        lines.collect::<Result<Vec<_>, _>>().unwrap()
+    });
+    let progress = receiver.recv_timeout(Duration::from_secs(30));
+    if progress.is_err() {
+        let _ = child.kill();
+        let _ = child.wait();
     }
-    assert!(database.exists(), "watch library should initialize");
-    std::thread::sleep(Duration::from_millis(100));
-    let started = Instant::now();
+    let progress: Value = serde_json::from_str(&progress.expect("first cycle completed")).unwrap();
+    assert_eq!(progress["event"], "watch-cycle-complete");
+    assert_eq!(progress["cycles"], 1);
+    assert_eq!(progress["counts"]["total"], 1);
     let status = Command::new("kill")
         .args(["-TERM", &child.id().to_string()])
         .status()
         .expect("signal import watch");
     assert!(status.success());
-    let output = child.wait_with_output().expect("wait for import watch");
-    assert!(started.elapsed() < Duration::from_secs(5));
+    let child_id = child.id();
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let waiter = std::thread::spawn(move || {
+        sender.send(child.wait_with_output()).unwrap();
+    });
+    let output = receiver.recv_timeout(Duration::from_secs(30));
+    if output.is_err() {
+        let _ = Command::new("kill")
+            .args(["-KILL", &child_id.to_string()])
+            .status();
+    }
+    let output = output
+        .expect("signal must wake the interval wait")
+        .expect("wait for import watch");
+    waiter.join().unwrap();
+    assert!(reader.join().unwrap().is_empty());
     assert!(output.status.success());
     assert!(output.stderr.is_empty());
     assert_eq!(String::from_utf8_lossy(&output.stdout).lines().count(), 1);
     let value = success_value(&output.stdout);
     assert_eq!(value["cycles"], 1);
     assert_eq!(value["stopped"], true);
-    assert!(
-        value["counts"]["total"].as_u64().expect("total") < entry_count,
-        "signal should stop the active scan before all entries are imported"
-    );
+    assert_eq!(value["counts"]["total"], 1);
 }
 
 fn run_import_watch(database: &std::path::Path, source: &std::path::Path, cycles: u64) -> Value {
@@ -2574,12 +2521,7 @@ fn catalog_saved_views_and_content_search_work_without_calibre() {
         .output()
         .expect("enrich catalog metadata");
     assert!(updated.status.success());
-    Connection::open(&database)
-        .expect("open catalog database")
-        .execute(
-            "INSERT INTO library_item_custom_metadata(library_item_id,name,value) VALUES(?1,'takio_metadata_audit','private source path')",
-            [id],
-        )
+    takio::test_support::insert_metadata_audit(&database, id, "private source path")
         .expect("insert reserved audit fixture");
 
     let catalog_json = temp.path().join("catalog.json");

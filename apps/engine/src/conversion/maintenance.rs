@@ -159,17 +159,7 @@ pub fn extract_text(source: &Path, timeout: Duration) -> AppResult<(FormatId, St
         .canonicalize()
         .map_err(|_| crate::app_error!("source-unavailable"))?;
     let format = detect_format(&source).ok_or_else(|| crate::app_error!("unsupported-format"))?;
-    if !matches!(
-        format,
-        FormatId::Kepub
-            | FormatId::Epub
-            | FormatId::Pdf
-            | FormatId::Mobi
-            | FormatId::Azw3
-            | FormatId::Docx
-            | FormatId::Html
-            | FormatId::Txt
-    ) {
+    if !format.is_text_extractable() {
         return Err(crate::app_error!("unsupported-format"));
     }
     if format == FormatId::Txt {

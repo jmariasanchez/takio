@@ -22,7 +22,8 @@ pub fn run() {
     let data_override = std::env::var_os("TAKIO_DATA_DIR").map(std::path::PathBuf::from);
     let paths = engine::resolve_paths(data_override.as_deref())
         .unwrap_or_else(|error| crate::fatal(error.code()));
-    let engine = Engine::open(paths).unwrap_or_else(|error| crate::fatal(error.code()));
+    let engine =
+        Engine::create_or_migrate(paths).unwrap_or_else(|error| crate::fatal(error.code()));
 
     let mut cx = VisualTestAppContext::new(gpui_platform::current_platform(false));
     cx.update(crate::theme::initialize);
@@ -44,7 +45,7 @@ pub fn run() {
             let found = cx.read(|cx| {
                 let state = state.read(cx);
                 !state.scanning_readers
-                    && !state.refreshing_devices()
+                    && !state.refreshing_destinations()
                     && state
                         .reader_shelves
                         .iter()

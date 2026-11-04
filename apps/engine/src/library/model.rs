@@ -93,6 +93,18 @@ impl Provenance {
     }
 }
 
+impl std::str::FromStr for Provenance {
+    type Err = crate::error::AppError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "managed" => Ok(Self::Managed),
+            "referenced" => Ok(Self::Referenced),
+            _ => Err(crate::app_error!("invalid-stored-data")),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BookFormat {
@@ -108,8 +120,14 @@ pub struct CustomColumnDefinition {
     pub key: String,
     pub label: String,
     #[serde(rename = "type")]
-    pub column_type: String,
+    pub column_type: CustomColumnType,
     pub position: u32,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CustomColumnType {
+    Text,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

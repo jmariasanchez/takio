@@ -1,6 +1,65 @@
 use super::*;
 
 #[test]
+fn cover_mutations_report_preserved_orphans_after_commit() {
+    for replace in [false, true] {
+        let (temp, mut store, item) = fixture();
+        let cover = temp.path().join("cover.jpg");
+        fs::write(&cover, b"cover bytes").unwrap();
+        let old = store
+            .set_cover(&item.id, &cover)
+            .unwrap()
+            .item
+            .cover_path
+            .unwrap();
+        fs::remove_file(&old).unwrap();
+        fs::create_dir(&old).unwrap();
+        let result = if replace {
+            store.set_cover(&item.id, &cover)
+        } else {
+            store.remove_cover(&item.id)
+        }
+        .unwrap();
+        assert!(result.cleanup_pending);
+        assert_eq!(result.cleanup_pending_paths, vec![old.clone()]);
+        assert!(old.is_dir());
+        let committed = store.get(&item.id).unwrap().unwrap();
+        assert_eq!(committed.cover_path, result.item.cover_path);
+        assert_ne!(committed.cover_path, Some(old));
+    }
+}
+
+#[test]
+fn stored_format_provenance_rejects_unknown_values() {
+    let (_temp, store, item) = fixture();
+    for provenance in [Provenance::Managed, Provenance::Referenced] {
+        assert_eq!(
+            provenance.as_str().parse::<Provenance>().unwrap(),
+            provenance
+        );
+    }
+    store
+        .connection
+        .pragma_update(None, "ignore_check_constraints", true)
+        .unwrap();
+    store
+        .connection
+        .execute("UPDATE library_item_formats SET provenance='unknown'", [])
+        .unwrap();
+    assert_eq!(
+        read_stored_format(&store.connection, &item.id, item.formats[0].format)
+            .err()
+            .unwrap()
+            .code(),
+        "invalid-stored-data"
+    );
+    assert_eq!(
+        store.get(&item.id).unwrap_err().code(),
+        "invalid-stored-data"
+    );
+}
+
+#[test]
 fn watch_outcome_wire_values_match_persisted_labels() {
     let (_temp, mut store, item) = fixture();
     let source = &item.formats[0].source_path;
@@ -271,14 +330,14 @@ fn format_mutations_roll_back_if_result_hydration_fails() {
 }
 
 #[test]
-fn remove_trashes_without_deleting_and_purge_requires_trash() {
+fn trash_preserves_files_and_purge_requires_trash() {
     let (_temp, mut store, item) = fixture();
     assert_eq!(store.purge(&item.id).unwrap_err().code(), "not-trashed");
     assert!(item.formats[0].source_path.exists());
-    assert_eq!(store.remove(&item.id).unwrap().item.id, item.id);
+    assert_eq!(store.trash(&item.id).unwrap().id, item.id);
     assert!(item.formats[0].source_path.exists());
     assert_eq!(store.list_trash().unwrap()[0].id, item.id);
-    store.remove(&item.id).unwrap();
+    store.trash(&item.id).unwrap();
     store.restore(&item.id).unwrap();
     assert_eq!(store.purge(&item.id).unwrap_err().code(), "not-trashed");
     store.trash(&item.id).unwrap();
@@ -292,7 +351,7 @@ fn replacing_and_removing_shared_cover_preserves_other_item_reference() {
         let (temp, mut store, item) = fixture();
         let cover = temp.path().join("cover.jpg");
         fs::write(&cover, b"cover bytes").unwrap();
-        let item = store.set_cover(&item.id, &cover).unwrap();
+        let item = store.set_cover(&item.id, &cover).unwrap().item;
         let shared = item.cover_path.unwrap();
         let source = temp.path().join("other.epub");
         fs::write(&source, b"other book").unwrap();
@@ -319,7 +378,7 @@ fn replacing_and_removing_shared_cover_preserves_other_item_reference() {
 
 #[test]
 fn remove_view_ignores_unrelated_corrupt_definition() {
-    let (_temp, store, _item) = fixture();
+    let (_temp, mut store, _item) = fixture();
     store
         .save_view(&serde_json::from_value(serde_json::json!({"id":"good","name":"Good","definition":{"version":1,"query":"hello","filters":{"authors":[],"tags":[],"series":[],"languages":[],"formats":[]},"sort":{"field":"title","direction":"ascending"}}})).unwrap())
         .unwrap();
@@ -335,7 +394,7 @@ fn remove_view_ignores_unrelated_corrupt_definition() {
         )
         .unwrap();
     assert!(store.list_saved_views().is_err());
-    assert_eq!(store.remove_view("good").unwrap().unwrap().id, "good");
+    assert_eq!(store.remove_view("good").unwrap().id, "good");
     assert!(store.saved_view("good").unwrap().is_none());
 }
 
@@ -407,7 +466,7 @@ fn sibling_mutators_report_not_found() {
             .code(),
         "not-found"
     );
-    assert_eq!(store.remove("missing").unwrap_err().code(), "not-found");
+    assert_eq!(store.trash("missing").unwrap_err().code(), "not-found");
     assert_eq!(
         store.remove_view("missing").unwrap_err().code(),
         "not-found"

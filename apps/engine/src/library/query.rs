@@ -5,59 +5,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::AppResult;
 use crate::library::model::LibraryItem;
+pub use crate::library::store::Filters;
 pub use crate::library::store::SavedViewSortField as SortField;
 use crate::library::store::{
-    LibraryQueryFilters, LibraryQueryScope, LibraryQuerySyntax, LibraryStore, SavedViewSort,
-    SavedViewSortDirection,
+    LibraryQueryScope, LibraryQuerySyntax, LibraryStore, SavedViewSort, SavedViewSortDirection,
 };
-
-/// Facet groups are conjunctive, values within one group are alternatives.
-#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct Filters {
-    pub authors: Vec<String>,
-    pub tags: Vec<String>,
-    pub series: Vec<String>,
-    pub languages: Vec<String>,
-    pub formats: Vec<String>,
-}
-
-impl Filters {
-    pub fn is_empty(&self) -> bool {
-        self.authors.is_empty()
-            && self.tags.is_empty()
-            && self.series.is_empty()
-            && self.languages.is_empty()
-            && self.formats.is_empty()
-    }
-
-    pub fn validate(&self) -> AppResult<()> {
-        for values in [
-            &self.authors,
-            &self.tags,
-            &self.series,
-            &self.languages,
-            &self.formats,
-        ] {
-            for value in values {
-                if value.trim().is_empty() {
-                    return Err(crate::app_error!("invalid-arguments"));
-                }
-            }
-        }
-        Ok(())
-    }
-
-    pub fn engine(&self) -> LibraryQueryFilters<'_> {
-        LibraryQueryFilters {
-            authors: &self.authors,
-            tags: &self.tags,
-            series: &self.series,
-            languages: &self.languages,
-            formats: &self.formats,
-        }
-    }
-}
 
 /// Each book contributes at most one count to a distinct value in each facet.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -192,13 +144,13 @@ pub fn query(store: &LibraryStore, request: QueryRequest) -> AppResult<QueryResu
         scopes.push(LibraryQueryScope {
             query,
             syntax: *syntax,
-            filters: filters.engine(),
+            filters,
         });
     }
     scopes.push(LibraryQueryScope {
         query: &request.query,
         syntax: request.query_syntax,
-        filters: request.filters.engine(),
+        filters: &request.filters,
     });
     let mut items = store.query_items_scoped(&scopes)?;
     let facets = Facets::from_items(&items);

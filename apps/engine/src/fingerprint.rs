@@ -15,6 +15,16 @@ use sha2::{Digest, Sha256};
 /// Chunk size used for streaming reads.
 const CHUNK_BYTES: usize = 64 * 1024;
 
+pub(crate) fn write_new_file(path: &Path, bytes: &[u8]) -> crate::error::AppResult<()> {
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)?;
+    file.write_all(bytes)?;
+    file.sync_all()?;
+    Ok(())
+}
+
 /// A byte count paired with the lowercase hexadecimal SHA-256 digest of those
 /// bytes. Serialization retains the historical `[bytes, sha256]` representation.
 #[derive(Clone, Debug, Eq, PartialEq, Hash, Ord, PartialOrd, Deserialize, Serialize)]

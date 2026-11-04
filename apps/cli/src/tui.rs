@@ -437,11 +437,15 @@ impl App {
         let result = match receiver.try_recv() {
             Ok(result) => Some(result),
             Err(TryRecvError::Empty) => None,
-            Err(TryRecvError::Disconnected) => Some((
-                self.candidate_generation,
-                String::new(),
-                Err(takio::app_error!("metadata-unavailable")),
-            )),
+            Err(TryRecvError::Disconnected) => {
+                self.candidate_rx = None;
+                self.candidate_cancel = None;
+                if let Some(review) = self.candidate_review.as_mut() {
+                    review.loading = false;
+                }
+                self.status = "Metadata lookup failed: metadata-unavailable".to_owned();
+                return;
+            }
         };
         let Some((generation, item_id, result)) = result else {
             return;
@@ -460,7 +464,7 @@ impl App {
             }
             return;
         };
-        if !item_id.is_empty() && review.item_id != item_id {
+        if review.item_id != item_id {
             if let Ok(candidates) = result {
                 release_metadata_candidate_covers(&self.paths.root, &candidates);
             }
@@ -1790,10 +1794,12 @@ mod tests {
         );
         let cover = takio::metadata::candidate_cover::stage(
             &app.paths.root,
-            &item.id,
-            "embedded:1",
-            "embedded",
-            &encoded_provenance,
+            &takio::metadata::candidate_cover::CoverBinding {
+                item_id: &item.id,
+                candidate_id: "embedded:1",
+                source: "embedded",
+                provenance: &encoded_provenance,
+            },
             &takio::metadata::candidate_cover::CapturedCover {
                 bytes: b"cover fixture".to_vec(),
                 media_type: "image/png".to_owned(),
@@ -2019,6 +2025,24 @@ mod tests {
 
         app.handle_key(KeyCode::Char('c'), KeyModifiers::CONTROL);
         assert!(app.should_quit);
+    }
+
+    #[test]
+    fn disconnected_lookup_clears_loading_without_a_fake_item_id() {
+        let (_temp, mut app, item) = app_with_book();
+        install_candidate_review(&mut app, &item);
+        app.candidate_review.as_mut().unwrap().loading = true;
+        let (sender, receiver) = mpsc::channel();
+        drop(sender);
+        app.candidate_rx = Some(receiver);
+        app.candidate_cancel = Some(Arc::new(CandidateLoaderCancel::new()));
+        app.poll_candidate_loader();
+        assert!(app.candidate_rx.is_none());
+        assert!(app.candidate_cancel.is_none());
+        let review = app.candidate_review.as_ref().unwrap();
+        assert!(!review.loading);
+        assert_eq!(review.item_id, item.id);
+        assert_eq!(app.status, "Metadata lookup failed: metadata-unavailable");
     }
 
     #[test]

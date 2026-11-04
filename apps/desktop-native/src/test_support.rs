@@ -19,7 +19,7 @@ pub fn wait_until(what: &str, mut ready: impl FnMut() -> bool) {
 }
 
 pub fn is_settled(state: &LibraryState) -> bool {
-    !(state.loading || state.busy() || state.refreshing_devices() || state.scanning_readers)
+    !(state.loading || state.busy() || state.refreshing_destinations() || state.scanning_readers)
 }
 
 #[cfg(test)]

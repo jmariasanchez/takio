@@ -333,3 +333,36 @@ fn copy_file(source: &Path, target: &Path) -> ExportStatus {
         Err(code) => failed(code),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn segments_normalize_bound_and_reject_empty_names() {
+        for value in ["..", "   ...", "\u{0}\u{1}\u{7}"] {
+            assert_eq!(path_segment(value, "fallback"), "fallback");
+        }
+        assert_eq!(path_segment(&"a".repeat(300), "fallback").len(), 128);
+        assert_eq!(
+            path_segment(&"\u{00e9}".repeat(100), "fallback"),
+            "\u{00e9}".repeat(64)
+        );
+        assert_eq!(path_segment("e\u{301}", "fallback"), "\u{00e9}");
+        assert_eq!(truncate_utf8_bytes("a\u{20ac}z", 3), "a");
+        assert_eq!(truncate_utf8_bytes("a\u{20ac}z", 4), "a\u{20ac}");
+    }
+
+    #[test]
+    fn long_unicode_filename_keeps_identity_suffix() {
+        let name = file_name(
+            &"\u{20ac}".repeat(300),
+            Some(&"a".repeat(300)),
+            "book-id",
+            "epub",
+        );
+        let identity = hex::encode(Sha256::digest(b"book-id"));
+        assert!(name.len() <= 240);
+        assert!(name.ends_with(&format!(" [{identity}].epub")));
+    }
+}

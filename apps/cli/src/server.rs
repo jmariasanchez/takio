@@ -103,11 +103,15 @@ fn handle(request: Request, store: &LibraryStore, token: &str) {
     };
     match segments.as_slice() {
         [version, books, id] if version == "v1" && books == "books" && query.is_empty() => {
-            match store.get(id) {
-                Ok(Some(item)) => {
+            match store.get_active(id) {
+                Ok(item) => {
                     respond_catalog_json(request, success(json!({"book":catalog_record(&item)})))
                 }
-                Ok(None) => respond_error(request, ErrorCode::NotFound, 404),
+                Err(error)
+                    if matches!(error.kind(), ErrorCode::NotFound | ErrorCode::ItemTrashed) =>
+                {
+                    respond_error(request, ErrorCode::NotFound, 404)
+                }
                 Err(error) => respond_error(request, error.kind(), 503),
             }
         }
@@ -118,8 +122,8 @@ fn handle(request: Request, store: &LibraryStore, token: &str) {
                 respond_error(request, ErrorCode::InvalidRequest, 400);
                 return;
             };
-            match store.get(id) {
-                Ok(Some(item)) => {
+            match store.get_active(id) {
+                Ok(item) => {
                     let Some(attachment) = item.formats.iter().find(|value| value.format == format)
                     else {
                         respond_error(request, ErrorCode::FormatNotFound, 404);
@@ -131,7 +135,11 @@ fn handle(request: Request, store: &LibraryStore, token: &str) {
                         respond_file(request, &attachment.source_path, format);
                     }
                 }
-                Ok(None) => respond_error(request, ErrorCode::NotFound, 404),
+                Err(error)
+                    if matches!(error.kind(), ErrorCode::NotFound | ErrorCode::ItemTrashed) =>
+                {
+                    respond_error(request, ErrorCode::NotFound, 404)
+                }
                 Err(error) => respond_error(request, error.kind(), 503),
             }
         }
@@ -316,6 +324,49 @@ mod tests {
     use takio::library::model::{BookAuthor, BookFormat, LibraryItem, Provenance};
 
     #[test]
+    fn trashed_books_are_not_returned_or_streamed_over_http() {
+        use std::io::{Read, Write};
+        use std::net::TcpStream;
+        use std::time::Duration;
+        use takio::library::{model::ImportMode, paths::LibraryPaths};
+
+        let temp = tempfile::tempdir().unwrap();
+        let paths = LibraryPaths::resolve(None, Some(&temp.path().join("library.sqlite"))).unwrap();
+        let mut store = LibraryStore::create_or_migrate(paths).unwrap();
+        let source = temp.path().join("private.txt");
+        std::fs::write(&source, "private book contents").unwrap();
+        let item = store.import(&source, None, ImportMode::Copy).unwrap();
+        store.trash(&item.id).unwrap();
+        let server = Server::http(("127.0.0.1", 0)).unwrap();
+        let address = server.server_addr().to_ip().unwrap();
+        let timeout = Duration::from_secs(10);
+        std::thread::scope(|scope| {
+            let worker = scope.spawn(move || {
+                for _ in 0..2 {
+                    handle(
+                        server.recv_timeout(timeout).unwrap().unwrap(),
+                        &store,
+                        "token",
+                    );
+                }
+            });
+            for path in [
+                format!("/v1/books/{}", item.id),
+                format!("/v1/books/{}/formats/txt", item.id),
+            ] {
+                let mut stream = TcpStream::connect_timeout(&address, timeout).unwrap();
+                stream.set_read_timeout(Some(timeout)).unwrap();
+                write!(stream, "GET {path} HTTP/1.1\r\nHost: {address}\r\nAuthorization: Bearer token\r\nConnection: close\r\n\r\n").unwrap();
+                let mut response = String::new();
+                stream.read_to_string(&mut response).unwrap();
+                assert!(response.starts_with("HTTP/1.1 404 "), "{response}");
+                assert!(!response.contains("private book contents"));
+            }
+            worker.join().unwrap();
+        });
+    }
+
+    #[test]
     fn catalog_http_boundary_authenticates_and_projects_rich_and_sparse_books() {
         use std::io::{Read, Write};
         use std::net::TcpStream;
@@ -358,14 +409,14 @@ mod tests {
                 .unwrap(),
             )
             .unwrap();
-        let database = rusqlite::Connection::open(&paths.database).unwrap();
         for id in [&sparse.id, &rich.id] {
-            database.execute(
-                "INSERT INTO library_item_custom_metadata(library_item_id,name,value) VALUES(?1,'takio_metadata_audit',?2)",
-                rusqlite::params![id, temp.path().join("private-audit").to_str().unwrap()],
-            ).unwrap();
+            takio::test_support::insert_metadata_audit(
+                &paths.database,
+                id,
+                temp.path().join("private-audit").to_str().unwrap(),
+            )
+            .unwrap();
         }
-        drop(database);
 
         let server = Server::http(("127.0.0.1", 0)).unwrap();
         let address = server.server_addr().to_ip().unwrap();

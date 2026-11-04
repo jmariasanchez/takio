@@ -243,10 +243,12 @@ impl CandidateCoverStages<'_> {
                     .map_err(|_| crate::app_error!("metadata-invalid"))?;
                 let descriptor = crate::metadata::candidate_cover::stage(
                     self.library_root,
-                    item_id,
-                    id,
-                    source,
-                    &encoded,
+                    &crate::metadata::candidate_cover::CoverBinding {
+                        item_id,
+                        candidate_id: id,
+                        source,
+                        provenance: &encoded,
+                    },
                     cover,
                 )?;
                 self.artifact_ids.push(descriptor.artifact_id.clone());
@@ -314,8 +316,8 @@ pub fn metadata_candidates_for_reconcile(
     item: &LibraryItem,
     include_online: bool,
     timeout_seconds: u64,
-    canceled: &AtomicBool,
     library_root: &Path,
+    canceled: &AtomicBool,
 ) -> AppResult<Vec<MetadataCandidate>> {
     discover_candidates(
         item,

@@ -252,7 +252,7 @@ pub enum Request {
         reply: Sender<AppResult<Vec<Arc<LibraryItem>>>>,
     },
     ListTrash {
-        reply: Sender<AppResult<Vec<LibraryItem>>>,
+        reply: Sender<AppResult<Vec<Arc<LibraryItem>>>>,
     },
     Update {
         id: String,
@@ -330,7 +330,7 @@ impl Engine {
     ///
     /// Returns the store's open error so the UI can show it before any
     /// window exists.
-    pub fn open(paths: LibraryPaths) -> AppResult<Self> {
+    pub fn create_or_migrate(paths: LibraryPaths) -> AppResult<Self> {
         Self::open_inner(paths, None)
     }
 
@@ -375,6 +375,12 @@ impl Engine {
         let _ = self.sender.send(build(reply));
         receiver
     }
+}
+
+pub fn recv<T>(receiver: Receiver<AppResult<T>>) -> AppResult<T> {
+    receiver
+        .recv()
+        .unwrap_or_else(|_| Err(takio::app_error!("storage-unavailable")))
 }
 
 fn worker(
@@ -461,11 +467,15 @@ fn worker_with_reader_scans(
             } => {
                 let result = filters
                     .validate()
-                    .and_then(|()| store.query_items_shared(&query, filters.engine()));
+                    .and_then(|()| store.query_items_shared(&query, &filters));
                 let _ = reply.send(result);
             }
             Request::ListTrash { reply } => {
-                let _ = reply.send(store.list_trash());
+                let _ = reply.send(
+                    store
+                        .list_trash()
+                        .map(|items| items.into_iter().map(Arc::new).collect()),
+                );
             }
             Request::Update { id, patch, reply } => {
                 let _ = reply.send(store.update(&id, patch));
@@ -667,6 +677,15 @@ pub fn resolve_paths(data_override: Option<&Path>) -> AppResult<LibraryPaths> {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn disconnected_reply_has_one_typed_error_policy() {
+        let (sender, receiver) = std::sync::mpsc::channel::<takio::error::AppResult<()>>();
+        drop(sender);
+        assert_eq!(
+            super::recv(receiver).unwrap_err().kind(),
+            takio::error::ErrorCode::StorageUnavailable
+        );
+    }
+    #[test]
     fn missing_reader_worker_does_not_report_library_failure() {
         let (_temp, store, _) = delivery_fixture();
         let (sender, receiver) = mpsc::channel();
@@ -857,7 +876,7 @@ mod tests {
     fn engine() -> (tempfile::TempDir, Engine) {
         let temp = tempfile::tempdir().unwrap();
         let paths = LibraryPaths::resolve(None, Some(&temp.path().join("library.sqlite"))).unwrap();
-        (temp, Engine::open(paths).unwrap())
+        (temp, Engine::create_or_migrate(paths).unwrap())
     }
 
     fn epub(dir: &Path, name: &str) -> PathBuf {

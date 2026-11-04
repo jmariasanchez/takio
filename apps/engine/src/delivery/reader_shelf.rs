@@ -368,6 +368,7 @@ pub fn scan(
                 continue;
             }
             let Ok(metadata) = entry.metadata() else {
+                unreadable += 1;
                 continue;
             };
             let Ok(relative) = entry.path().strip_prefix(&destination.path) else {
@@ -386,10 +387,13 @@ pub fn scan(
                 .get(relative.as_str())
                 .filter(|record| record.bytes == bytes);
             let mut matched = None;
-            if (candidates.is_some() || record.is_some())
-                && let Some(Fingerprint { sha256, .. }) =
+            if candidates.is_some() || record.is_some() {
+                let Some(Fingerprint { sha256, .. }) =
                     hash(entry.path()).filter(|read| read.bytes == bytes)
-            {
+                else {
+                    unreadable += 1;
+                    continue;
+                };
                 matched = candidates
                     .and_then(|candidates| candidates.iter().find(|(known, _)| *known == sha256))
                     .map(|(_, id)| (*id, ShelfMatchSource::Content))
@@ -765,6 +769,31 @@ mod tests {
         )
         .unwrap();
         assert_eq!(hashed, ["Same Size.epub"]);
+    }
+
+    #[test]
+    fn failed_or_changed_hash_is_counted_not_importable() {
+        let mut f = fixture();
+        import(&mut f, "Kindred.epub", b"kindred bytes");
+        fs::write(f.kindle.join("documents/Same Size.epub"), b"kindred bytez").unwrap();
+        let destination = destinations::authorize(&f.kindle, &f.volumes).unwrap();
+        for result in [
+            None,
+            Some(Fingerprint {
+                bytes: 1,
+                sha256: "changed".to_owned(),
+            }),
+        ] {
+            let shelf = scan(
+                &destination,
+                &f.store.active_fingerprints().unwrap(),
+                &mut |_| result.clone(),
+            )
+            .unwrap();
+            assert_eq!(shelf.unreadable, 1);
+            assert_eq!(shelf.not_in_library, 0);
+            assert!(shelf.books.is_empty());
+        }
     }
 
     #[test]

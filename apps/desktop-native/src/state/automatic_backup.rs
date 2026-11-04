@@ -105,9 +105,9 @@ impl LibraryState {
     pub fn check_automatic_backup(&mut self, now: u64, cx: &mut Context<Self>) {
         if !self.automatic_backup.due(now)
             || !self.can_mutate()
-            || self.refreshing_devices
+            || self.refreshing_destinations
             || self.preparation_pending()
-            || self.automatic_backup_prompt_open()
+            || self.automatic_backup_prompt_open
         {
             return;
         }

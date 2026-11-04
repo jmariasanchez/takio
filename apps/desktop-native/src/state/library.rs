@@ -19,7 +19,7 @@ impl LibraryState {
     }
 
     pub fn can_switch_library(&self) -> bool {
-        self.can_mutate() && !self.refreshing_devices
+        self.can_mutate() && !self.refreshing_destinations
     }
 
     pub fn open_library(&mut self, directory: PathBuf, cx: &mut Context<Self>) {
@@ -40,9 +40,7 @@ impl LibraryState {
             .engine
             .request(|reply| Request::OpenLibrary { directory, reply });
         let task = cx.background_executor().spawn(async move {
-            let report = receiver
-                .recv()
-                .unwrap_or_else(|_| Err(takio::app_error!("storage-unavailable")))?;
+            let report = crate::engine::recv(receiver)?;
             Ok::<_, AppError>(crate::activation::ActivationReport::remember(
                 report.root,
                 remember.as_deref(),

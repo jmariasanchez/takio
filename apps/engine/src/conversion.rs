@@ -1,6 +1,7 @@
 pub(crate) mod executable_discovery;
 pub mod jobs;
 pub mod maintenance;
+pub mod prepare;
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -227,11 +228,15 @@ fn convert_inner(
         .map_err(|_| crate::app_error!("backend-unavailable"))?;
     let started = Instant::now();
     let status = loop {
-        if let Some(status) = child
-            .try_wait()
-            .map_err(|_| crate::app_error!("conversion-failed"))?
-        {
-            break status;
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => {}
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = fs::remove_file(&temporary);
+                return Err(crate::app_error!("conversion-failed"));
+            }
         }
         if started.elapsed() >= timeout {
             let _ = child.kill();

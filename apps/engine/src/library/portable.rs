@@ -1,6 +1,5 @@
 use std::collections::{BTreeMap, HashSet};
 use std::fs::{self, File, OpenOptions};
-use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 
 use roxmltree::{Document, Node};
@@ -11,6 +10,7 @@ use unicode_normalization::UnicodeNormalization;
 use uuid::Uuid;
 
 use crate::error::{AppError, AppResult};
+use crate::fingerprint::write_new_file;
 use crate::format::FormatId;
 use crate::library::model::{BookAuthor, CustomColumnDefinition, LibraryItem, Provenance};
 use crate::library::paths::{LibraryPaths, absolute as absolute_nonempty};
@@ -840,11 +840,6 @@ fn create_private_dir(path: &Path) -> AppResult<()> {
     }
     Ok(())
 }
-fn write_new_file(path: &Path, bytes: &[u8]) -> AppResult<()> {
-    let mut file = OpenOptions::new().write(true).create_new(true).open(path)?;
-    file.write_all(bytes)?;
-    file.sync_all().map_err(AppError::from)
-}
 fn xml(value: &str) -> String {
     value
         .replace('&', "&amp;")
@@ -1115,7 +1110,7 @@ mod tests {
         manifest.definitions = vec![CustomColumnDefinition {
             key: "shelf".to_owned(),
             label: " Shelf ".to_owned(),
-            column_type: "text".to_owned(),
+            column_type: crate::library::model::CustomColumnType::Text,
             position: 0,
         }];
         fs::write(

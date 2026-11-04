@@ -40,13 +40,7 @@ fn read_only_cli_commands_do_not_migrate_legacy_library() {
     for args in read_commands() {
         let temp = tempfile::tempdir().unwrap();
         let database = temp.path().join("library.sqlite");
-        let connection = rusqlite::Connection::open(&database).unwrap();
-        connection
-            .execute_batch(include_str!(
-                "../../engine/tests/fixtures/legacy-library-schemas/schema-v1.sql"
-            ))
-            .unwrap();
-        drop(connection);
+        takio::test_support::legacy_schema_v1(&database).unwrap();
         let before = fs::read(&database).unwrap();
         let output = cargo_bin_cmd!("takio")
             .arg("library")

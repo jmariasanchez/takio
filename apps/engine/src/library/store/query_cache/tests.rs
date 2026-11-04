@@ -4,14 +4,8 @@ use crate::library::paths::LibraryPaths;
 use rusqlite::Connection;
 use std::path::PathBuf;
 
-fn filters() -> LibraryQueryFilters<'static> {
-    LibraryQueryFilters {
-        authors: &[],
-        tags: &[],
-        series: &[],
-        languages: &[],
-        formats: &[],
-    }
+fn filters() -> Filters {
+    Filters::default()
 }
 
 fn fixture(count: usize) -> (tempfile::TempDir, LibraryStore) {
@@ -22,13 +16,9 @@ fn fixture(count: usize) -> (tempfile::TempDir, LibraryStore) {
     (temp, store)
 }
 
-fn assert_same(
-    store: &LibraryStore,
-    query: &str,
-    filters: LibraryQueryFilters<'_>,
-) -> Vec<Arc<LibraryItem>> {
-    let expected = store.query_items(query, filters).unwrap();
-    let shared = store.query_items_shared(query, filters).unwrap();
+fn assert_same(store: &LibraryStore, query: &str, filters: Filters) -> Vec<Arc<LibraryItem>> {
+    let expected = store.query_items(query, &filters).unwrap();
+    let shared = store.query_items_shared(query, &filters).unwrap();
     let refs: Vec<_> = shared.iter().map(Arc::as_ref).collect();
     assert_eq!(
         serde_json::to_value(&expected).unwrap(),
@@ -62,32 +52,32 @@ fn shared_queries_preserve_full_metadata_literals_filters_and_chunk_order() {
             let languages = first.languages.clone();
             let formats = vec![first.format.as_str().to_owned()];
             for selected in [
-                LibraryQueryFilters {
-                    authors: &authors,
+                Filters {
+                    authors: authors.clone(),
                     ..filters()
                 },
-                LibraryQueryFilters {
-                    tags: &tags,
+                Filters {
+                    tags: tags.clone(),
                     ..filters()
                 },
-                LibraryQueryFilters {
-                    series: &series,
+                Filters {
+                    series: series.clone(),
                     ..filters()
                 },
-                LibraryQueryFilters {
-                    languages: &languages,
+                Filters {
+                    languages: languages.clone(),
                     ..filters()
                 },
-                LibraryQueryFilters {
-                    formats: &formats,
+                Filters {
+                    formats: formats.clone(),
                     ..filters()
                 },
-                LibraryQueryFilters {
-                    authors: &authors,
-                    tags: &tags,
-                    series: &series,
-                    languages: &languages,
-                    formats: &formats,
+                Filters {
+                    authors: authors.clone(),
+                    tags: tags.clone(),
+                    series: series.clone(),
+                    languages: languages.clone(),
+                    formats: formats.clone(),
                 },
             ] {
                 assert_same(&store, "Signal", selected);
@@ -203,7 +193,7 @@ fn nested_transactions_never_retain_uncommitted_or_newer_wal_snapshots() {
         .execute_batch("BEGIN; UPDATE library_items SET title='Uncommitted';")
         .unwrap();
     assert_eq!(
-        store.query_items_shared("", filters()).unwrap()[0].title,
+        store.query_items_shared("", &filters()).unwrap()[0].title,
         "Uncommitted"
     );
     store.connection.execute_batch("ROLLBACK").unwrap();
@@ -221,7 +211,7 @@ fn nested_transactions_never_retain_uncommitted_or_newer_wal_snapshots() {
         .execute("UPDATE library_items SET title='New WAL snapshot'", [])
         .unwrap();
     assert_eq!(
-        store.query_items_shared("", filters()).unwrap()[0].title,
+        store.query_items_shared("", &filters()).unwrap()[0].title,
         initial[0].title
     );
     store.connection.execute_batch("COMMIT").unwrap();
@@ -252,7 +242,7 @@ fn external_wal_commit_between_selection_and_hydration_cannot_mix_snapshots() {
                 .unwrap();
         }))
     });
-    let during = store.query_items_shared("", filters()).unwrap();
+    let during = store.query_items_shared("", &filters()).unwrap();
     assert!(Arc::ptr_eq(&initial[0], &during[0]));
     for (before, during) in initial.iter().zip(&during) {
         assert_eq!(
@@ -278,7 +268,7 @@ fn cached_rows_do_not_hide_new_invalid_stored_data() {
         .execute("DELETE FROM library_item_formats", [])
         .unwrap();
     assert_eq!(
-        store.query_items_shared("", filters()).unwrap_err().code(),
+        store.query_items_shared("", &filters()).unwrap_err().code(),
         "invalid-stored-data"
     );
     assert!(store.query_cache.borrow().items.is_empty());
@@ -344,14 +334,14 @@ fn oversized_stored_record_is_returned_without_retention() {
             ["x".repeat(MAX_PAYLOAD_BYTES)],
         )
         .unwrap();
-    let first = store.query_items_shared("", filters()).unwrap();
+    let first = store.query_items_shared("", &filters()).unwrap();
     assert_eq!(first.len(), 1);
     let description = first[0].description.as_ref().unwrap();
     assert_eq!(description.len(), MAX_PAYLOAD_BYTES);
     assert!(description.bytes().all(|byte| byte == b'x'));
     assert!(store.query_cache.borrow().items.is_empty());
     assert_eq!(store.query_cache.borrow().payload_bytes, 0);
-    let second = store.query_items_shared("", filters()).unwrap();
+    let second = store.query_items_shared("", &filters()).unwrap();
     assert_eq!(second[0].description, first[0].description);
     assert!(!Arc::ptr_eq(&first[0], &second[0]));
     assert!(store.query_cache.borrow().items.is_empty());

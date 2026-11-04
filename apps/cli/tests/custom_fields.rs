@@ -1,7 +1,6 @@
 use std::fs;
 
 use assert_cmd::cargo::cargo_bin_cmd;
-use rusqlite::Connection;
 use serde_json::Value;
 
 fn add_book(database: &std::path::Path, source: &std::path::Path) -> String {
@@ -125,29 +124,11 @@ fn custom_lookup_fields_and_literals_are_safe_composable_and_read_only() {
             .output()
             .expect("set custom metadata");
         assert!(updated.status.success());
+        if file == "earthsea.txt" {
+            takio::test_support::insert_metadata_audit(&database, &id, "hidden provenance")
+                .expect("add reserved audit fixture");
+        }
     }
-    let connection = Connection::open(&database).expect("open database");
-    let earthsea_id: String = connection
-        .query_row(
-            "SELECT id FROM library_items WHERE title='Classic Earthsea'",
-            [],
-            |row| row.get(0),
-        )
-        .expect("earthsea id");
-    connection
-        .execute(
-            "INSERT INTO library_item_custom_metadata(library_item_id,name,value) VALUES(?1,'takio_metadata_audit','hidden provenance')",
-            [&earthsea_id],
-        )
-        .expect("add reserved audit fixture");
-    let before: i64 = connection
-        .query_row(
-            "SELECT COUNT(*) FROM library_item_custom_metadata",
-            [],
-            |row| row.get(0),
-        )
-        .expect("metadata count");
-    drop(connection);
 
     let definition = serde_json::json!({
         "id":"favorites","name":"Favorites","definition":{
@@ -164,6 +145,7 @@ fn custom_lookup_fields_and_literals_are_safe_composable_and_read_only() {
         .expect("save custom field virtual library");
     assert!(saved.status.success());
     assert!(saved.stderr.is_empty());
+    let before = fs::read(&database).expect("database before queries");
 
     let request = serde_json::json!({
         "virtualLibraryId":"favorites","querySyntax":"structured-v1",
@@ -219,13 +201,6 @@ fn custom_lookup_fields_and_literals_are_safe_composable_and_read_only() {
         assert_eq!(failure_code(&output.stdout), "invalid-query");
     }
 
-    let connection = Connection::open(&database).expect("reopen database");
-    let after: i64 = connection
-        .query_row(
-            "SELECT COUNT(*) FROM library_item_custom_metadata",
-            [],
-            |row| row.get(0),
-        )
-        .expect("metadata count after queries");
+    let after = fs::read(&database).expect("database after queries");
     assert_eq!(after, before);
 }

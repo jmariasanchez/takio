@@ -69,6 +69,25 @@ pub struct LibraryStore {
     query_cache: RefCell<query_cache::QueryCache>,
 }
 
+/// A catalogue opened without write access. Shared dereferencing permits reads,
+/// but no mutable access to the underlying store is available.
+///
+/// ```compile_fail
+/// use takio::library::store::ReadOnlyLibraryStore;
+/// fn cannot_trash(mut store: ReadOnlyLibraryStore) {
+///     store.trash("book").unwrap();
+/// }
+/// ```
+pub struct ReadOnlyLibraryStore(LibraryStore);
+
+impl std::ops::Deref for ReadOnlyLibraryStore {
+    type Target = LibraryStore;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
 /// A committed catalogue mutation. Cleanup failures never turn a committed
 /// change into an error, and every preserved orphan path is reported here.
 #[derive(Debug, Serialize)]
@@ -115,13 +134,40 @@ pub struct ImportResult {
     pub source_preserved: bool,
 }
 
-#[derive(Clone, Copy)]
-pub struct LibraryQueryFilters<'a> {
-    pub authors: &'a [String],
-    pub tags: &'a [String],
-    pub series: &'a [String],
-    pub languages: &'a [String],
-    pub formats: &'a [String],
+/// Facet groups are conjunctive, values within one group are alternatives.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct Filters {
+    pub authors: Vec<String>,
+    pub tags: Vec<String>,
+    pub series: Vec<String>,
+    pub languages: Vec<String>,
+    pub formats: Vec<String>,
+}
+
+impl Filters {
+    pub fn is_empty(&self) -> bool {
+        self.authors.is_empty()
+            && self.tags.is_empty()
+            && self.series.is_empty()
+            && self.languages.is_empty()
+            && self.formats.is_empty()
+    }
+
+    pub fn validate(&self) -> AppResult<()> {
+        for values in [
+            &self.authors,
+            &self.tags,
+            &self.series,
+            &self.languages,
+            &self.formats,
+        ] {
+            if values.iter().any(|value| value.trim().is_empty()) {
+                return Err(crate::app_error!("invalid-arguments"));
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
@@ -136,7 +182,7 @@ pub enum LibraryQuerySyntax {
 pub struct LibraryQueryScope<'a> {
     pub query: &'a str,
     pub syntax: LibraryQuerySyntax,
-    pub filters: LibraryQueryFilters<'a>,
+    pub filters: &'a Filters,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, Eq, PartialEq)]
@@ -218,7 +264,7 @@ pub use duplicates::{
 };
 
 impl LibraryStore {
-    pub fn open_read_only(paths: LibraryPaths) -> AppResult<Self> {
+    pub fn open_read_only(paths: LibraryPaths) -> AppResult<ReadOnlyLibraryStore> {
         if !paths.database.is_file() {
             return Err(crate::app_error!("storage-unavailable"));
         }
@@ -231,16 +277,16 @@ impl LibraryStore {
             return Err(crate::app_error!("incompatible-schema"));
         }
         migration::verify_schema_version(&connection, version)?;
-        Ok(Self {
+        Ok(ReadOnlyLibraryStore(Self {
             connection,
             paths,
             query_cache: RefCell::default(),
-        })
+        }))
     }
 
     /// Validate an existing default before writable startup opening. Returns true
     /// only for a supported legacy catalogue requiring the verified migration.
-    pub fn preflight_startup(paths: LibraryPaths) -> AppResult<bool> {
+    pub fn requires_verified_migration(paths: LibraryPaths) -> AppResult<bool> {
         if !fs::symlink_metadata(&paths.database)?.file_type().is_file() {
             return Err(crate::app_error!("storage-unavailable"));
         }
@@ -436,7 +482,7 @@ impl LibraryStore {
     ) -> AppResult<ImportResult> {
         // Every import path (CLI, TUI, desktop, folder scans) funnels through here, so the
         // owned-path guard lives here rather than in each caller.
-        crate::import::scan::validate_import_sources(&self.paths, &[source.to_path_buf()])?;
+        crate::library::paths::validate_import_sources(&self.paths, &[source.to_path_buf()])?;
         let source = canonical_file(source)?;
         let format =
             detect_format(&source).ok_or_else(|| crate::app_error!("unsupported-format"))?;
@@ -905,7 +951,6 @@ impl LibraryStore {
         Ok(updated)
     }
 
-    /// Returns the committed item and any managed paths that could not be cleaned up.
     /// Replace a format only when its recorded identity still matches `expected`.
     ///
     /// # Errors
@@ -991,13 +1036,6 @@ impl LibraryStore {
         Ok(updated)
     }
 
-    /// Compatibility entry point for `library remove`: moves the item to trash.
-    /// Permanent deletion is only available through `purge` after trashing.
-    /// Like sibling mutators, unknown IDs return `not-found`.
-    pub fn remove(&mut self, id: &str) -> AppResult<MutationResult> {
-        self.trash(id).map(MutationResult::new)
-    }
-
     pub fn update(&mut self, id: &str, patch: LibraryPatch) -> AppResult<LibraryItem> {
         self.update_inner(id, patch, false, None)
     }
@@ -1015,10 +1053,12 @@ impl LibraryStore {
             .map(|descriptor| {
                 candidate_cover::claim(
                     &self.paths.root,
-                    id,
-                    candidate_id,
-                    source,
-                    provenance,
+                    &candidate_cover::CoverBinding {
+                        item_id: id,
+                        candidate_id,
+                        source,
+                        provenance,
+                    },
                     descriptor,
                 )
             })
@@ -1243,7 +1283,7 @@ impl LibraryStore {
         Ok(item)
     }
 
-    pub fn set_cover(&mut self, id: &str, source: &Path) -> AppResult<LibraryItem> {
+    pub fn set_cover(&mut self, id: &str, source: &Path) -> AppResult<MutationResult> {
         let mut item = self
             .read_item(id)?
             .ok_or_else(|| crate::app_error!("not-found"))?;
@@ -1267,21 +1307,16 @@ impl LibraryStore {
             let _ = fs::remove_file(&target);
             return Err(error.into());
         }
-        if let Some(old) = old
-            && old != target
-            && old.starts_with(&self.paths.covers)
-            && self
-                .path_is_referenced(&old.to_string_lossy())
-                .is_ok_and(|referenced| !referenced)
-        {
-            let _ = fs::remove_file(old);
-        }
         item.cover_path = Some(target);
         item.updated_at = Some(updated_at);
-        Ok(item)
+        let mut result = MutationResult::new(item);
+        if let Some(old) = old {
+            self.cleanup_cover_after_commit(&old, &mut result);
+        }
+        Ok(result)
     }
 
-    pub fn remove_cover(&mut self, id: &str) -> AppResult<LibraryItem> {
+    pub fn remove_cover(&mut self, id: &str) -> AppResult<MutationResult> {
         let mut item = self
             .read_item(id)?
             .ok_or_else(|| crate::app_error!("not-found"))?;
@@ -1290,16 +1325,13 @@ impl LibraryStore {
             "UPDATE library_items SET cover_path=NULL, updated_at=?2 WHERE id=?1",
             params![id, updated_at],
         )?;
-        if let Some(path) = item.cover_path.take()
-            && path.starts_with(&self.paths.covers)
-            && self
-                .path_is_referenced(&path.to_string_lossy())
-                .is_ok_and(|referenced| !referenced)
-        {
-            let _ = fs::remove_file(path);
-        }
+        let old = item.cover_path.take();
         item.updated_at = Some(updated_at);
-        Ok(item)
+        let mut result = MutationResult::new(item);
+        if let Some(old) = old {
+            self.cleanup_cover_after_commit(&old, &mut result);
+        }
+        Ok(result)
     }
 
     pub fn trash(&mut self, id: &str) -> AppResult<LibraryItem> {
@@ -1474,7 +1506,7 @@ impl LibraryStore {
             .collect()
     }
 
-    pub fn save_view(&self, request: &SaveViewRequest) -> AppResult<SavedView> {
+    pub fn save_view(&mut self, request: &SaveViewRequest) -> AppResult<SavedView> {
         let id = request.id.trim();
         let name = request.name.trim();
         if id.is_empty() || id.encode_utf16().count() > 256 || name.is_empty() || name.len() > 120 {
@@ -1517,15 +1549,14 @@ impl LibraryStore {
         })
     }
 
-    /// Unknown IDs return `not-found`, as for other mutators. The optional
-    /// result type remains for source compatibility.
-    pub fn remove_view(&self, id: &str) -> AppResult<Option<SavedView>> {
+    /// Unknown IDs return `not-found`, as for other mutators.
+    pub fn remove_view(&mut self, id: &str) -> AppResult<SavedView> {
         let view = self
             .saved_view(id)?
             .ok_or_else(|| crate::app_error!("not-found"))?;
         self.connection
             .execute("DELETE FROM saved_library_views WHERE id=?1", [&view.id])?;
-        Ok(Some(view))
+        Ok(view)
     }
 
     fn set_trash(&mut self, id: &str, timestamp: Option<String>) -> AppResult<LibraryItem> {
@@ -1571,36 +1602,38 @@ fn read_stored_format(
     id: &str,
     format: FormatId,
 ) -> AppResult<Option<StoredFormat>> {
-    connection
+    let row = connection
         .query_row(
             "SELECT source_path, provenance, position, content_bytes, content_sha256
              FROM library_item_formats WHERE library_item_id=?1 AND format=?2",
             params![id, format.as_str()],
             |row| {
-                let provenance: String = row.get(1)?;
-                Ok(StoredFormat {
-                    path: PathBuf::from(row.get::<_, String>(0)?),
-                    provenance: if provenance == "managed" {
-                        Provenance::Managed
-                    } else {
-                        Provenance::Referenced
-                    },
-                    position: row.get(2)?,
-                    fingerprint: match (
-                        row.get::<_, Option<i64>>(3)?,
-                        row.get::<_, Option<String>>(4)?,
-                    ) {
-                        (Some(bytes), Some(sha256)) => Some(Fingerprint {
-                            bytes: u64::try_from(bytes).unwrap_or_default(),
-                            sha256,
-                        }),
-                        _ => None,
-                    },
-                })
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, Option<i64>>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                ))
             },
         )
-        .optional()
-        .map_err(Into::into)
+        .optional()?;
+    row.map(|(path, provenance, position, bytes, sha256)| {
+        Ok(StoredFormat {
+            path: PathBuf::from(path),
+            provenance: provenance.parse()?,
+            position,
+            fingerprint: match (bytes, sha256) {
+                (Some(bytes), Some(sha256)) => Some(Fingerprint {
+                    bytes: u64::try_from(bytes)
+                        .map_err(|_| crate::app_error!("invalid-stored-data"))?,
+                    sha256,
+                }),
+                _ => None,
+            },
+        })
+    })
+    .transpose()
 }
 
 fn existing_owned_root(path: &Path, canonical_root: &Path, directory: &str) -> AppResult<PathBuf> {
@@ -1672,10 +1705,11 @@ fn metadata_from_filename(path: &Path) -> (String, Vec<BookAuthor>) {
     } else {
         spaced
     };
-    let zlibrary =
+    static ZLIBRARY: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
         regex::Regex::new(r"(?i)^(.+?)\s*\(([^()]+)\)\s*\([^()]*\bz-lib(?:rary)?\b[^()]*\)$")
-            .expect("valid regex");
-    let Some(captures) = zlibrary.captures(&title) else {
+            .expect("valid filename regex")
+    });
+    let Some(captures) = ZLIBRARY.captures(&title) else {
         return (title, Vec::new());
     };
     let authors = captures[2]
@@ -2138,14 +2172,7 @@ mod tests {
                 params![item.id, METADATA_AUDIT_KEY, "hidden provenance"],
             )
             .unwrap();
-        let empty = Vec::<String>::new();
-        let filters = LibraryQueryFilters {
-            authors: &empty,
-            tags: &empty,
-            series: &empty,
-            languages: &empty,
-            formats: &empty,
-        };
+        let filters = &Filters::default();
 
         for (query, syntax) in [
             ("#shelf:favorite", LibraryQuerySyntax::StructuredV1),
@@ -2224,18 +2251,11 @@ mod tests {
                 )
                 .unwrap();
         }
-        let empty = Vec::<String>::new();
         let items = store
             .query_items_scoped(&[LibraryQueryScope {
                 query: "author:\"Ursula K. Le Guin\" tag:Classic not publisher:Tor",
                 syntax: LibraryQuerySyntax::StructuredV1,
-                filters: LibraryQueryFilters {
-                    authors: &empty,
-                    tags: &empty,
-                    series: &empty,
-                    languages: &empty,
-                    formats: &empty,
-                },
+                filters: &Filters::default(),
             }])
             .unwrap();
         assert_eq!(items.len(), 1);
@@ -2266,10 +2286,10 @@ mod tests {
         fs::write(&first_cover, b"first").unwrap();
         fs::write(&second_cover, b"second").unwrap();
         let first = store.set_cover(&item.id, &first_cover).unwrap();
-        let first_path = first.cover_path.unwrap();
+        let first_path = first.item.cover_path.unwrap();
         let second = store.set_cover(&item.id, &second_cover).unwrap();
         assert!(!first_path.exists());
-        assert!(second.cover_path.unwrap().exists());
+        assert!(second.item.cover_path.unwrap().exists());
     }
 
     #[test]
@@ -2284,10 +2304,12 @@ mod tests {
             .unwrap();
         let descriptor = crate::metadata::candidate_cover::stage(
             &store.paths.root,
-            &item.id,
-            "embedded:cover",
-            "embedded",
-            "proof",
+            &candidate_cover::CoverBinding {
+                item_id: &item.id,
+                candidate_id: "embedded:cover",
+                source: "embedded",
+                provenance: "proof",
+            },
             &crate::metadata::candidate_cover::CapturedCover {
                 bytes: vec![0xff, 0xd8, 0xff, 1, 2, 3],
                 media_type: "image/jpeg".to_owned(),
@@ -2326,10 +2348,12 @@ mod tests {
         assert!(
             crate::metadata::candidate_cover::validate(
                 &store.paths.root,
-                &item.id,
-                "embedded:cover",
-                "embedded",
-                "proof",
+                &candidate_cover::CoverBinding {
+                    item_id: &item.id,
+                    candidate_id: "embedded:cover",
+                    source: "embedded",
+                    provenance: "proof"
+                },
                 &descriptor,
             )
             .is_ok(),
@@ -2349,10 +2373,12 @@ mod tests {
             .unwrap();
         let descriptor = crate::metadata::candidate_cover::stage(
             &store.paths.root,
-            &item.id,
-            "embedded:cover",
-            "embedded",
-            "proof",
+            &candidate_cover::CoverBinding {
+                item_id: &item.id,
+                candidate_id: "embedded:cover",
+                source: "embedded",
+                provenance: "proof",
+            },
             &crate::metadata::candidate_cover::CapturedCover {
                 bytes: vec![0xff, 0xd8, 0xff, 1, 2, 3],
                 media_type: "image/jpeg".to_owned(),
@@ -2393,10 +2419,12 @@ mod tests {
         assert_eq!(
             crate::metadata::candidate_cover::validate(
                 &store.paths.root,
-                &item.id,
-                "embedded:cover",
-                "embedded",
-                "proof",
+                &candidate_cover::CoverBinding {
+                    item_id: &item.id,
+                    candidate_id: "embedded:cover",
+                    source: "embedded",
+                    provenance: "proof"
+                },
                 &descriptor,
             )
             .unwrap_err()

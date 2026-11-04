@@ -243,7 +243,8 @@ fn incomplete_tree() -> TreeSummary {
     }
 }
 
-fn integrity_value(report: &VerifyReport) -> Value {
+/// Stable integrity summary shared by diagnostics and adapter responses.
+pub fn integrity_value(report: &VerifyReport) -> Value {
     json!({
         "schemaVersion": report.schema_version,
         "items": {

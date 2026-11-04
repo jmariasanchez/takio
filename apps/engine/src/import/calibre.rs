@@ -170,7 +170,7 @@ pub fn import_calibre_library(
         if let Some(cover) = &book.cover_path
             && let Ok(covered) = store.set_cover(&item.id, cover)
         {
-            item = covered;
+            item = covered.item;
         }
         outcomes.push(ImportOutcome::Imported {
             source_path: primary.path.clone(),
@@ -728,9 +728,10 @@ fn text(value: &str) -> Option<String> {
 }
 
 fn normalize_date(value: &str) -> Option<String> {
-    let captures = Regex::new(r"^(\d{4})(?:-(\d{2})(?:-(\d{2}))?)?")
-        .expect("valid regex")
-        .captures(value)?;
+    static DATE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+        Regex::new(r"^(\d{4})(?:-(\d{2})(?:-(\d{2}))?)?").expect("valid date regex")
+    });
+    let captures = DATE.captures(value)?;
     Some(
         [captures.get(1), captures.get(2), captures.get(3)]
             .into_iter()
@@ -742,11 +743,11 @@ fn normalize_date(value: &str) -> Option<String> {
 }
 
 fn normalize_language(value: &str) -> Option<String> {
+    static LANGUAGE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+        Regex::new(r"^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$").expect("valid language regex")
+    });
     let value = text(value)?.replace('_', "-");
-    Regex::new(r"^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$")
-        .expect("valid regex")
-        .is_match(&value)
-        .then_some(value)
+    LANGUAGE.is_match(&value).then_some(value)
 }
 
 fn maybe_json(value: &str) -> String {

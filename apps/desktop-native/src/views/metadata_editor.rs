@@ -138,7 +138,7 @@ impl MetadataEditor {
         fields[0].update(cx, |field, cx| field.focus(window, cx));
         cx.observe(&state, |this, _, cx| {
             if this.submitted && !this.state.read(cx).saving_metadata() {
-                match this.state.read(cx).metadata_save_result().clone() {
+                match this.state.read(cx).metadata_save_result.clone() {
                     Some(Ok(id)) if id == this.original.id => {
                         this.submitted = false;
                         this.state.update(cx, |state, cx| {
@@ -468,7 +468,7 @@ mod tests {
         cx.update(crate::theme::initialize);
         let temp = tempfile::tempdir().unwrap();
         let paths = LibraryPaths::resolve(None, Some(&temp.path().join("library.sqlite"))).unwrap();
-        let engine = Engine::open(paths).unwrap();
+        let engine = Engine::create_or_migrate(paths).unwrap();
         let state = cx.new(|cx| LibraryState::new(engine, cx));
         crate::test_support::settle(&state, cx);
         state.update(cx, |state, cx| {
@@ -501,9 +501,9 @@ mod tests {
             })
             .unwrap();
         state.read_with(cx, |state, _| {
-            assert!(!state.metadata_editing());
+            assert!(!state.metadata_editing);
             assert!(!state.saving_metadata());
-            assert!(state.metadata_save_result().is_none());
+            assert!(state.metadata_save_result.is_none());
             assert_eq!(state.items[0].title, "Original title");
             assert!(state.query.is_empty());
         });
@@ -536,7 +536,7 @@ mod tests {
             .unwrap();
         cx.simulate_keystrokes(window.into(), "escape");
         state.read_with(cx, |state, _| {
-            assert!(!state.metadata_editing());
+            assert!(!state.metadata_editing);
             assert_eq!(state.items[0].title, "Original title");
         });
     }
@@ -576,7 +576,7 @@ mod tests {
                     editor
                         .state
                         .read(cx)
-                        .metadata_save_result()
+                        .metadata_save_result
                         .as_ref()
                         .unwrap()
                         .as_ref()
@@ -584,7 +584,7 @@ mod tests {
                         .code(),
                     "not-found"
                 );
-                assert!(editor.state.read(cx).metadata_editing());
+                assert!(editor.state.read(cx).metadata_editing);
                 assert_eq!(editor.draft(cx).title, "Keep this draft");
                 editor.fields[0].update(cx, |field, cx| {
                     field.replace_text_in_range(None, "!", window, cx)

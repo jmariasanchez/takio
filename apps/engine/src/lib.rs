@@ -18,3 +18,6 @@ pub mod format;
 pub mod import;
 pub mod library;
 pub mod metadata;
+
+#[cfg(feature = "test-support")]
+pub mod test_support;

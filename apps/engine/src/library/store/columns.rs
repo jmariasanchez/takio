@@ -3,9 +3,29 @@ use rusqlite::{OptionalExtension, TransactionBehavior, params};
 
 use super::{LibraryStore, METADATA_AUDIT_KEY};
 use crate::error::AppResult;
-use crate::library::model::CustomColumnDefinition;
+use crate::library::model::{CustomColumnDefinition, CustomColumnType};
 
 const MAX_CUSTOM_COLUMN_DEFINITIONS: usize = 64;
+
+impl rusqlite::types::FromSql for CustomColumnType {
+    fn column_result(value: rusqlite::types::ValueRef<'_>) -> rusqlite::types::FromSqlResult<Self> {
+        match value.as_str()? {
+            "text" => Ok(Self::Text),
+            _ => Err(rusqlite::types::FromSqlError::Other(Box::new(
+                crate::app_error!("invalid-stored-data"),
+            ))),
+        }
+    }
+}
+
+fn column_storage_error(error: rusqlite::Error) -> crate::error::AppError {
+    match error {
+        rusqlite::Error::FromSqlConversionFailure(..) | rusqlite::Error::InvalidColumnType(..) => {
+            crate::app_error!("invalid-stored-data")
+        }
+        _ => error.into(),
+    }
+}
 
 impl LibraryStore {
     pub fn list_custom_column_definitions(&self) -> AppResult<Vec<CustomColumnDefinition>> {
@@ -21,9 +41,10 @@ impl LibraryStore {
                     position: row.get(3)?,
                 })
             })?
-            .collect::<Result<Vec<_>, _>>()?;
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(column_storage_error)?;
         validate_custom_column_definitions(&definitions)
-            .map_err(|_| crate::app_error!("incompatible-schema"))?;
+            .map_err(|_| crate::app_error!("invalid-stored-data"))?;
         Ok(definitions)
     }
 
@@ -54,7 +75,7 @@ impl LibraryStore {
         Ok(CustomColumnDefinition {
             key: key.to_owned(),
             label,
-            column_type: "text".to_owned(),
+            column_type: CustomColumnType::Text,
             position: count as u32,
         })
     }
@@ -76,7 +97,7 @@ impl LibraryStore {
             "SELECT key,label,type,position FROM library_custom_column_definitions WHERE key=?1",
             [key],
             |row| Ok(CustomColumnDefinition { key: row.get(0)?, label: row.get(1)?, column_type: row.get(2)?, position: row.get(3)? }),
-        ).map_err(Into::into)
+        ).map_err(column_storage_error)
     }
 
     pub fn remove_custom_column_definition(
@@ -93,7 +114,7 @@ impl LibraryStore {
             "SELECT key,label,type,position FROM library_custom_column_definitions WHERE key=?1",
             [key],
             |row| Ok(CustomColumnDefinition { key: row.get(0)?, label: row.get(1)?, column_type: row.get(2)?, position: row.get(3)? }),
-        ).optional()?.ok_or_else(|| crate::app_error!("not-found"))?;
+        ).optional().map_err(column_storage_error)?.ok_or_else(|| crate::app_error!("not-found"))?;
         transaction.execute(
             "DELETE FROM library_custom_column_definitions WHERE key=?1",
             [key],
@@ -130,10 +151,7 @@ pub(crate) fn validate_custom_column_definitions(
     }
     let mut keys = std::collections::HashSet::new();
     for (position, definition) in definitions.iter().enumerate() {
-        if definition.column_type != "text"
-            || definition.position as usize != position
-            || !keys.insert(&definition.key)
-        {
+        if definition.position as usize != position || !keys.insert(&definition.key) {
             return Err(crate::app_error!("invalid-arguments"));
         }
         let label = validate_custom_column_definition(&definition.key, &definition.label)?;
@@ -168,6 +186,28 @@ fn valid_custom_column_key(key: &str) -> bool {
 mod tests {
     use super::LibraryStore;
     use crate::library::paths::LibraryPaths;
+
+    #[test]
+    fn custom_column_type_wire_is_closed_and_stored_corruption_is_explicit() {
+        use crate::library::model::CustomColumnType;
+        assert_eq!(
+            serde_json::to_string(&CustomColumnType::Text).unwrap(),
+            "\"text\""
+        );
+        assert!(serde_json::from_str::<CustomColumnType>("\"number\"").is_err());
+        let temp = tempfile::tempdir().unwrap();
+        let paths = LibraryPaths::resolve(None, Some(&temp.path().join("library.sqlite"))).unwrap();
+        let store = LibraryStore::create_or_migrate(paths).unwrap();
+        store
+            .connection
+            .pragma_update(None, "ignore_check_constraints", true)
+            .unwrap();
+        store.connection.execute("INSERT INTO library_custom_column_definitions VALUES ('valid','Valid','unknown',0)", []).unwrap();
+        assert_eq!(
+            store.list_custom_column_definitions().unwrap_err().code(),
+            "invalid-stored-data"
+        );
+    }
 
     #[test]
     fn column_storage_failures_are_not_invalid_arguments() {
@@ -212,7 +252,7 @@ mod tests {
             store.connection.execute(sql, []).unwrap();
             assert_eq!(
                 store.list_custom_column_definitions().unwrap_err().code(),
-                "incompatible-schema"
+                "invalid-stored-data"
             );
         }
     }

@@ -56,7 +56,7 @@ actions!(
         ShowLibrary,
         ShowTrash,
         TogglePalette,
-        RefreshDevices,
+        RefreshReaders,
         SendSelected,
         ConfirmSend,
         CancelSend,

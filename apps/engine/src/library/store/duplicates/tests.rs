@@ -171,7 +171,7 @@ fn duplicate_merge_rolls_back_and_purge_preserves_transferred_owned_files() {
         .attach_format(&source.id, &source_pdf, Provenance::Managed)
         .unwrap();
     store.set_cover(&target.id, &target_cover).unwrap();
-    let source = store.set_cover(&source.id, &source_cover).unwrap();
+    let source = store.set_cover(&source.id, &source_cover).unwrap().item;
     let transferred_pdf = source
         .formats
         .iter()

@@ -4,8 +4,7 @@ use std::path::Path;
 use assert_cmd::cargo::cargo_bin_cmd;
 use serde_json::Value;
 
-#[path = "../../engine/tests/support/pdf.rs"]
-mod fixture;
+use takio::test_support::pdf as fixture;
 
 fn add(database: &Path, source: &Path, title: Option<&str>) -> Value {
     let mut command = cargo_bin_cmd!("takio");

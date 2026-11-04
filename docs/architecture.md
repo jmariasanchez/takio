@@ -37,8 +37,9 @@ canonical domain paths, never through adapter re-exports or flat root aliases.
 
 Engine modules use `foo.rs` plus `foo/` for child modules, consistently with the
 native desktop. Unit tests live under their subject's `#[cfg(test)] mod tests`
-namespace, inline or in `<subject>/tests.rs` and `<subject>/tests/`. Shared fixture
-builders are the only feature-gated test-support API.
+namespace, inline or in `<subject>/tests.rs` and `<subject>/tests/`. The
+`test-support` feature exposes shared fixture builders and disposable-library
+fault injection for adapter tests, without coupling adapters to engine tables.
 
 | Module | Responsibility |
 | --- | --- |
@@ -49,6 +50,7 @@ builders are the only feature-gated test-support API.
 | `error` | Closed `ErrorCode` vocabulary and application results |
 | `format` | Ebook format vocabulary and extension detection |
 | `fingerprint` | Streaming SHA-256 byte counts and digests for owned-file operations |
+| `test_support` (feature-gated) | Disposable-library corruption, provenance, legacy schema, and PDF fixtures for adapter tests |
 | `library` | Catalogue domain modules |
 | `library::store` | Schema-v12 SQLite catalogue and owned-file transactions |
 | `library::paths` | Default, named, and explicit library path resolution |
@@ -74,6 +76,7 @@ builders are the only feature-gated test-support API.
 | `conversion` | Calibre discovery, planning, execution, and artifact verification |
 | `conversion::executable_discovery` (internal) | Backend precedence and canonical executable resolution |
 | `conversion::maintenance` | Ebook polishing and bounded text extraction |
+| `conversion::prepare` | Reviewed local EPUB-to-AZW3 preparation, staged conversion, source revalidation, and verified attachment |
 | `conversion::jobs` | Independent schema-v4 foreground conversion ledger |
 
 The crate forbids unsafe Rust. SQLite is bundled through `rusqlite`, so the
@@ -86,6 +89,9 @@ Every machine command writes exactly one JSON record to stdout:
 ```json
 {"ok":true,"value":{}}
 ```
+
+`library import-watch --progress` additionally writes completed-cycle NDJSON
+events to stderr. Stdout still contains only its final success or failure record.
 
 Failures use a stable code and a nonzero exit status:
 

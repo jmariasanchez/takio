@@ -19,7 +19,7 @@ use crate::theme::{Theme, metrics};
 use crate::views::library_list::LibraryList;
 use crate::views::{sidebar::Sidebar, text_input::TextInput};
 use crate::{
-    Import, ImportMove, OpenSelected, PurgeSelected, RefreshDevices, RestoreSelected, SelectAll,
+    Import, ImportMove, OpenSelected, PurgeSelected, RefreshReaders, RestoreSelected, SelectAll,
     ShowLibrary, ShowTrash, TrashSelected,
 };
 use takio::library::model::ImportMode;
@@ -356,10 +356,10 @@ impl Render for Workspace {
         let loading = read.loading;
         let section = read.section;
         let can_mutate = read.can_mutate();
-        let report = read.delivery_report().clone();
+        let report = read.delivery_report.clone();
         let preview = read.send_preview().cloned();
         let preparation = read.preparation_preview().cloned();
-        let recovery = read.recovery_outcome().clone();
+        let recovery = read.recovery_outcome.clone();
         let exclusions = read.delivery_exclusions.clone();
         let library_path = read.library_root();
         let library_root = library_path.display().to_string();
@@ -483,7 +483,7 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &PurgeSelected, window, cx| {
                 this.confirm_purge(window, cx);
             }))
-            .on_action(cx.listener(|this, _: &RefreshDevices, _, cx| {
+            .on_action(cx.listener(|this, _: &RefreshReaders, _, cx| {
                 this.state
                     .update(cx, |state, cx| state.refresh_destinations(cx));
             }))

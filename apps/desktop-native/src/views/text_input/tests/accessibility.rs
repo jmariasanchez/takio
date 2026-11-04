@@ -20,7 +20,7 @@ pub(crate) fn fixture(cx: &mut TestAppContext) -> (tempfile::TempDir, LibraryEnt
     let temp = tempfile::tempdir().unwrap();
     let paths =
         LibraryPaths::resolve(None, Some(&temp.path().join("library/library.sqlite"))).unwrap();
-    let engine = Engine::open(paths).unwrap();
+    let engine = Engine::create_or_migrate(paths).unwrap();
     let roots = ["Alpha", "Beta"].map(|title| {
         let path = temp.path().join(format!("{title}.epub"));
         std::fs::write(&path, format!("isolated keyboard fixture {title}")).unwrap();

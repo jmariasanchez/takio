@@ -307,7 +307,8 @@ pub fn run(started: Instant) {
     let data_override = std::env::var_os("TAKIO_DATA_DIR").map(std::path::PathBuf::from);
     let paths = engine::resolve_paths(data_override.as_deref())
         .unwrap_or_else(|error| crate::fatal(error.code()));
-    let engine = Engine::open(paths).unwrap_or_else(|error| crate::fatal(error.code()));
+    let engine =
+        Engine::create_or_migrate(paths).unwrap_or_else(|error| crate::fatal(error.code()));
     gpui_platform::application().run(move |cx: &mut App| {
         crate::theme::initialize(cx);
         cx.set_menus(crate::commands::menus());

@@ -285,7 +285,7 @@ mod tests {
         let alias = temp.path().join("alias");
         symlink(&real, &alias).unwrap();
         let paths = LibraryPaths::resolve(None, Some(&alias.join("library.sqlite"))).unwrap();
-        let engine = Engine::open(paths).unwrap();
+        let engine = Engine::create_or_migrate(paths).unwrap();
         assert_eq!(engine.root(), real);
         let source = temp.path().join("source.epub");
         fs::write(&source, b"alias-origin book").unwrap();

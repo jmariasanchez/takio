@@ -17,6 +17,21 @@ pub enum FormatId {
 }
 
 impl FormatId {
+    #[must_use]
+    pub const fn is_text_extractable(self) -> bool {
+        match self {
+            Self::Kepub
+            | Self::Epub
+            | Self::Pdf
+            | Self::Mobi
+            | Self::Azw3
+            | Self::Docx
+            | Self::Html
+            | Self::Txt => true,
+            Self::Cbz => false,
+        }
+    }
+
     pub const ALL: [Self; 9] = [
         Self::Kepub,
         Self::Epub,

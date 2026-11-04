@@ -1,7 +1,8 @@
 //! Library navigation, mounted devices, and collapsible facet filters.
 use std::collections::HashSet;
 
-use gpui::{Context, IntoElement, Render, Window, div, prelude::*, px};
+use gpui::{Context, Div, IntoElement, Render, Stateful, Window, div, prelude::*, px};
+use takio::delivery::destinations::Destination;
 
 use crate::state::{FilterDimension, LibraryEntity, Section, humanize_error};
 use crate::theme::{Theme, metrics};
@@ -26,29 +27,7 @@ impl Sidebar {
 impl Render for Sidebar {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = *cx.global::<Theme>();
-        let state = self.state.read(cx);
-        let section = state.section;
-        let destinations = state.destinations().clone();
-        let facets = state.facets.clone();
-        let filters = state.filters.clone();
-        let selected = state.selected.len();
-        let available = state.can_mutate();
-        let can_send = available && section == Section::Library && selected > 0;
-        let refreshing = state.refreshing_devices();
-        let device_error = state
-            .device_error
-            .as_ref()
-            .map(|error| crate::state::humanize_error(error.kind()));
-        let readers: Vec<_> = destinations
-            .into_iter()
-            .filter(|device| {
-                !matches!(
-                    device.kind,
-                    takio::delivery::destinations::DestinationKind::Generic
-                )
-            })
-            .collect();
-        let mut sidebar = div()
+        let sidebar = div()
             .id("sidebar")
             .role(gpui::Role::Navigation)
             .aria_label("Library navigation and filters")
@@ -65,12 +44,18 @@ impl Render for Sidebar {
             .gap_1()
             .text_sm()
             .text_color(theme.text);
-        let has_stock_kindle = readers.iter().any(|reader| {
-            matches!(
-                reader.kind,
-                takio::delivery::destinations::DestinationKind::Kindle
-            ) && !reader.has_koreader()
-        });
+        let sidebar = self.render_sections(sidebar, cx);
+        let sidebar = self.render_readers(sidebar, cx);
+        sidebar.child(self.render_facets(cx))
+    }
+}
+
+impl Sidebar {
+    fn render_sections(&self, mut sidebar: Stateful<Div>, cx: &Context<Self>) -> Stateful<Div> {
+        let theme = *cx.global::<Theme>();
+        let state = self.state.read(cx);
+        let section = state.section;
+        let available = state.can_mutate();
         for (label, target) in [("Library", Section::Library), ("Trash", Section::Trash)] {
             sidebar = sidebar.child(
                 div()
@@ -95,6 +80,34 @@ impl Render for Sidebar {
                     })),
             );
         }
+        sidebar
+    }
+
+    fn render_readers(&self, mut sidebar: Stateful<Div>, cx: &Context<Self>) -> Stateful<Div> {
+        let theme = *cx.global::<Theme>();
+        let state = self.state.read(cx);
+        let refreshing = state.refreshing_destinations();
+        let destination_error = state
+            .destination_error
+            .as_ref()
+            .map(|error| humanize_error(error.kind()));
+        let readers: Vec<_> = state
+            .destinations()
+            .iter()
+            .filter(|reader| {
+                !matches!(
+                    reader.kind,
+                    takio::delivery::destinations::DestinationKind::Generic
+                )
+            })
+            .cloned()
+            .collect();
+        let has_stock_kindle = readers.iter().any(|reader| {
+            matches!(
+                reader.kind,
+                takio::delivery::destinations::DestinationKind::Kindle
+            ) && !reader.has_koreader()
+        });
         sidebar = sidebar.child(
             div()
                 .mt_3()
@@ -114,7 +127,7 @@ impl Render for Sidebar {
                         .text_color(theme.accent)
                         .child(if refreshing { "Checking..." } else { "Refresh" })
                         .on_click(cx.listener(|this, _, _, cx| {
-                            if this.state.read(cx).refreshing_devices() {
+                            if this.state.read(cx).refreshing_destinations() {
                                 return;
                             }
                             this.state
@@ -124,169 +137,10 @@ impl Render for Sidebar {
         );
         if readers.is_empty() {
             sidebar = sidebar.child(div().px_2().py_2().text_xs().text_color(theme.text_secondary)
-                .child(device_error.unwrap_or_else(|| "Connect your reader with a data-capable USB cable. It appears here a moment after it mounts. Only mounted USB readers appear here. MTP is not supported yet.".into())));
+                .child(destination_error.unwrap_or_else(|| "Connect your reader with a data-capable USB cable. It appears here a moment after it mounts. Only mounted USB readers appear here. MTP is not supported yet.".into())));
         }
         for (index, destination) in readers.into_iter().enumerate() {
-            let send = destination.clone();
-            let import = destination.clone();
-            let can_import = available && section == Section::Library;
-            let unmatched = if state.scanning_readers {
-                0
-            } else {
-                state
-                    .reader_shelves
-                    .iter()
-                    .find(|(reader, _)| reader.id == destination.id)
-                    .and_then(|(_, shelf)| shelf.as_ref().ok())
-                    .map_or(0, |shelf| shelf.importable)
-            };
-            let shelf_text = if state.scanning_readers {
-                "Checking books...".to_owned()
-            } else {
-                shelf_summary(
-                    state
-                        .reader_shelves
-                        .iter()
-                        .find(|(reader, _)| reader.id == destination.id)
-                        .map(|(_, shelf)| shelf),
-                )
-            };
-            sidebar = sidebar.child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .px_2()
-                    .py_2()
-                    .child({
-                        let label = destination.label();
-                        div()
-                            .id(("reader-label", index))
-                            .role(gpui::Role::Label)
-                            .aria_label(label.clone())
-                            .min_w_0()
-                            .text_ellipsis()
-                            .overflow_hidden()
-                            .debug_selector(|| format!("reader-label:{label}"))
-                            .child(label)
-                    })
-                    .child(
-                        div()
-                            .id(("reader-summary", index))
-                            .role(gpui::Role::Status)
-                            .aria_label(shelf_text.clone())
-                            .text_xs()
-                            .text_color(theme.text_secondary)
-                            .debug_selector({
-                                let text = shelf_text.clone();
-                                move || format!("reader-summary:{text}")
-                            })
-                            .child(shelf_text),
-                    )
-                    .when(unmatched > 0, |row| {
-                        row.child(
-                            div()
-                                .id(("import-reader", index))
-                                .map(|el| {
-                                    super::text_input::accessible_button(
-                                        el,
-                                        format!("Add {unmatched} books from reader"),
-                                        can_import,
-                                    )
-                                })
-                                .debug_selector(|| "import-reader".to_owned())
-                                .text_xs()
-                                .px_2()
-                                .py_1()
-                                .rounded(px(metrics::RADIUS))
-                                .bg(theme.row_selected_inactive)
-                                .text_color(if can_import {
-                                    theme.accent
-                                } else {
-                                    theme.text_tertiary
-                                })
-                                .when(can_import, |button| button.cursor_pointer())
-                                .child(format!("Add {unmatched} to library"))
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    if !can_import {
-                                        return;
-                                    }
-                                    this.state.update(cx, |state, cx| {
-                                        state.import_from_reader(import.clone(), cx)
-                                    });
-                                })),
-                        )
-                    })
-                    .child(
-                        div()
-                            .flex()
-                            .gap_2()
-                            .items_center()
-                            .child(
-                                div()
-                                    .id(("send-device", index))
-                                    .map(|el| {
-                                        super::text_input::accessible_button(
-                                            el,
-                                            format!("Review {selected} books to send"),
-                                            can_send,
-                                        )
-                                    })
-                                    .debug_selector(|| "send-device".to_owned())
-                                    .text_xs()
-                                    .px_2()
-                                    .py_1()
-                                    .rounded(px(metrics::RADIUS))
-                                    .bg(theme.row_selected_inactive)
-                                    .text_color(if can_send {
-                                        theme.accent
-                                    } else {
-                                        theme.text_tertiary
-                                    })
-                                    .when(can_send, |button| button.cursor_pointer())
-                                    .child(if can_send {
-                                        format!("Review {selected} to send")
-                                    } else {
-                                        "Select books to send".to_owned()
-                                    })
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        if !can_send {
-                                            return;
-                                        }
-                                        this.state.update(cx, |state, cx| {
-                                            state.send_selected_to(send.clone(), cx)
-                                        });
-                                    })),
-                            )
-                            .child(
-                                div()
-                                    .id(("eject", index))
-                                    .map(|el| {
-                                        super::text_input::accessible_button(
-                                            el,
-                                            "Eject reader",
-                                            available,
-                                        )
-                                    })
-                                    .text_xs()
-                                    .text_color(if available {
-                                        theme.text_secondary
-                                    } else {
-                                        theme.text_tertiary
-                                    })
-                                    .when(available, |button| button.cursor_pointer())
-                                    .child("Eject")
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        if !available {
-                                            return;
-                                        }
-                                        this.state.update(cx, |state, cx| {
-                                            state.eject(destination.clone(), cx)
-                                        });
-                                    })),
-                            ),
-                    ),
-            );
+            sidebar = sidebar.child(self.render_reader(index, destination, cx));
         }
         if has_stock_kindle {
             sidebar = sidebar.child(div().px_2().py_2().flex().flex_col().gap_1()
@@ -296,6 +150,147 @@ impl Render for Sidebar {
                 .on_click(|_, _, cx| cx.open_url("https://www.amazon.com/sendtokindle")))
             .child(div().text_xs().text_color(theme.text_tertiary).child("Opens your browser. Takio does not upload files or confirm Amazon delivery.")));
         }
+        sidebar
+    }
+
+    fn render_reader(&self, index: usize, destination: Destination, cx: &Context<Self>) -> Div {
+        let theme = *cx.global::<Theme>();
+        let state = self.state.read(cx);
+        let section = state.section;
+        let selected = state.selected.len();
+        let available = state.can_mutate();
+        let can_send = available && section == Section::Library && selected > 0;
+        let send = destination.clone();
+        let import = destination.clone();
+        let can_import = available && section == Section::Library;
+        let shelf = state
+            .reader_shelves
+            .iter()
+            .find(|(reader, _)| reader.id == destination.id)
+            .map(|(_, shelf)| shelf);
+        let unmatched = if state.scanning_readers {
+            0
+        } else {
+            shelf
+                .and_then(|shelf| shelf.as_ref().ok())
+                .map_or(0, |shelf| shelf.importable)
+        };
+        let shelf_text = if state.scanning_readers {
+            "Checking books...".to_owned()
+        } else {
+            shelf_summary(shelf)
+        };
+        div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .px_2()
+            .py_2()
+            .child({
+                let label = destination.label();
+                div()
+                    .id(("reader-label", index))
+                    .role(gpui::Role::Label)
+                    .aria_label(label.clone())
+                    .min_w_0()
+                    .text_ellipsis()
+                    .overflow_hidden()
+                    .debug_selector(|| format!("reader-label:{label}"))
+                    .child(label)
+            })
+            .child(
+                div()
+                    .id(("reader-summary", index))
+                    .role(gpui::Role::Status)
+                    .aria_label(shelf_text.clone())
+                    .text_xs()
+                    .text_color(theme.text_secondary)
+                    .debug_selector({
+                        let text = shelf_text.clone();
+                        move || format!("reader-summary:{text}")
+                    })
+                    .child(shelf_text),
+            )
+            .when(unmatched > 0, |row| {
+                row.child(
+                    div()
+                        .id(("import-reader", index))
+                        .map(|el| {
+                            super::text_input::accessible_button(
+                                el,
+                                format!("Add {unmatched} books from reader"),
+                                can_import,
+                            )
+                        })
+                        .debug_selector(|| "import-reader".to_owned())
+                        .map(|el| small_action(el, can_import, theme))
+                        .child(format!("Add {unmatched} to library"))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if !can_import {
+                                return;
+                            }
+                            this.state.update(cx, |state, cx| {
+                                state.import_from_reader(import.clone(), cx)
+                            });
+                        })),
+                )
+            })
+            .child(
+                div()
+                    .flex()
+                    .gap_2()
+                    .items_center()
+                    .child(
+                        div()
+                            .id(("send-device", index))
+                            .map(|el| {
+                                super::text_input::accessible_button(
+                                    el,
+                                    format!("Review {selected} books to send"),
+                                    can_send,
+                                )
+                            })
+                            .debug_selector(|| "send-device".to_owned())
+                            .map(|el| small_action(el, can_send, theme))
+                            .child(if can_send {
+                                format!("Review {selected} to send")
+                            } else {
+                                "Select books to send".to_owned()
+                            })
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                if !can_send {
+                                    return;
+                                }
+                                this.state.update(cx, |state, cx| {
+                                    state.send_selected_to(send.clone(), cx)
+                                });
+                            })),
+                    )
+                    .child(
+                        div()
+                            .id(("eject", index))
+                            .map(|el| {
+                                super::text_input::accessible_button(el, "Eject reader", available)
+                            })
+                            .map(|el| small_action(el, available, theme))
+                            .child("Eject")
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                if !available {
+                                    return;
+                                }
+                                this.state
+                                    .update(cx, |state, cx| state.eject(destination.clone(), cx));
+                            })),
+                    ),
+            )
+    }
+
+    fn render_facets(&self, cx: &Context<Self>) -> Stateful<Div> {
+        let theme = *cx.global::<Theme>();
+        let state = self.state.read(cx);
+        let facets = &state.facets;
+        let filters = &state.filters;
+        let available = state.can_mutate();
         let mut groups = div()
             .id("facets")
             .mt_3()
@@ -432,8 +427,23 @@ impl Render for Sidebar {
                 );
             }
         }
-        sidebar.child(groups)
+        groups
     }
+}
+
+fn small_action(element: Stateful<Div>, enabled: bool, theme: Theme) -> Stateful<Div> {
+    element
+        .text_xs()
+        .px_2()
+        .py_1()
+        .rounded(px(metrics::RADIUS))
+        .bg(theme.row_selected_inactive)
+        .text_color(if enabled {
+            theme.accent
+        } else {
+            theme.text_tertiary
+        })
+        .when(enabled, |button| button.cursor_pointer())
 }
 
 /// The text under a reader in the sidebar, from its last scan.

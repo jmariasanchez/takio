@@ -41,7 +41,7 @@ fn library_switch_resets_view_and_routes_mutation_to_new_catalogue(cx: &mut Test
             detail: "old".into(),
         });
         state.session.delivery_report = Some(SendReport::default());
-        state.session.device_error = Some(takio::app_error!("unknown-destination"));
+        state.session.destination_error = Some(takio::app_error!("unknown-destination"));
         state.session.metadata_save_result = Some(Err(takio::app_error!("metadata-unavailable")));
         state
             .session
@@ -62,10 +62,10 @@ fn library_switch_resets_view_and_routes_mutation_to_new_catalogue(cx: &mut Test
         );
         assert_eq!(state.session.sort, Sort::default());
         assert_ne!(
-            state.device_error.as_ref().map(AppError::code),
+            state.destination_error.as_ref().map(AppError::code),
             Some("unknown-destination")
         );
-        assert!(state.metadata_save_result().is_none());
+        assert!(state.metadata_save_result.is_none());
         assert!(!state.on_reader.contains_key("old-library-book"));
         assert!(
             state.session.recovery_outcome.is_none() && state.session.delivery_report.is_none()
@@ -190,7 +190,7 @@ fn library_switch_guards_edits_operations_loading_and_reviews(cx: &mut TestAppCo
                 Activity::Idle
             };
             state.session.loading = guard == 2;
-            state.refreshing_devices = guard == 3;
+            state.refreshing_destinations = guard == 3;
             if guard == 4 {
                 state.session.activity = Activity::ReviewingSend(SendPreview {
                     destination: takio::delivery::destinations::Destination {

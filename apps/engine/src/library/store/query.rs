@@ -8,8 +8,7 @@ use rusqlite::{Connection, OptionalExtension, params, params_from_iter};
 use super::hydration::{read_items_bulk, read_items_required};
 use super::metadata::valid_custom_metadata_key;
 use super::{
-    LibraryQueryFilters, LibraryQueryScope, LibraryQuerySyntax, LibraryStore, METADATA_AUDIT_KEY,
-    as_i64, count,
+    Filters, LibraryQueryScope, LibraryQuerySyntax, LibraryStore, METADATA_AUDIT_KEY, as_i64, count,
 };
 use crate::error::AppResult;
 use crate::library::model::LibraryItem;
@@ -98,11 +97,7 @@ impl LibraryStore {
         read_items_required(&self.connection, &ids)
     }
 
-    pub fn query_items(
-        &self,
-        query: &str,
-        filters: LibraryQueryFilters<'_>,
-    ) -> AppResult<Vec<LibraryItem>> {
+    pub fn query_items(&self, query: &str, filters: &Filters) -> AppResult<Vec<LibraryItem>> {
         self.query_items_scoped(&[LibraryQueryScope {
             query,
             syntax: LibraryQuerySyntax::Literal,
@@ -169,19 +164,13 @@ fn append_query_scope(
         }
         LibraryQuerySyntax::StructuredV1 => {
             for term in parse_structured_query(scope.query)? {
-                append_structured_term(
-                    sql,
-                    values,
-                    term.field.as_deref(),
-                    &term.value,
-                    term.negated,
-                );
+                append_structured_term(sql, values, term.field.as_ref(), &term.value, term.negated);
             }
         }
     }
     if !scope.filters.authors.is_empty() {
-        let legacy = query_placeholders(scope.filters.authors, values);
-        let ordered = query_placeholders(scope.filters.authors, values);
+        let legacy = query_placeholders(&scope.filters.authors, values);
+        let ordered = query_placeholders(&scope.filters.authors, values);
         sql.push_str(&format!(
             " AND (li.author COLLATE NOCASE IN ({legacy})
                OR EXISTS(SELECT 1 FROM library_item_authors fa
@@ -190,7 +179,7 @@ fn append_query_scope(
         ));
     }
     if !scope.filters.tags.is_empty() {
-        let placeholders = query_placeholders(scope.filters.tags, values);
+        let placeholders = query_placeholders(&scope.filters.tags, values);
         sql.push_str(&format!(
             " AND EXISTS(SELECT 1 FROM library_item_tags fit
                          JOIN tags ft ON ft.normalized_name=fit.tag_normalized_name
@@ -199,13 +188,13 @@ fn append_query_scope(
         ));
     }
     if !scope.filters.series.is_empty() {
-        let placeholders = query_placeholders(scope.filters.series, values);
+        let placeholders = query_placeholders(&scope.filters.series, values);
         sql.push_str(&format!(
             " AND li.series COLLATE NOCASE IN ({placeholders})"
         ));
     }
     if !scope.filters.languages.is_empty() {
-        let placeholders = query_placeholders(scope.filters.languages, values);
+        let placeholders = query_placeholders(&scope.filters.languages, values);
         sql.push_str(&format!(
             " AND EXISTS(SELECT 1 FROM library_item_languages fl
                          WHERE fl.library_item_id=li.id
@@ -213,7 +202,7 @@ fn append_query_scope(
         ));
     }
     if !scope.filters.formats.is_empty() {
-        let placeholders = query_placeholders(scope.filters.formats, values);
+        let placeholders = query_placeholders(&scope.filters.formats, values);
         sql.push_str(&format!(
             " AND EXISTS(SELECT 1 FROM library_item_formats ff
                          WHERE ff.library_item_id=li.id
@@ -225,9 +214,46 @@ fn append_query_scope(
 
 #[derive(Debug)]
 pub(super) struct StructuredQueryTerm {
-    field: Option<String>,
+    field: Option<QueryField>,
     value: String,
     negated: bool,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum QueryField {
+    Title,
+    Author,
+    Tag,
+    Series,
+    Publisher,
+    Language,
+    Format,
+    Identifier,
+    Description,
+    Custom(String),
+}
+
+impl QueryField {
+    fn parse(value: String) -> AppResult<Self> {
+        Ok(match value.as_str() {
+            "title" => Self::Title,
+            "author" | "authors" => Self::Author,
+            "tag" | "tags" => Self::Tag,
+            "series" => Self::Series,
+            "publisher" => Self::Publisher,
+            "language" | "languages" => Self::Language,
+            "format" | "formats" => Self::Format,
+            "identifier" | "identifiers" => Self::Identifier,
+            "comments" | "description" => Self::Description,
+            _ => {
+                let key = value
+                    .strip_prefix('#')
+                    .filter(|key| valid_custom_metadata_key(key) && *key != METADATA_AUDIT_KEY)
+                    .ok_or_else(|| crate::app_error!("invalid-query"))?;
+                Self::Custom(key.to_owned())
+            }
+        })
+    }
 }
 
 pub(super) fn parse_structured_query(query: &str) -> AppResult<Vec<StructuredQueryTerm>> {
@@ -314,31 +340,7 @@ pub(super) fn parse_structured_query(query: &str) -> AppResult<Vec<StructuredQue
         if value.is_empty() || value.encode_utf16().count() > 256 {
             return Err(crate::app_error!("invalid-query"));
         }
-        if let Some(field) = field.as_deref() {
-            let valid = matches!(
-                field,
-                "title"
-                    | "author"
-                    | "authors"
-                    | "tag"
-                    | "tags"
-                    | "series"
-                    | "publisher"
-                    | "language"
-                    | "languages"
-                    | "format"
-                    | "formats"
-                    | "identifier"
-                    | "identifiers"
-                    | "comments"
-                    | "description"
-            ) || field
-                .strip_prefix('#')
-                .is_some_and(|key| valid_custom_metadata_key(key) && key != METADATA_AUDIT_KEY);
-            if !valid {
-                return Err(crate::app_error!("invalid-query"));
-            }
-        }
+        let field = field.map(QueryField::parse).transpose()?;
         terms.push(StructuredQueryTerm {
             field,
             value: value.to_owned(),
@@ -359,7 +361,7 @@ pub(super) fn parse_structured_query(query: &str) -> AppResult<Vec<StructuredQue
 fn append_structured_term(
     sql: &mut String,
     values: &mut Vec<SqlValue>,
-    field: Option<&str>,
+    field: Option<&QueryField>,
     value: &str,
     negated: bool,
 ) {
@@ -394,8 +396,8 @@ fn append_structured_term(
             values.push(SqlValue::Text(METADATA_AUDIT_KEY.to_owned()));
             values.extend(std::iter::repeat_n(SqlValue::Text(needle), 2));
         }
-        Some("title") => append_like(sql, values, "li.title", needle),
-        Some("author" | "authors") => {
+        Some(QueryField::Title) => append_like(sql, values, "li.title", needle),
+        Some(QueryField::Author) => {
             sql.push_str(
                 "COALESCE(li.author,'') LIKE ? ESCAPE '\\' COLLATE NOCASE
                  OR EXISTS(SELECT 1 FROM library_item_authors qa
@@ -404,7 +406,7 @@ fn append_structured_term(
             );
             values.extend(std::iter::repeat_n(SqlValue::Text(needle), 2));
         }
-        Some("tag" | "tags") => {
+        Some(QueryField::Tag) => {
             sql.push_str(
                 "EXISTS(SELECT 1 FROM library_item_tags qit
                         JOIN tags qt ON qt.normalized_name=qit.tag_normalized_name
@@ -413,9 +415,9 @@ fn append_structured_term(
             );
             values.push(SqlValue::Text(needle));
         }
-        Some("series") => append_like(sql, values, "li.series", needle),
-        Some("publisher") => append_like(sql, values, "li.publisher", needle),
-        Some("language" | "languages") => {
+        Some(QueryField::Series) => append_like(sql, values, "li.series", needle),
+        Some(QueryField::Publisher) => append_like(sql, values, "li.publisher", needle),
+        Some(QueryField::Language) => {
             sql.push_str(
                 "EXISTS(SELECT 1 FROM library_item_languages ql
                         WHERE ql.library_item_id=li.id
@@ -423,7 +425,7 @@ fn append_structured_term(
             );
             values.push(SqlValue::Text(needle));
         }
-        Some("format" | "formats") => {
+        Some(QueryField::Format) => {
             sql.push_str(
                 "EXISTS(SELECT 1 FROM library_item_formats qf
                         WHERE qf.library_item_id=li.id
@@ -431,7 +433,7 @@ fn append_structured_term(
             );
             values.push(SqlValue::Text(needle));
         }
-        Some("identifier" | "identifiers") => {
+        Some(QueryField::Identifier) => {
             sql.push_str(
                 "EXISTS(SELECT 1 FROM library_item_identifiers qi
                         WHERE qi.library_item_id=li.id
@@ -440,18 +442,17 @@ fn append_structured_term(
             );
             values.extend(std::iter::repeat_n(SqlValue::Text(needle), 2));
         }
-        Some("comments" | "description") => append_like(sql, values, "li.description", needle),
-        Some(field) if field.starts_with('#') => {
+        Some(QueryField::Description) => append_like(sql, values, "li.description", needle),
+        Some(QueryField::Custom(key)) => {
             sql.push_str(
                 "EXISTS(SELECT 1 FROM library_item_custom_metadata qm
                         WHERE qm.library_item_id=li.id
                           AND qm.name=?
                           AND qm.value LIKE ? ESCAPE '\\' COLLATE NOCASE)",
             );
-            values.push(SqlValue::Text(field[1..].to_owned()));
+            values.push(SqlValue::Text(key.to_owned()));
             values.push(SqlValue::Text(needle));
         }
-        Some(_) => unreachable!("structured query fields are validated"),
     }
     sql.push(')');
 }
@@ -472,7 +473,7 @@ fn query_placeholders(values: &[String], parameters: &mut Vec<SqlValue>) -> Stri
 
 #[cfg(test)]
 mod tests {
-    use super::parse_structured_query;
+    use super::{QueryField, parse_structured_query};
 
     #[test]
     fn structured_queries_parse_fields_quotes_negation_and_literal_colons() {
@@ -481,11 +482,11 @@ mod tests {
         )
         .unwrap();
         assert_eq!(terms.len(), 6);
-        assert_eq!(terms[0].field.as_deref(), Some("author"));
+        assert_eq!(terms[0].field, Some(QueryField::Author));
         assert_eq!(terms[0].value, "Ursula K. Le Guin");
-        assert_eq!(terms[1].field.as_deref(), Some("tag"));
+        assert_eq!(terms[1].field, Some(QueryField::Tag));
         assert!(terms[2].negated);
-        assert_eq!(terms[3].field.as_deref(), Some("#shelf"));
+        assert_eq!(terms[3].field, Some(QueryField::Custom("shelf".to_owned())));
         assert_eq!(terms[4].field, None);
         assert_eq!(terms[4].value, "https://example.test");
         assert_eq!(terms[5].value, "or");

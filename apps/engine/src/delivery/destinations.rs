@@ -236,7 +236,7 @@ pub enum OverwritePolicy {
     Replace,
 }
 
-pub fn send(
+pub(crate) fn send(
     destination: &Destination,
     item_id: &str,
     source: &Path,
@@ -329,12 +329,15 @@ pub fn inventory(destination: &Destination) -> AppResult<Vec<InventoryEntry>> {
             ensure_contained(&destination.path, &path)?;
             let status = if !path.exists() {
                 InventoryStatus::Missing
-            } else if hash_file(&path)?
-                == (Fingerprint {
-                    bytes: record.bytes,
-                    sha256: record.sha256.clone(),
-                })
-            {
+            } else if crate::fingerprint::hash_file(&path).map_err(|error| {
+                crate::error::AppError::from_io(
+                    crate::error::ErrorCode::DestinationUnavailable,
+                    error,
+                )
+            })? == (Fingerprint {
+                bytes: record.bytes,
+                sha256: record.sha256.clone(),
+            }) {
                 InventoryStatus::Present
             } else {
                 InventoryStatus::Changed
@@ -350,7 +353,7 @@ pub fn remove(destination: &Destination, item_id: &str) -> AppResult<DeliveryRec
         .deliveries
         .iter()
         .position(|record| record.item_id == item_id)
-        .ok_or_else(|| crate::app_error!("invalid-arguments"))?;
+        .ok_or_else(|| crate::app_error!("not-found"))?;
     let record = manifest.deliveries.remove(index);
     let relative = Path::new(&record.relative_path);
     validate_relative(relative)?;
@@ -511,7 +514,9 @@ fn publish_exclusive_copy(partial: &Path, target: &Path, expected: &Fingerprint)
 }
 
 fn hash_file(path: &Path) -> AppResult<Fingerprint> {
-    crate::fingerprint::hash_file(path).map_err(|_| crate::app_error!("source-unavailable"))
+    crate::fingerprint::hash_file(path).map_err(|error| {
+        crate::error::AppError::from_io(crate::error::ErrorCode::CopyFailed, error)
+    })
 }
 
 fn manifest_path(destination: &Destination) -> PathBuf {
@@ -520,19 +525,27 @@ fn manifest_path(destination: &Destination) -> PathBuf {
 
 fn read_manifest(destination: &Destination) -> AppResult<Manifest> {
     let path = manifest_path(destination);
-    if !path.exists() {
-        return Ok(Manifest {
-            version: 1,
-            deliveries: Vec::new(),
-        });
-    }
-    let bytes = fs::read(path).map_err(|_| crate::app_error!("copy-failed"))?;
+    let bytes = match fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(Manifest {
+                version: 1,
+                deliveries: Vec::new(),
+            });
+        }
+        Err(error) => {
+            return Err(crate::error::AppError::from_io(
+                crate::error::ErrorCode::DestinationUnavailable,
+                error,
+            ));
+        }
+    };
     let manifest: Manifest =
-        serde_json::from_slice(&bytes).map_err(|_| crate::app_error!("copy-failed"))?;
+        serde_json::from_slice(&bytes).map_err(|_| crate::app_error!("invalid-stored-data"))?;
     if manifest.version == 1 {
         Ok(manifest)
     } else {
-        Err(crate::app_error!("copy-failed"))
+        Err(crate::app_error!("invalid-stored-data"))
     }
 }
 
@@ -586,6 +599,41 @@ mod tests {
     use super::*;
 
     #[test]
+    fn reader_failures_have_destination_or_stored_data_codes() {
+        let temporary = tempfile::tempdir().unwrap();
+        let destination = manifest_destination(temporary.path());
+        assert_eq!(
+            remove(&destination, "missing").unwrap_err().code(),
+            "not-found"
+        );
+        assert_eq!(
+            hash_file(&temporary.path().join("missing"))
+                .unwrap_err()
+                .code(),
+            "copy-failed"
+        );
+        fs::create_dir(destination.path.join(".takio")).unwrap();
+        let path = manifest_path(&destination);
+        for bytes in [b"broken".as_slice(), br#"{"version":2,"deliveries":[]}"#] {
+            fs::write(&path, bytes).unwrap();
+            assert_eq!(
+                inventory(&destination).unwrap_err().code(),
+                "invalid-stored-data"
+            );
+            assert_eq!(
+                remove(&destination, "missing").unwrap_err().code(),
+                "invalid-stored-data"
+            );
+        }
+        fs::remove_file(&path).unwrap();
+        fs::create_dir(&path).unwrap();
+        assert_eq!(
+            inventory(&destination).unwrap_err().code(),
+            "destination-unavailable"
+        );
+    }
+
+    #[test]
     fn verified_delivery_survives_manifest_failure() {
         let temporary = tempfile::tempdir().unwrap();
         let destination = manifest_destination(temporary.path());
@@ -614,11 +662,11 @@ mod tests {
         );
         assert_eq!(
             delivered.record_error.as_ref().unwrap().code(),
-            "copy-failed"
+            "invalid-stored-data"
         );
         assert_eq!(
             serde_json::to_value(&delivered).unwrap()["recordError"],
-            "copy-failed"
+            "invalid-stored-data"
         );
         assert_eq!(fs::read(manifest).unwrap(), b"broken history");
         assert_eq!(
@@ -739,7 +787,7 @@ mod tests {
             record_delivery(&destination, manifest_record(146))
                 .unwrap_err()
                 .code(),
-            "copy-failed"
+            "invalid-stored-data"
         );
         assert_eq!(fs::read(&path).unwrap(), prior_bytes);
         assert_only_manifest(&destination);

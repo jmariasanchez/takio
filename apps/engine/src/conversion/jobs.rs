@@ -151,7 +151,7 @@ impl JobStore {
     }
 
     pub fn enqueue(
-        &self,
+        &mut self,
         input: &Path,
         output_format: FormatId,
         output: &Path,
@@ -204,7 +204,7 @@ impl JobStore {
             .transpose()
     }
 
-    pub fn cancel(&self, id: &str) -> AppResult<ConversionJob> {
+    pub fn cancel(&mut self, id: &str) -> AppResult<ConversionJob> {
         let changed = self.connection.execute(
             "UPDATE jobs SET status='canceled',finished_at=?2 WHERE id=?1 AND status='queued'",
             params![id, Utc::now().to_rfc3339()],
@@ -220,7 +220,7 @@ impl JobStore {
             .ok_or_else(|| crate::app_error!("unknown-job"))
     }
 
-    pub fn retry(&self, id: &str) -> AppResult<ConversionJob> {
+    pub fn retry(&mut self, id: &str) -> AppResult<ConversionJob> {
         let old = self
             .get(id)?
             .ok_or_else(|| crate::app_error!("unknown-job"))?;
@@ -235,7 +235,7 @@ impl JobStore {
         )
     }
 
-    pub fn retry_attachment(&self, id: &str) -> AppResult<ConversionJob> {
+    pub fn retry_attachment(&mut self, id: &str) -> AppResult<ConversionJob> {
         let job = self
             .get(id)?
             .ok_or_else(|| crate::app_error!("unknown-job"))?;
@@ -256,7 +256,7 @@ impl JobStore {
     }
 
     pub fn finish_attachment(
-        &self,
+        &mut self,
         id: &str,
         error_code: Option<ErrorCode>,
     ) -> AppResult<ConversionJob> {
@@ -278,6 +278,30 @@ impl JobStore {
         }
         self.get(id)?
             .ok_or_else(|| crate::app_error!("unknown-job"))
+    }
+
+    pub fn reconcile_attachment(
+        &mut self,
+        library: &mut crate::library::store::LibraryStore,
+        job: ConversionJob,
+    ) -> AppResult<ConversionJob> {
+        if job.attachment.as_ref().map(|value| value.status) != Some(JobAttachmentStatus::Pending) {
+            return Ok(job);
+        }
+        let Some(item_id) = job.library_item_id.as_deref() else {
+            return self.finish_attachment(&job.id, Some(ErrorCode::InvalidAttachment));
+        };
+        let Some(artifact) = job.artifact.as_ref() else {
+            return self.finish_attachment(&job.id, Some(ErrorCode::ArtifactInvalid));
+        };
+        let result = library.attach_verified_artifact(
+            item_id,
+            &artifact.path,
+            job.output_format,
+            artifact.bytes,
+            &artifact.sha256,
+        );
+        self.finish_attachment(&job.id, result.err().map(|error| error.kind()))
     }
 
     pub fn run_next(
@@ -331,14 +355,14 @@ impl JobStore {
         Ok(jobs)
     }
 
-    fn complete(&self, id: &str, artifact: &Artifact) -> AppResult<()> {
+    fn complete(&mut self, id: &str, artifact: &Artifact) -> AppResult<()> {
         self.connection.execute(
         "UPDATE jobs SET status='completed',finished_at=?2,owner_pid=NULL,artifact_bytes=?3,artifact_sha256=?4,
          attachment_status=CASE WHEN library_item_id IS NULL THEN NULL ELSE 'pending' END WHERE id=?1 AND status='running'",
         params![id,Utc::now().to_rfc3339(),i64::try_from(artifact.bytes).map_err(|_|crate::app_error!("artifact-invalid"))?,artifact.sha256])?;
         Ok(())
     }
-    fn fail(&self, id: &str, code: ErrorCode) -> AppResult<()> {
+    fn fail(&mut self, id: &str, code: ErrorCode) -> AppResult<()> {
         self.connection.execute("UPDATE jobs SET status='failed',finished_at=?2,owner_pid=NULL,error_code=?3 WHERE id=?1 AND status='running'",params![id,Utc::now().to_rfc3339(),code.as_str()])?;
         Ok(())
     }
@@ -467,7 +491,7 @@ mod tests {
         let input = temp.path().join("book.epub");
         std::fs::write(&input, b"book").unwrap();
         let database = temp.path().join("jobs.sqlite");
-        let store = JobStore::open(&database).unwrap();
+        let mut store = JobStore::open(&database).unwrap();
         let job = store
             .enqueue(
                 &input,
@@ -535,7 +559,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let input = temp.path().join("book.epub");
         std::fs::write(&input, b"book").unwrap();
-        let store = JobStore::open(&temp.path().join("jobs.sqlite")).unwrap();
+        let mut store = JobStore::open(&temp.path().join("jobs.sqlite")).unwrap();
         let job = store
             .enqueue(&input, FormatId::Pdf, &temp.path().join("book.pdf"), None)
             .unwrap();
@@ -581,7 +605,7 @@ mod tests {
         let input = temp.path().join("book.epub");
         std::fs::write(&input, b"x").unwrap();
         let output = temp.path().join("book.pdf");
-        let store = JobStore::open(&temp.path().join("jobs.sqlite")).unwrap();
+        let mut store = JobStore::open(&temp.path().join("jobs.sqlite")).unwrap();
         let job = store.enqueue(&input, FormatId::Pdf, &output, None).unwrap();
         assert_eq!(job.status, JobStatus::Queued);
         assert_eq!(store.cancel(&job.id).unwrap().status, JobStatus::Canceled);

@@ -1,5 +1,5 @@
 //! Measure repeated reader shelf scans, uncached and with the desktop's hash cache.
-//! Usage: cargo run --release -p takio --example reader_rescan -- <library.sqlite> <reader mount>
+//! Usage: cargo run --offline --release -p takio-engine --example reader_rescan -- <library.sqlite> <reader mount>
 use std::path::Path;
 use std::time::Instant;
 

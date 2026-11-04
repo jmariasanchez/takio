@@ -128,7 +128,7 @@ impl Workspace {
     }
 
     pub(super) fn reveal_recovery(&self, cx: &mut Context<Self>) {
-        if let Some(outcome) = &self.state.read(cx).recovery_outcome() {
+        if let Some(outcome) = &self.state.read(cx).recovery_outcome {
             cx.reveal_path(Path::new(&outcome.path));
         }
     }

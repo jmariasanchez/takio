@@ -1,5 +1,5 @@
 //! Print the title and authors Takio reads from MOBI-family files, one JSON line each.
-//! Usage: cargo run --release -p takio --example mobi_metadata -- <file>...
+//! Usage: cargo run --offline --release -p takio-engine --example mobi_metadata -- <file>...
 fn main() {
     for path in std::env::args().skip(1) {
         let (title, authors) = takio::metadata::embedded_mobi(std::path::Path::new(&path));

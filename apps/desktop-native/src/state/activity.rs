@@ -19,6 +19,25 @@ pub(super) enum Operation {
 }
 
 impl Activity {
+    pub(super) fn take_send_preview(&mut self) -> Option<SendPreview> {
+        match std::mem::take(self) {
+            Self::ReviewingSend(preview) => Some(preview),
+            other => {
+                *self = other;
+                None
+            }
+        }
+    }
+
+    pub(super) fn take_preparation_preview(&mut self) -> Option<PreparationPreview> {
+        match std::mem::take(self) {
+            Self::ReviewingPreparation(preview) => Some(preview),
+            other => {
+                *self = other;
+                None
+            }
+        }
+    }
     pub(super) fn is_idle(&self) -> bool {
         matches!(self, Self::Idle)
     }

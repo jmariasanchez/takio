@@ -136,11 +136,11 @@ pub(super) fn scan_duplicate_candidates_in(
     })?;
     for row in rows {
         let (item_id, format, path, provenance, bytes, sha) = row?;
-        let format = FormatId::ALL
-            .into_iter()
-            .find(|candidate| candidate.as_str() == format)
-            .ok_or_else(|| crate::app_error!("invalid-stored-data"))?;
-        let fingerprint = if provenance == "managed" {
+        let format = format
+            .parse::<FormatId>()
+            .map_err(|_| crate::app_error!("invalid-stored-data"))?;
+        let provenance = provenance.parse::<crate::library::model::Provenance>()?;
+        let fingerprint = if provenance == crate::library::model::Provenance::Managed {
             let bytes = bytes
                 .and_then(|value| u64::try_from(value).ok())
                 .ok_or_else(|| crate::app_error!("invalid-stored-data"))?;
@@ -152,7 +152,7 @@ pub(super) fn scan_duplicate_candidates_in(
                 .ok_or_else(|| crate::app_error!("invalid-stored-data"))?;
             fingerprints_reused += 1;
             Some(Fingerprint { bytes, sha256: sha })
-        } else if provenance == "referenced" {
+        } else {
             if let Ok(value) = hash_file(Path::new(&path)) {
                 files_hashed += 1;
                 if value.bytes > MAX_SAFE_INTEGER {
@@ -163,8 +163,6 @@ pub(super) fn scan_duplicate_candidates_in(
                 unreadable_formats += 1;
                 None
             }
-        } else {
-            return Err(crate::app_error!("invalid-stored-data"));
         };
         if let Some(Fingerprint { bytes, sha256: sha }) = fingerprint
             && bytes > 0

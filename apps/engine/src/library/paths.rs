@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use directories::ProjectDirs;
 
@@ -63,6 +63,80 @@ pub fn absolute(path: &Path) -> AppResult<PathBuf> {
         return Err(crate::app_error!("invalid-arguments"));
     }
     std::path::absolute(path).map_err(AppError::from)
+}
+
+/// Reject imports that could consume or recursively scan this library's owned files.
+pub fn validate_import_sources(paths: &LibraryPaths, sources: &[PathBuf]) -> AppResult<()> {
+    let protected = [&paths.database, &paths.jobs, &paths.items, &paths.covers]
+        .into_iter()
+        .map(|path| path_for_overlap(path))
+        .collect::<AppResult<Vec<_>>>()?;
+    for source in sources {
+        let source = path_for_overlap(source)?;
+        if protected
+            .iter()
+            .any(|path| import_paths_overlap(&source, path))
+        {
+            return Err(crate::app_error!("invalid-arguments"));
+        }
+    }
+    Ok(())
+}
+
+fn path_for_overlap(path: &Path) -> AppResult<PathBuf> {
+    // `link/..` follows the link's real parent, not its lexical parent.
+    if let Ok(resolved) = path.canonicalize() {
+        return Ok(resolved);
+    }
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()?.join(path)
+    };
+    let mut normalized = PathBuf::new();
+    for component in absolute.components() {
+        match component {
+            Component::Prefix(_) | Component::RootDir | Component::Normal(_) => {
+                normalized.push(component.as_os_str());
+            }
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !normalized.pop() {
+                    return Err(crate::app_error!("invalid-arguments"));
+                }
+            }
+        }
+    }
+    let mut ancestor = normalized.as_path();
+    let mut missing = Vec::new();
+    while std::fs::symlink_metadata(ancestor).is_err() {
+        let leaf = ancestor
+            .file_name()
+            .ok_or_else(|| crate::app_error!("invalid-arguments"))?;
+        missing.push(leaf.to_os_string());
+        ancestor = ancestor
+            .parent()
+            .ok_or_else(|| crate::app_error!("invalid-arguments"))?;
+    }
+    let mut resolved = ancestor
+        .canonicalize()
+        .map_err(|_| crate::app_error!("invalid-arguments"))?;
+    for component in missing.into_iter().rev() {
+        resolved.push(component);
+    }
+    Ok(resolved)
+}
+
+fn import_paths_overlap(source: &Path, protected: &Path) -> bool {
+    if source.starts_with(protected) || protected.starts_with(source) {
+        return true;
+    }
+    source
+        .ancestors()
+        .any(|ancestor| same_file::is_same_file(ancestor, protected).unwrap_or(false))
+        || protected
+            .ancestors()
+            .any(|ancestor| same_file::is_same_file(ancestor, source).unwrap_or(false))
 }
 
 /// Explicit profiles isolate preferences, even when a data override is set.

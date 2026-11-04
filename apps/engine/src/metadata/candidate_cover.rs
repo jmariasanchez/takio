@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, OpenOptions};
-use std::io::{Read, Write};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration as StdDuration, Instant};
@@ -10,7 +10,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use crate::error::{AppError, AppResult};
+use crate::error::AppResult;
+use crate::fingerprint::write_new_file as write_new;
 
 pub const MAX_COVER_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_ARTIFACTS: usize = 128;
@@ -72,12 +73,16 @@ pub fn root(library_root: &Path) -> PathBuf {
     library_root.join("candidate-covers")
 }
 
+pub struct CoverBinding<'a> {
+    pub item_id: &'a str,
+    pub candidate_id: &'a str,
+    pub source: &'a str,
+    pub provenance: &'a str,
+}
+
 pub fn stage(
     library_root: &Path,
-    item_id: &str,
-    candidate_id: &str,
-    source: &str,
-    provenance: &str,
+    binding: &CoverBinding<'_>,
     cover: &CapturedCover,
 ) -> AppResult<CandidateCoverDescriptor> {
     if cover.bytes.is_empty() || cover.bytes.len() as u64 > MAX_COVER_BYTES {
@@ -106,10 +111,10 @@ pub fn stage(
     let manifest = Manifest {
         schema_version: 1,
         artifact_id: artifact_id.clone(),
-        item_id: item_id.to_owned(),
-        candidate_id: candidate_id.to_owned(),
-        source: source.to_owned(),
-        provenance: provenance.to_owned(),
+        item_id: binding.item_id.to_owned(),
+        candidate_id: binding.candidate_id.to_owned(),
+        source: binding.source.to_owned(),
+        provenance: binding.provenance.to_owned(),
         sha256: digest,
         bytes: descriptor.bytes,
         media_type: cover.media_type.clone(),
@@ -131,10 +136,7 @@ pub fn stage(
 
 pub fn validate(
     library_root: &Path,
-    item_id: &str,
-    candidate_id: &str,
-    source: &str,
-    provenance: &str,
+    binding: &CoverBinding<'_>,
     descriptor: &CandidateCoverDescriptor,
 ) -> AppResult<ValidatedCover> {
     validate_descriptor(descriptor)?;
@@ -147,10 +149,10 @@ pub fn validate(
         .map_err(|_| crate::app_error!("candidate-cover-invalid"))?;
     if manifest.schema_version != 1
         || manifest.artifact_id != descriptor.artifact_id
-        || manifest.item_id != item_id
-        || manifest.candidate_id != candidate_id
-        || manifest.source != source
-        || manifest.provenance != provenance
+        || manifest.item_id != binding.item_id
+        || manifest.candidate_id != binding.candidate_id
+        || manifest.source != binding.source
+        || manifest.provenance != binding.provenance
         || manifest.sha256 != descriptor.sha256
         || manifest.bytes != descriptor.bytes
         || manifest.media_type != descriptor.media_type
@@ -176,22 +178,12 @@ pub fn validate(
 
 pub fn claim(
     library_root: &Path,
-    item_id: &str,
-    candidate_id: &str,
-    source: &str,
-    provenance: &str,
+    binding: &CoverBinding<'_>,
     descriptor: &CandidateCoverDescriptor,
 ) -> AppResult<ClaimedCover> {
     let root = root(library_root);
     let _guard = StageGuard::acquire(&root)?;
-    let validated = validate(
-        library_root,
-        item_id,
-        candidate_id,
-        source,
-        provenance,
-        descriptor,
-    )?;
+    let validated = validate(library_root, binding, descriptor)?;
     fs::rename(
         manifest_path(&root, &descriptor.artifact_id),
         claimed_manifest_path(&root, &descriptor.artifact_id),
@@ -417,12 +409,6 @@ fn read_regular(path: &Path, max: u64) -> AppResult<Vec<u8>> {
     Ok(bytes)
 }
 
-fn write_new(path: &Path, bytes: &[u8]) -> AppResult<()> {
-    let mut file = OpenOptions::new().write(true).create_new(true).open(path)?;
-    file.write_all(bytes)?;
-    file.sync_all().map_err(AppError::from)
-}
-
 fn data_path(root: &Path, id: &str) -> PathBuf {
     root.join(format!("{id}.bin"))
 }
@@ -474,6 +460,66 @@ impl Drop for StageGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn stage(
+        root: &Path,
+        item_id: &str,
+        candidate_id: &str,
+        source: &str,
+        provenance: &str,
+        cover: &CapturedCover,
+    ) -> AppResult<CandidateCoverDescriptor> {
+        super::stage(
+            root,
+            &CoverBinding {
+                item_id,
+                candidate_id,
+                source,
+                provenance,
+            },
+            cover,
+        )
+    }
+
+    fn validate(
+        root: &Path,
+        item_id: &str,
+        candidate_id: &str,
+        source: &str,
+        provenance: &str,
+        descriptor: &CandidateCoverDescriptor,
+    ) -> AppResult<ValidatedCover> {
+        super::validate(
+            root,
+            &CoverBinding {
+                item_id,
+                candidate_id,
+                source,
+                provenance,
+            },
+            descriptor,
+        )
+    }
+
+    fn claim(
+        root: &Path,
+        item_id: &str,
+        candidate_id: &str,
+        source: &str,
+        provenance: &str,
+        descriptor: &CandidateCoverDescriptor,
+    ) -> AppResult<ClaimedCover> {
+        super::claim(
+            root,
+            &CoverBinding {
+                item_id,
+                candidate_id,
+                source,
+                provenance,
+            },
+            descriptor,
+        )
+    }
     use std::sync::{Arc, Barrier};
 
     #[test]

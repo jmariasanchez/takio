@@ -103,7 +103,7 @@ pub struct LibraryState {
     /// Volume names seen at the last refresh, so polling only acts on a change.
     seen_volumes: Option<BTreeSet<String>>,
     volume_watch: Option<Task<()>>,
-    refreshing_devices: bool,
+    refreshing_destinations: bool,
     preparation_generation: Generation,
     send_preview_generation: Generation,
     generation: Generation,
@@ -136,8 +136,8 @@ impl LibraryState {
         &self.destinations
     }
 
-    pub fn refreshing_devices(&self) -> bool {
-        self.refreshing_devices
+    pub fn refreshing_destinations(&self) -> bool {
+        self.refreshing_destinations
     }
 
     pub fn set_preference_path(&mut self, path: Option<PathBuf>) {
@@ -195,7 +195,7 @@ impl LibraryState {
             reader_scan_generation: Generation::default(),
             seen_volumes: None,
             volume_watch: None,
-            refreshing_devices: false,
+            refreshing_destinations: false,
             preparation_generation: Generation::default(),
             send_preview_generation: Generation::default(),
             generation: Generation::default(),
@@ -243,35 +243,15 @@ impl LibraryState {
         let sort = self.session.sort;
         self.session.loading = true;
         self.session.sorting = false;
-        let task = match self.session.section {
-            Section::Library => {
-                let query = self.session.query.clone();
-                let filters = self.session.filters.clone();
-                let receiver = self.engine.request(|reply| Request::Query {
-                    query,
-                    filters,
-                    reply,
-                });
-                cx.background_executor().spawn(async move {
-                    let items = receiver
-                        .recv()
-                        .unwrap_or_else(|_| Err(takio::app_error!("storage-unavailable")))?;
-                    Ok(build_snapshot(items, sort))
-                })
-            }
-            Section::Trash => {
-                let receiver = self.engine.request(|reply| Request::ListTrash { reply });
-                cx.background_executor().spawn(async move {
-                    let items = receiver
-                        .recv()
-                        .unwrap_or_else(|_| Err(takio::app_error!("storage-unavailable")))?;
-                    Ok(build_snapshot(
-                        items.into_iter().map(Arc::new).collect(),
-                        sort,
-                    ))
-                })
-            }
-        };
+        let receiver = request_section(
+            &self.engine,
+            self.session.section,
+            self.session.query.clone(),
+            self.session.filters.clone(),
+        );
+        let task = cx
+            .background_executor()
+            .spawn(async move { Ok(build_snapshot(crate::engine::recv(receiver)?, sort)) });
         self.await_snapshot(task, generation, cx).detach();
         cx.notify();
     }
@@ -303,23 +283,7 @@ impl LibraryState {
             if cancelled.load(Ordering::Acquire) {
                 return Err(takio::app_error!("query-cancelled"));
             }
-            let items = match section {
-                Section::Library => engine
-                    .request(|reply| Request::Query {
-                        query,
-                        filters,
-                        reply,
-                    })
-                    .recv()
-                    .unwrap_or_else(|_| Err(takio::app_error!("storage-unavailable")))?,
-                Section::Trash => engine
-                    .request(|reply| Request::ListTrash { reply })
-                    .recv()
-                    .unwrap_or_else(|_| Err(takio::app_error!("storage-unavailable")))?
-                    .into_iter()
-                    .map(Arc::new)
-                    .collect(),
-            };
+            let items = crate::engine::recv(request_section(&engine, section, query, filters))?;
             Ok(build_snapshot(items, sort))
         });
         // Do not cancel a completed snapshot on the UI thread. Obsolete replies
@@ -663,7 +627,7 @@ impl LibraryState {
     }
 
     pub fn can_mutate(&self) -> bool {
-        self.session.activity.is_idle() && !self.metadata_editing() && !self.session.loading
+        self.session.activity.is_idle() && !self.metadata_editing && !self.session.loading
     }
 
     pub fn busy(&self) -> bool {
@@ -723,30 +687,10 @@ impl LibraryState {
         true
     }
 
-    pub fn recovery_outcome(&self) -> &Option<RecoveryOutcome> {
-        &self.session.recovery_outcome
-    }
-
-    pub fn delivery_report(&self) -> &Option<SendReport> {
-        &self.session.delivery_report
-    }
-
-    pub fn automatic_backup_prompt_open(&self) -> bool {
-        self.session.automatic_backup_prompt_open
-    }
-
-    pub fn metadata_editing(&self) -> bool {
-        self.session.metadata_editing
-    }
-
     pub fn saving_metadata(&self) -> bool {
         self.session
             .activity
             .is_operation(Operation::SavingMetadata)
-    }
-
-    pub fn metadata_save_result(&self) -> &Option<AppResult<String>> {
-        &self.session.metadata_save_result
     }
 
     pub fn dismiss_recovery_outcome(&mut self, cx: &mut Context<Self>) {
@@ -1019,12 +963,12 @@ impl LibraryState {
     }
 
     pub fn refresh_destinations(&mut self, cx: &mut Context<Self>) {
-        if self.refreshing_devices || self.busy() {
+        if self.refreshing_destinations || self.busy() {
             return;
         }
-        self.refreshing_devices = true;
+        self.refreshing_destinations = true;
         self.clear_reader_shelves();
-        self.session.device_error = None;
+        self.session.destination_error = None;
         let volumes_root = self.volumes_root.clone();
         self.seen_volumes = Some(mounted_volume_names(&volumes_root));
         let receiver = self.engine.request(|reply| Request::ListDestinations {
@@ -1032,7 +976,7 @@ impl LibraryState {
             reply,
         });
         self.await_reply(receiver, cx, |this, result, cx| {
-            this.refreshing_devices = false;
+            this.refreshing_destinations = false;
             match result {
                 Ok(destinations) => {
                     this.destinations = destinations;
@@ -1040,7 +984,7 @@ impl LibraryState {
                 }
                 Err(error) => {
                     this.destinations.clear();
-                    this.session.device_error = Some(error);
+                    this.session.destination_error = Some(error);
                 }
             }
             cx.notify();
@@ -1083,7 +1027,7 @@ impl LibraryState {
     /// A detected change is applied only between operations so it never cancels a
     /// review or races a send, import or library switch. The next tick retries.
     fn can_auto_refresh(&self) -> bool {
-        !self.refreshing_devices && self.session.activity.is_idle()
+        !self.refreshing_destinations && self.session.activity.is_idle()
     }
 
     pub fn send_ids_to(
@@ -1161,15 +1105,13 @@ impl LibraryState {
         {
             return;
         }
-        let Some(preview) = self.send_preview() else {
+        let Some(preview) = self.session.activity.take_send_preview() else {
             return;
         };
         if preview.ready_count() == 0 {
+            self.session.activity = Activity::ReviewingSend(preview);
             return;
         }
-        let Activity::ReviewingSend(preview) = std::mem::take(&mut self.session.activity) else {
-            unreachable!("checked send review")
-        };
         let (ready, excluded) = preview
             .entries
             .into_iter()
@@ -1345,17 +1287,14 @@ impl LibraryState {
         {
             return;
         }
-        let Some(preview) = self.preparation_preview() else {
+        let Some(preview) = self.session.activity.take_preparation_preview() else {
             return;
         };
         if !preview.backend.available {
+            self.session.activity = Activity::ReviewingPreparation(preview);
             self.set_error(takio::error::ErrorCode::BackendUnavailable, cx);
             return;
         }
-        let Activity::ReviewingPreparation(preview) = std::mem::take(&mut self.session.activity)
-        else {
-            unreachable!("checked preparation review")
-        };
         self.session.activity = Activity::Running(Operation::Mutation);
         self.set_status("Preparing an AZW3 copy locally (120-second conversion limit). EPUB kept. Nothing sent.".into(), false, cx);
         let receiver = self
@@ -1443,11 +1382,7 @@ impl LibraryState {
         cx.spawn(async move |this: gpui::WeakEntity<Self>, cx| {
             let result = cx
                 .background_executor()
-                .spawn(async move {
-                    receiver
-                        .recv()
-                        .unwrap_or_else(|_| Err(takio::app_error!("storage-unavailable")))
-                })
+                .spawn(async move { crate::engine::recv(receiver) })
                 .await;
             let _ = this.update(cx, |this, cx| {
                 if this.library_epoch == epoch {
@@ -1465,6 +1400,22 @@ pub enum FilterDimension {
     Series,
     Language,
     Format,
+}
+
+fn request_section(
+    engine: &Engine,
+    section: Section,
+    query: String,
+    filters: Filters,
+) -> Receiver<AppResult<Vec<Arc<LibraryItem>>>> {
+    match section {
+        Section::Library => engine.request(|reply| Request::Query {
+            query,
+            filters,
+            reply,
+        }),
+        Section::Trash => engine.request(|reply| Request::ListTrash { reply }),
+    }
 }
 
 /// How often the app checks whether a reader was connected or unplugged.
@@ -1545,7 +1496,7 @@ mod tests {
         cx.executor().allow_parking();
         let temp = tempfile::tempdir().unwrap();
         let paths = LibraryPaths::resolve(None, Some(&temp.path().join("library.sqlite"))).unwrap();
-        let engine = Engine::open(paths).unwrap();
+        let engine = Engine::create_or_migrate(paths).unwrap();
         let roots = vec![
             epub(temp.path(), "Beta"),
             epub(temp.path(), "Alpha"),
@@ -2500,7 +2451,7 @@ mod tests {
         });
         let paths =
             LibraryPaths::resolve(None, Some(&f._temp.path().join("library.sqlite"))).unwrap();
-        let reopened = Engine::open(paths)
+        let reopened = Engine::create_or_migrate(paths)
             .unwrap()
             .request(|reply| Request::Query {
                 query: "Zulu".into(),

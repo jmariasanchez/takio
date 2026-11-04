@@ -187,7 +187,7 @@ commands![
     ),
     (EjectReader, "Eject Reader...", "Reader", None, None),
     (
-        RefreshDevices,
+        RefreshReaders,
         "Refresh Readers",
         "Reader",
         Some("cmd-r"),

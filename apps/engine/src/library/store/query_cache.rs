@@ -7,7 +7,7 @@ use std::cell::RefCell;
 
 use super::hydration::read_items_bulk;
 use super::query::query_item_ids;
-use super::{LibraryQueryFilters, LibraryQueryScope, LibraryQuerySyntax, LibraryStore};
+use super::{Filters, LibraryQueryScope, LibraryQuerySyntax, LibraryStore};
 use crate::error::AppResult;
 use crate::library::model::{BookAuthor, BookFormat, LibraryItem};
 
@@ -58,7 +58,7 @@ impl LibraryStore {
     pub fn query_items_shared(
         &self,
         query: &str,
-        filters: LibraryQueryFilters<'_>,
+        filters: &Filters,
     ) -> AppResult<Vec<Arc<LibraryItem>>> {
         // Do not retain uncommitted records if a caller already owns a transaction.
         if !self.connection.is_autocommit() {

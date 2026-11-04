@@ -551,7 +551,7 @@ fn startup_preflight_preserves_supported_legacy_migration_and_rejects_corruption
     connection.execute("DELETE FROM library_items", []).unwrap();
     drop(connection);
     let before = fs::read(&paths.database).unwrap();
-    assert!(LibraryStore::preflight_startup(paths.clone()).unwrap());
+    assert!(LibraryStore::requires_verified_migration(paths.clone()).unwrap());
     assert_eq!(fs::read(&paths.database).unwrap(), before);
     assert!(!paths.root.join("library.sqlite.v1.backup").exists());
     assert!(!paths.items.exists());
@@ -560,13 +560,13 @@ fn startup_preflight_preserves_supported_legacy_migration_and_rejects_corruption
         migrated.verify().unwrap().schema_version,
         LIBRARY_SCHEMA_VERSION
     );
-    assert!(!LibraryStore::preflight_startup(paths.clone()).unwrap());
+    assert!(!LibraryStore::requires_verified_migration(paths.clone()).unwrap());
     assert!(paths.root.join("library.sqlite.v1.backup").is_file());
     drop(migrated);
     let mut malformed = fs::read(&paths.database).unwrap();
     malformed[60..64].copy_from_slice(&1_u32.to_be_bytes());
     fs::write(&paths.database, &malformed).unwrap();
-    assert!(LibraryStore::preflight_startup(paths.clone()).is_err());
+    assert!(LibraryStore::requires_verified_migration(paths.clone()).is_err());
     assert_eq!(fs::read(&paths.database).unwrap(), malformed);
 }
 
@@ -577,12 +577,12 @@ fn startup_preflight_accepts_parent_alias_but_not_database_symlink() {
     let alias = temp.path().join("alias");
     std::os::unix::fs::symlink(&store.paths.root, &alias).unwrap();
     let aliased = LibraryPaths::resolve(None, Some(&alias.join("library.sqlite"))).unwrap();
-    assert!(!LibraryStore::preflight_startup(aliased).unwrap());
+    assert!(!LibraryStore::requires_verified_migration(aliased).unwrap());
     let redirected = temp.path().join("redirected");
     fs::create_dir(&redirected).unwrap();
     std::os::unix::fs::symlink(&store.paths.database, redirected.join("library.sqlite")).unwrap();
     let paths = LibraryPaths::resolve(None, Some(&redirected.join("library.sqlite"))).unwrap();
-    assert!(LibraryStore::preflight_startup(paths).is_err());
+    assert!(LibraryStore::requires_verified_migration(paths).is_err());
     assert_eq!(store.verify().unwrap().verified_managed_formats, 1);
 }
 

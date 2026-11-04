@@ -115,7 +115,7 @@ fn automatic_backup_state_defers_for_edits_reviews_busy_loading_and_switch(
             };
             s.session.metadata_editing = blocked == 1;
             s.session.loading = blocked == 2;
-            s.refreshing_devices = blocked == 4;
+            s.refreshing_destinations = blocked == 4;
             s.session.automatic_backup_prompt_open = blocked == 6;
             s.check_automatic_backup(10, cx);
             assert!(s.automatic_backup.last_attempt.is_none());

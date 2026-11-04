@@ -655,7 +655,7 @@ fn failed_volume_listing_clears_stale_reader_marks(cx: &mut TestAppContext) {
     });
     settle(&f.state, cx);
     f.state.read_with(cx, |state, _| {
-        assert!(state.device_error.is_some());
+        assert!(state.destination_error.is_some());
         assert!(state.destinations.is_empty());
         assert!(
             state.on_reader.is_empty(),

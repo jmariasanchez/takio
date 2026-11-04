@@ -97,11 +97,7 @@ pub(super) fn read_items_bulk(
         })?;
         for row in rows {
             let (id, format, path, added_at, provenance) = row?;
-            let provenance = match provenance.as_str() {
-                "managed" => Provenance::Managed,
-                "referenced" => Provenance::Referenced,
-                _ => return Err(crate::app_error!("invalid-stored-data")),
-            };
+            let provenance = provenance.parse::<Provenance>()?;
             formats.entry(id).or_default().push(BookFormat {
                 source_path: PathBuf::from(path),
                 format: format
