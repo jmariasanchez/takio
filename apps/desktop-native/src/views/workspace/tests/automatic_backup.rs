@@ -30,7 +30,7 @@ fn native_automatic_backup_enable_reload_mutate_restore_and_disable(cx: &mut Tes
     assert_eq!(
         f.state
             .read_with(cx, |state, _| state.automatic_backup().config.clone()),
-        crate::automatic_backup::Config::default()
+        crate::settings::automatic_backup::Config::default()
     );
 
     // Only the native consent/picker boundary is simulated. Actions, state,
@@ -78,10 +78,10 @@ fn native_automatic_backup_enable_reload_mutate_restore_and_disable(cx: &mut Tes
         assert!(
             !state
                 .automatic_backup()
-                .due(last_success + crate::automatic_backup::DAILY_SECONDS - 1)
+                .due(last_success + crate::settings::automatic_backup::DAILY_SECONDS - 1)
         );
         state.check_automatic_backup(
-            last_success + crate::automatic_backup::DAILY_SECONDS - 1,
+            last_success + crate::settings::automatic_backup::DAILY_SECONDS - 1,
             cx,
         );
         assert!(!state.busy());
@@ -147,7 +147,7 @@ fn native_automatic_backup_enable_reload_mutate_restore_and_disable(cx: &mut Tes
         }
         assert_eq!(
             state.automatic_backup().config,
-            crate::automatic_backup::Config::default()
+            crate::settings::automatic_backup::Config::default()
         );
         state.check_automatic_backup(u64::MAX, cx);
         assert!(!state.busy());
@@ -177,7 +177,7 @@ fn native_automatic_backup_enable_reload_mutate_restore_and_disable(cx: &mut Tes
         assert!(!state.busy());
     });
     assert!(
-        !crate::automatic_backup::load(&original_root)
+        !crate::settings::automatic_backup::load(&original_root)
             .unwrap()
             .enabled
     );
@@ -200,7 +200,7 @@ fn automatic_backup_due_for_dialog_test(f: &Fixture, cx: &mut TestAppContext) {
     automatic_backup_settings_ready(&f.state, cx);
     f.state.update(cx, |state, _| {
         assert!(state.automatic_backup().ready);
-        state.set_test_automatic_backup_config(crate::automatic_backup::Config {
+        state.set_test_automatic_backup_config(crate::settings::automatic_backup::Config {
             enabled: true,
             destination: Some(f._temp.path().join("unused")),
             last_success: None,

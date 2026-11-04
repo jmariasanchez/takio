@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::small_file;
+use super::small_file;
 use takio::error::{AppError, AppResult, ErrorCode};
 use takio::library::store::{BackupReport, LibraryStore};
 

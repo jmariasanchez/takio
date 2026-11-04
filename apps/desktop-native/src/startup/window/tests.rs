@@ -156,7 +156,7 @@ fn startup_open_existing_activates_only_valid_choice_and_remembers_it(cx: &mut T
     settle(&f.view, cx);
     assert!(f.view.read_with(cx, |view, _| view.workspace.is_some()));
     assert_eq!(
-        crate::preferences::load(&f.preference).unwrap(),
+        crate::startup::preferences::load(&f.preference).unwrap(),
         Some(good.canonicalize().unwrap())
     );
     original_unchanged(&f);
@@ -182,7 +182,7 @@ fn startup_restore_opens_verified_new_copy_without_changing_original_or_backup(
     settle(&f.view, cx);
     assert!(f.view.read_with(cx, |view, _| view.workspace.is_some()));
     assert_eq!(
-        crate::preferences::load(&f.preference).unwrap(),
+        crate::startup::preferences::load(&f.preference).unwrap(),
         Some(destination.canonicalize().unwrap())
     );
     let paths = LibraryPaths::resolve(None, Some(&destination.join("library.sqlite"))).unwrap();

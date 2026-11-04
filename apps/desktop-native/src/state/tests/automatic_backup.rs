@@ -20,7 +20,7 @@ fn stale_backup_configuration_reply_releases_busy(cx: &mut TestAppContext) {
     };
     f.state.update(cx, |s, _| s.automatic_backup.revision += 1);
     reply
-        .send(Ok(crate::automatic_backup::Config::default()))
+        .send(Ok(crate::settings::automatic_backup::Config::default()))
         .unwrap();
     settle(&f.state, cx);
     assert!(f.state.read_with(cx, |s, _| s.can_mutate()));
@@ -68,10 +68,13 @@ fn automatic_backup_state_opt_in_roundtrip_disable_and_daily_clock(cx: &mut Test
         );
     }
     f.state.update(cx, |s, cx| {
-        s.check_automatic_backup(last + crate::automatic_backup::DAILY_SECONDS - 1, cx);
+        s.check_automatic_backup(
+            last + crate::settings::automatic_backup::DAILY_SECONDS - 1,
+            cx,
+        );
         assert!(!s.busy());
         assert!(s.request_close(cx));
-        s.check_automatic_backup(last + crate::automatic_backup::DAILY_SECONDS, cx);
+        s.check_automatic_backup(last + crate::settings::automatic_backup::DAILY_SECONDS, cx);
         assert!(s.busy());
         assert!(!s.request_close(cx));
     });
@@ -86,7 +89,7 @@ fn automatic_backup_state_opt_in_roundtrip_disable_and_daily_clock(cx: &mut Test
     });
     assert_eq!(fs::read_dir(output.path()).unwrap().count(), 3);
     assert!(
-        !crate::automatic_backup::load(f._temp.path())
+        !crate::settings::automatic_backup::load(f._temp.path())
             .unwrap()
             .enabled
     );
@@ -100,7 +103,7 @@ fn automatic_backup_state_defers_for_edits_reviews_busy_loading_and_switch(
     automatic_ready(&f, cx);
     let requests = preparation_channel(&f, cx);
     f.state.update(cx, |s, cx| {
-        s.automatic_backup.config = crate::automatic_backup::Config {
+        s.automatic_backup.config = crate::settings::automatic_backup::Config {
             enabled: true,
             destination: Some(PathBuf::from("/unused")),
             last_success: None,
@@ -148,9 +151,15 @@ fn automatic_backup_state_defers_for_edits_reviews_busy_loading_and_switch(
                 .text
                 .contains("one hour")
         );
-        s.check_automatic_backup(10 + crate::automatic_backup::FAILURE_RETRY_SECONDS - 1, cx);
+        s.check_automatic_backup(
+            10 + crate::settings::automatic_backup::FAILURE_RETRY_SECONDS - 1,
+            cx,
+        );
         assert!(!s.busy());
-        s.check_automatic_backup(10 + crate::automatic_backup::FAILURE_RETRY_SECONDS, cx);
+        s.check_automatic_backup(
+            10 + crate::settings::automatic_backup::FAILURE_RETRY_SECONDS,
+            cx,
+        );
         assert!(s.busy());
     });
     match requests.try_recv().unwrap() {
@@ -243,7 +252,8 @@ fn automatic_backup_state_keeps_success_and_daily_throttle_when_timestamp_save_f
     let output = tempfile::tempdir().unwrap();
     let parent = output.path().join("copies");
     fs::create_dir(&parent).unwrap();
-    let config = crate::automatic_backup::configure(f._temp.path(), Some(parent)).unwrap();
+    let config =
+        crate::settings::automatic_backup::configure(f._temp.path(), Some(parent)).unwrap();
     let settings = f._temp.path().join(".takio-automatic-backup");
     fs::remove_file(&settings).unwrap();
     fs::create_dir(&settings).unwrap();
@@ -263,7 +273,10 @@ fn automatic_backup_state_keeps_success_and_daily_throttle_when_timestamp_save_f
                 .contains("Copy kept")
         );
         assert_eq!(s.automatic_backup.config.last_success, Some(100));
-        s.check_automatic_backup(100 + crate::automatic_backup::FAILURE_RETRY_SECONDS, cx);
+        s.check_automatic_backup(
+            100 + crate::settings::automatic_backup::FAILURE_RETRY_SECONDS,
+            cx,
+        );
         assert!(!s.busy());
         s.session().recovery_outcome.as_ref().unwrap().path.clone()
     });
@@ -292,10 +305,10 @@ fn automatic_backup_state_stale_settings_load_cannot_replace_new_library_config(
     };
     f.state.update(cx, |s, _| {
         s.library_epoch += 1;
-        s.automatic_backup = crate::automatic_backup::Schedule::default();
+        s.automatic_backup = crate::settings::automatic_backup::Schedule::default();
     });
     reply
-        .send(Ok(crate::automatic_backup::Config {
+        .send(Ok(crate::settings::automatic_backup::Config {
             enabled: true,
             destination: Some(PathBuf::from("/unused-old-destination")),
             last_success: None,

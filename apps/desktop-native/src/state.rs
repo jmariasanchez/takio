@@ -91,7 +91,7 @@ impl Drop for PendingQuery {
 
 pub struct LibraryState {
     session: LibrarySession,
-    automatic_backup: crate::automatic_backup::Schedule,
+    automatic_backup: crate::settings::automatic_backup::Schedule,
     automatic_backup_timer: Option<Task<()>>,
     engine: Engine,
     library_root: PathBuf,
@@ -114,7 +114,7 @@ impl LibraryState {
     pub fn session(&self) -> &LibrarySession {
         &self.session
     }
-    pub fn automatic_backup(&self) -> &crate::automatic_backup::Schedule {
+    pub fn automatic_backup(&self) -> &crate::settings::automatic_backup::Schedule {
         &self.automatic_backup
     }
 
@@ -151,7 +151,7 @@ impl LibraryState {
     #[cfg(test)]
     pub(crate) fn set_test_automatic_backup_config(
         &mut self,
-        config: crate::automatic_backup::Config,
+        config: crate::settings::automatic_backup::Config,
     ) {
         self.automatic_backup.config = config;
     }
@@ -178,7 +178,7 @@ impl LibraryState {
     ) -> Self {
         let mut this = Self {
             session: LibrarySession::default(),
-            automatic_backup: crate::automatic_backup::Schedule::default(),
+            automatic_backup: crate::settings::automatic_backup::Schedule::default(),
             automatic_backup_timer: None,
             volumes_root,
             library_root: engine.root().to_path_buf(),

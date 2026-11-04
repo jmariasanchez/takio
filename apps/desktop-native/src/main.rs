@@ -1,21 +1,15 @@
 //! Takio native desktop. One process, one binary: the GPUI renderer links
 //! the library engine directly and talks to it over an in-process channel.
 
-mod activation;
-mod automatic_backup;
 mod bench;
 mod commands;
 mod covers;
 mod engine;
-mod launch;
-mod library_location;
-mod preferences;
 mod preparation;
-mod small_file;
+mod settings;
 #[cfg(feature = "snapshot")]
 mod snapshot;
 mod startup;
-mod startup_window;
 mod state;
 #[cfg(any(test, feature = "snapshot"))]
 mod test_support;
@@ -29,7 +23,7 @@ use gpui_platform::application;
 use std::io::Write;
 use std::process::ExitCode;
 
-use crate::startup_window::StartupWindow;
+use crate::startup::{launch, window::StartupWindow};
 
 actions!(
     takio,

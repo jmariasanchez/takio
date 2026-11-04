@@ -12,7 +12,7 @@ use crate::engine::Engine;
 use crate::state::LibraryState;
 use crate::views::workspace::Workspace;
 
-pub fn run(launch: &crate::launch::LaunchEnvironment) {
+pub fn run(launch: &crate::startup::launch::LaunchEnvironment) {
     let output = PathBuf::from(
         std::env::var_os("TAKIO_SNAPSHOT_OUTPUT")
             .unwrap_or_else(|| crate::fatal("set TAKIO_SNAPSHOT_OUTPUT")),

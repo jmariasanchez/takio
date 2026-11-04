@@ -305,7 +305,7 @@ impl Render for BenchWindow {
     }
 }
 
-pub fn run(started: Instant, launch: &crate::launch::LaunchEnvironment) {
+pub fn run(started: Instant, launch: &crate::startup::launch::LaunchEnvironment) {
     let paths = launch
         .paths()
         .unwrap_or_else(|error| crate::fatal(error.code()));

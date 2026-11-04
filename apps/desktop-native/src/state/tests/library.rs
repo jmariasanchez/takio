@@ -273,7 +273,7 @@ fn library_switch_persists_selection_and_reports_preference_failure(cx: &mut Tes
     });
     settle(&f.state, cx);
     assert_eq!(
-        crate::preferences::load(&preference).unwrap(),
+        crate::startup::preferences::load(&preference).unwrap(),
         Some(b.clone())
     );
     f.state.update(cx, |state, cx| {

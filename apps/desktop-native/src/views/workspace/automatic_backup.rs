@@ -25,7 +25,10 @@ impl Workspace {
         } else {
             "Currently disabled.\n\n".into()
         };
-        let detail = format!("{current}{}", crate::automatic_backup::EXPLANATION);
+        let detail = format!(
+            "{current}{}",
+            crate::settings::automatic_backup::EXPLANATION
+        );
         let pause = self.state.read(cx).automatic_backup().pause();
         let answer = window.prompt(
             PromptLevel::Info,

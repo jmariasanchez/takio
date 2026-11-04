@@ -11,8 +11,8 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 
-pub use crate::library_location::OpenedLibrary;
 use crate::preparation::{self, PreparationPreview};
+pub use crate::startup::library_location::OpenedLibrary;
 use takio::conversion::BackendDiscovery;
 #[cfg(test)]
 use takio::delivery::destinations::DestinationKind;
@@ -216,16 +216,16 @@ pub type MutationReport = Vec<(String, AppResult<takio::library::store::Mutation
 /// Everything the UI can ask the engine to do.
 pub enum Request {
     AutomaticBackupLoad {
-        reply: Sender<AppResult<crate::automatic_backup::Config>>,
+        reply: Sender<AppResult<crate::settings::automatic_backup::Config>>,
     },
     AutomaticBackupConfigure {
         destination: Option<PathBuf>,
-        reply: Sender<AppResult<crate::automatic_backup::Config>>,
+        reply: Sender<AppResult<crate::settings::automatic_backup::Config>>,
     },
     AutomaticBackupRun {
-        config: crate::automatic_backup::Config,
+        config: crate::settings::automatic_backup::Config,
         now: u64,
-        reply: Sender<AppResult<crate::automatic_backup::RunReport>>,
+        reply: Sender<AppResult<crate::settings::automatic_backup::RunReport>>,
     },
     OpenLibrary {
         directory: PathBuf,
@@ -342,7 +342,7 @@ impl Engine {
     }
 
     pub fn open_existing(directory: PathBuf) -> AppResult<Self> {
-        let (store, _) = crate::library_location::open(&directory)?;
+        let (store, _) = crate::startup::library_location::open(&directory)?;
         Self::start(store, None)
     }
 
@@ -409,30 +409,31 @@ fn worker_with_reader_scans(
     while let Ok(request) = receiver.recv() {
         match request {
             Request::OpenLibrary { directory, reply } => {
-                let result =
-                    crate::library_location::open(&directory).map(|(candidate, opened)| {
+                let result = crate::startup::library_location::open(&directory).map(
+                    |(candidate, opened)| {
                         store = candidate;
                         if let Some(scans) = &reader_scans {
                             scans.invalidate();
                         }
                         opened
-                    });
+                    },
+                );
                 let _ = reply.send(result);
             }
             Request::Backup { destination, reply } => {
                 let _ = reply.send(store.backup(&destination));
             }
             Request::AutomaticBackupLoad { reply } => {
-                let _ = reply.send(crate::automatic_backup::load(&store.paths().root));
+                let _ = reply.send(crate::settings::automatic_backup::load(&store.paths().root));
             }
             Request::AutomaticBackupConfigure { destination, reply } => {
-                let _ = reply.send(crate::automatic_backup::configure(
+                let _ = reply.send(crate::settings::automatic_backup::configure(
                     &store.paths().root,
                     destination,
                 ));
             }
             Request::AutomaticBackupRun { config, now, reply } => {
-                let _ = reply.send(crate::automatic_backup::run(&store, config, now));
+                let _ = reply.send(crate::settings::automatic_backup::run(&store, config, now));
             }
             Request::RestoreBackupCopy {
                 source,

@@ -40,6 +40,10 @@ renders in under 100 ms from launch.
 ```text
 apps/desktop-native/
   src/main.rs          window, menus, keybindings, theme install
+  src/startup/         launch environment, activation, library location, preferences, recovery window
+  src/settings/        bounded small-file IO and automatic backup configuration
+  src/bench.rs         opt-in native performance probes
+  src/snapshot.rs      opt-in native offscreen rendering
   src/engine.rs        EngineHandle: request channel to the store thread
   src/state.rs         LibraryState entity: items, selection, query, sort
   src/theme.rs         light/dark tokens (system appearance aware)

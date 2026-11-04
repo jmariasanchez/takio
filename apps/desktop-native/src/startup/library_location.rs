@@ -248,10 +248,10 @@ mod tests {
             .recv()
             .unwrap()
             .unwrap();
-        let report = crate::activation::ActivationReport::remember(result.root, Some(&b));
+        let report = crate::startup::activation::ActivationReport::remember(result.root, Some(&b));
         assert_eq!(
             report.preference,
-            crate::activation::PreferenceOutcome::SessionOnly
+            crate::startup::activation::PreferenceOutcome::SessionOnly
         );
         assert_eq!(query(&engine)[0].id, id);
     }

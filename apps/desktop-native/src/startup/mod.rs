@@ -1,5 +1,12 @@
 //! Resolve a remembered library without recreating a missing selected database.
-use crate::{activation::ActivationReport, engine::Engine, preferences};
+pub mod activation;
+pub mod launch;
+pub mod library_location;
+pub mod preferences;
+pub mod window;
+
+use crate::engine::Engine;
+use activation::ActivationReport;
 use std::path::{Path, PathBuf};
 use takio::{
     error::AppResult,

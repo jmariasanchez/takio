@@ -63,7 +63,9 @@ impl StartupWindow {
 
     fn run(
         &mut self,
-        job: impl FnOnce() -> AppResult<(Engine, crate::activation::ActivationReport)> + Send + 'static,
+        job: impl FnOnce() -> AppResult<(Engine, crate::startup::activation::ActivationReport)>
+        + Send
+        + 'static,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {

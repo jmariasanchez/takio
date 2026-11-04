@@ -41,7 +41,7 @@ impl LibraryState {
             .request(|reply| Request::OpenLibrary { directory, reply });
         let task = cx.background_executor().spawn(async move {
             let report = crate::engine::recv(receiver)?;
-            Ok::<_, AppError>(crate::activation::ActivationReport::remember(
+            Ok::<_, AppError>(crate::startup::activation::ActivationReport::remember(
                 report.root,
                 remember.as_deref(),
             ))

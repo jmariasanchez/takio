@@ -8,7 +8,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::small_file;
+use crate::settings::small_file;
 use takio::error::{AppError, AppResult, ErrorCode};
 
 const MAX_BYTES: usize = 64 * 1024;

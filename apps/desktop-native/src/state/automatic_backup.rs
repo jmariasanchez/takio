@@ -1,6 +1,6 @@
 //! Daily checks use a cancellable UI timer. Only actual copy work holds the busy guard.
 use super::*;
-use crate::automatic_backup::{Schedule, now_seconds};
+use crate::settings::automatic_backup::{Schedule, now_seconds};
 
 impl LibraryState {
     pub fn initialize_automatic_backup(&mut self, cx: &mut Context<Self>) {
