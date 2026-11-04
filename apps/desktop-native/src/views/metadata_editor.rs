@@ -9,12 +9,27 @@ use super::text_input::TextInput;
 use crate::state::{LibraryEntity, humanize_error};
 use crate::theme::Theme;
 
-const FIELD_LABELS: [&str; 4] = [
-    "Title (required)",
-    "Authors (separate with semicolons)",
-    "Series",
-    "Tags (separate with semicolons)",
-];
+struct EditorFields {
+    title: Entity<TextInput>,
+    authors: Entity<TextInput>,
+    series: Entity<TextInput>,
+    tags: Entity<TextInput>,
+}
+
+impl EditorFields {
+    fn labeled(&self) -> [(&'static str, &Entity<TextInput>); 4] {
+        [
+            ("Title (required)", &self.title),
+            ("Authors (separate with semicolons)", &self.authors),
+            ("Series", &self.series),
+            ("Tags (separate with semicolons)", &self.tags),
+        ]
+    }
+
+    fn iter(&self) -> impl Iterator<Item = &Entity<TextInput>> {
+        self.labeled().into_iter().map(|(_, field)| field)
+    }
+}
 
 actions!(
     metadata_editor,
@@ -105,7 +120,7 @@ pub struct Closed;
 pub struct MetadataEditor {
     state: LibraryEntity,
     original: LibraryItem,
-    fields: [Entity<TextInput>; 4],
+    fields: EditorFields,
     save_focus: FocusHandle,
     cancel_focus: FocusHandle,
     return_focus: Option<FocusHandle>,
@@ -131,13 +146,17 @@ impl MetadataEditor {
             KeyBinding::new("space", Activate, Some("MetadataButton")),
         ]);
         let draft = Draft::from_item(&item);
-        let fields = [draft.title, draft.authors, draft.series, draft.tags]
-            .map(|text| cx.new(|cx| TextInput::new(text, cx)));
-        for (field, label) in fields.iter().zip(FIELD_LABELS) {
+        let fields = EditorFields {
+            title: cx.new(|cx| TextInput::new(draft.title, cx)),
+            authors: cx.new(|cx| TextInput::new(draft.authors, cx)),
+            series: cx.new(|cx| TextInput::new(draft.series, cx)),
+            tags: cx.new(|cx| TextInput::new(draft.tags, cx)),
+        };
+        for (label, field) in fields.labeled() {
             field.update(cx, |field, _| field.set_label(label));
         }
         let return_focus = window.focused(cx);
-        fields[0].update(cx, |field, cx| field.focus(window, cx));
+        fields.title.update(cx, |field, cx| field.focus(window, cx));
         cx.observe(&state, |this, _, cx| {
             if this.submitted && !this.state.read(cx).saving_metadata() {
                 match this.state.read(cx).session().metadata_save_result.clone() {
@@ -151,7 +170,7 @@ impl MetadataEditor {
                     Some(Err(error)) => {
                         this.submitted = false;
                         this.error = Some(humanize_error(error.kind()));
-                        for field in &this.fields {
+                        for field in this.fields.iter() {
                             field.update(cx, |field, cx| field.set_read_only(false, cx));
                         }
                     }
@@ -181,10 +200,10 @@ impl MetadataEditor {
 
     fn draft(&self, cx: &App) -> Draft {
         Draft {
-            title: self.fields[0].read(cx).text().to_owned(),
-            authors: self.fields[1].read(cx).text().to_owned(),
-            series: self.fields[2].read(cx).text().to_owned(),
-            tags: self.fields[3].read(cx).text().to_owned(),
+            title: self.fields.title.read(cx).text().to_owned(),
+            authors: self.fields.authors.read(cx).text().to_owned(),
+            series: self.fields.series.read(cx).text().to_owned(),
+            tags: self.fields.tags.read(cx).text().to_owned(),
         }
     }
 
@@ -196,14 +215,16 @@ impl MetadataEditor {
             Ok(patch) => patch,
             Err(error) => {
                 self.error = Some(humanize_error(error.kind()));
-                self.fields[0].update(cx, |field, cx| field.focus(window, cx));
+                self.fields
+                    .title
+                    .update(cx, |field, cx| field.focus(window, cx));
                 cx.notify();
                 return;
             }
         };
         self.error = None;
         self.submitted = true;
-        for field in &self.fields {
+        for field in self.fields.iter() {
             field.update(cx, |field, cx| field.set_read_only(true, cx));
         }
         self.state.update(cx, |state, cx| {
@@ -279,24 +300,19 @@ impl Render for MetadataEditor {
                     .text_color(theme.text_secondary)
                     .child("Changes apply to this book only."),
             )
-            .children(
-                FIELD_LABELS
-                    .into_iter()
-                    .zip(self.fields.iter())
-                    .map(|(label, field)| {
+            .children(self.fields.labeled().into_iter().map(|(label, field)| {
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .child(
                         div()
-                            .flex()
-                            .flex_col()
-                            .gap_1()
-                            .child(
-                                div()
-                                    .text_sm()
-                                    .text_color(theme.text_secondary)
-                                    .child(label),
-                            )
-                            .child(field.clone())
-                    }),
-            )
+                            .text_sm()
+                            .text_color(theme.text_secondary)
+                            .child(label),
+                    )
+                    .child(field.clone())
+            }))
             .children(
                 self.error
                     .clone()
@@ -489,7 +505,7 @@ mod tests {
             cx.add_window(|window, cx| MetadataEditor::new(state.clone(), item(), window, cx));
         window
             .update(cx, |editor, window, cx| {
-                editor.fields[0].update(cx, |field, cx| {
+                editor.fields.title.update(cx, |field, cx| {
                     field.replace_text_in_range(Some(0..14), "Draft title", window, cx);
                 });
                 assert_eq!(editor.draft(cx).title, "Draft title");
@@ -498,9 +514,23 @@ mod tests {
                     "Original title"
                 );
                 editor.traverse(false, window, cx);
-                assert!(editor.fields[1].read(cx).focus_handle().is_focused(window));
+                assert!(
+                    editor
+                        .fields
+                        .authors
+                        .read(cx)
+                        .focus_handle()
+                        .is_focused(window)
+                );
                 editor.traverse(true, window, cx);
-                assert!(editor.fields[0].read(cx).focus_handle().is_focused(window));
+                assert!(
+                    editor
+                        .fields
+                        .title
+                        .read(cx)
+                        .focus_handle()
+                        .is_focused(window)
+                );
                 editor.traverse(true, window, cx);
                 assert!(editor.cancel_focus.is_focused(window));
                 editor.cancel(window, cx);
@@ -531,7 +561,14 @@ mod tests {
         cx.simulate_keystrokes(window.into(), "tab");
         window
             .update(cx, |editor, window, cx| {
-                assert!(editor.fields[1].read(cx).focus_handle().is_focused(window));
+                assert!(
+                    editor
+                        .fields
+                        .authors
+                        .read(cx)
+                        .focus_handle()
+                        .is_focused(window)
+                );
             })
             .unwrap();
         cx.simulate_keystrokes(window.into(), "shift-tab shift-tab");
@@ -554,13 +591,13 @@ mod tests {
             cx.add_window(|window, cx| MetadataEditor::new(state.clone(), item(), window, cx));
         window
             .update(cx, |editor, window, cx| {
-                editor.fields[0].update(cx, |field, cx| {
+                editor.fields.title.update(cx, |field, cx| {
                     field.replace_text_in_range(Some(0..14), " ", window, cx)
                 });
                 editor.save(window, cx);
                 assert_eq!(editor.error.as_deref(), Some("Title is required."));
                 assert!(!editor.submitted);
-                editor.fields[0].update(cx, |field, cx| {
+                editor.fields.title.update(cx, |field, cx| {
                     field.replace_text_in_range(Some(0..1), "Keep this draft", window, cx)
                 });
                 editor.save(window, cx);
@@ -593,7 +630,7 @@ mod tests {
                 );
                 assert!(editor.state.read(cx).session().metadata_editing);
                 assert_eq!(editor.draft(cx).title, "Keep this draft");
-                editor.fields[0].update(cx, |field, cx| {
+                editor.fields.title.update(cx, |field, cx| {
                     field.replace_text_in_range(None, "!", window, cx)
                 });
                 assert_eq!(editor.draft(cx).title, "Keep this draft!");

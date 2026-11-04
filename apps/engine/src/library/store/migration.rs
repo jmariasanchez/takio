@@ -1129,16 +1129,6 @@ mod tests {
     use super::*;
     use crate::library::store::{LIBRARY_SCHEMA_VERSION, LibraryStore};
 
-    const V1: &str = include_str!("migration/reference_schemas/schema-v1.sql");
-    const V2: &str = include_str!("migration/reference_schemas/schema-v2.sql");
-    const V3: &str = include_str!("migration/reference_schemas/schema-v3.sql");
-    const V4: &str = include_str!("migration/reference_schemas/schema-v4.sql");
-    const V5: &str = include_str!("migration/reference_schemas/schema-v5.sql");
-    const V6: &str = include_str!("migration/reference_schemas/schema-v6.sql");
-    const V7: &str = include_str!("migration/reference_schemas/schema-v7.sql");
-    const V8: &str = include_str!("migration/reference_schemas/schema-v8.sql");
-    const V9: &str = include_str!("migration/reference_schemas/schema-v9.sql");
-
     fn paths(temp: &tempfile::TempDir) -> LibraryPaths {
         LibraryPaths::resolve(None, Some(&temp.path().join("library.sqlite"))).unwrap()
     }
@@ -1147,6 +1137,26 @@ mod tests {
     fn rust_owned_legacy_fixtures_preserve_original_bytes() {
         // Freeze the historical fixtures without depending on the Bun package.
         for (fixture, expected) in [
+            (
+                V1_SCHEMA,
+                "9a5cf12df9a72300ebdadfe1bd118ce0ef2aad6c121ef64db3d5859a0238d760",
+            ),
+            (
+                V6_SCHEMA,
+                "7d0475b15bd1f4ecfd438580a5f2ada7db46a97c4ce03a990b8b3c7f41c3f8de",
+            ),
+            (
+                V7_SCHEMA,
+                "31dfce00d00f55198753d7f7752c6dfe866551f5edca6db7d581468dd358ff30",
+            ),
+            (
+                V8_SCHEMA,
+                "2a95f67e5ca4db847441487e076fd3ea0e9a52f78c5c47cbfdf6d00ab8207b4b",
+            ),
+            (
+                V9_SCHEMA,
+                "d01bf3c7ef2bc41dfeb259ba4b62f231825fad1c15e2af6c883701de8d050e26",
+            ),
             (
                 V2_SCHEMA,
                 "b0f7a54209eecd9c7bf92dd897ab2147ac64f0ac21b8e9624eb1c6ca4807b9fd",
@@ -1172,9 +1182,9 @@ mod tests {
         fs::create_dir_all(&paths.items).unwrap();
         fs::create_dir_all(&paths.covers).unwrap();
         let sql = match version {
-            1 => V1.to_owned(),
-            2 => V2.to_owned(),
-            3 => V3
+            1 => V1_SCHEMA.to_owned(),
+            2 => V2_SCHEMA.to_owned(),
+            3 => V3_SCHEMA
                 .replace(
                     "__LIBRARY_ROOT__/items/book-v3-singleton.epub",
                     "/external/book-v3-singleton.epub",
@@ -1187,12 +1197,12 @@ mod tests {
                     "__EXTERNAL_ROOT__/the-fifth-season.epub",
                     "/external/the-fifth-season.epub",
                 ),
-            4 => V4.to_owned(),
-            5 => V5.to_owned(),
-            6 => V6.to_owned(),
-            7 => V7.to_owned(),
-            8 => V8.to_owned(),
-            9 => V9.to_owned(),
+            4 => V4_SCHEMA.to_owned(),
+            5 => V5_SCHEMA.to_owned(),
+            6 => V6_SCHEMA.to_owned(),
+            7 => V7_SCHEMA.to_owned(),
+            8 => V8_SCHEMA.to_owned(),
+            9 => V9_SCHEMA.to_owned(),
             10 => {
                 let connection = Connection::open(&paths.database).unwrap();
                 install_v10_reference_schema(&connection).unwrap();

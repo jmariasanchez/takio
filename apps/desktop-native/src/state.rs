@@ -1105,7 +1105,9 @@ impl LibraryState {
         });
         self.await_reply(receiver, cx, move |this, result, cx| {
             this.session.activity = Activity::Idle;
-            if this.send_preview_generation != generation || this.session.section != Section::Library {
+            if this.send_preview_generation != generation
+                || this.session.section != Section::Library
+            {
                 this.set_status(errors::SEND_CANCELLED.into(), false, cx);
                 return;
             }
@@ -1114,11 +1116,12 @@ impl LibraryState {
                     let ready = preview.ready_count();
                     let blocked = preview.entries.len() - ready;
                     this.session.activity = Activity::ReviewingSend(preview);
-                    this.set_status(format!("Review send: {ready} ready, {blocked} need attention. Nothing sent yet."), false, cx);
+                    this.set_status(errors::send_review(ready, blocked), false, cx);
                 }
                 Err(error) => this.set_app_error(&error, cx),
             }
-        }).detach();
+        })
+        .detach();
     }
 
     pub fn cancel_send_preview(&mut self, cx: &mut Context<Self>) {

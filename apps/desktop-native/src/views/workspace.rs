@@ -26,6 +26,11 @@ use crate::{
 };
 use takio::library::model::ImportMode;
 
+const MOVE_DETAIL: &str = "The selected files will leave their current folders after a verified import. Use Add books instead to keep your originals.";
+const PURGE_DETAIL: &str = "This cannot be undone. Takio-managed copies will be deleted. Original files and referenced files outside Takio will be kept.";
+const SEND_DETAIL: &str = "Next, review compatible formats and any blocked books. Nothing is sent until you confirm Send ready.";
+const EJECT_DETAIL: &str = "Wait for a successful eject before unplugging the USB cable.";
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ReaderAction {
     Send,
@@ -113,8 +118,11 @@ impl Workspace {
         let answer = window.prompt(
             PromptLevel::Warning,
             "Move originals into Takio?",
-            Some("The selected files will leave their current folders after a verified import. Use Add books instead to keep your originals."),
-            &[PromptButton::cancel("Cancel"), PromptButton::new("Choose files to move")],
+            Some(MOVE_DETAIL),
+            &[
+                PromptButton::cancel("Cancel"),
+                PromptButton::new("Choose files to move"),
+            ],
             cx,
         );
         self.after_dialog(answer, cx, move |this, answer, cx| {
@@ -159,8 +167,11 @@ impl Workspace {
         let answer = window.prompt(
             PromptLevel::Warning,
             &format!("Permanently delete {} book(s)?", ids.len()),
-            Some("This cannot be undone. Takio-managed copies will be deleted. Original files and referenced files outside Takio will be kept."),
-            &[PromptButton::cancel("Cancel"), PromptButton::new("Delete permanently")],
+            Some(PURGE_DETAIL),
+            &[
+                PromptButton::cancel("Cancel"),
+                PromptButton::new("Delete permanently"),
+            ],
             cx,
         );
         self.after_dialog(answer, cx, move |this, answer, cx| {
@@ -215,9 +226,13 @@ impl Workspace {
         } else {
             "Eject which reader?".to_owned()
         };
-        let answer = window.prompt(PromptLevel::Info, &message,
-            Some(if send { "Next, review compatible formats and any blocked books. Nothing is sent until you confirm Send ready." } else { "Wait for a successful eject before unplugging the USB cable." }),
-            &buttons, cx);
+        let answer = window.prompt(
+            PromptLevel::Info,
+            &message,
+            Some(if send { SEND_DETAIL } else { EJECT_DETAIL }),
+            &buttons,
+            cx,
+        );
         self.after_dialog(answer, cx, move |this, response, cx| {
             if let Some(Ok(index)) = response
                 && let Some(destination) = index

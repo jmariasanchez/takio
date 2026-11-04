@@ -4,6 +4,10 @@ pub(super) const BACKUP_DETAIL: &str = "Includes the catalogue, Trash and manage
 pub(super) const SEND_CANCELLED: &str = "Send review cancelled. Nothing was sent.";
 pub(super) const PREPARATION_CANCELLED: &str = "Preparation cancelled. No copy was prepared.";
 
+pub(super) fn send_review(ready: usize, blocked: usize) -> String {
+    format!("Review send: {ready} ready, {blocked} need attention. Nothing sent yet.")
+}
+
 pub(super) fn restore_detail(referenced_formats: u64) -> String {
     format!(
         "Your current library is unchanged and still open. {referenced_formats} external reference(s) still need their original files. Conversion jobs are not restored."
