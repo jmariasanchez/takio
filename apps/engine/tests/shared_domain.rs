@@ -134,6 +134,6 @@ fn typed_metadata_candidate_applies_only_reviewed_fields() {
     .unwrap();
     let updated = apply_prepared_metadata_candidate(&mut store, &item.id, &prepared).unwrap();
     assert_eq!(updated.title, "Suggested Title");
-    assert_eq!(updated.author, item.author);
+    assert_eq!(updated.display_author(), item.display_author());
     assert_eq!(fs::read(source).unwrap(), b"original bytes");
 }

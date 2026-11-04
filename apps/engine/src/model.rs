@@ -139,9 +139,11 @@ pub struct LibraryItem {
     pub format: FormatId,
     pub added_at: String,
     pub formats: Vec<BookFormat>,
-    /// Derived display value retained for wire compatibility, never a matching source.
+    /// Derived display value retained for wire compatibility, never a matching
+    /// source. Crate-private so only the store sets it, always through
+    /// [`derived_display_author`]. Read it with [`LibraryItem::display_author`].
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub author: Option<String>,
+    pub(crate) author: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub authors: Vec<BookAuthor>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -178,6 +180,52 @@ impl LibraryItem {
 
     pub fn primary_author(&self) -> Option<&str> {
         self.author_names().next()
+    }
+
+    /// The legacy scalar display value as stored on the wire.
+    #[must_use]
+    pub fn display_author(&self) -> Option<&str> {
+        self.author.as_deref()
+    }
+
+    /// Simulate a legacy scalar-only record in adapter tests.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn set_legacy_display_author_for_test(&mut self, author: Option<&str>) {
+        self.author = author.map(str::to_owned);
+    }
+
+    /// Minimal item for adapter tests; set further public fields directly.
+    #[cfg(any(test, feature = "test-support"))]
+    #[must_use]
+    pub fn for_test(
+        id: &str,
+        title: &str,
+        source_path: &str,
+        format: FormatId,
+        added_at: &str,
+    ) -> Self {
+        Self {
+            id: id.to_owned(),
+            title: title.to_owned(),
+            source_path: PathBuf::from(source_path),
+            format,
+            added_at: added_at.to_owned(),
+            formats: Vec::new(),
+            author: None,
+            authors: Vec::new(),
+            series: None,
+            series_index: None,
+            publisher: None,
+            languages: Vec::new(),
+            identifiers: BTreeMap::new(),
+            custom_metadata: BTreeMap::new(),
+            published_date: None,
+            rating: None,
+            description: None,
+            cover_path: None,
+            tags: Vec::new(),
+            updated_at: None,
+        }
     }
 }
 

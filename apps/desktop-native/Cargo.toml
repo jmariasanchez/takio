@@ -29,6 +29,7 @@ gpui_platform = { workspace = true, features = ["wayland", "x11"] }
 
 [dev-dependencies]
 gpui = { workspace = true, features = ["test-support"] }
+takio = { workspace = true, features = ["test-support"] }
 
 [features]
 # Opt-in offscreen render of the real workspace to a PNG via Metal, for acceptance

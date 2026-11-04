@@ -400,31 +400,30 @@ mod tests {
     use takio::{format::FormatId, library::paths::LibraryPaths};
 
     fn item() -> LibraryItem {
-        LibraryItem {
-            id: "book-id".into(),
-            title: "Original title".into(),
-            source_path: "book.epub".into(),
-            format: FormatId::Epub,
-            added_at: "2026-01-01".into(),
-            formats: Vec::new(),
-            author: Some("Legacy author".into()),
-            authors: vec![BookAuthor {
-                name: "Author, First".into(),
-                sort_name: Some("First, Author".into()),
-            }],
-            series: Some("A series".into()),
-            series_index: Some(2.5),
-            publisher: Some("Publisher".into()),
-            languages: vec!["en".into()],
-            identifiers: [("isbn".into(), "123".into())].into(),
-            custom_metadata: [("private".into(), "keep me".into())].into(),
-            published_date: Some("2020".into()),
-            rating: Some(4.0),
-            description: Some("Description".into()),
-            cover_path: Some("cover.jpg".into()),
-            tags: vec!["fiction".into()],
-            updated_at: None,
-        }
+        let mut item = LibraryItem::for_test(
+            "book-id",
+            "Original title",
+            "book.epub",
+            FormatId::Epub,
+            "2026-01-01",
+        );
+        item.set_legacy_display_author_for_test(Some("Legacy author"));
+        item.authors = vec![BookAuthor {
+            name: "Author, First".into(),
+            sort_name: Some("First, Author".into()),
+        }];
+        item.series = Some("A series".into());
+        item.series_index = Some(2.5);
+        item.publisher = Some("Publisher".into());
+        item.languages = vec!["en".into()];
+        item.identifiers = [("isbn".into(), "123".into())].into();
+        item.custom_metadata = [("private".into(), "keep me".into())].into();
+        item.published_date = Some("2020".into());
+        item.rating = Some(4.0);
+        item.description = Some("Description".into());
+        item.cover_path = Some("cover.jpg".into());
+        item.tags = vec!["fiction".into()];
+        item
     }
 
     #[test]

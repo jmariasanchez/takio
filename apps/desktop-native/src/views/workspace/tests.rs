@@ -1100,7 +1100,7 @@ fn confirm_send_rechecks_source_reader_capabilities_disconnect_and_collision(
             .join("documents")
             .join(takio::file_name::destination_file_name(
                 &chosen.title,
-                chosen.author.as_deref(),
+                chosen.display_author(),
                 "epub",
             ));
         let expected = match change {

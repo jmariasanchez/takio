@@ -344,7 +344,7 @@ mod tests {
     #[test]
     fn display_only_legacy_authors_do_not_count_as_structured_authors() {
         let mut legacy = takio::library::catalog::tests::sparse_book();
-        legacy.author = Some("Public author".into());
+        legacy.set_legacy_display_author_for_test(Some("Public author"));
         let structured = takio::library::catalog::tests::rich_book();
         assert_eq!(structured.primary_author(), Some("Public author"));
         assert_eq!(legacy.primary_author(), None);

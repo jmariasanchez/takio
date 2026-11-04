@@ -1851,7 +1851,7 @@ mod tests {
         let mut first = f
             .state
             .read_with(cx, |s, _| (*s.session().items[0]).clone());
-        first.author = Some("Legacy".into());
+        first.set_legacy_display_author_for_test(Some("Legacy"));
         first.authors = vec![
             takio::library::model::BookAuthor {
                 name: "Same".into(),
@@ -1880,7 +1880,7 @@ mod tests {
         );
         first.authors.clear();
         assert_eq!(author_label(&first), "");
-        first.author = None;
+        first.set_legacy_display_author_for_test(None);
         assert_eq!(author_label(&first), "");
     }
 

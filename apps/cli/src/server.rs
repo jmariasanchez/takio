@@ -527,42 +527,40 @@ mod tests {
 
     #[test]
     fn catalog_records_are_complete_and_do_not_expose_paths() {
-        let item = LibraryItem {
-            id: "book-1".to_owned(),
-            title: "Kindred".to_owned(),
+        let mut item = LibraryItem::for_test(
+            "book-1",
+            "Kindred",
+            "/private/library/book.epub",
+            FormatId::Epub,
+            "2026-01-01T00:00:00Z",
+        );
+        item.formats = vec![BookFormat {
             source_path: PathBuf::from("/private/library/book.epub"),
             format: FormatId::Epub,
             added_at: "2026-01-01T00:00:00Z".to_owned(),
-            formats: vec![BookFormat {
-                source_path: PathBuf::from("/private/library/book.epub"),
-                format: FormatId::Epub,
-                added_at: "2026-01-01T00:00:00Z".to_owned(),
-                provenance: Provenance::Managed,
-            }],
-            author: None,
-            authors: vec![BookAuthor {
-                name: "Octavia E. Butler".to_owned(),
-                sort_name: Some("Butler, Octavia E.".to_owned()),
-            }],
-            series: Some("Examples".to_owned()),
-            series_index: Some(1.0),
-            publisher: Some("Beacon Press".to_owned()),
-            languages: vec!["en".to_owned()],
-            identifiers: BTreeMap::from([("isbn".to_owned(), "9780807083697".to_owned())]),
-            custom_metadata: BTreeMap::from([
-                ("shelf".to_owned(), "favorites".to_owned()),
-                (
-                    "takio_metadata_audit".to_owned(),
-                    "private source path".to_owned(),
-                ),
-            ]),
-            published_date: Some("1979-06-01".to_owned()),
-            rating: Some(5.0),
-            description: Some("A landmark novel.".to_owned()),
-            cover_path: Some(PathBuf::from("/private/library/cover.jpg")),
-            tags: vec!["fiction".to_owned()],
-            updated_at: None,
-        };
+            provenance: Provenance::Managed,
+        }];
+        item.authors = vec![BookAuthor {
+            name: "Octavia E. Butler".to_owned(),
+            sort_name: Some("Butler, Octavia E.".to_owned()),
+        }];
+        item.series = Some("Examples".to_owned());
+        item.series_index = Some(1.0);
+        item.publisher = Some("Beacon Press".to_owned());
+        item.languages = vec!["en".to_owned()];
+        item.identifiers = BTreeMap::from([("isbn".to_owned(), "9780807083697".to_owned())]);
+        item.custom_metadata = BTreeMap::from([
+            ("shelf".to_owned(), "favorites".to_owned()),
+            (
+                "takio_metadata_audit".to_owned(),
+                "private source path".to_owned(),
+            ),
+        ]);
+        item.published_date = Some("1979-06-01".to_owned());
+        item.rating = Some(5.0);
+        item.description = Some("A landmark novel.".to_owned());
+        item.cover_path = Some(PathBuf::from("/private/library/cover.jpg"));
+        item.tags = vec!["fiction".to_owned()];
 
         let record = catalog_record(&item);
         assert_eq!(record["authors"], json!(["Octavia E. Butler"]));
