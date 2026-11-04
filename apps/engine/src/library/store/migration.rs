@@ -1385,8 +1385,8 @@ mod tests {
             .unwrap();
         let paths = reopened.paths().clone();
         drop(reopened);
-        for _ in 0..2 {
-            let store = LibraryStore::create_or_migrate(paths.clone()).unwrap();
+        for writable_open in [LibraryStore::open_existing, LibraryStore::create_or_migrate] {
+            let store = writable_open(paths.clone()).unwrap();
             let minimal = store.get("book-v4-minimal").unwrap().unwrap();
             assert_eq!(
                 minimal.author_names().collect::<Vec<_>>(),

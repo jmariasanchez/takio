@@ -130,9 +130,10 @@ pub(super) fn metadata_candidates(
                     return Err(takio::app_error!("invalid-arguments"));
                 }
                 let item = store.update(&id, patch)?;
-                return print_success(
-                    json!({"item":item,"applied":{"itemId":id,"source":"manual","provenance":provenance}}),
-                );
+                return print_success(json!({
+                    "item": item,
+                    "applied": {"itemId": id, "source": "manual", "provenance": provenance},
+                }));
             };
 
             // The engine validates the candidate independently of any client,

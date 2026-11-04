@@ -100,9 +100,10 @@ pub(super) fn jobs(command: JobsCommand, library: Option<&str>) -> AppResult<()>
                 _ => return Err(takio::app_error!("invalid-arguments")),
             };
             let path = job_path(library, db.as_deref())?;
-            print_success(
-                json!({"job":JobStore::open(&path)?.enqueue(&input, to, &absolute(&output)?, library_item_id.as_deref())?}),
-            )
+            let output = absolute(&output)?;
+            let job =
+                JobStore::open(&path)?.enqueue(&input, to, &output, library_item_id.as_deref())?;
+            print_success(json!({ "job": job }))
         }
         JobsCommand::List { db, status } => {
             let path = job_path(library, db.as_deref())?;

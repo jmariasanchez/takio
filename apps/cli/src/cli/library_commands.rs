@@ -41,9 +41,10 @@ pub(super) fn library(
             let store = read_store(library, db.as_deref())?;
             let report = store.verify()?;
             let backup = store.backup(&dest)?;
-            print_success(
-                json!({"backup":{"path":backup.destination_path,"report":integrity_value(&report)}}),
-            )
+            print_success(json!({"backup": {
+                "path": backup.destination_path,
+                "report": integrity_value(&report),
+            }}))
         }
         LibraryCommand::Diagnostics { db, dest } => {
             let paths = LibraryPaths::resolve(library, db.as_deref())?;
@@ -88,9 +89,11 @@ pub(super) fn library(
         LibraryCommand::Get { db, id } => {
             print_success(json!({"item":read_store(library, db.as_deref())?.get(&id)?}))
         }
-        LibraryCommand::Search { db, query } => print_success(
-            json!({"items":read_store(library, db.as_deref())?.query_items(&query, &Default::default())?}),
-        ),
+        LibraryCommand::Search { db, query } => {
+            let store = read_store(library, db.as_deref())?;
+            let items = store.query_items(&query, &Default::default())?;
+            print_success(json!({ "items": items }))
+        }
         LibraryCommand::Query { db, request_json } => {
             let request = read_json(&request_json)?;
             let store = read_store(library, db.as_deref())?;
@@ -146,9 +149,15 @@ pub(super) fn library(
                 .filter(|outcome| matches!(outcome, UpdateOutcome::Missing { .. }))
                 .count();
             let failed = outcomes.len() - updated - missing;
-            print_success(
-                json!({"outcomes":outcomes,"counts":{"total":outcomes.len(),"updated":updated,"missing":missing,"failed":failed}}),
-            )
+            print_success(json!({
+                "outcomes": outcomes,
+                "counts": {
+                    "total": outcomes.len(),
+                    "updated": updated,
+                    "missing": missing,
+                    "failed": failed,
+                },
+            }))
         }
         LibraryCommand::Format(command) => library_format(command, library),
         LibraryCommand::Cover(command) => library_cover(command, library),
@@ -472,23 +481,41 @@ pub(super) fn content_search(
             Ok((_, text)) => {
                 let (matches, snippets) = maintenance::find_literal_text(&text, query, 3);
                 if matches == 0 {
-                    outcomes.push(json!({"status":"no-match","itemId":item_id,"format":format.format}));
+                    outcomes.push(json!({
+                        "status": "no-match",
+                        "itemId": item_id,
+                        "format": format.format,
+                    }));
                 } else {
-                    outcomes.push(json!({"status":"matched","itemId":item_id,"title":item.title,"format":format.format,"matches":matches,"snippets":snippets}));
+                    outcomes.push(json!({
+                        "status": "matched",
+                        "itemId": item_id,
+                        "title": item.title,
+                        "format": format.format,
+                        "matches": matches,
+                        "snippets": snippets,
+                    }));
                 }
             }
-            Err(error) => outcomes.push(json!({"status":"failed","itemId":item_id,"format":format.format,"code":error.kind()})),
+            Err(error) => outcomes.push(failed_outcome(&item_id, format.format, &error)),
         }
     }
-    let count = |status: &str| {
-        outcomes
-            .iter()
-            .filter(|value| value["status"] == status)
-            .count()
-    };
-    Ok(
-        json!({"query":query,"available":available,"selected":outcomes.len(),"canceled":false,"counts":{"total":outcomes.len(),"matched":count("matched"),"noMatch":count("no-match"),"missing":count("missing"),"skipped":count("skipped"),"failed":count("failed")},"outcomes":outcomes}),
-    )
+    let count = |status: &str| status_count(&outcomes, status);
+    Ok(json!({
+        "query": query,
+        "available": available,
+        "selected": outcomes.len(),
+        "canceled": false,
+        "counts": {
+            "total": outcomes.len(),
+            "matched": count("matched"),
+            "noMatch": count("no-match"),
+            "missing": count("missing"),
+            "skipped": count("skipped"),
+            "failed": count("failed"),
+        },
+        "outcomes": outcomes,
+    }))
 }
 
 pub(super) fn validate_library_formats(
@@ -517,20 +544,39 @@ pub(super) fn validate_library_formats(
                 }
             });
             match result {
-                Ok(content) => outcomes.push(json!({"status":"valid","itemId":item_id,"format":format.format,"content":content})),
-                Err(error) => outcomes.push(json!({"status":"failed","itemId":item_id,"format":format.format,"code":error.kind()})),
+                Ok(content) => outcomes.push(json!({
+                    "status": "valid",
+                    "itemId": item_id,
+                    "format": format.format,
+                    "content": content,
+                })),
+                Err(error) => outcomes.push(failed_outcome(&item_id, format.format, &error)),
             }
         }
     }
-    let count = |status: &str| {
-        outcomes
-            .iter()
-            .filter(|value| value["status"] == status)
-            .count()
-    };
-    Ok(
-        json!({"available":available,"selected":selected,"outcomes":outcomes,"counts":{"total":outcomes.len(),"valid":count("valid"),"missing":count("missing"),"failed":count("failed")}}),
-    )
+    let count = |status: &str| status_count(&outcomes, status);
+    Ok(json!({
+        "available": available,
+        "selected": selected,
+        "outcomes": outcomes,
+        "counts": {
+            "total": outcomes.len(),
+            "valid": count("valid"),
+            "missing": count("missing"),
+            "failed": count("failed"),
+        },
+    }))
+}
+
+fn failed_outcome(item_id: &str, format: FormatId, error: &takio::error::AppError) -> Value {
+    json!({"status": "failed", "itemId": item_id, "format": format, "code": error.kind()})
+}
+
+fn status_count(outcomes: &[Value], status: &str) -> usize {
+    outcomes
+        .iter()
+        .filter(|value| value["status"] == status)
+        .count()
 }
 
 pub(super) fn library_format(command: FormatCommand, library: Option<&str>) -> AppResult<()> {

@@ -393,6 +393,7 @@ impl LibraryStore {
         };
         // Validate the actual writable handle too, in case the candidate changed.
         store.validate_catalog()?;
+        migration::backfill_current_structured_authors(&mut store.connection)?;
         Ok(store)
     }
 
