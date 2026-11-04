@@ -32,7 +32,7 @@ pub struct DeliveryOptions<'a> {
     pub format: Option<FormatId>,
     pub reviewed: Option<&'a ReadyFile>,
     pub subdir: Option<&'a Path>,
-    pub overwrite: bool,
+    pub overwrite: destinations::OverwritePolicy,
 }
 
 pub fn reauthorize(destination: &Destination) -> AppResult<Destination> {

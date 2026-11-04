@@ -5,6 +5,15 @@ use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::format::FormatId;
 
+/// Whether importing preserves the original file or removes it after a verified copy.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ImportMode {
+    #[default]
+    Copy,
+    Move,
+}
+
 /// A patch field that distinguishes "absent" from "explicitly null".
 ///
 /// `Missing` leaves the stored value untouched, `Null` clears it to the

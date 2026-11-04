@@ -468,7 +468,13 @@ pub fn import_unmatched(
         .iter()
         .filter_map(|source| Some((source.as_path(), stamp(source)?)))
         .collect();
-    let scan = scan_imports(store, &sources, false, false, || false)?;
+    let scan = scan_imports(
+        store,
+        &sources,
+        crate::model::ImportMode::Copy,
+        crate::import_scan::ImportObservation::Untracked,
+        || false,
+    )?;
     let mut managed: HashMap<String, Vec<Fingerprint>> = HashMap::new();
     for book in store.active_fingerprints()? {
         if let Some(fingerprint) = book.fingerprint {
@@ -549,7 +555,10 @@ mod tests {
     fn import(f: &mut Fixture, name: &str, bytes: &[u8]) -> String {
         let source = f.kindle.parent().unwrap().parent().unwrap().join(name);
         fs::write(&source, bytes).unwrap();
-        f.store.import(&source, None, false).unwrap().id
+        f.store
+            .import(&source, None, crate::model::ImportMode::Copy)
+            .unwrap()
+            .id
     }
 
     fn scan_fixture(f: &Fixture) -> ReaderShelf {
@@ -665,7 +674,7 @@ mod tests {
             "Kindred.pdf",
             "pdf",
             None,
-            false,
+            destinations::OverwritePolicy::Refuse,
         )
         .unwrap();
         fs::write(

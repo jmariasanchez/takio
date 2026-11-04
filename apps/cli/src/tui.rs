@@ -240,7 +240,10 @@ impl App {
                     return;
                 }
                 let path = Path::new(input);
-                match self.store.import(path, None, false) {
+                match self
+                    .store
+                    .import(path, None, takio::model::ImportMode::Copy)
+                {
                     Ok(item) => {
                         self.status = format!("Imported {}", item.title);
                         self.query.clear();
@@ -281,7 +284,10 @@ impl App {
                 self.refresh();
             }
             "import" if !argument.is_empty() => {
-                match self.store.import(Path::new(argument), None, false) {
+                match self
+                    .store
+                    .import(Path::new(argument), None, takio::model::ImportMode::Copy)
+                {
                     Ok(item) => {
                         self.status = format!("Imported {}", item.title);
                         self.refresh();
@@ -1722,7 +1728,11 @@ mod tests {
         std::fs::write(&source, b"epub fixture").expect("write source");
         let item = app
             .store
-            .import(&source, Some("Original Title"), false)
+            .import(
+                &source,
+                Some("Original Title"),
+                takio::model::ImportMode::Copy,
+            )
             .expect("import book");
         app.refresh();
         (temp, app, item)
@@ -1945,7 +1955,7 @@ mod tests {
         std::fs::write(&other_source, b"other fixture").expect("write other source");
         let other = app
             .store
-            .import(&other_source, None, false)
+            .import(&other_source, None, takio::model::ImportMode::Copy)
             .expect("import other book");
         app.refresh();
         install_candidate_review(&mut app, &reviewed);
@@ -1970,7 +1980,7 @@ mod tests {
             let source = temp.path().join(format!("{title}.epub"));
             std::fs::write(&source, title.as_bytes()).expect("write source");
             app.store
-                .import(&source, Some(title), false)
+                .import(&source, Some(title), takio::model::ImportMode::Copy)
                 .expect("import book");
         }
         app.refresh();

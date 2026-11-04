@@ -48,7 +48,9 @@ mod tests {
         let mut store = LibraryStore::create_or_migrate(paths).unwrap();
         let source = temp.path().join("book.epub");
         std::fs::write(&source, b"book").unwrap();
-        let mut item = store.import(&source, None, false).unwrap();
+        let mut item = store
+            .import(&source, None, crate::model::ImportMode::Copy)
+            .unwrap();
         for metadata in [
             serde_json::json!({"unknown":true}),
             serde_json::json!({"title":4}),

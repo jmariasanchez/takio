@@ -105,7 +105,7 @@ fn fixture() -> (tempfile::TempDir, LibraryStore, LibraryItem) {
     let mut store = LibraryStore::create_or_migrate(paths).unwrap();
     let source = temp.path().join("book.epub");
     fs::write(&source, b"original book").unwrap();
-    let item = store.import(&source, None, false).unwrap();
+    let item = store.import(&source, None, ImportMode::Copy).unwrap();
     (temp, store, item)
 }
 
@@ -115,10 +115,10 @@ fn import_refuses_sources_inside_library_owned_paths() {
     let item_dir = item.formats[0].source_path.parent().unwrap().to_path_buf();
     let stray = item_dir.join("stray.epub");
     fs::write(&stray, b"unrelated bytes inside an owned directory").unwrap();
-    for move_source in [false, true] {
+    for mode in [ImportMode::Copy, ImportMode::Move] {
         assert_eq!(
             store
-                .import_with_outcome(&stray, None, move_source)
+                .import_with_outcome(&stray, None, mode)
                 .unwrap_err()
                 .code(),
             "invalid-arguments"
@@ -136,15 +136,13 @@ fn duplicate_import_explicitly_preserves_copy_and_move_sources() {
     let (temp, mut store, item) = fixture();
     let source = temp.path().join("duplicate.epub");
     fs::write(&source, b"original book").unwrap();
-    for move_source in [false, true] {
-        let outcome = store
-            .import_with_outcome(&source, None, move_source)
-            .unwrap();
+    for mode in [ImportMode::Copy, ImportMode::Move] {
+        let outcome = store.import_with_outcome(&source, None, mode).unwrap();
         assert_eq!(outcome.status, ImportStatus::Duplicate);
         assert_eq!(outcome.item.id, item.id);
         assert!(outcome.source_preserved);
         assert_eq!(
-            store.import(&source, None, move_source).unwrap_err().code(),
+            store.import(&source, None, mode).unwrap_err().code(),
             "duplicate-source-preserved"
         );
         assert_eq!(fs::read(&source).unwrap(), b"original book");
@@ -158,7 +156,9 @@ fn purge_reports_changed_file_and_continues_other_cleanup() {
     let (temp, mut store, item) = fixture();
     let pdf = temp.path().join("extra.pdf");
     fs::write(&pdf, b"pdf bytes").unwrap();
-    let item = store.attach_format(&item.id, &pdf, true).unwrap();
+    let item = store
+        .attach_format(&item.id, &pdf, Provenance::Managed)
+        .unwrap();
     let changed = item.formats[0].source_path.clone();
     let unchanged = item.formats[1].source_path.clone();
     fs::write(&changed, b"user changed bytes").unwrap();
@@ -180,7 +180,9 @@ fn remove_format_reports_cleanup_failure_after_committed_change() {
     let (temp, mut store, item) = fixture();
     let pdf = temp.path().join("extra.pdf");
     fs::write(&pdf, b"pdf bytes").unwrap();
-    store.attach_format(&item.id, &pdf, true).unwrap();
+    store
+        .attach_format(&item.id, &pdf, Provenance::Managed)
+        .unwrap();
     let changed = item.formats[0].source_path.clone();
     fs::write(&changed, b"user changed bytes").unwrap();
     let result = store.remove_format(&item.id, FormatId::Epub).unwrap();
@@ -201,7 +203,13 @@ fn replace_format_reports_cleanup_failure_after_committed_change() {
     fs::write(&changed, b"user changed bytes").unwrap();
     let expected = ExpectedFormatSnapshot::from(&item.formats[0]);
     let result = store
-        .replace_format(&item.id, FormatId::Epub, &expected, &replacement, true)
+        .replace_format(
+            &item.id,
+            FormatId::Epub,
+            &expected,
+            &replacement,
+            Provenance::Managed,
+        )
         .unwrap();
     assert!(result.cleanup_pending);
     assert_eq!(result.cleanup_pending_paths, vec![changed.clone()]);
@@ -219,7 +227,9 @@ fn format_mutations_roll_back_if_result_hydration_fails() {
         let (temp, mut store, item) = fixture();
         let pdf = temp.path().join("extra.pdf");
         fs::write(&pdf, b"pdf bytes").unwrap();
-        store.attach_format(&item.id, &pdf, true).unwrap();
+        store
+            .attach_format(&item.id, &pdf, Provenance::Managed)
+            .unwrap();
         let before = store.get(&item.id).unwrap().unwrap();
         store
             .connection
@@ -240,7 +250,7 @@ fn format_mutations_roll_back_if_result_hydration_fails() {
                     FormatId::Epub,
                     &ExpectedFormatSnapshot::from(&item.formats[0]),
                     &replacement,
-                    true,
+                    Provenance::Managed,
                 )
                 .unwrap_err()
         } else {
@@ -286,7 +296,7 @@ fn replacing_and_removing_shared_cover_preserves_other_item_reference() {
         let shared = item.cover_path.unwrap();
         let source = temp.path().join("other.epub");
         fs::write(&source, b"other book").unwrap();
-        let other = store.import(&source, None, false).unwrap();
+        let other = store.import(&source, None, ImportMode::Copy).unwrap();
         store
             .connection
             .execute(
@@ -391,7 +401,7 @@ fn sibling_mutators_report_not_found() {
                 FormatId::Epub,
                 &ExpectedFormatSnapshot::from(&item.formats[0]),
                 &item.formats[0].source_path,
-                true,
+                Provenance::Managed,
             )
             .unwrap_err()
             .code(),

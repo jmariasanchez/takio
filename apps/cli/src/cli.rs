@@ -1240,7 +1240,11 @@ fn library(command: LibraryCommand, library: Option<&str>) -> AppResult<()> {
         } => {
             let paths = LibraryPaths::resolve(library, db.as_deref())?;
             let mut store = LibraryStore::create_or_migrate(paths)?;
-            print_success(store.import_with_outcome(&source_path, title.as_deref(), false)?)
+            print_success(store.import_with_outcome(
+                &source_path,
+                title.as_deref(),
+                takio::model::ImportMode::Copy,
+            )?)
         }
         LibraryCommand::Import {
             db,
@@ -1248,14 +1252,14 @@ fn library(command: LibraryCommand, library: Option<&str>) -> AppResult<()> {
             title,
             mode,
         } => {
-            let move_source = match mode.as_str() {
-                "copy" => false,
-                "move" => true,
+            let mode = match mode.as_str() {
+                "copy" => takio::model::ImportMode::Copy,
+                "move" => takio::model::ImportMode::Move,
                 _ => return Err(AppError::new("invalid-arguments")),
             };
             let paths = LibraryPaths::resolve(library, db.as_deref())?;
             let mut store = LibraryStore::create_or_migrate(paths)?;
-            print_success(store.import_with_outcome(&source_path, title.as_deref(), move_source)?)
+            print_success(store.import_with_outcome(&source_path, title.as_deref(), mode)?)
         }
         LibraryCommand::List {
             db,
@@ -1371,9 +1375,9 @@ fn library(command: LibraryCommand, library: Option<&str>) -> AppResult<()> {
             if source_paths.is_empty() || source_paths.len() > 256 {
                 return Err(AppError::new("invalid-arguments"));
             }
-            let move_source = match mode.as_str() {
-                "copy" => false,
-                "move" => true,
+            let mode = match mode.as_str() {
+                "copy" => takio::model::ImportMode::Copy,
+                "move" => takio::model::ImportMode::Move,
                 _ => return Err(AppError::new("invalid-arguments")),
             };
             let paths = LibraryPaths::resolve(library, db.as_deref())?;
@@ -1383,8 +1387,8 @@ fn library(command: LibraryCommand, library: Option<&str>) -> AppResult<()> {
             print_success(scan_imports(
                 &mut store,
                 &source_paths,
-                move_source,
-                false,
+                mode,
+                takio::import_scan::ImportObservation::Untracked,
                 || false,
             )?)
         }
@@ -1757,8 +1761,11 @@ struct FormatSource {
 }
 
 impl FormatSource {
-    fn managed(&self) -> bool {
-        matches!(self.kind, SourceKind::Copy)
+    fn provenance(&self) -> takio::model::Provenance {
+        match self.kind {
+            SourceKind::Copy => takio::model::Provenance::Managed,
+            SourceKind::Reference => takio::model::Provenance::Referenced,
+        }
     }
 }
 
@@ -1794,7 +1801,7 @@ fn replace_format_request(
         request.format,
         &request.expected_current,
         &request.source.path,
-        request.source.managed(),
+        request.source.provenance(),
     )?;
     serde_json::to_value(result).map_err(|_| AppError::new("storage-unavailable"))
 }
@@ -1808,7 +1815,9 @@ fn library_format(command: FormatCommand, library: Option<&str>) -> AppResult<()
         } => {
             let paths = LibraryPaths::resolve(library, db.as_deref())?;
             let mut store = LibraryStore::create_or_migrate(paths)?;
-            print_success(json!({"item":store.attach_format(&id, &source_path, true)?}))
+            print_success(
+                json!({"item":store.attach_format(&id, &source_path, takio::model::Provenance::Managed)?}),
+            )
         }
         FormatCommand::Attach {
             db,
@@ -1817,7 +1826,9 @@ fn library_format(command: FormatCommand, library: Option<&str>) -> AppResult<()
         } => {
             let paths = LibraryPaths::resolve(library, db.as_deref())?;
             let mut store = LibraryStore::create_or_migrate(paths)?;
-            print_success(json!({"item":store.attach_format(&id, &source_path, false)?}))
+            print_success(
+                json!({"item":store.attach_format(&id, &source_path, takio::model::Provenance::Referenced)?}),
+            )
         }
         FormatCommand::Remove { db, id, format } => {
             let paths = LibraryPaths::resolve(library, db.as_deref())?;
@@ -2019,7 +2030,7 @@ fn service_request(store: &mut LibraryStore, request: &Value) -> AppResult<Value
                 return Err(AppError::new("invalid-arguments"));
             }
             Ok(
-                json!({"item":store.attach_format(&request.id, &request.source.path, request.source.managed())?}),
+                json!({"item":store.attach_format(&request.id, &request.source.path, request.source.provenance())?}),
             )
         }
         "library_remove_format" => {
@@ -2106,9 +2117,13 @@ fn import_watch(
     let mut stopped = false;
     loop {
         validate_import_sources(&paths, source_paths)?;
-        let scan = scan_imports(&mut store, source_paths, false, true, || {
-            receiver.try_recv().is_ok()
-        })?;
+        let scan = scan_imports(
+            &mut store,
+            source_paths,
+            takio::model::ImportMode::Copy,
+            takio::import_scan::ImportObservation::Watch,
+            || receiver.try_recv().is_ok(),
+        )?;
         cycles += 1;
         counts.add(scan.counts);
         if scan.stopped || receiver.try_recv().is_ok() {
@@ -2441,7 +2456,11 @@ fn send(
         crate::delivery::DeliveryOptions {
             format,
             subdir,
-            overwrite,
+            overwrite: if overwrite {
+                destinations::OverwritePolicy::Replace
+            } else {
+                destinations::OverwritePolicy::Refuse
+            },
             reviewed: None,
         },
     )?)

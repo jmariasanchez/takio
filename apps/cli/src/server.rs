@@ -334,10 +334,14 @@ mod tests {
         let mut store = LibraryStore::create_or_migrate(paths.clone()).unwrap();
         let source = temp.path().join("sparse.txt");
         std::fs::write(&source, "sparse book").unwrap();
-        let sparse = store.import(&source, Some("Example"), false).unwrap();
+        let sparse = store
+            .import(&source, Some("Example"), takio::model::ImportMode::Copy)
+            .unwrap();
         let source = temp.path().join("rich.txt");
         std::fs::write(&source, "rich book").unwrap();
-        let rich = store.import(&source, Some("Example"), false).unwrap();
+        let rich = store
+            .import(&source, Some("Example"), takio::model::ImportMode::Copy)
+            .unwrap();
         store
             .update(
                 &rich.id,

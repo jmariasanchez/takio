@@ -15,7 +15,7 @@ use uuid::Uuid;
 use crate::candidate_cover::{self, CandidateCoverDescriptor};
 use crate::conversion::{FormatId, detect_format};
 use crate::error::{AppError, AppResult};
-use crate::model::{BookAuthor, LibraryItem, LibraryPatch, Patch, Provenance};
+use crate::model::{BookAuthor, ImportMode, LibraryItem, LibraryPatch, Patch, Provenance};
 use crate::paths::LibraryPaths;
 
 mod columns;
@@ -28,8 +28,6 @@ mod migration;
 mod query;
 mod query_cache;
 mod recovery;
-#[cfg(test)]
-mod safety_tests;
 mod schema;
 
 use contracts::validate_saved_view_definition;
@@ -419,9 +417,9 @@ impl LibraryStore {
         &mut self,
         source: &Path,
         title: Option<&str>,
-        move_source: bool,
+        mode: ImportMode,
     ) -> AppResult<LibraryItem> {
-        let result = self.import_with_outcome(source, title, move_source)?;
+        let result = self.import_with_outcome(source, title, mode)?;
         match result.status {
             ImportStatus::Imported => Ok(result.item),
             ImportStatus::Duplicate => Err(AppError::new("duplicate-source-preserved")),
@@ -434,7 +432,7 @@ impl LibraryStore {
         &mut self,
         source: &Path,
         title: Option<&str>,
-        move_source: bool,
+        mode: ImportMode,
     ) -> AppResult<ImportResult> {
         // Every import path (CLI, TUI, desktop, folder scans) funnels through here, so the
         // owned-path guard lives here rather than in each caller.
@@ -508,7 +506,7 @@ impl LibraryStore {
             params![id, format.as_str(), target.to_string_lossy(), now, as_i64(fingerprint.bytes)?, fingerprint.sha256],
         )?;
         transaction.commit()?;
-        if move_source && fs::remove_file(&source).is_err() {
+        if mode == ImportMode::Move && fs::remove_file(&source).is_err() {
             self.connection.execute(
                 "INSERT OR REPLACE INTO source_file_cleanup (source_path, content_bytes, content_sha256)
                  VALUES (?1, ?2, ?3)",
@@ -645,7 +643,7 @@ impl LibraryStore {
         &mut self,
         id: &str,
         source: &Path,
-        managed: bool,
+        provenance: Provenance,
     ) -> AppResult<LibraryItem> {
         let source = canonical_file(source)?;
         let format = detect_format(&source).ok_or_else(|| AppError::new("unsupported-format"))?;
@@ -666,7 +664,7 @@ impl LibraryStore {
             [id],
             |row| row.get(0),
         )?;
-        if managed {
+        if provenance == Provenance::Managed {
             let fingerprint = hash_file(&source)?;
             let target = self.managed_path(id, format);
             publish_copy(&source, &target, &fingerprint)?;
@@ -917,7 +915,7 @@ impl LibraryStore {
         format: FormatId,
         expected: &ExpectedFormatSnapshot,
         source: &Path,
-        managed: bool,
+        provenance: Provenance,
     ) -> AppResult<MutationResult> {
         let current = self
             .read_item(id)?
@@ -940,7 +938,7 @@ impl LibraryStore {
             .stored_format(id, format)?
             .ok_or_else(|| AppError::new("format-changed"))?;
         let now = Utc::now().to_rfc3339();
-        let (stored_path, fingerprint) = if managed {
+        let (stored_path, fingerprint) = if provenance == Provenance::Managed {
             let fingerprint = hash_file(&source)?;
             let target = self.paths.items.join(id).join(format!(
                 "book-{}.{}",
@@ -962,7 +960,7 @@ impl LibraryStore {
                     format.as_str(),
                     stored_path.to_string_lossy(),
                     now,
-                    if managed { "managed" } else { "referenced" },
+                    provenance.as_str(),
                     fingerprint
                         .as_ref()
                         .map(|value| value.bytes)
@@ -979,7 +977,7 @@ impl LibraryStore {
         let mut updated = match result {
             Ok(updated) => MutationResult::new(updated),
             Err(error) => {
-                if managed {
+                if provenance == Provenance::Managed {
                     let _ = fs::remove_file(&stored_path);
                 }
                 return Err(error);
@@ -1802,6 +1800,8 @@ fn rebase_owned_paths(
 
 #[cfg(test)]
 mod tests {
+    mod safety;
+
     use super::hydration::read_items_required;
     use super::*;
 
@@ -2004,7 +2004,7 @@ mod tests {
         let mut import = |name: &str, bytes: &[u8], title: Option<&str>| {
             let source = temp.path().join(name);
             fs::write(&source, bytes).unwrap();
-            let item = store.import(&source, title, false).unwrap();
+            let item = store.import(&source, title, ImportMode::Copy).unwrap();
             let authors = item
                 .authors
                 .iter()
@@ -2111,7 +2111,9 @@ mod tests {
         let mut store = LibraryStore::create_or_migrate(paths).unwrap();
         let source = temp.path().join("earthsea.txt");
         fs::write(&source, "earthsea").unwrap();
-        let item = store.import(&source, Some("Earthsea"), false).unwrap();
+        let item = store
+            .import(&source, Some("Earthsea"), ImportMode::Copy)
+            .unwrap();
         store
             .update(
                 &item.id,
@@ -2199,7 +2201,9 @@ mod tests {
         ] {
             let source = temp.path().join(file);
             fs::write(&source, file).unwrap();
-            let item = store.import(&source, Some(title), false).unwrap();
+            let item = store
+                .import(&source, Some(title), ImportMode::Copy)
+                .unwrap();
             store
                 .update(
                     &item.id,
@@ -2246,7 +2250,9 @@ mod tests {
         assert_eq!(error.code(), "storage-unavailable");
         let paths = LibraryPaths::resolve(None, Some(&temp.path().join("library.sqlite"))).unwrap();
         let mut store = LibraryStore::create_or_migrate(paths).unwrap();
-        let item = store.import(&source, Some("Book"), false).unwrap();
+        let item = store
+            .import(&source, Some("Book"), ImportMode::Copy)
+            .unwrap();
         assert_eq!(item.title, "Book");
         assert_eq!(store.list(false).unwrap().len(), 1);
         assert_eq!(store.verify().unwrap().managed_formats, 1);
@@ -2269,7 +2275,7 @@ mod tests {
         fs::write(&source, b"epub source").unwrap();
         let mut store = LibraryStore::create_or_migrate(paths).unwrap();
         let item = store
-            .import(&source, Some("Original title"), false)
+            .import(&source, Some("Original title"), ImportMode::Copy)
             .unwrap();
         let descriptor = crate::candidate_cover::stage(
             &store.paths.root,
@@ -2334,7 +2340,7 @@ mod tests {
         fs::write(&source, b"epub source").unwrap();
         let mut store = LibraryStore::create_or_migrate(paths).unwrap();
         let item = store
-            .import(&source, Some("Original title"), false)
+            .import(&source, Some("Original title"), ImportMode::Copy)
             .unwrap();
         let descriptor = crate::candidate_cover::stage(
             &store.paths.root,
@@ -2401,7 +2407,9 @@ mod tests {
         let source = temp.path().join("source.epub");
         fs::write(&source, b"epub source").unwrap();
         let mut store = LibraryStore::create_or_migrate(paths).unwrap();
-        let item = store.import(&source, Some("Book"), false).unwrap();
+        let item = store
+            .import(&source, Some("Book"), ImportMode::Copy)
+            .unwrap();
         let artifact = temp.path().join("converted.pdf");
         fs::write(&artifact, b"verified pdf").unwrap();
         let expected = hash_file(&artifact).unwrap();
@@ -2450,7 +2458,9 @@ mod tests {
         let source = temp.path().join("source.epub");
         fs::write(&source, b"epub source").unwrap();
         let mut store = LibraryStore::create_or_migrate(paths).unwrap();
-        let item = store.import(&source, Some("Book"), false).unwrap();
+        let item = store
+            .import(&source, Some("Book"), ImportMode::Copy)
+            .unwrap();
         store
             .connection
             .execute_batch(
@@ -2490,7 +2500,9 @@ mod tests {
         let source = temp.path().join("source.epub");
         fs::write(&source, b"epub source").unwrap();
         let mut store = LibraryStore::create_or_migrate(paths).unwrap();
-        let item = store.import(&source, Some("Book"), false).unwrap();
+        let item = store
+            .import(&source, Some("Book"), ImportMode::Copy)
+            .unwrap();
         drop(store);
 
         let artifact = temp.path().join("converted.pdf");
@@ -2593,7 +2605,7 @@ mod existing_open_tests {
             let mut store = LibraryStore::create_or_migrate(paths.clone()).unwrap();
             let source = temp.path().join("source.epub");
             fs::write(&source, b"book").unwrap();
-            let item = store.import(&source, None, false).unwrap();
+            let item = store.import(&source, None, ImportMode::Copy).unwrap();
             store.trash(&item.id).unwrap();
             store
                 .connection
@@ -2617,7 +2629,7 @@ mod existing_open_tests {
         let mut store = LibraryStore::create_or_migrate(paths.clone()).unwrap();
         let source = temp.path().join("source.epub");
         fs::write(&source, b"book").unwrap();
-        let item = store.import(&source, None, false).unwrap();
+        let item = store.import(&source, None, ImportMode::Copy).unwrap();
         store.connection.execute(
             "UPDATE library_item_formats SET provenance='referenced',source_path=?1,content_bytes=NULL,content_sha256=NULL",
             [source.to_string_lossy()],
@@ -2637,7 +2649,7 @@ mod existing_open_tests {
         let mut store = LibraryStore::create_or_migrate(paths.clone()).unwrap();
         let source = temp.path().join("source.epub");
         fs::write(&source, b"book").unwrap();
-        let item = store.import(&source, None, false).unwrap();
+        let item = store.import(&source, None, ImportMode::Copy).unwrap();
         let copied = tempfile::tempdir().unwrap();
         fs::copy(&paths.database, copied.path().join("library.sqlite")).unwrap();
         let copied_paths = LibraryPaths::resolve(
@@ -2674,7 +2686,7 @@ mod existing_open_tests {
         let mut store = LibraryStore::create_or_migrate(paths.clone()).unwrap();
         let source = temp.path().join("source.epub");
         fs::write(&source, b"book").unwrap();
-        store.import(&source, None, false).unwrap();
+        store.import(&source, None, ImportMode::Copy).unwrap();
         drop(store);
         let outside = tempfile::tempdir().unwrap();
         let moved = outside.path().join("items");

@@ -8,7 +8,9 @@ fn fixture() -> (tempfile::TempDir, LibraryStore, String) {
     let mut store = LibraryStore::create_or_migrate(paths).unwrap();
     let source = temp.path().join("original.epub");
     fs::write(&source, b"recovery test ebook").unwrap();
-    let item = store.import(&source, Some("Recovery"), false).unwrap();
+    let item = store
+        .import(&source, Some("Recovery"), ImportMode::Copy)
+        .unwrap();
     (temp, store, item.id)
 }
 
@@ -34,7 +36,9 @@ fn recovery_roundtrip_relocates_managed_and_covers_preserves_trash_and_reference
     store.trash(&id).unwrap();
     let referenced = temp.path().join("external.pdf");
     fs::write(&referenced, b"reference bytes").unwrap();
-    let external = store.import(&referenced, Some("External"), false).unwrap();
+    let external = store
+        .import(&referenced, Some("External"), ImportMode::Copy)
+        .unwrap();
     store.connection.execute("UPDATE library_item_formats SET provenance='referenced',source_path=?1,content_bytes=NULL,content_sha256=NULL WHERE library_item_id=?2", params![referenced.to_string_lossy(), external.id]).unwrap();
     fs::write(&store.paths.jobs, b"not part of snapshot").unwrap();
     let backup = temp.path().join("backup");
@@ -479,7 +483,7 @@ fn recovery_verifies_through_macos_var_alias_with_any_tmpdir() {
     let mut store = LibraryStore::create_or_migrate(paths).unwrap();
     let source = temp.path().join("source.epub");
     fs::write(&source, b"macOS alias regression").unwrap();
-    store.import(&source, None, false).unwrap();
+    store.import(&source, None, ImportMode::Copy).unwrap();
     let backup = temp.path().join("backup");
     store.backup(&backup).unwrap();
     let restored = temp.path().join("restored");
@@ -541,7 +545,7 @@ fn startup_preflight_preserves_supported_legacy_migration_and_rejects_corruption
     let connection = Connection::open(&paths.database).unwrap();
     connection
         .execute_batch(include_str!(
-            "../../../tests/fixtures/legacy-library-schemas/schema-v1.sql"
+            "../../../../tests/fixtures/legacy-library-schemas/schema-v1.sql"
         ))
         .unwrap();
     connection.execute("DELETE FROM library_items", []).unwrap();

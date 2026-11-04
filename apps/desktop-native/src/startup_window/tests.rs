@@ -72,7 +72,11 @@ fn backup(f: &Fixture) -> PathBuf {
     let source = f._temp.path().join("source.epub");
     fs::write(&source, b"recovery source book").unwrap();
     store
-        .import(&source, Some("Recovered title"), false)
+        .import(
+            &source,
+            Some("Recovered title"),
+            takio::model::ImportMode::Copy,
+        )
         .unwrap();
     let backup = f._temp.path().join("backup");
     store.backup(&backup).unwrap();

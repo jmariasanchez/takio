@@ -127,7 +127,7 @@ pub fn import_calibre_library(paths: LibraryPaths, library_root: &Path) -> AppRe
             continue;
         }
 
-        let mut item = match store.import(&primary.path, None, false) {
+        let mut item = match store.import(&primary.path, None, crate::model::ImportMode::Copy) {
             Ok(item) => item,
             Err(error) => {
                 outcomes.push(json!({
@@ -139,7 +139,9 @@ pub fn import_calibre_library(paths: LibraryPaths, library_root: &Path) -> AppRe
             }
         };
         for extra in &book.formats[1..] {
-            if let Ok(attached) = store.attach_format(&item.id, &extra.path, true) {
+            if let Ok(attached) =
+                store.attach_format(&item.id, &extra.path, crate::model::Provenance::Managed)
+            {
                 item = attached;
             }
         }

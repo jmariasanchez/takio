@@ -214,6 +214,14 @@ impl Destination {
     }
 }
 
+/// Replacing an existing reader file requires an explicit caller choice.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum OverwritePolicy {
+    #[default]
+    Refuse,
+    Replace,
+}
+
 pub fn send(
     destination: &Destination,
     item_id: &str,
@@ -221,7 +229,7 @@ pub fn send(
     file_name: &str,
     format: &str,
     subdir: Option<&Path>,
-    overwrite: bool,
+    overwrite: OverwritePolicy,
 ) -> AppResult<DeliveryResult> {
     let source = source
         .canonicalize()
@@ -243,7 +251,7 @@ pub fn send(
     let safe_name =
         sanitize_file_name(file_name).ok_or_else(|| AppError::new("invalid-arguments"))?;
     let target = canonical_directory.join(safe_name);
-    if target.exists() && !overwrite {
+    if target.exists() && overwrite == OverwritePolicy::Refuse {
         return Err(AppError::new("destination-file-exists"));
     }
     let partial = canonical_directory.join(format!(".takio-partial-{}", Uuid::new_v4()));
@@ -253,10 +261,10 @@ pub fn send(
         let _ = fs::remove_file(&partial);
         return Err(AppError::new("verification-failed"));
     }
-    if overwrite && target.exists() {
+    if overwrite == OverwritePolicy::Replace && target.exists() {
         fs::remove_file(&target).map_err(|_| AppError::new("copy-failed"))?;
     }
-    let publication = if overwrite {
+    let publication = if overwrite == OverwritePolicy::Replace {
         fs::rename(&partial, &target).map_err(publication_error)
     } else {
         publish_noclobber(&partial, &target, &expected)
@@ -571,7 +579,7 @@ mod tests {
             "book.txt",
             "txt",
             None,
-            false,
+            OverwritePolicy::Refuse,
         )
         .unwrap();
         assert_eq!(fs::read(&delivered.path).unwrap(), b"delivered bytes");
@@ -596,7 +604,7 @@ mod tests {
                 "book.txt",
                 "txt",
                 None,
-                false
+                OverwritePolicy::Refuse
             )
             .unwrap_err()
             .code(),
@@ -826,7 +834,7 @@ mod tests {
             "Book.epub",
             "epub",
             None,
-            false,
+            OverwritePolicy::Refuse,
         )
         .expect("deliver to mount root");
 
@@ -849,7 +857,7 @@ mod tests {
                 "Book.epub",
                 "epub",
                 None,
-                false
+                OverwritePolicy::Refuse
             )
             .unwrap_err()
             .code(),
@@ -863,7 +871,7 @@ mod tests {
             "Book.epub",
             "epub",
             None,
-            true,
+            OverwritePolicy::Replace,
         )
         .unwrap();
         assert_eq!(fs::read(&result.path).unwrap(), b"replacement bytes");

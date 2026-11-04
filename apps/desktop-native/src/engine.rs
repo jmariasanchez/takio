@@ -146,11 +146,7 @@ impl Drop for ReaderScanWorker {
 
 pub use takio::library_query::{Facets, Filters};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ImportMode {
-    Copy,
-    Move,
-}
+pub use takio::model::ImportMode;
 
 /// Larger batches are rejected before any destination is modified.
 pub const MAX_SEND_ITEMS: usize = 256;
@@ -468,10 +464,13 @@ fn worker_with_reader_scans(
                 let _ = reply.send(store.update(&id, patch));
             }
             Request::Import { roots, mode, reply } => {
-                let result =
-                    scan_imports(&mut store, &roots, mode == ImportMode::Move, false, || {
-                        false
-                    });
+                let result = scan_imports(
+                    &mut store,
+                    &roots,
+                    mode,
+                    takio::import_scan::ImportObservation::Untracked,
+                    || false,
+                );
                 let _ = reply.send(result);
             }
             Request::Trash { ids, reply } => {
@@ -880,7 +879,9 @@ mod tests {
     ) -> LibraryItem {
         let source = root.join(format!("{title}.{extension}"));
         fs::write(&source, format!("contents for {title}.{extension}")).unwrap();
-        store.import(&source, Some(title), false).unwrap()
+        store
+            .import(&source, Some(title), ImportMode::Copy)
+            .unwrap()
     }
 
     #[test]
@@ -988,7 +989,9 @@ mod tests {
         for extension in ["mobi", "azw3"] {
             let source = temp.path().join(format!("attachment.{extension}"));
             fs::write(&source, extension).unwrap();
-            store.attach_format(&item.id, &source, true).unwrap();
+            store
+                .attach_format(&item.id, &source, takio::model::Provenance::Managed)
+                .unwrap();
         }
         assert_eq!(
             preview_send(&store, &destination, &ids).unwrap().entries[0]
@@ -1162,7 +1165,9 @@ mod tests {
             let item = add_book(&mut store, temp.path(), "Reviewed", "epub");
             let mobi = temp.path().join("reviewed.mobi");
             fs::write(&mobi, b"reviewed mobi").unwrap();
-            store.attach_format(&item.id, &mobi, false).unwrap();
+            store
+                .attach_format(&item.id, &mobi, takio::model::Provenance::Referenced)
+                .unwrap();
             let preview =
                 preview_send(&store, &destination, std::slice::from_ref(&item.id)).unwrap();
             assert_eq!(
@@ -1176,13 +1181,17 @@ mod tests {
                 "preferred-attachment" => {
                     let azw3 = temp.path().join("preferred.azw3");
                     fs::write(&azw3, b"new preferred attachment").unwrap();
-                    store.attach_format(&item.id, &azw3, true).unwrap();
+                    store
+                        .attach_format(&item.id, &azw3, takio::model::Provenance::Managed)
+                        .unwrap();
                 }
                 "source-path" => {
                     store.remove_format(&item.id, FormatId::Mobi).unwrap();
                     let replacement = temp.path().join("replacement.mobi");
                     fs::write(&replacement, b"replacement attachment").unwrap();
-                    store.attach_format(&item.id, &replacement, false).unwrap();
+                    store
+                        .attach_format(&item.id, &replacement, takio::model::Provenance::Referenced)
+                        .unwrap();
                 }
                 _ => unreachable!(),
             }
@@ -1261,7 +1270,9 @@ mod tests {
         for extension in ["mobi", "azw3"] {
             let source = temp.path().join(format!("Preferred.{extension}"));
             fs::write(&source, extension).unwrap();
-            store.attach_format(&item.id, &source, true).unwrap();
+            store
+                .attach_format(&item.id, &source, takio::model::Provenance::Managed)
+                .unwrap();
         }
         let result = preview_and_send_one(&store, &destination, &item.id).unwrap();
         assert_eq!(result.path.extension().unwrap(), "azw3");

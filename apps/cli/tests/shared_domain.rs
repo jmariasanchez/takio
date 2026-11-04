@@ -21,7 +21,11 @@ fn typed_metadata_candidate_applies_only_reviewed_fields() {
     let source = temp.path().join("Writer - Suggested Title.txt");
     fs::write(&source, b"original bytes").unwrap();
     let item = store
-        .import(&source, Some("Original Title"), false)
+        .import(
+            &source,
+            Some("Original Title"),
+            takio::model::ImportMode::Copy,
+        )
         .unwrap();
     let candidate = filename_candidates(&source, Some(&item.id), &[])
         .unwrap()
@@ -66,7 +70,9 @@ fn cli_send_rejects_trash_and_matches_shared_preview_choice() {
     let mut store = LibraryStore::create_or_migrate(paths).unwrap();
     let source = temp.path().join("book.azw3");
     fs::write(&source, b"compatible fixture").unwrap();
-    let item = store.import(&source, Some("Title"), false).unwrap();
+    let item = store
+        .import(&source, Some("Title"), takio::model::ImportMode::Copy)
+        .unwrap();
     let volumes = temp.path().join("Volumes");
     let reader = volumes.join("Kindle");
     fs::create_dir_all(reader.join("documents")).unwrap();
@@ -114,7 +120,9 @@ fn cli_and_shared_plan_reject_automatic_unknown_reader_format() {
     let mut store = LibraryStore::create_or_migrate(paths).unwrap();
     let source = temp.path().join("book.epub");
     fs::write(&source, b"epub fixture").unwrap();
-    let item = store.import(&source, None, false).unwrap();
+    let item = store
+        .import(&source, None, takio::model::ImportMode::Copy)
+        .unwrap();
     let volumes = temp.path().join("Volumes");
     let reader = volumes.join("Unknown");
     fs::create_dir_all(&reader).unwrap();
@@ -148,7 +156,9 @@ fn cli_query_and_native_facets_share_mixed_author_counts() {
     for (index, structured) in [false, true].into_iter().enumerate() {
         let source = temp.path().join(format!("source-{index}.txt"));
         fs::write(&source, format!("book {index}")).unwrap();
-        let item = store.import(&source, None, false).unwrap();
+        let item = store
+            .import(&source, None, takio::model::ImportMode::Copy)
+            .unwrap();
         let patch = if structured {
             LibraryPatch {
                 authors: Patch::Set(vec![BookAuthor {
@@ -196,7 +206,9 @@ fn cli_query_does_not_rewrite_unicode_filter_values() {
     let mut store = LibraryStore::create_or_migrate(paths).unwrap();
     let source = temp.path().join("book.txt");
     fs::write(&source, b"book").unwrap();
-    let item = store.import(&source, None, false).unwrap();
+    let item = store
+        .import(&source, None, takio::model::ImportMode::Copy)
+        .unwrap();
     let author = "\u{00c5}uthor";
     store
         .update(

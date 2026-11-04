@@ -7,7 +7,9 @@ pub(super) fn switching_candidate(title: &str) -> (tempfile::TempDir, PathBuf) {
     let mut store = takio::store::LibraryStore::create_or_migrate(paths).unwrap();
     let source = temp.path().join("book.txt");
     fs::write(&source, title).unwrap();
-    store.import(&source, Some(title), false).unwrap();
+    store
+        .import(&source, Some(title), takio::model::ImportMode::Copy)
+        .unwrap();
     (temp, root)
 }
 

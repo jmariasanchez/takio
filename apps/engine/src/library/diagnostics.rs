@@ -288,7 +288,13 @@ mod tests {
         let source = workspace.path().join("secret-title.epub");
         fs::write(&source, b"private ebook bytes bearer-token").unwrap();
         let mut store = LibraryStore::create_or_migrate(paths(&library_root)).unwrap();
-        let item = store.import(&source, Some("Secret title"), false).unwrap();
+        let item = store
+            .import(
+                &source,
+                Some("Secret title"),
+                crate::model::ImportMode::Copy,
+            )
+            .unwrap();
         assert_eq!(item.format, FormatId::Epub);
         drop(store);
 

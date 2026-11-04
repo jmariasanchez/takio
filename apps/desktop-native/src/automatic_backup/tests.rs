@@ -9,7 +9,11 @@ fn fixture() -> (tempfile::TempDir, LibraryStore, PathBuf, String) {
     let source = temp.path().join("original.txt");
     fs::write(&source, b"automatic recovery bytes").unwrap();
     let book = store
-        .import(&source, Some("Preserved book"), false)
+        .import(
+            &source,
+            Some("Preserved book"),
+            takio::model::ImportMode::Copy,
+        )
         .unwrap();
     let parent = temp.path().join("external-drive");
     fs::create_dir(&parent).unwrap();

@@ -171,7 +171,11 @@ mod tests {
             let source = root.path().join("original.epub");
             fs::write(&source, b"original EPUB fixture").unwrap();
             let item = store
-                .import(&source, Some("Preparation fixture"), false)
+                .import(
+                    &source,
+                    Some("Preparation fixture"),
+                    takio::model::ImportMode::Copy,
+                )
                 .unwrap();
             let path = root.path().join("ebook-convert");
             fs::write(&path, format!("#!/bin/sh\nset -eu\n{script}\n")).unwrap();
@@ -332,7 +336,10 @@ mod tests {
         let mut f = Fixture::new("exit 99");
         let source = f.root.path().join("text-only.txt");
         fs::write(&source, b"plain text").unwrap();
-        let item = f.store.import(&source, None, false).unwrap();
+        let item = f
+            .store
+            .import(&source, None, takio::model::ImportMode::Copy)
+            .unwrap();
         assert_eq!(
             preview_with_backend(&f.store, &item.id, f.backend.clone())
                 .unwrap_err()
@@ -389,7 +396,9 @@ mod tests {
         let review = f.preview();
         let existing = f.root.path().join("existing.azw3");
         fs::write(&existing, b"keep existing AZW3").unwrap();
-        f.store.attach_format(&f.item.id, &existing, true).unwrap();
+        f.store
+            .attach_format(&f.item.id, &existing, takio::model::Provenance::Managed)
+            .unwrap();
         let before = snapshot(f.root.path());
         assert_eq!(f.prepare(&review).unwrap_err().code(), "format-exists");
         assert_eq!(

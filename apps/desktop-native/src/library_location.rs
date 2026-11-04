@@ -41,7 +41,9 @@ mod tests {
         let mut store = LibraryStore::create_or_migrate(paths).unwrap();
         let source = root.join("source.epub");
         fs::write(&source, b"fixture book").unwrap();
-        let item = store.import(&source, Some("Original"), false).unwrap();
+        let item = store
+            .import(&source, Some("Original"), takio::model::ImportMode::Copy)
+            .unwrap();
         (temp, root, item.id)
     }
 
@@ -347,7 +349,9 @@ mod tests {
         let mut store = LibraryStore::create_or_migrate(paths).unwrap();
         let source = temp.path().join("second.epub");
         fs::write(&source, b"different book").unwrap();
-        store.import(&source, None, false).unwrap();
+        store
+            .import(&source, None, takio::model::ImportMode::Copy)
+            .unwrap();
         drop(store);
         let before = fs::read(b.join("library.sqlite")).unwrap();
         assert_eq!(switch(&engine, &b).unwrap_err().code(), "integrity-failed");

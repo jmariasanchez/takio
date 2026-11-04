@@ -6,7 +6,7 @@ use serde::Serialize;
 
 use crate::format::{FormatId, detect_format};
 use crate::metadata::pdf_page_count;
-use crate::model::LibraryItem;
+use crate::model::{ImportMode, LibraryItem};
 use crate::output::{AppError, AppResult};
 use crate::paths::LibraryPaths;
 use crate::store::{ImportWatchObservation, ImportWatchOutcome, LibraryStore};
@@ -149,17 +149,25 @@ pub struct ImportScan {
     pub stopped: bool,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum ImportObservation {
+    #[default]
+    Untracked,
+    Watch,
+}
+
 pub fn scan_imports<F>(
     store: &mut LibraryStore,
     roots: &[PathBuf],
-    move_source: bool,
-    observe: bool,
+    mode: ImportMode,
+    observation: ImportObservation,
     mut should_stop: F,
 ) -> AppResult<ImportScan>
 where
     F: FnMut() -> bool,
 {
     validate_import_sources(store.paths(), roots)?;
+    let observe = observation == ImportObservation::Watch;
     let mut encountered = HashSet::new();
     let (mut entries, mut stopped) = collect_entries(roots, &mut should_stop);
     let mut seen = HashSet::new();
@@ -240,7 +248,7 @@ where
                             Some(ImportWatchOutcome::Unsupported),
                         )
                     } else {
-                        match store.import(&canonical, None, move_source) {
+                        match store.import(&canonical, None, mode) {
                             Ok(item) => {
                                 encountered.insert(fingerprint.clone());
                                 (
@@ -425,15 +433,21 @@ mod tests {
 
     #[test]
     fn engine_scan_rejects_owned_paths_in_copy_and_move_modes() {
-        for move_source in [false, true] {
+        for mode in [ImportMode::Copy, ImportMode::Move] {
             let temp = tempfile::tempdir().unwrap();
             let mut store = open_store(temp.path());
             let owned = store.paths().items.join("uncatalogued.epub");
             fs::create_dir_all(owned.parent().unwrap()).unwrap();
             fs::write(&owned, b"preserve owned bytes").unwrap();
             for root in [owned.clone(), store.paths().root.clone()] {
-                let error =
-                    scan_imports(&mut store, &[root], move_source, false, || false).unwrap_err();
+                let error = scan_imports(
+                    &mut store,
+                    &[root],
+                    mode,
+                    ImportObservation::Untracked,
+                    || false,
+                )
+                .unwrap_err();
                 assert_eq!(error.code(), "invalid-arguments");
                 assert_eq!(fs::read(&owned).unwrap(), b"preserve owned bytes");
                 assert!(store.list(false).unwrap().is_empty());
@@ -450,9 +464,15 @@ mod tests {
         let alias = temp.path().join("alias");
         std::os::unix::fs::symlink(&store.paths().items, &alias).unwrap();
         assert_eq!(
-            scan_imports(&mut store, &[alias], true, false, || false)
-                .unwrap_err()
-                .code(),
+            scan_imports(
+                &mut store,
+                &[alias],
+                ImportMode::Move,
+                ImportObservation::Untracked,
+                || false
+            )
+            .unwrap_err()
+            .code(),
             "invalid-arguments"
         );
     }
@@ -474,9 +494,15 @@ mod tests {
             .join(store.paths().items.file_name().unwrap())
             .join("keep.txt");
         assert_eq!(
-            scan_imports(&mut store, &[source], true, false, || false)
-                .unwrap_err()
-                .code(),
+            scan_imports(
+                &mut store,
+                &[source],
+                ImportMode::Move,
+                ImportObservation::Untracked,
+                || false
+            )
+            .unwrap_err()
+            .code(),
             "invalid-arguments"
         );
         assert_eq!(fs::read(owned).unwrap(), b"keep");
@@ -484,7 +510,7 @@ mod tests {
 
     #[test]
     fn mixed_scan_preserves_unsupported_sources_in_copy_and_move_modes() {
-        for move_source in [false, true] {
+        for mode in [ImportMode::Copy, ImportMode::Move] {
             let temp = tempfile::tempdir().unwrap();
             let mut store = open_store(temp.path());
             let supported = temp.path().join("book.epub");
@@ -495,8 +521,8 @@ mod tests {
             let scan = scan_imports(
                 &mut store,
                 &[supported.clone(), unsupported.clone(), missing.clone()],
-                move_source,
-                false,
+                mode,
+                ImportObservation::Untracked,
                 || false,
             )
             .unwrap();
@@ -526,8 +552,8 @@ mod tests {
                 matches!(&scan.outcomes[2], ImportOutcome::Failed { source_path, code: "not-found" } if source_path == &missing)
             );
             assert_eq!(fs::read(&unsupported).unwrap(), b"keep these bytes");
-            assert_eq!(supported.exists(), !move_source);
-            if !move_source {
+            assert_eq!(supported.exists(), mode == ImportMode::Copy);
+            if mode == ImportMode::Copy {
                 assert_eq!(fs::read(&supported).unwrap(), b"ebook fixture");
             }
         }
@@ -548,7 +574,14 @@ mod tests {
         let chosen = temp.path().join("paper.pdf");
         fs::write(&chosen, pdf_fixture(3)).unwrap();
 
-        let scan = scan_imports(&mut store, &[folder, chosen], false, false, || false).unwrap();
+        let scan = scan_imports(
+            &mut store,
+            &[folder, chosen],
+            ImportMode::Copy,
+            ImportObservation::Untracked,
+            || false,
+        )
+        .unwrap();
         let outcomes = scan
             .outcomes
             .iter()
@@ -575,14 +608,14 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let source = temp.path().join("notes.bin");
         fs::write(&source, b"first").unwrap();
-        for move_source in [false, true] {
+        for mode in [ImportMode::Copy, ImportMode::Move] {
             fs::write(&source, b"first").unwrap();
             let mut store = open_store(temp.path());
             let scan = scan_imports(
                 &mut store,
                 std::slice::from_ref(&source),
-                move_source,
-                true,
+                mode,
+                ImportObservation::Watch,
                 || false,
             )
             .unwrap();
@@ -592,8 +625,8 @@ mod tests {
             let repeated = scan_imports(
                 &mut store,
                 std::slice::from_ref(&source),
-                move_source,
-                true,
+                mode,
+                ImportObservation::Watch,
                 || false,
             )
             .unwrap();
@@ -603,8 +636,8 @@ mod tests {
             let changed = scan_imports(
                 &mut store,
                 std::slice::from_ref(&source),
-                move_source,
-                true,
+                mode,
+                ImportObservation::Watch,
                 || false,
             )
             .unwrap();
@@ -612,8 +645,8 @@ mod tests {
             let repeated = scan_imports(
                 &mut store,
                 std::slice::from_ref(&source),
-                move_source,
-                true,
+                mode,
+                ImportObservation::Watch,
                 || false,
             )
             .unwrap();
@@ -641,12 +674,12 @@ mod tests {
             }
             Ok(_) => false,
         };
-        for move_source in [false, true] {
+        for mode in [ImportMode::Copy, ImportMode::Move] {
             let scan = scan_imports(
                 &mut store,
                 std::slice::from_ref(&source),
-                move_source,
-                false,
+                mode,
+                ImportObservation::Untracked,
                 || false,
             )
             .unwrap();
@@ -654,8 +687,8 @@ mod tests {
             let watch = scan_imports(
                 &mut store,
                 std::slice::from_ref(&source),
-                move_source,
-                true,
+                mode,
+                ImportObservation::Watch,
                 || false,
             )
             .unwrap();
@@ -684,8 +717,8 @@ mod tests {
         let scan = scan_imports(
             &mut store,
             std::slice::from_ref(&source),
-            true,
-            false,
+            ImportMode::Move,
+            ImportObservation::Untracked,
             || {
                 calls += 1;
                 calls > 1
@@ -713,8 +746,8 @@ mod tests {
                 let scan = scan_imports(
                     &mut store,
                     std::slice::from_ref(&source),
-                    false,
-                    false,
+                    ImportMode::Copy,
+                    ImportObservation::Untracked,
                     || false,
                 )
                 .unwrap();

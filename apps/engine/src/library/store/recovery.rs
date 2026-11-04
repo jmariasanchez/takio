@@ -3,7 +3,6 @@ use std::io::{self, Read, Write};
 use std::path::Component;
 
 #[cfg(test)]
-#[path = "recovery_tests.rs"]
 mod tests;
 
 // Resolve only the recorded library root, never an owned entry. Canonicalizing
