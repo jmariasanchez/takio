@@ -406,3 +406,15 @@ Open and not addressed by design:
   - copy: a few long literal lines.
   - authors: read-only opens stay write-free by design, and the input-only
     scalar alias is kept for compatibility.
+
+### Fourth blind review and score
+
+Run `20261104_224905` used the same process as before: 20 context-isolated,
+read-only reviewers. **Strict went from 83.8 to 84.4**, still below the 85
+target. Scores rose for abstraction fitness (80 to 87), package organization
+(80 to 86) and incomplete migration (76 to 80), and design coherence recovered
+to 82. API surface coherence (82.5), contract coherence (82.5), error
+consistency (79), low-level elegance (81) and test strategy (80) are now the
+lowest. No dimension landed exactly on the target. The review queued 140 new
+findings. Next is to work the lowest dimensions first, using the same
+audit-before-resolve rule.
