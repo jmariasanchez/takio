@@ -18,12 +18,13 @@ impl LibraryState {
             this.automatic_backup.ready = true;
             match result {
                 Ok(config) => this.automatic_backup.config = config,
-                Err(error) => this.set_status(format!("Automatic recovery copies remain disabled: settings could not be read ({}). Enable again from File to choose a destination.", error.code()), true, cx),
+                Err(error) => this.set_status(copy::load_failed(&error), true, cx),
             }
             this.start_automatic_backup_timer(cx);
             this.run_automatic_backup_if_due(now_seconds(), cx);
             cx.notify();
-        }).detach();
+        })
+        .detach();
     }
 
     fn start_automatic_backup_timer(&mut self, cx: &mut Context<Self>) {
@@ -55,7 +56,7 @@ impl LibraryState {
         cx: &mut Context<Self>,
     ) {
         if !self.can_mutate() {
-            self.set_status("Finish the current operation, edits or review before changing automatic recovery copies.".into(), true, cx);
+            self.set_status(copy::BUSY.into(), true, cx);
             return;
         }
         let disabling = destination.is_none();
@@ -76,30 +77,35 @@ impl LibraryState {
             .request(|reply| Request::AutomaticBackupConfigure { destination, reply });
         self.await_reply(receiver, cx, move |this, result, cx| {
             this.session.activity = Activity::Idle;
-            if this.automatic_backup.revision != revision { cx.notify(); return; }
+            if this.automatic_backup.revision != revision {
+                cx.notify();
+                return;
+            }
             match result {
                 Ok(config) => {
                     this.automatic_backup.config = config;
                     this.automatic_backup.ready = true;
                     this.automatic_backup.last_attempt = None;
-                    this.set_status(if disabling {
-                        "Automatic recovery copies disabled. All existing copies are kept.".into()
+                    let message = if disabling {
+                        copy::DISABLED
                     } else {
-                        "Automatic recovery copies enabled: daily while Takio is open. All copies are kept, with no automatic deletion.".into()
-                    }, false, cx);
+                        copy::ENABLED
+                    };
+                    this.set_status(message.into(), false, cx);
                     this.start_automatic_backup_timer(cx);
                     this.run_automatic_backup_if_due(now_seconds(), cx);
                 }
                 Err(error) => {
                     let message = if disabling {
-                        format!("Automatic recovery copies are disabled for this session, but settings could not be saved ({}). The previous setting may return after reopening this library. Existing copies are kept.", error.code())
+                        copy::disable_not_saved(&error)
                     } else {
-                        format!("Automatic recovery settings were not changed ({}). Choose an existing writable folder outside the library and check library permissions.", error.code())
+                        copy::configure_failed(&error)
                     };
                     this.set_status(message, true, cx);
                 }
             }
-        }).detach();
+        })
+        .detach();
     }
 
     pub fn run_automatic_backup_if_due(&mut self, now: u64, cx: &mut Context<Self>) {
@@ -128,16 +134,82 @@ impl LibraryState {
                 Ok(report) => {
                     this.automatic_backup.config = report.config;
                     let warning = report.settings_error.is_some();
-                    let summary = format!("Automatic recovery copy verified: {} managed format(s)", report.backup.managed_files);
-                    let detail = format!("Includes catalogue, Trash, managed formats and covers. External referenced bytes and conversion jobs are excluded. All copies are kept, with no automatic deletion.{}", if warning {
-                        " The successful copy is preserved, but its timestamp could not be saved. This session will wait 24 hours. Reopening may create another copy. Check library permissions."
-                    } else { "" });
-                    this.set_status(if warning { format!("{summary}. Copy kept, but settings could not be saved. Check library permissions.") } else { summary.clone() }, warning, cx);
-                    this.session.recovery_outcome = Some(RecoveryOutcome { path: report.backup.destination_path, summary, detail });
+                    let summary = copy::verified(report.backup.managed_files);
+                    let status = if warning {
+                        copy::verified_unsaved(&summary)
+                    } else {
+                        summary.clone()
+                    };
+                    this.set_status(status, warning, cx);
+                    this.session.recovery_outcome = Some(RecoveryOutcome {
+                        path: report.backup.destination_path,
+                        summary,
+                        detail: copy::detail(warning),
+                    });
                     cx.notify();
                 }
-                Err(error) => this.set_status(format!("Automatic recovery copy failed ({}). Check that the selected backup drive/folder exists and is writable. Existing copies are kept. Retrying no sooner than one hour while Takio is open.", error.code()), true, cx),
+                Err(error) => this.set_status(copy::run_failed(&error), true, cx),
             }
-        }).detach();
+        })
+        .detach();
+    }
+}
+
+/// User-facing automatic recovery-copy messages, kept out of closures so the
+/// handlers stay rustfmt-formatted. Error codes are stable and path-free.
+mod copy {
+    use takio::error::AppError;
+
+    pub(super) const BUSY: &str =
+        "Finish the current operation, edits or review before changing automatic recovery copies.";
+    pub(super) const DISABLED: &str =
+        "Automatic recovery copies disabled. All existing copies are kept.";
+    pub(super) const ENABLED: &str = "Automatic recovery copies enabled: daily while Takio is open. All copies are kept, with no automatic deletion.";
+
+    pub(super) fn load_failed(error: &AppError) -> String {
+        format!(
+            "Automatic recovery copies remain disabled: settings could not be read ({}). Enable again from File to choose a destination.",
+            error.code()
+        )
+    }
+
+    pub(super) fn disable_not_saved(error: &AppError) -> String {
+        format!(
+            "Automatic recovery copies are disabled for this session, but settings could not be saved ({}). The previous setting may return after reopening this library. Existing copies are kept.",
+            error.code()
+        )
+    }
+
+    pub(super) fn configure_failed(error: &AppError) -> String {
+        format!(
+            "Automatic recovery settings were not changed ({}). Choose an existing writable folder outside the library and check library permissions.",
+            error.code()
+        )
+    }
+
+    pub(super) fn verified(managed_files: u64) -> String {
+        format!("Automatic recovery copy verified: {managed_files} managed format(s)")
+    }
+
+    pub(super) fn verified_unsaved(summary: &str) -> String {
+        format!("{summary}. Copy kept, but settings could not be saved. Check library permissions.")
+    }
+
+    pub(super) fn detail(settings_unsaved: bool) -> String {
+        let suffix = if settings_unsaved {
+            " The successful copy is preserved, but its timestamp could not be saved. This session will wait 24 hours. Reopening may create another copy. Check library permissions."
+        } else {
+            ""
+        };
+        format!(
+            "Includes catalogue, Trash, managed formats and covers. External referenced bytes and conversion jobs are excluded. All copies are kept, with no automatic deletion.{suffix}"
+        )
+    }
+
+    pub(super) fn run_failed(error: &AppError) -> String {
+        format!(
+            "Automatic recovery copy failed ({}). Check that the selected backup drive/folder exists and is writable. Existing copies are kept. Retrying no sooner than one hour while Takio is open.",
+            error.code()
+        )
     }
 }

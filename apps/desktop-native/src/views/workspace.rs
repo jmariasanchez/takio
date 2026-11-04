@@ -30,6 +30,16 @@ const MOVE_DETAIL: &str = "The selected files will leave their current folders a
 const PURGE_DETAIL: &str = "This cannot be undone. Takio-managed copies will be deleted. Original files and referenced files outside Takio will be kept.";
 const SEND_DETAIL: &str = "Next, review compatible formats and any blocked books. Nothing is sent until you confirm Send ready.";
 const EJECT_DETAIL: &str = "Wait for a successful eject before unplugging the USB cable.";
+const CALIBRE_AVAILABLE: &str =
+    "Calibre is available. Conversion runs locally and can take up to two minutes.";
+const CALIBRE_MISSING: &str = "Calibre was not found. Install Calibre in Applications, then cancel and try again. Advanced setup: set TAKIO_EBOOK_CONVERT to its full executable path.";
+const PREPARATION_SUMMARY: &str =
+    "EPUB to AZW3. Your EPUB is kept. Nothing has been converted or sent yet.";
+const PREPARATION_ACCESSIBLE: &str = "EPUB to AZW3. Your EPUB is kept. Nothing has been converted or sent yet. Conversion does not remove DRM.";
+const PREPARATION_OUTCOME: &str = "Adds an AZW3 copy to this book in your library. Sending requires a separate review. Conversion does not remove DRM.";
+const SEND_REVIEW_ACCESSIBLE: &str =
+    "Files are checked again when sending. Existing reader files are never overwritten.";
+const SEND_REVIEW_NOTE: &str = "No conversion. Files are checked again when sending. Existing reader files are never overwritten.";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ReaderAction {
@@ -259,39 +269,83 @@ impl Workspace {
     ) -> gpui::Stateful<gpui::Div> {
         let enabled = preview.backend.available && !self.state.read(cx).session().loading;
         let backend_message = if preview.backend.available {
-            "Calibre is available. Conversion runs locally and can take up to two minutes."
+            CALIBRE_AVAILABLE
         } else {
-            "Calibre was not found. Install Calibre in Applications, then cancel and try again. Advanced setup: set TAKIO_EBOOK_CONVERT to its full executable path."
+            CALIBRE_MISSING
         };
         div()
             .id("preparation-review")
             .role(gpui::Role::Group)
-            .aria_label(format!("Prepare {} for Kindle. {backend_message}", preview.title))
-            .aria_description("EPUB to AZW3. Your EPUB is kept. Nothing has been converted or sent yet. Conversion does not remove DRM.")
-            .flex().flex_col().flex_shrink_0().gap_2().p_3()
-            .border_t_1().border_color(theme.border)
-            .child(div().text_sm().font_weight(gpui::FontWeight::SEMIBOLD)
-                .child("Prepare for Kindle"))
-            .child(div().id("preparation-details").max_h(px(160.)).overflow_y_scroll()
-                .flex().flex_col().gap_2()
-                .child(div().text_sm().child(preview.title))
-                .child(div().text_xs().child("EPUB to AZW3. Your EPUB is kept. Nothing has been converted or sent yet."))
-                .child(div().text_xs().text_color(theme.text_secondary).child(backend_message))
-                .children(preview.backend.path.map(|path| {
-                    div().id("preparation-backend-path").overflow_x_scroll().text_xs()
-                        .text_color(theme.text_tertiary).child(path.display().to_string())
-                }))
-                .child(div().text_xs().text_color(theme.text_secondary)
-                    .child("Adds an AZW3 copy to this book in your library. Sending requires a separate review. Conversion does not remove DRM.")))
-            .child(div().flex().flex_wrap().gap_2()
-                .child(toolbar_button("cancel-preparation", "Cancel", true, theme)
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.state.update(cx, |state, cx| state.cancel_preparation(cx));
-                    })))
-                .child(toolbar_button("confirm-preparation", "Convert to AZW3", enabled, theme)
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.state.update(cx, |state, cx| state.confirm_preparation(cx));
-                    }))))
+            .aria_label(format!(
+                "Prepare {} for Kindle. {backend_message}",
+                preview.title
+            ))
+            .aria_description(PREPARATION_ACCESSIBLE)
+            .flex()
+            .flex_col()
+            .flex_shrink_0()
+            .gap_2()
+            .p_3()
+            .border_t_1()
+            .border_color(theme.border)
+            .child(
+                div()
+                    .text_sm()
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .child("Prepare for Kindle"),
+            )
+            .child(
+                div()
+                    .id("preparation-details")
+                    .max_h(px(160.))
+                    .overflow_y_scroll()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .child(div().text_sm().child(preview.title))
+                    .child(div().text_xs().child(PREPARATION_SUMMARY))
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(theme.text_secondary)
+                            .child(backend_message),
+                    )
+                    .children(preview.backend.path.map(|path| {
+                        div()
+                            .id("preparation-backend-path")
+                            .overflow_x_scroll()
+                            .text_xs()
+                            .text_color(theme.text_tertiary)
+                            .child(path.display().to_string())
+                    }))
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(theme.text_secondary)
+                            .child(PREPARATION_OUTCOME),
+                    ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .gap_2()
+                    .child(
+                        toolbar_button("cancel-preparation", "Cancel", true, theme).on_click(
+                            cx.listener(|this, _, _, cx| {
+                                this.state
+                                    .update(cx, |state, cx| state.cancel_preparation(cx));
+                            }),
+                        ),
+                    )
+                    .child(
+                        toolbar_button("confirm-preparation", "Convert to AZW3", enabled, theme)
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.state
+                                    .update(cx, |state, cx| state.confirm_preparation(cx));
+                            })),
+                    ),
+            )
     }
 
     fn send_review(
@@ -306,36 +360,94 @@ impl Workspace {
         div()
             .id("send-review")
             .role(gpui::Role::Group)
-            .aria_label(format!("Review send to {}. {ready} ready, {blocked} need attention. Nothing sent yet.", preview.destination.name))
-            .aria_description("Files are checked again when sending. Existing reader files are never overwritten.")
-            .flex().flex_col().flex_shrink_0().gap_2().p_3()
-            .border_t_1().border_color(theme.border)
-            .child(div().text_sm().font_weight(gpui::FontWeight::SEMIBOLD)
-                .child(format!("Review send to {}", preview.destination.name)))
-            .child(div().text_xs().text_color(theme.text_secondary)
-                .child(format!("{ready} ready, {blocked} need attention. Nothing sent yet.")))
-            .child(div().id("send-review-books").max_h(px(130.)).overflow_y_scroll()
-                .children(preview.entries.into_iter().map(|entry| {
-                    let (message, blocked) = match entry.result {
-                        Ok(file) => (format!("Ready as {}", file.format.as_str().to_uppercase()), false),
-                        Err(error) => (format!("Not ready: {}", crate::state::humanize_app_error(&error)), true),
-                    };
-                    div().id(gpui::SharedString::from(entry.item_id)).role(gpui::Role::Label)
-                        .aria_label(format!("{}: {message}", entry.title)).py_1().text_xs()
-                        .text_color(if blocked { theme.danger } else { theme.text_secondary })
-                        .child(format!("{}: {message}", entry.title))
-                })))
-            .child(div().text_xs().text_color(theme.text_tertiary)
-                .child("No conversion. Files are checked again when sending. Existing reader files are never overwritten."))
-            .child(div().flex().flex_wrap().gap_2()
-                .child(toolbar_button("cancel-send-review", "Cancel", true, theme)
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.state.update(cx, |state, cx| state.cancel_send_preview(cx));
-                    })))
-                .child(toolbar_button("confirm-send-review", format!("Send {ready} ready"), enabled, theme)
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.state.update(cx, |state, cx| state.confirm_send_preview(cx));
-                    }))))
+            .aria_label(format!(
+                "Review send to {}. {ready} ready, {blocked} need attention. Nothing sent yet.",
+                preview.destination.name
+            ))
+            .aria_description(SEND_REVIEW_ACCESSIBLE)
+            .flex()
+            .flex_col()
+            .flex_shrink_0()
+            .gap_2()
+            .p_3()
+            .border_t_1()
+            .border_color(theme.border)
+            .child(
+                div()
+                    .text_sm()
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .child(format!("Review send to {}", preview.destination.name)),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(theme.text_secondary)
+                    .child(format!(
+                        "{ready} ready, {blocked} need attention. Nothing sent yet."
+                    )),
+            )
+            .child(
+                div()
+                    .id("send-review-books")
+                    .max_h(px(130.))
+                    .overflow_y_scroll()
+                    .children(preview.entries.into_iter().map(|entry| {
+                        let (message, blocked) = match entry.result {
+                            Ok(file) => (
+                                format!("Ready as {}", file.format.as_str().to_uppercase()),
+                                false,
+                            ),
+                            Err(error) => (
+                                format!("Not ready: {}", crate::state::humanize_app_error(&error)),
+                                true,
+                            ),
+                        };
+                        div()
+                            .id(gpui::SharedString::from(entry.item_id))
+                            .role(gpui::Role::Label)
+                            .aria_label(format!("{}: {message}", entry.title))
+                            .py_1()
+                            .text_xs()
+                            .text_color(if blocked {
+                                theme.danger
+                            } else {
+                                theme.text_secondary
+                            })
+                            .child(format!("{}: {message}", entry.title))
+                    })),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(theme.text_tertiary)
+                    .child(SEND_REVIEW_NOTE),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .gap_2()
+                    .child(
+                        toolbar_button("cancel-send-review", "Cancel", true, theme).on_click(
+                            cx.listener(|this, _, _, cx| {
+                                this.state
+                                    .update(cx, |state, cx| state.cancel_send_preview(cx));
+                            }),
+                        ),
+                    )
+                    .child(
+                        toolbar_button(
+                            "confirm-send-review",
+                            format!("Send {ready} ready"),
+                            enabled,
+                            theme,
+                        )
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.state
+                                .update(cx, |state, cx| state.confirm_send_preview(cx));
+                        })),
+                    ),
+            )
     }
 }
 
