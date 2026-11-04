@@ -16,7 +16,7 @@ use gpui::{
 };
 
 use super::button::button as toolbar_button;
-use crate::state::{LibraryEntity, Section, humanize_error};
+use crate::state::{LibraryEntity, Section};
 use crate::theme::{Theme, metrics};
 use crate::views::library_list::LibraryList;
 use crate::views::{sidebar::Sidebar, text_input::TextInput};
@@ -318,7 +318,7 @@ impl Workspace {
                 .children(preview.entries.into_iter().map(|entry| {
                     let (message, blocked) = match entry.result {
                         Ok(file) => (format!("Ready as {}", file.format.as_str().to_uppercase()), false),
-                        Err(error) => (format!("Not ready: {}", humanize_error(error.kind())), true),
+                        Err(error) => (format!("Not ready: {}", crate::state::humanize_app_error(&error)), true),
                     };
                     div().id(gpui::SharedString::from(entry.item_id)).role(gpui::Role::Label)
                         .aria_label(format!("{}: {message}", entry.title)).py_1().text_xs()

@@ -163,6 +163,17 @@ macro_rules! app_error {
     };
 }
 
+/// `map_err` adapter for filesystem failures: maps to a compile-checked domain
+/// code while preserving the redacted `std::io::ErrorKind` for actionable UI copy.
+#[macro_export]
+macro_rules! io_error {
+    ($code:literal $(,)?) => {
+        |error: std::io::Error| {
+            $crate::error::AppError::from_io($crate::app_error!($code).kind(), error)
+        }
+    };
+}
+
 #[derive(Clone, Debug, Error)]
 #[error("{code}")]
 pub struct AppError {

@@ -150,15 +150,15 @@ pub fn write_catalog(
     let publication = (|| -> AppResult<()> {
         let mut file = options
             .open(&temporary)
-            .map_err(|_| crate::app_error!("write-failed"))?;
+            .map_err(crate::io_error!("write-failed"))?;
         file.write_all(body.as_bytes())
             .and_then(|_| file.flush())
             .and_then(|_| file.sync_all())
-            .map_err(|_| crate::app_error!("write-failed"))?;
+            .map_err(crate::io_error!("write-failed"))?;
         if !temporary.is_file() {
             return Err(crate::app_error!("write-failed"));
         }
-        std::fs::hard_link(&temporary, output).map_err(|_| crate::app_error!("write-failed"))?;
+        std::fs::hard_link(&temporary, output).map_err(crate::io_error!("write-failed"))?;
         Ok(())
     })();
     let _ = std::fs::remove_file(&temporary);
@@ -261,6 +261,25 @@ fn html_escape(value: &str) -> String {
 
 #[cfg(any(test, feature = "test-support"))]
 pub mod tests {
+    #[cfg(unix)]
+    #[test]
+    fn catalog_write_failure_keeps_the_redacted_io_kind() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempfile::tempdir().unwrap();
+        let locked = temp.path().join("locked");
+        std::fs::create_dir(&locked).unwrap();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o500)).unwrap();
+        let error = super::write_catalog(
+            &[sparse_book()],
+            super::CatalogFormat::Json,
+            &locked.join("catalog.json"),
+        )
+        .unwrap_err();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(error.kind(), crate::error::ErrorCode::WriteFailed);
+        assert_eq!(error.io_kind(), Some(std::io::ErrorKind::PermissionDenied));
+    }
+
     #[test]
     fn catalog_formats_keep_wire_names_and_reject_unknown_values() {
         for format in [

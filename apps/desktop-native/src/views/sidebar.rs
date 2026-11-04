@@ -4,7 +4,7 @@ use std::collections::HashSet;
 use gpui::{Context, Div, IntoElement, Render, Stateful, Window, div, prelude::*, px};
 use takio::delivery::destinations::Destination;
 
-use crate::state::{FilterDimension, LibraryEntity, Section, humanize_error};
+use crate::state::{FilterDimension, LibraryEntity, Section};
 use crate::theme::{Theme, metrics};
 
 pub struct Sidebar {
@@ -91,7 +91,7 @@ impl Sidebar {
             .session()
             .destination_error
             .as_ref()
-            .map(|error| humanize_error(error.kind()));
+            .map(crate::state::humanize_app_error);
         let readers: Vec<_> = state
             .destinations()
             .iter()
@@ -461,7 +461,10 @@ pub(crate) fn shelf_summary(
     let shelf = match shelf {
         Some(Ok(shelf)) => shelf,
         Some(Err(error)) => {
-            return format!("Could not check books. {}", humanize_error(error.kind()));
+            return format!(
+                "Could not check books. {}",
+                crate::state::humanize_app_error(error)
+            );
         }
         None => return "Refresh to check books".to_owned(),
     };

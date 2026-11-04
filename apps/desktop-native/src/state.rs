@@ -867,10 +867,9 @@ impl LibraryState {
                     let failures = report
                         .iter()
                         .filter_map(|(id, result)| {
-                            result
-                                .as_ref()
-                                .err()
-                                .map(|error| format!("{id}: {}", humanize_error(error.kind())))
+                            result.as_ref().err().map(|error| {
+                                format!("{id}: {}", crate::state::humanize_app_error(error))
+                            })
                         })
                         .collect::<Vec<_>>();
                     let mut detail = if failures.is_empty() {
@@ -1482,7 +1481,7 @@ fn sort_items(items: &mut [Arc<LibraryItem>], sort: Sort) {
 }
 
 mod errors;
-pub use errors::humanize_error;
+pub use errors::{humanize_app_error, humanize_error};
 use errors::{humanize_recovery_error, open_library_error};
 
 /// Convenience alias so views can declare their dependency plainly.

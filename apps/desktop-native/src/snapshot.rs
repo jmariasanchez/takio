@@ -155,7 +155,7 @@ pub fn run(launch: &crate::startup::launch::LaunchEnvironment) {
                 Err(error) => format!(
                     "{}: error {}",
                     reader.name,
-                    crate::state::humanize_error(error.kind())
+                    crate::state::humanize_app_error(&error)
                 ),
             })
             .collect();

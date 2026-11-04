@@ -100,9 +100,9 @@ struct Manifest {
 pub fn list(root: &Path) -> AppResult<Vec<Destination>> {
     let root = root
         .canonicalize()
-        .map_err(|_| crate::app_error!("destination-unavailable"))?;
+        .map_err(crate::io_error!("destination-unavailable"))?;
     let mut destinations = Vec::new();
-    let entries = fs::read_dir(&root).map_err(|_| crate::app_error!("destination-unavailable"))?;
+    let entries = fs::read_dir(&root).map_err(crate::io_error!("destination-unavailable"))?;
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();
         let Ok(path) = entry.path().canonicalize() else {
@@ -260,17 +260,17 @@ pub(crate) fn send(
 ) -> AppResult<DeliveryResult> {
     let source = source
         .canonicalize()
-        .map_err(|_| crate::app_error!("source-unavailable"))?;
+        .map_err(crate::io_error!("source-unavailable"))?;
     if !source.is_file() || item_id.trim().is_empty() {
         return Err(crate::app_error!("invalid-arguments"));
     }
     let relative_dir = subdir.map_or_else(|| default_subdir(destination.kind), Path::to_path_buf);
     validate_relative(&relative_dir)?;
     let directory = destination.path.join(relative_dir);
-    fs::create_dir_all(&directory).map_err(|_| crate::app_error!("copy-failed"))?;
+    fs::create_dir_all(&directory).map_err(crate::io_error!("copy-failed"))?;
     let canonical_directory = directory
         .canonicalize()
-        .map_err(|_| crate::app_error!("copy-failed"))?;
+        .map_err(crate::io_error!("copy-failed"))?;
     if canonical_directory != destination.path {
         ensure_contained(&destination.path, &canonical_directory)?;
     }
@@ -289,7 +289,7 @@ pub(crate) fn send(
         return Err(crate::app_error!("verification-failed"));
     }
     if overwrite == OverwritePolicy::Replace && target.exists() {
-        fs::remove_file(&target).map_err(|_| crate::app_error!("copy-failed"))?;
+        fs::remove_file(&target).map_err(crate::io_error!("copy-failed"))?;
     }
     let publication = if overwrite == OverwritePolicy::Replace {
         fs::rename(&partial, &target).map_err(publication_error)
@@ -381,7 +381,7 @@ pub fn remove(destination: &Destination, item_id: &str) -> AppResult<DeliveryRec
         {
             return Err(crate::app_error!("verification-failed"));
         }
-        fs::remove_file(path).map_err(|_| crate::app_error!("copy-failed"))?;
+        fs::remove_file(path).map_err(crate::io_error!("copy-failed"))?;
     }
     write_manifest(destination, &manifest)?;
     Ok(record)
@@ -560,14 +560,14 @@ fn write_manifest_with_publisher(
     let directory = path
         .parent()
         .ok_or_else(|| crate::app_error!("copy-failed"))?;
-    fs::create_dir_all(directory).map_err(|_| crate::app_error!("copy-failed"))?;
+    fs::create_dir_all(directory).map_err(crate::io_error!("copy-failed"))?;
     let temporary = directory.join(format!(".deliveries-{}.tmp", Uuid::new_v4()));
     let body = serde_json::to_vec_pretty(manifest).map_err(|_| crate::app_error!("copy-failed"))?;
     let mut file = OpenOptions::new()
         .create_new(true)
         .write(true)
         .open(&temporary)
-        .map_err(|_| crate::app_error!("copy-failed"))?;
+        .map_err(crate::io_error!("copy-failed"))?;
     let staged = file.write_all(&body).and_then(|()| file.sync_all());
     drop(file);
     // Replace without unlinking the prior manifest. Rename guarantees depend on the filesystem.
@@ -575,7 +575,7 @@ fn write_manifest_with_publisher(
     if result.is_err() {
         let _ = fs::remove_file(&temporary);
     }
-    result.map_err(|_| crate::app_error!("copy-failed"))
+    result.map_err(crate::io_error!("copy-failed"))
 }
 
 #[cfg(test)]

@@ -236,7 +236,7 @@ impl Workspace {
                                 true,
                             ),
                             Ok(_) => ("Sent and verified".to_owned(), false),
-                            Err(error) => (humanize_error(error.kind()), true),
+                            Err(error) => (crate::state::humanize_app_error(&error), true),
                         };
                         div()
                             .id(gpui::SharedString::from(entry.item_id))
@@ -259,7 +259,9 @@ impl Workspace {
                             .child(format!(
                                 "{}: Not sent (blocked in review). {}",
                                 entry.title,
-                                humanize_error(entry.result.as_ref().unwrap_err().kind())
+                                crate::state::humanize_app_error(
+                                    entry.result.as_ref().unwrap_err()
+                                )
                             ))
                     })),
             )

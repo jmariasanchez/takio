@@ -94,11 +94,11 @@ pub fn export_many(store: &LibraryStore, request: ExportRequest) -> AppResult<Ex
         return Err(crate::app_error!("invalid-arguments"));
     }
     std::fs::create_dir_all(&request.destination_path)
-        .map_err(|_| crate::app_error!("destination-unavailable"))?;
+        .map_err(crate::io_error!("destination-unavailable"))?;
     let destination = request
         .destination_path
         .canonicalize()
-        .map_err(|_| crate::app_error!("destination-unavailable"))?;
+        .map_err(crate::io_error!("destination-unavailable"))?;
     if !destination.is_dir() {
         return Err(crate::app_error!("destination-unavailable"));
     }
@@ -241,14 +241,13 @@ fn prepare_directory(destination: &Path, segment: Option<&str>) -> AppResult<Pat
         }
         Ok(_) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            std::fs::create_dir(&directory)
-                .map_err(|_| crate::app_error!("destination-unavailable"))?
+            std::fs::create_dir(&directory).map_err(crate::io_error!("destination-unavailable"))?
         }
         Err(_) => return Err(crate::app_error!("destination-unavailable")),
     }
     let canonical = directory
         .canonicalize()
-        .map_err(|_| crate::app_error!("destination-unavailable"))?;
+        .map_err(crate::io_error!("destination-unavailable"))?;
     if canonical == destination || !canonical.starts_with(destination) {
         return Err(crate::app_error!("destination-unavailable"));
     }

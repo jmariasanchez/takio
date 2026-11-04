@@ -8,11 +8,7 @@ use gpui::{
 use takio::{error::AppResult, library::paths::LibraryPaths};
 
 use crate::{
-    engine::Engine,
-    startup,
-    state::{LibraryState, humanize_error},
-    theme::Theme,
-    views::workspace::Workspace,
+    engine::Engine, startup, state::LibraryState, theme::Theme, views::workspace::Workspace,
 };
 
 pub struct StartupWindow {
@@ -93,7 +89,7 @@ impl StartupWindow {
                         this.message = format!(
                             "Operation failed: {}\n{}\nChoose another existing library, or restore a backup into a separate new folder. No original library is replaced.",
                             this.operation,
-                            humanize_error(error.kind()),
+                            crate::state::humanize_app_error(&error),
                         );
                         window.focus(&this.focus, cx);
                     }

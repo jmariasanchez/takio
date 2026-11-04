@@ -6,7 +6,7 @@ use gpui::{
 use takio::library::model::{BookAuthor, LibraryItem, LibraryPatch, Patch};
 
 use super::text_input::TextInput;
-use crate::state::{LibraryEntity, humanize_error};
+use crate::state::LibraryEntity;
 use crate::theme::Theme;
 
 struct EditorFields {
@@ -169,7 +169,7 @@ impl MetadataEditor {
                     }
                     Some(Err(error)) => {
                         this.submitted = false;
-                        this.error = Some(humanize_error(error.kind()));
+                        this.error = Some(crate::state::humanize_app_error(&error));
                         for field in this.fields.iter() {
                             field.update(cx, |field, cx| field.set_read_only(false, cx));
                         }
@@ -214,7 +214,7 @@ impl MetadataEditor {
         let patch = match self.draft(cx).patch(&self.original) {
             Ok(patch) => patch,
             Err(error) => {
-                self.error = Some(humanize_error(error.kind()));
+                self.error = Some(crate::state::humanize_app_error(&error));
                 self.fields
                     .title
                     .update(cx, |field, cx| field.focus(window, cx));
@@ -479,7 +479,10 @@ mod tests {
         draft.title = " \t\n ".into();
         let error = draft.patch(&item).unwrap_err();
         assert_eq!(error.kind(), takio::error::ErrorCode::InvalidTitle);
-        assert_eq!(humanize_error(error.kind()), "Title is required.");
+        assert_eq!(
+            crate::state::humanize_error(error.kind()),
+            "Title is required."
+        );
     }
 
     fn setup(cx: &mut TestAppContext) -> (tempfile::TempDir, LibraryEntity) {
