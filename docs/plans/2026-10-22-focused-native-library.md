@@ -2244,3 +2244,18 @@ in parallel, under 12 busy loops, alternating the two variants in halves:
 - Running only that one test (`--exact`, one thread) did not reproduce the
   failure for either variant (0 of 150 each). The trigger is the module's
   parallel tests competing with the converter script for the CPU.
+
+### 2026-11-04: round 4b repair evidence
+
+The per-finding ledger is `docs/reports/2026-11-04-round4b.md`: 37 fixes,
+one test-layout dismissal, and five open findings. Each implementation group
+passed formatting, offline workspace tests and strict workspace Clippy before
+its local commit. New regression coverage includes structured-author migration
+search, original-root reader reauthorization, reviewed-send change rejection,
+protected-root restore refusal, sparse typed metadata selection and all V1-V9
+schema hashes. These are isolated-library/native integration checks, not physical
+reader compatibility evidence. The report records the final native macOS gate.
+
+Mutation-result consistency and the large CLI module split remain unfinished.
+Three frozen TypeScript-store findings require a product-owner decision before
+package or gate removal. No actual book library or reader hardware was changed.
