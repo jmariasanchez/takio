@@ -532,7 +532,7 @@ mod tests {
         let root = temp.path().canonicalize().unwrap();
         let paths =
             LibraryPaths::resolve(None, Some(&root.join("library/library.sqlite"))).unwrap();
-        let store = LibraryStore::open(paths, true).unwrap();
+        let store = LibraryStore::create_or_migrate(paths).unwrap();
         let volumes = root.join("Volumes");
         let kindle = volumes.join("Kindle");
         for directory in ["documents", "system"] {

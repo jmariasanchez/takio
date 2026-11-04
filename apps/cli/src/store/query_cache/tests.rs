@@ -17,7 +17,7 @@ fn filters() -> LibraryQueryFilters<'static> {
 fn fixture(count: usize) -> (tempfile::TempDir, LibraryStore) {
     let temp = tempfile::tempdir().unwrap();
     let paths = LibraryPaths::resolve(None, Some(&temp.path().join("library.sqlite"))).unwrap();
-    let mut store = LibraryStore::open(paths, true).unwrap();
+    let mut store = LibraryStore::create_or_migrate(paths).unwrap();
     crate::store::tests::seed_hydration_books(&mut store, count);
     (temp, store)
 }

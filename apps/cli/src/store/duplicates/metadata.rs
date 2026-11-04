@@ -45,7 +45,7 @@ mod tests {
         let paths =
             crate::paths::LibraryPaths::resolve(None, Some(&temp.path().join("library.sqlite")))
                 .unwrap();
-        let mut store = LibraryStore::open(paths, true).unwrap();
+        let mut store = LibraryStore::create_or_migrate(paths).unwrap();
         let source = temp.path().join("book.epub");
         std::fs::write(&source, b"book").unwrap();
         let mut item = store.import(&source, None, false).unwrap();

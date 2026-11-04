@@ -158,7 +158,7 @@ impl CandidateLoaderCancel {
 
 impl App {
     fn new(paths: LibraryPaths) -> AppResult<Self> {
-        let store = LibraryStore::open(paths.clone(), true)?;
+        let store = LibraryStore::create_or_migrate(paths.clone())?;
         let items = store.list(false)?;
         Ok(Self {
             paths,

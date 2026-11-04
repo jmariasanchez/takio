@@ -5,7 +5,7 @@ fn fixture() -> (tempfile::TempDir, LibraryStore, String) {
     let temp = tempfile::tempdir().unwrap();
     let paths =
         LibraryPaths::resolve(None, Some(&temp.path().join("library/library.sqlite"))).unwrap();
-    let mut store = LibraryStore::open(paths, true).unwrap();
+    let mut store = LibraryStore::create_or_migrate(paths).unwrap();
     let source = temp.path().join("original.epub");
     fs::write(&source, b"recovery test ebook").unwrap();
     let item = store.import(&source, Some("Recovery"), false).unwrap();
@@ -476,7 +476,7 @@ fn recovery_verifies_through_macos_var_alias_with_any_tmpdir() {
     assert_ne!(temp.path(), temp.path().canonicalize().unwrap());
     let paths =
         LibraryPaths::resolve(None, Some(&temp.path().join("library/library.sqlite"))).unwrap();
-    let mut store = LibraryStore::open(paths, true).unwrap();
+    let mut store = LibraryStore::create_or_migrate(paths).unwrap();
     let source = temp.path().join("source.epub");
     fs::write(&source, b"macOS alias regression").unwrap();
     store.import(&source, None, false).unwrap();
@@ -551,7 +551,7 @@ fn startup_preflight_preserves_supported_legacy_migration_and_rejects_corruption
     assert_eq!(fs::read(&paths.database).unwrap(), before);
     assert!(!paths.root.join("library.sqlite.v1.backup").exists());
     assert!(!paths.items.exists());
-    let migrated = LibraryStore::open(paths.clone(), true).unwrap();
+    let migrated = LibraryStore::create_or_migrate(paths.clone()).unwrap();
     assert_eq!(
         migrated.verify().unwrap().schema_version,
         LIBRARY_SCHEMA_VERSION

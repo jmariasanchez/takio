@@ -173,7 +173,7 @@ mod tests {
     fn column_storage_failures_are_not_invalid_arguments() {
         let temp = tempfile::tempdir().unwrap();
         let paths = LibraryPaths::resolve(None, Some(&temp.path().join("library.sqlite"))).unwrap();
-        let mut store = LibraryStore::open(paths, true).unwrap();
+        let mut store = LibraryStore::create_or_migrate(paths).unwrap();
         store
             .create_custom_column_definition("key", "Label")
             .unwrap();
@@ -208,7 +208,7 @@ mod tests {
             let temp = tempfile::tempdir().unwrap();
             let database = temp.path().join("library.sqlite");
             let paths = LibraryPaths::resolve(None, Some(&database)).unwrap();
-            let store = LibraryStore::open(paths, true).unwrap();
+            let store = LibraryStore::create_or_migrate(paths).unwrap();
             store.connection.execute(sql, []).unwrap();
             assert_eq!(
                 store.list_custom_column_definitions().unwrap_err().code(),

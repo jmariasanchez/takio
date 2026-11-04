@@ -102,7 +102,7 @@ fn active_item_lookup_distinguishes_absent_and_trashed_books() {
 fn fixture() -> (tempfile::TempDir, LibraryStore, LibraryItem) {
     let temp = tempfile::tempdir().unwrap();
     let paths = LibraryPaths::resolve(None, Some(&temp.path().join("library.sqlite"))).unwrap();
-    let mut store = LibraryStore::open(paths, true).unwrap();
+    let mut store = LibraryStore::create_or_migrate(paths).unwrap();
     let source = temp.path().join("book.epub");
     fs::write(&source, b"original book").unwrap();
     let item = store.import(&source, None, false).unwrap();

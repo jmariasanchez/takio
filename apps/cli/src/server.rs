@@ -331,7 +331,7 @@ mod tests {
 
         let temp = tempfile::tempdir().unwrap();
         let paths = LibraryPaths::resolve(None, Some(&temp.path().join("library.sqlite"))).unwrap();
-        let mut store = LibraryStore::open(paths.clone(), true).unwrap();
+        let mut store = LibraryStore::create_or_migrate(paths.clone()).unwrap();
         let source = temp.path().join("sparse.txt");
         std::fs::write(&source, "sparse book").unwrap();
         let sparse = store.import(&source, Some("Example"), false).unwrap();

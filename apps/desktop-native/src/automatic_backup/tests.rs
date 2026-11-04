@@ -5,7 +5,7 @@ fn fixture() -> (tempfile::TempDir, LibraryStore, PathBuf, String) {
     let temp = tempfile::tempdir().unwrap();
     let paths =
         LibraryPaths::resolve(None, Some(&temp.path().join("library/library.sqlite"))).unwrap();
-    let mut store = LibraryStore::open(paths, true).unwrap();
+    let mut store = LibraryStore::create_or_migrate(paths).unwrap();
     let source = temp.path().join("original.txt");
     fs::write(&source, b"automatic recovery bytes").unwrap();
     let book = store

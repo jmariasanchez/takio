@@ -4,7 +4,7 @@ pub(super) fn switching_candidate(title: &str) -> (tempfile::TempDir, PathBuf) {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().canonicalize().unwrap().join("library");
     let paths = LibraryPaths::resolve(None, Some(&root.join("library.sqlite"))).unwrap();
-    let mut store = takio::store::LibraryStore::open(paths, true).unwrap();
+    let mut store = takio::store::LibraryStore::create_or_migrate(paths).unwrap();
     let source = temp.path().join("book.txt");
     fs::write(&source, title).unwrap();
     store.import(&source, Some(title), false).unwrap();

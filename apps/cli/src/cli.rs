@@ -912,7 +912,7 @@ pub fn run() -> AppResult<()> {
                 return Err(AppError::new("invalid-arguments"));
             }
             let paths = LibraryPaths::resolve(cli.library.as_deref(), db.as_deref())?;
-            let store = LibraryStore::open(paths, false)?;
+            let store = LibraryStore::open_read_only(paths)?;
             crate::server::serve(&store, &host, port)
         }
     }
@@ -1019,7 +1019,7 @@ fn metadata_candidates(command: MetadataCandidatesCommand, library: Option<&str>
                 return Err(AppError::new("invalid-arguments"));
             }
             let paths = LibraryPaths::resolve(library, db.as_deref())?;
-            let store = LibraryStore::open(paths, true)?;
+            let store = LibraryStore::open_read_only(paths)?;
             let item = store.get(&id)?.ok_or_else(|| AppError::new("not-found"))?;
             let candidates = metadata_candidates_for_item_at(
                 &item,
@@ -1098,7 +1098,7 @@ fn metadata_candidates(command: MetadataCandidatesCommand, library: Option<&str>
                 let patch: LibraryPatch = serde_json::from_value(patch_value)
                     .map_err(|_| AppError::new("invalid-arguments"))?;
                 let paths = LibraryPaths::resolve(library, db.as_deref())?;
-                let mut store = LibraryStore::open(paths, true)?;
+                let mut store = LibraryStore::create_or_migrate(paths)?;
                 if cover {
                     return Err(AppError::new("invalid-arguments"));
                 }
@@ -1122,7 +1122,7 @@ fn metadata_candidates(command: MetadataCandidatesCommand, library: Option<&str>
             )?;
 
             let paths = LibraryPaths::resolve(library, db.as_deref())?;
-            let mut store = LibraryStore::open(paths, true)?;
+            let mut store = LibraryStore::create_or_migrate(paths)?;
             let item = apply_prepared_metadata_candidate(&mut store, &id, &prepared)?;
             let mut applied = json!({
                 "itemId": id,
@@ -1216,12 +1216,12 @@ fn library(command: LibraryCommand, library: Option<&str>) -> AppResult<()> {
         }
         LibraryCommand::Verify { db } => {
             let paths = LibraryPaths::resolve(library, db.as_deref())?;
-            let report = LibraryStore::open(paths, false)?.verify()?;
+            let report = LibraryStore::open_read_only(paths)?.verify()?;
             print_success(json!({"report":integrity_value(&report)}))
         }
         LibraryCommand::Backup { db, dest } => {
             let paths = LibraryPaths::resolve(library, db.as_deref())?;
-            let store = LibraryStore::open(paths, false)?;
+            let store = LibraryStore::open_read_only(paths)?;
             let report = store.verify()?;
             let backup = store.backup(&dest)?;
             print_success(
@@ -1239,7 +1239,7 @@ fn library(command: LibraryCommand, library: Option<&str>) -> AppResult<()> {
             title,
         } => {
             let paths = LibraryPaths::resolve(library, db.as_deref())?;
-            let mut store = LibraryStore::open(paths, true)?;
+            let mut store = LibraryStore::create_or_migrate(paths)?;
             print_success(store.import_with_outcome(&source_path, title.as_deref(), false)?)
         }
         LibraryCommand::Import {
@@ -1254,7 +1254,7 @@ fn library(command: LibraryCommand, library: Option<&str>) -> AppResult<()> {
                 _ => return Err(AppError::new("invalid-arguments")),
             };
             let paths = LibraryPaths::resolve(library, db.as_deref())?;
-            let mut store = LibraryStore::open(paths, true)?;
+            let mut store = LibraryStore::create_or_migrate(paths)?;
             print_success(store.import_with_outcome(&source_path, title.as_deref(), move_source)?)
         }
         LibraryCommand::List {
@@ -1263,7 +1263,7 @@ fn library(command: LibraryCommand, library: Option<&str>) -> AppResult<()> {
             volumes_root,
         } => {
             let paths = LibraryPaths::resolve(library, db.as_deref())?;
-            let store = LibraryStore::open(paths, true)?;
+            let store = LibraryStore::open_read_only(paths)?;
             let items = store.list(false)?;
             if human {
                 print_human_list(&store, &items, &volumes_root)
@@ -1273,23 +1273,23 @@ fn library(command: LibraryCommand, library: Option<&str>) -> AppResult<()> {
         }
         LibraryCommand::Get { db, id } => {
             let paths = LibraryPaths::resolve(library, db.as_deref())?;
-            print_success(json!({"item":LibraryStore::open(paths, true)?.get(&id)?}))
+            print_success(json!({"item":LibraryStore::open_read_only(paths)?.get(&id)?}))
         }
         LibraryCommand::Search { db, query } => {
             let paths = LibraryPaths::resolve(library, db.as_deref())?;
-            print_success(json!({"items":LibraryStore::open(paths, true)?.search(&query)?}))
+            print_success(json!({"items":LibraryStore::open_read_only(paths)?.search(&query)?}))
         }
         LibraryCommand::Query { db, request_json } => {
             let request = read_json(&request_json)?;
             let paths = LibraryPaths::resolve(library, db.as_deref())?;
-            let store = LibraryStore::open(paths, true)?;
+            let store = LibraryStore::open_read_only(paths)?;
             print_success(library_query_value(&store, &request)?)
         }
         LibraryCommand::Update { db, id, patch_json } => {
             let patch: LibraryPatch = serde_json::from_value(read_json(&patch_json)?)
                 .map_err(|_| AppError::new("invalid-arguments"))?;
             let paths = LibraryPaths::resolve(library, db.as_deref())?;
-            let mut store = LibraryStore::open(paths, true)?;
+            let mut store = LibraryStore::create_or_migrate(paths)?;
             print_success(json!({"item":store.update(&id, patch)?}))
         }
         LibraryCommand::UpdateMany {
@@ -1307,7 +1307,7 @@ fn library(command: LibraryCommand, library: Option<&str>) -> AppResult<()> {
             let patch: LibraryPatch = serde_json::from_value(read_json(&patch_json)?)
                 .map_err(|_| AppError::new("invalid-arguments"))?;
             let paths = LibraryPaths::resolve(library, db.as_deref())?;
-            let mut store = LibraryStore::open(paths, true)?;
+            let mut store = LibraryStore::create_or_migrate(paths)?;
             let mut outcomes = Vec::with_capacity(ids.len());
             for id in ids {
                 match store.update(&id, patch.clone()) {
@@ -1342,7 +1342,7 @@ fn library(command: LibraryCommand, library: Option<&str>) -> AppResult<()> {
             json,
         } => {
             let paths = LibraryPaths::resolve(library, db.as_deref())?;
-            let item = LibraryStore::open(paths, true)?
+            let item = LibraryStore::open_read_only(paths)?
                 .get(&id)?
                 .ok_or_else(|| AppError::new("not-found"))?;
             let selected = format
@@ -1378,7 +1378,7 @@ fn library(command: LibraryCommand, library: Option<&str>) -> AppResult<()> {
             };
             let paths = LibraryPaths::resolve(library, db.as_deref())?;
             validate_import_sources(&paths, &source_paths)?;
-            let mut store = LibraryStore::open(paths.clone(), true)?;
+            let mut store = LibraryStore::create_or_migrate(paths.clone())?;
             validate_import_sources(&paths, &source_paths)?;
             print_success(scan_imports(
                 &mut store,
@@ -1391,12 +1391,12 @@ fn library(command: LibraryCommand, library: Option<&str>) -> AppResult<()> {
         LibraryCommand::ExportMany { db, request_json } => {
             let request = read_json(&request_json)?;
             let paths = LibraryPaths::resolve(library, db.as_deref())?;
-            let store = LibraryStore::open(paths, true)?;
+            let store = LibraryStore::open_read_only(paths)?;
             print_success(export_many(&store, &request)?)
         }
         LibraryCommand::Remove { db, id } => {
             let paths = LibraryPaths::resolve(library, db.as_deref())?;
-            let mut store = LibraryStore::open(paths, true)?;
+            let mut store = LibraryStore::create_or_migrate(paths)?;
             print_success(store.remove(&id)?)
         }
         LibraryCommand::ImportCalibre { db, library_root } => {
@@ -1405,7 +1405,7 @@ fn library(command: LibraryCommand, library: Option<&str>) -> AppResult<()> {
         }
         LibraryCommand::Catalog { db, format, output } => {
             let paths = LibraryPaths::resolve(library, db.as_deref())?;
-            let items = LibraryStore::open(paths, true)?.list(false)?;
+            let items = LibraryStore::open_read_only(paths)?.list(false)?;
             print_success(json!({"catalog":write_catalog(&items, &format, &output)?}))
         }
         LibraryCommand::ContentSearch {
@@ -1419,7 +1419,7 @@ fn library(command: LibraryCommand, library: Option<&str>) -> AppResult<()> {
                 return Err(AppError::new("invalid-arguments"));
             }
             let paths = LibraryPaths::resolve(library, db.as_deref())?;
-            let store = LibraryStore::open(paths, true)?;
+            let store = LibraryStore::open_read_only(paths)?;
             print_success(content_search(
                 &store,
                 &query,
@@ -1438,7 +1438,7 @@ fn library(command: LibraryCommand, library: Option<&str>) -> AppResult<()> {
                 return Err(AppError::new("invalid-arguments"));
             }
             let paths = LibraryPaths::resolve(library, db.as_deref())?;
-            let store = LibraryStore::open(paths, true)?;
+            let store = LibraryStore::open_read_only(paths)?;
             print_success(validate_library_formats(
                 &store,
                 &ids,
@@ -1448,7 +1448,7 @@ fn library(command: LibraryCommand, library: Option<&str>) -> AppResult<()> {
         }
         LibraryCommand::PortableExport { db, dest } => {
             let paths = LibraryPaths::resolve(library, db.as_deref())?;
-            let store = LibraryStore::open(paths, false)?;
+            let store = LibraryStore::open_read_only(paths)?;
             print_success(portable_library::export(&store, &dest)?)
         }
         LibraryCommand::Rebuild { db, source } => {
@@ -1491,7 +1491,11 @@ fn custom_columns(command: CustomColumnsCommand, library: Option<&str>) -> AppRe
         | CustomColumnsCommand::Remove { db, .. } => db.as_deref(),
     };
     let paths = LibraryPaths::resolve(library, database)?;
-    let mut store = LibraryStore::open(paths, true)?;
+    let mut store = if matches!(command, CustomColumnsCommand::List { .. }) {
+        LibraryStore::open_read_only(paths)?
+    } else {
+        LibraryStore::create_or_migrate(paths)?
+    };
     match command {
         CustomColumnsCommand::List { .. } => {
             print_success(json!({"definitions":store.list_custom_column_definitions()?}))
@@ -1512,13 +1516,15 @@ fn library_saved_views(command: SavedViewsCommand, library: Option<&str>) -> App
     match command {
         SavedViewsCommand::List { db } => {
             let paths = LibraryPaths::resolve(library, db.as_deref())?;
-            print_success(json!({"views":LibraryStore::open(paths, true)?.list_saved_views()?}))
+            print_success(json!({"views":LibraryStore::open_read_only(paths)?.list_saved_views()?}))
         }
         SavedViewsCommand::Save { db, request_json } => {
             let request: crate::store::SaveViewRequest =
                 decode_request(&read_json(&request_json)?)?;
             let paths = LibraryPaths::resolve(library, db.as_deref())?;
-            print_success(json!({"view":LibraryStore::open(paths, true)?.save_view(&request)?}))
+            print_success(
+                json!({"view":LibraryStore::create_or_migrate(paths)?.save_view(&request)?}),
+            )
         }
         SavedViewsCommand::Remove { db, request_json } => {
             let request = read_json(&request_json)?;
@@ -1535,7 +1541,7 @@ fn library_saved_views(command: SavedViewsCommand, library: Option<&str>) -> App
                 .filter(|id| !id.is_empty() && id.encode_utf16().count() <= 256)
                 .ok_or_else(|| AppError::new("invalid-arguments"))?;
             let paths = LibraryPaths::resolve(library, db.as_deref())?;
-            print_success(json!({"view":LibraryStore::open(paths, true)?.remove_view(id)?}))
+            print_success(json!({"view":LibraryStore::create_or_migrate(paths)?.remove_view(id)?}))
         }
     }
 }
@@ -1547,7 +1553,7 @@ fn library_duplicates(command: DuplicateCommand, library: Option<&str>) -> AppRe
                 serde_json::from_value::<ListDuplicateCandidatesRequest>(read_json(&request_json)?)
                     .map_err(|_| AppError::new("invalid-arguments"))?;
             let paths = LibraryPaths::resolve(library, db.as_deref())?;
-            let store = LibraryStore::open(paths, true)?;
+            let store = LibraryStore::open_read_only(paths)?;
             print_success(
                 serde_json::to_value(store.list_duplicate_candidates(&request)?)
                     .map_err(|_| AppError::new("storage-unavailable"))?,
@@ -1558,7 +1564,7 @@ fn library_duplicates(command: DuplicateCommand, library: Option<&str>) -> AppRe
                 serde_json::from_value::<DuplicatePairReviewRequest>(read_json(&request_json)?)
                     .map_err(|_| AppError::new("invalid-arguments"))?;
             let paths = LibraryPaths::resolve(library, db.as_deref())?;
-            LibraryStore::open(paths, true)?.keep_duplicate_pair(&request)?;
+            LibraryStore::create_or_migrate(paths)?.keep_duplicate_pair(&request)?;
             print_success(Value::Null)
         }
         DuplicateCommand::Reopen { db, request_json } => {
@@ -1566,7 +1572,7 @@ fn library_duplicates(command: DuplicateCommand, library: Option<&str>) -> AppRe
                 serde_json::from_value::<DuplicatePairReviewRequest>(read_json(&request_json)?)
                     .map_err(|_| AppError::new("invalid-arguments"))?;
             let paths = LibraryPaths::resolve(library, db.as_deref())?;
-            LibraryStore::open(paths, true)?.reopen_duplicate_pair(&request)?;
+            LibraryStore::create_or_migrate(paths)?.reopen_duplicate_pair(&request)?;
             print_success(Value::Null)
         }
         DuplicateCommand::Merge { db, request_json } => {
@@ -1574,7 +1580,7 @@ fn library_duplicates(command: DuplicateCommand, library: Option<&str>) -> AppRe
                 serde_json::from_value::<MergeDuplicatePairRequest>(read_json(&request_json)?)
                     .map_err(|_| AppError::new("invalid-arguments"))?;
             let paths = LibraryPaths::resolve(library, db.as_deref())?;
-            let result = LibraryStore::open(paths, true)?.merge_duplicate_pair(&request)?;
+            let result = LibraryStore::create_or_migrate(paths)?.merge_duplicate_pair(&request)?;
             print_success(
                 serde_json::to_value(result).map_err(|_| AppError::new("storage-unavailable"))?,
             )
@@ -1801,7 +1807,7 @@ fn library_format(command: FormatCommand, library: Option<&str>) -> AppResult<()
             source_path,
         } => {
             let paths = LibraryPaths::resolve(library, db.as_deref())?;
-            let mut store = LibraryStore::open(paths, true)?;
+            let mut store = LibraryStore::create_or_migrate(paths)?;
             print_success(json!({"item":store.attach_format(&id, &source_path, true)?}))
         }
         FormatCommand::Attach {
@@ -1810,12 +1816,12 @@ fn library_format(command: FormatCommand, library: Option<&str>) -> AppResult<()
             source_path,
         } => {
             let paths = LibraryPaths::resolve(library, db.as_deref())?;
-            let mut store = LibraryStore::open(paths, true)?;
+            let mut store = LibraryStore::create_or_migrate(paths)?;
             print_success(json!({"item":store.attach_format(&id, &source_path, false)?}))
         }
         FormatCommand::Remove { db, id, format } => {
             let paths = LibraryPaths::resolve(library, db.as_deref())?;
-            let mut store = LibraryStore::open(paths, true)?;
+            let mut store = LibraryStore::create_or_migrate(paths)?;
             print_success(store.remove_format(&id, format)?)
         }
         FormatCommand::Replace { db, request_json } => {
@@ -1824,7 +1830,7 @@ fn library_format(command: FormatCommand, library: Option<&str>) -> AppResult<()
                 return Err(AppError::new("invalid-arguments"));
             }
             let paths = LibraryPaths::resolve(library, db.as_deref())?;
-            let mut store = LibraryStore::open(paths, true)?;
+            let mut store = LibraryStore::create_or_migrate(paths)?;
             print_success(replace_format_request(&mut store, request)?)
         }
     }
@@ -1837,12 +1843,12 @@ fn library_cover(command: CoverCommand, library: Option<&str>) -> AppResult<()> 
             source_path,
         } => {
             let paths = LibraryPaths::resolve(library, db.as_deref())?;
-            let mut store = LibraryStore::open(paths, true)?;
+            let mut store = LibraryStore::create_or_migrate(paths)?;
             print_success(json!({"item":store.set_cover(&id, &source_path)?}))
         }
         CoverCommand::Remove { db, id } => {
             let paths = LibraryPaths::resolve(library, db.as_deref())?;
-            let mut store = LibraryStore::open(paths, true)?;
+            let mut store = LibraryStore::create_or_migrate(paths)?;
             print_success(json!({"item":store.remove_cover(&id)?}))
         }
     }
@@ -1851,7 +1857,7 @@ fn library_trash(command: TrashCommand, library: Option<&str>) -> AppResult<()> 
     match command {
         TrashCommand::List { db, request_json } => {
             let paths = LibraryPaths::resolve(library, db.as_deref())?;
-            let items = LibraryStore::open(paths, true)?.list_trash()?;
+            let items = LibraryStore::open_read_only(paths)?.list_trash()?;
             let request = request_json.as_deref().map(read_json).transpose()?;
             let offset = request
                 .as_ref()
@@ -1878,21 +1884,21 @@ fn library_trash(command: TrashCommand, library: Option<&str>) -> AppResult<()> 
             let request = read_json(&request_json)?;
             let id = request_id(&request)?;
             let paths = LibraryPaths::resolve(library, db.as_deref())?;
-            let mut store = LibraryStore::open(paths, true)?;
+            let mut store = LibraryStore::create_or_migrate(paths)?;
             print_success(json!({"item":store.trash(id)?}))
         }
         TrashCommand::Restore { db, request_json } => {
             let request = read_json(&request_json)?;
             let id = request_id(&request)?;
             let paths = LibraryPaths::resolve(library, db.as_deref())?;
-            let mut store = LibraryStore::open(paths, true)?;
+            let mut store = LibraryStore::create_or_migrate(paths)?;
             print_success(json!({"item":store.restore(id)?}))
         }
         TrashCommand::Purge { db, request_json } => {
             let request = read_json(&request_json)?;
             let id = request_id(&request)?;
             let paths = LibraryPaths::resolve(library, db.as_deref())?;
-            let mut store = LibraryStore::open(paths, true)?;
+            let mut store = LibraryStore::create_or_migrate(paths)?;
             print_success(store.purge(id)?)
         }
     }
@@ -1900,7 +1906,7 @@ fn library_trash(command: TrashCommand, library: Option<&str>) -> AppResult<()> 
 
 fn library_service(library: Option<&str>, database: Option<&Path>) -> AppResult<()> {
     let paths = LibraryPaths::resolve(library, database)?;
-    let mut store = LibraryStore::open(paths, true)?;
+    let mut store = LibraryStore::create_or_migrate(paths)?;
     let stdin = std::io::stdin();
     let mut input = stdin.lock();
     let stdout = std::io::stdout();
@@ -2085,7 +2091,7 @@ fn import_watch(
 
     let paths = LibraryPaths::resolve(library, db)?;
     validate_import_sources(&paths, source_paths)?;
-    let mut store = LibraryStore::open(paths.clone(), true)?;
+    let mut store = LibraryStore::create_or_migrate(paths.clone())?;
     let mut signals = Signals::new([SIGINT, SIGTERM])?;
     let handle = signals.handle();
     let (sender, receiver) = mpsc::sync_channel(1);
@@ -2151,7 +2157,7 @@ fn jobs(command: JobsCommand, library: Option<&str>) -> AppResult<()> {
                 (Some(input), None, None) => input,
                 (None, Some(item_id), Some(format)) => {
                     let paths = LibraryPaths::resolve(library, None)?;
-                    let item = LibraryStore::open(paths, true)?
+                    let item = LibraryStore::open_read_only(paths)?
                         .get(item_id)?
                         .ok_or_else(|| AppError::new("not-found"))?;
                     item.formats
@@ -2241,7 +2247,7 @@ fn reconcile_job_attachment(
         return jobs.finish_attachment(&job.id, Some("artifact-invalid"));
     };
     let paths = LibraryPaths::resolve(library, None)?;
-    let result = LibraryStore::open(paths, true).and_then(|mut store| {
+    let result = LibraryStore::create_or_migrate(paths).and_then(|mut store| {
         store.attach_verified_artifact(
             item_id,
             &artifact.path,
@@ -2338,7 +2344,7 @@ fn destination(command: DestinationCommand, library: Option<&str>) -> AppResult<
         } => {
             let device = destinations::resolve(&dest, &volumes_root)?;
             let paths = LibraryPaths::resolve(library, db.as_deref())?;
-            let mut store = LibraryStore::open(paths, true)?;
+            let mut store = LibraryStore::create_or_migrate(paths)?;
             let mut cache = reader_shelf::HashCache::load(&store.paths().root);
             let scan = reader_shelf::import_unmatched(&mut store, &device, &mut cache)?;
             let _ = cache.save(&store.paths().root);
@@ -2396,7 +2402,7 @@ fn destination(command: DestinationCommand, library: Option<&str>) -> AppResult<
             timeout_ms,
         } => {
             let paths = LibraryPaths::resolve(library, None)?;
-            let item = LibraryStore::open(paths, true)?.get_active(&id)?;
+            let item = LibraryStore::open_read_only(paths)?.get_active(&id)?;
             let source = item
                 .formats
                 .iter()
@@ -2426,7 +2432,7 @@ fn send(
     overwrite: bool,
     volumes_root: &Path,
 ) -> AppResult<()> {
-    let store = LibraryStore::open(paths, true)?;
+    let store = LibraryStore::open_read_only(paths)?;
     let device = destinations::resolve(dest, volumes_root)?;
     print_success(crate::delivery::send_library_item(
         &store,
@@ -2679,7 +2685,7 @@ mod tests {
     fn typed_query_rejects_unknown_missing_null_and_out_of_range_fields() {
         let temp = tempfile::tempdir().unwrap();
         let paths = LibraryPaths::resolve(None, Some(&temp.path().join("library.sqlite"))).unwrap();
-        let store = LibraryStore::open(paths, true).unwrap();
+        let store = LibraryStore::create_or_migrate(paths).unwrap();
         let valid = json!({
             "query":"", "filters":{"authors":[],"tags":[],"series":[],"languages":[],"formats":[]},
             "sort":{"field":"title","direction":"ascending"}, "page":{"offset":0,"limit":100}
@@ -2722,7 +2728,7 @@ mod tests {
     fn typed_service_arguments_reject_unknown_fields_without_mutation() {
         let temp = tempfile::tempdir().unwrap();
         let paths = LibraryPaths::resolve(None, Some(&temp.path().join("library.sqlite"))).unwrap();
-        let mut store = LibraryStore::open(paths, true).unwrap();
+        let mut store = LibraryStore::create_or_migrate(paths).unwrap();
         for (command, args) in [
             (
                 "library_custom_columns_create",

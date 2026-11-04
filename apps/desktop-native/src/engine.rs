@@ -350,7 +350,7 @@ impl Engine {
     }
 
     fn open_inner(paths: LibraryPaths, backend: Option<BackendDiscovery>) -> AppResult<Self> {
-        let store = LibraryStore::open(paths, true)?;
+        let store = LibraryStore::create_or_migrate(paths)?;
         Self::start(store, backend)
     }
 
@@ -863,7 +863,7 @@ mod tests {
     fn delivery_fixture() -> (tempfile::TempDir, LibraryStore, Destination) {
         let temp = tempfile::tempdir().unwrap();
         let paths = LibraryPaths::resolve(None, Some(&temp.path().join("library.sqlite"))).unwrap();
-        let store = LibraryStore::open(paths, true).unwrap();
+        let store = LibraryStore::create_or_migrate(paths).unwrap();
         let volumes = temp.path().join("Volumes");
         let mount = volumes.join("Kindle");
         fs::create_dir_all(mount.join("documents")).unwrap();

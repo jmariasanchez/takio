@@ -287,7 +287,7 @@ mod tests {
         let library_root = workspace.path().join("private-library-name");
         let source = workspace.path().join("secret-title.epub");
         fs::write(&source, b"private ebook bytes bearer-token").unwrap();
-        let mut store = LibraryStore::open(paths(&library_root), true).unwrap();
+        let mut store = LibraryStore::create_or_migrate(paths(&library_root)).unwrap();
         let item = store.import(&source, Some("Secret title"), false).unwrap();
         assert_eq!(item.format, FormatId::Epub);
         drop(store);
@@ -339,7 +339,7 @@ mod tests {
             fs::create_dir(&root)?;
             let library = paths(&root);
             match name {
-                "current" => drop(LibraryStore::open(library.clone(), true)?),
+                "current" => drop(LibraryStore::create_or_migrate(library.clone())?),
                 "legacy" => {
                     let connection = rusqlite::Connection::open(&library.database)?;
                     connection.execute_batch(include_str!(

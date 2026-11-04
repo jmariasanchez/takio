@@ -12,7 +12,7 @@ fn duplicate_reviews_are_stable_idempotent_and_reject_stale_evidence() {
     let right_path = temp.path().join("right.pdf");
     fs::write(&left_path, b"left duplicate bytes").unwrap();
     fs::write(&right_path, b"right duplicate bytes").unwrap();
-    let mut store = LibraryStore::open(paths, true).unwrap();
+    let mut store = LibraryStore::create_or_migrate(paths).unwrap();
     let left = store.import(&left_path, Some("Dune"), false).unwrap();
     let right = store.import(&right_path, Some(" dune "), false).unwrap();
     for id in [&left.id, &right.id] {
@@ -89,7 +89,7 @@ fn duplicate_merge_rolls_back_and_purge_preserves_transferred_owned_files() {
     fs::write(&source_pdf, b"transferred pdf").unwrap();
     fs::write(&target_cover, b"target cover").unwrap();
     fs::write(&source_cover, b"source cover").unwrap();
-    let mut store = LibraryStore::open(paths, true).unwrap();
+    let mut store = LibraryStore::create_or_migrate(paths).unwrap();
     let target = store.import(&target_path, Some("Target"), false).unwrap();
     let source = store.import(&source_path, Some("Source"), false).unwrap();
     for id in [&target.id, &source.id] {
@@ -170,7 +170,7 @@ fn duplicate_merge_rolls_back_when_result_hydration_fails() {
     let source_path = temp.path().join("source.pdf");
     fs::write(&target_path, b"target").unwrap();
     fs::write(&source_path, b"source").unwrap();
-    let mut store = LibraryStore::open(paths, true).unwrap();
+    let mut store = LibraryStore::create_or_migrate(paths).unwrap();
     let target = store.import(&target_path, Some("Target"), false).unwrap();
     let source = store.import(&source_path, Some("Source"), false).unwrap();
     for id in [&target.id, &source.id] {
@@ -233,7 +233,7 @@ fn shared_merged_formats_survive_target_remove_and_replace() {
     fs::write(&target_path, b"target").unwrap();
     fs::write(&source_path, b"source").unwrap();
     fs::write(&source_pdf, b"shared pdf").unwrap();
-    let mut store = LibraryStore::open(paths, true).unwrap();
+    let mut store = LibraryStore::create_or_migrate(paths).unwrap();
     let target = store.import(&target_path, Some("Target"), false).unwrap();
     let source = store.import(&source_path, Some("Source"), false).unwrap();
     for id in [&target.id, &source.id] {
@@ -319,7 +319,7 @@ fn duplicate_signals_use_javascript_string_order_and_safe_numbers() {
     let right_path = temp.path().join("right.pdf");
     fs::write(&left_path, b"left").unwrap();
     fs::write(&right_path, b"right").unwrap();
-    let mut store = LibraryStore::open(paths, true).unwrap();
+    let mut store = LibraryStore::create_or_migrate(paths).unwrap();
     let left = store.import(&left_path, Some("Left"), false).unwrap();
     let right = store.import(&right_path, Some("Right"), false).unwrap();
     let identifiers = BTreeMap::from([
@@ -380,7 +380,7 @@ fn duplicate_merge_rejects_empty_contract_arrays() {
     let right_path = temp.path().join("right.pdf");
     fs::write(&left_path, b"left").unwrap();
     fs::write(&right_path, b"right").unwrap();
-    let mut store = LibraryStore::open(paths, true).unwrap();
+    let mut store = LibraryStore::create_or_migrate(paths).unwrap();
     let left = store.import(&left_path, Some("Shared"), false).unwrap();
     let right = store.import(&right_path, Some("Shared"), false).unwrap();
     for id in [&left.id, &right.id] {

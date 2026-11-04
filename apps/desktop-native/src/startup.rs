@@ -160,7 +160,7 @@ mod tests {
         std::fs::create_dir(&root).unwrap();
         assert!(open(paths.clone(), Some(&preference)).is_err());
         assert!(!paths.database.exists());
-        drop(LibraryStore::open(paths.clone(), true).unwrap());
+        drop(LibraryStore::create_or_migrate(paths.clone()).unwrap());
         let mut bytes = std::fs::read(&paths.database).unwrap();
         bytes[60..64].copy_from_slice(&1_u32.to_be_bytes());
         std::fs::write(&paths.database, &bytes).unwrap();
@@ -194,7 +194,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let selected = temp.path().join("selected");
         let paths = LibraryPaths::resolve(None, Some(&selected.join("library.sqlite"))).unwrap();
-        drop(LibraryStore::open(paths, true).unwrap());
+        drop(LibraryStore::create_or_migrate(paths).unwrap());
         let preference = temp.path().join("profile/last-library");
         preferences::save(&preference, &selected).unwrap();
         let default =
@@ -263,7 +263,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let paths =
             LibraryPaths::resolve(None, Some(&temp.path().join("good/library.sqlite"))).unwrap();
-        let store = LibraryStore::open(paths, true).unwrap();
+        let store = LibraryStore::create_or_migrate(paths).unwrap();
         let backup = temp.path().join("backup");
         store.backup(&backup).unwrap();
         let broken = temp.path().join("broken");
@@ -302,7 +302,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let paths =
             LibraryPaths::resolve(None, Some(&temp.path().join("good/library.sqlite"))).unwrap();
-        drop(LibraryStore::open(paths.clone(), true).unwrap());
+        drop(LibraryStore::create_or_migrate(paths.clone()).unwrap());
         let (engine, warning) = open_recovery(paths.root.clone(), Some(&paths.root)).unwrap();
         assert_eq!(engine.root(), paths.root.canonicalize().unwrap());
         assert!(warning.warning.unwrap().contains("for this session"));

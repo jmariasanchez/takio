@@ -17,7 +17,7 @@ fn typed_metadata_candidate_applies_only_reviewed_fields() {
     let temp = tempfile::tempdir().unwrap();
     let paths =
         LibraryPaths::resolve(None, Some(&temp.path().join("library/library.sqlite"))).unwrap();
-    let mut store = LibraryStore::open(paths, true).unwrap();
+    let mut store = LibraryStore::create_or_migrate(paths).unwrap();
     let source = temp.path().join("Writer - Suggested Title.txt");
     fs::write(&source, b"original bytes").unwrap();
     let item = store
@@ -63,7 +63,7 @@ fn cli_send_rejects_trash_and_matches_shared_preview_choice() {
     let temp = tempfile::tempdir().unwrap();
     let database = temp.path().join("library/library.sqlite");
     let paths = LibraryPaths::resolve(None, Some(&database)).unwrap();
-    let mut store = LibraryStore::open(paths, true).unwrap();
+    let mut store = LibraryStore::create_or_migrate(paths).unwrap();
     let source = temp.path().join("book.azw3");
     fs::write(&source, b"compatible fixture").unwrap();
     let item = store.import(&source, Some("Title"), false).unwrap();
@@ -111,7 +111,7 @@ fn cli_and_shared_plan_reject_automatic_unknown_reader_format() {
     let temp = tempfile::tempdir().unwrap();
     let database = temp.path().join("library/library.sqlite");
     let paths = LibraryPaths::resolve(None, Some(&database)).unwrap();
-    let mut store = LibraryStore::open(paths, true).unwrap();
+    let mut store = LibraryStore::create_or_migrate(paths).unwrap();
     let source = temp.path().join("book.epub");
     fs::write(&source, b"epub fixture").unwrap();
     let item = store.import(&source, None, false).unwrap();
@@ -144,7 +144,7 @@ fn cli_query_and_native_facets_share_mixed_author_counts() {
     let temp = tempfile::tempdir().unwrap();
     let database = temp.path().join("library/library.sqlite");
     let paths = LibraryPaths::resolve(None, Some(&database)).unwrap();
-    let mut store = LibraryStore::open(paths, true).unwrap();
+    let mut store = LibraryStore::create_or_migrate(paths).unwrap();
     for (index, structured) in [false, true].into_iter().enumerate() {
         let source = temp.path().join(format!("source-{index}.txt"));
         fs::write(&source, format!("book {index}")).unwrap();
@@ -193,7 +193,7 @@ fn cli_query_does_not_rewrite_unicode_filter_values() {
     let temp = tempfile::tempdir().unwrap();
     let database = temp.path().join("library/library.sqlite");
     let paths = LibraryPaths::resolve(None, Some(&database)).unwrap();
-    let mut store = LibraryStore::open(paths, true).unwrap();
+    let mut store = LibraryStore::create_or_migrate(paths).unwrap();
     let source = temp.path().join("book.txt");
     fs::write(&source, b"book").unwrap();
     let item = store.import(&source, None, false).unwrap();

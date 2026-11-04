@@ -80,7 +80,7 @@ pub fn import_calibre_library(paths: LibraryPaths, library_root: &Path) -> AppRe
     let definitions =
         custom_definitions(&database).map_err(|_| AppError::new("storage-unavailable"))?;
     drop(database);
-    let mut store = LibraryStore::open(paths, true)?;
+    let mut store = LibraryStore::create_or_migrate(paths)?;
     let warnings = import_column_definitions(&mut store, definitions)?;
     let original_ids = store
         .list(true)?
@@ -768,7 +768,7 @@ mod tests {
         let paths =
             crate::paths::LibraryPaths::resolve(None, Some(&temp.path().join("library.sqlite")))
                 .unwrap();
-        let mut store = crate::store::LibraryStore::open(paths, true).unwrap();
+        let mut store = crate::store::LibraryStore::create_or_migrate(paths).unwrap();
         let warnings = super::import_column_definitions(
             &mut store,
             vec![

@@ -167,7 +167,7 @@ mod tests {
             let paths =
                 LibraryPaths::resolve(None, Some(&root.path().join("library/library.sqlite")))
                     .unwrap();
-            let mut store = LibraryStore::open(paths, true).unwrap();
+            let mut store = LibraryStore::create_or_migrate(paths).unwrap();
             let source = root.path().join("original.epub");
             fs::write(&source, b"original EPUB fixture").unwrap();
             let item = store

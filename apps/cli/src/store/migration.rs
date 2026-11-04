@@ -1229,7 +1229,7 @@ mod tests {
             let temp = tempfile::tempdir().unwrap();
             let paths = paths(&temp);
             install_fixture(&paths, version);
-            let store = LibraryStore::open(paths.clone(), true)
+            let store = LibraryStore::create_or_migrate(paths.clone())
                 .unwrap_or_else(|error| panic!("v{version} migration failed: {}", error.code()));
             let migrated_version: i64 = store
                 .connection
@@ -1265,7 +1265,7 @@ mod tests {
         install_fixture(&paths, 9);
         let backup = PathBuf::from(format!("{}.v9.backup", paths.database.display()));
         fs::write(&backup, b"keep me").unwrap();
-        let error = LibraryStore::open(paths, true).err().unwrap();
+        let error = LibraryStore::create_or_migrate(paths).err().unwrap();
         assert_eq!(error.code(), "backup-failed");
         assert_eq!(fs::read(backup).unwrap(), b"keep me");
     }
@@ -1275,7 +1275,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let paths = paths(&temp);
         install_fixture(&paths, 7);
-        let store = LibraryStore::open(paths.clone(), true).unwrap();
+        let store = LibraryStore::create_or_migrate(paths.clone()).unwrap();
         let managed: String = store.connection.query_row(
             "SELECT source_path FROM library_item_formats WHERE provenance='managed' ORDER BY library_item_id LIMIT 1",
             [], |row| row.get(0)).unwrap();
@@ -1313,7 +1313,9 @@ mod tests {
                 .pragma_update(None, "user_version", version)
                 .unwrap();
             drop(connection);
-            let error = LibraryStore::open(paths.clone(), true).err().unwrap();
+            let error = LibraryStore::create_or_migrate(paths.clone())
+                .err()
+                .unwrap();
             assert_eq!(error.code(), "incompatible-schema");
             assert!(
                 !PathBuf::from(format!("{}.v{version}.backup", paths.database.display())).exists()
@@ -1328,7 +1330,9 @@ mod tests {
         install_fixture(&paths, 4);
         let before = logical_snapshot(&paths.database).unwrap();
         fail_after_step(Some(7));
-        let error = LibraryStore::open(paths.clone(), true).err().unwrap();
+        let error = LibraryStore::create_or_migrate(paths.clone())
+            .err()
+            .unwrap();
         fail_after_step(None);
         assert_eq!(error.code(), "migration-failed");
         assert_eq!(logical_snapshot(&paths.database).unwrap(), before);
@@ -1352,7 +1356,7 @@ mod tests {
         let library_paths = paths(&temp);
         install_fixture(&library_paths, 9);
         fail_after_step(Some(10));
-        let error = LibraryStore::open(library_paths.clone(), true)
+        let error = LibraryStore::create_or_migrate(library_paths.clone())
             .err()
             .unwrap();
         fail_after_step(None);
@@ -1360,7 +1364,7 @@ mod tests {
 
         let backup = PathBuf::from(format!("{}.v9.backup", library_paths.database.display()));
         assert!(backup.is_file());
-        let store = LibraryStore::open(library_paths.clone(), true).unwrap();
+        let store = LibraryStore::create_or_migrate(library_paths.clone()).unwrap();
         verify_current(&store.connection, &library_paths).unwrap();
         drop(store);
 
@@ -1368,7 +1372,7 @@ mod tests {
         let changed_paths = paths(&changed);
         install_fixture(&changed_paths, 9);
         fail_after_step(Some(10));
-        let error = LibraryStore::open(changed_paths.clone(), true)
+        let error = LibraryStore::create_or_migrate(changed_paths.clone())
             .err()
             .unwrap();
         fail_after_step(None);
@@ -1377,7 +1381,9 @@ mod tests {
             .unwrap()
             .execute("UPDATE library_items SET title=title || ' changed'", [])
             .unwrap();
-        let error = LibraryStore::open(changed_paths, true).err().unwrap();
+        let error = LibraryStore::create_or_migrate(changed_paths)
+            .err()
+            .unwrap();
         assert_eq!(error.code(), "backup-failed");
     }
 
@@ -1385,7 +1391,7 @@ mod tests {
     fn current_verification_rejects_invalid_domain_even_when_sqlite_is_integral() {
         let temp = tempfile::tempdir().unwrap();
         let paths = paths(&temp);
-        let store = LibraryStore::open(paths.clone(), true).unwrap();
+        let store = LibraryStore::create_or_migrate(paths.clone()).unwrap();
         store
             .connection
             .execute_batch(
@@ -1413,7 +1419,9 @@ mod tests {
             .unwrap();
         let before = keeper.serialize("main").unwrap().to_vec();
         fail_after_step(Some(9));
-        let error = LibraryStore::open(paths.clone(), true).err().unwrap();
+        let error = LibraryStore::create_or_migrate(paths.clone())
+            .err()
+            .unwrap();
         fail_after_step(None);
         assert_eq!(error.code(), "migration-failed");
         let reopened = Connection::open(&paths.database).unwrap();
@@ -1452,7 +1460,7 @@ mod tests {
                     release_rx.recv_timeout(Duration::from_secs(10)).unwrap();
                 }))
             });
-            LibraryStore::open(migration_paths, true)
+            LibraryStore::create_or_migrate(migration_paths)
         });
         locked_rx.recv_timeout(Duration::from_secs(10)).unwrap();
         let writer_path = paths.database.clone();
@@ -1519,14 +1527,16 @@ mod tests {
             if version == 7 {
                 install_fixture(&paths, version);
             } else {
-                drop(LibraryStore::open(paths.clone(), true).unwrap());
+                drop(LibraryStore::create_or_migrate(paths.clone()).unwrap());
             }
             let connection = Connection::open(&paths.database).unwrap();
             connection
                 .execute_batch("CREATE TABLE foreign_extension(value TEXT) STRICT;")
                 .unwrap();
             drop(connection);
-            let error = LibraryStore::open(paths.clone(), true).err().unwrap();
+            let error = LibraryStore::create_or_migrate(paths.clone())
+                .err()
+                .unwrap();
             assert_eq!(error.code(), "incompatible-schema");
             assert!(
                 !PathBuf::from(format!("{}.v{version}.backup", paths.database.display())).exists()
@@ -1538,7 +1548,7 @@ mod tests {
     fn rejects_weakened_v12_ddl() {
         let temp = tempfile::tempdir().unwrap();
         let paths = paths(&temp);
-        drop(LibraryStore::open(paths.clone(), true).unwrap());
+        drop(LibraryStore::create_or_migrate(paths.clone()).unwrap());
         let connection = Connection::open(&paths.database).unwrap();
         connection
             .execute_batch(
@@ -1556,7 +1566,7 @@ mod tests {
             )
             .unwrap();
         drop(connection);
-        let error = LibraryStore::open(paths, false).err().unwrap();
+        let error = LibraryStore::open_read_only(paths).err().unwrap();
         assert_eq!(error.code(), "incompatible-schema");
     }
 
@@ -1564,7 +1574,7 @@ mod tests {
     fn rejects_v11_missing_one_check_or_unique_constraint() {
         let check_temp = tempfile::tempdir().unwrap();
         let check_paths = paths(&check_temp);
-        drop(LibraryStore::open(check_paths.clone(), true).unwrap());
+        drop(LibraryStore::create_or_migrate(check_paths.clone()).unwrap());
         let connection = Connection::open(&check_paths.database).unwrap();
         connection
             .execute_batch(
@@ -1580,13 +1590,16 @@ mod tests {
             .unwrap();
         drop(connection);
         assert_eq!(
-            LibraryStore::open(check_paths, false).err().unwrap().code(),
+            LibraryStore::open_read_only(check_paths)
+                .err()
+                .unwrap()
+                .code(),
             "incompatible-schema"
         );
 
         let unique_temp = tempfile::tempdir().unwrap();
         let unique_paths = paths(&unique_temp);
-        drop(LibraryStore::open(unique_paths.clone(), true).unwrap());
+        drop(LibraryStore::create_or_migrate(unique_paths.clone()).unwrap());
         let connection = Connection::open(&unique_paths.database).unwrap();
         connection
             .execute_batch(
@@ -1612,7 +1625,7 @@ mod tests {
             .unwrap();
         drop(connection);
         assert_eq!(
-            LibraryStore::open(unique_paths, false)
+            LibraryStore::open_read_only(unique_paths)
                 .err()
                 .unwrap()
                 .code(),
@@ -1635,7 +1648,7 @@ mod tests {
             )
             .unwrap();
         drop(connection);
-        let store = LibraryStore::open(paths.clone(), true).unwrap();
+        let store = LibraryStore::create_or_migrate(paths.clone()).unwrap();
         let mut statement = store.connection.prepare(
             "SELECT source_path FROM library_item_formats WHERE provenance='managed' ORDER BY library_item_id",
         ).unwrap();
@@ -1657,11 +1670,11 @@ mod tests {
     fn fresh_and_migrated_v11_have_identical_canonical_indexes() {
         let fresh_temp = tempfile::tempdir().unwrap();
         let fresh_paths = paths(&fresh_temp);
-        let fresh = LibraryStore::open(fresh_paths, true).unwrap();
+        let fresh = LibraryStore::create_or_migrate(fresh_paths).unwrap();
         let migrated_temp = tempfile::tempdir().unwrap();
         let migrated_paths = paths(&migrated_temp);
         install_fixture(&migrated_paths, 7);
-        let migrated = LibraryStore::open(migrated_paths, true).unwrap();
+        let migrated = LibraryStore::create_or_migrate(migrated_paths).unwrap();
         assert_eq!(
             index_signature(&fresh.connection).unwrap(),
             index_signature(&migrated.connection).unwrap()

@@ -347,25 +347,22 @@ impl LibraryStore {
         Ok(())
     }
 
-    pub fn open(paths: LibraryPaths, create: bool) -> AppResult<Self> {
-        if !create && !paths.database.is_file() {
-            return Err(AppError::new("storage-unavailable"));
-        }
-        if create {
-            fs::create_dir_all(&paths.root)?;
-            fs::create_dir_all(&paths.items)?;
-            fs::create_dir_all(&paths.covers)?;
-        }
+    /// Create a catalogue or explicitly migrate a supported existing schema.
+    /// Use `open_read_only` for reads and `open_existing` for non-migrating writes.
+    pub fn create_or_migrate(paths: LibraryPaths) -> AppResult<Self> {
+        fs::create_dir_all(&paths.root)?;
+        fs::create_dir_all(&paths.items)?;
+        fs::create_dir_all(&paths.covers)?;
         let mut connection = Connection::open(&paths.database)?;
         connection.busy_timeout(std::time::Duration::from_secs(5))?;
         connection.pragma_update(None, "foreign_keys", "ON")?;
         let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
         if version == 0 {
-            if !create || has_schema(&connection)? {
+            if has_schema(&connection)? {
                 return Err(AppError::new("incompatible-schema"));
             }
             create_schema(&connection)?;
-        } else if (1..LIBRARY_SCHEMA_VERSION).contains(&version) && create {
+        } else if (1..LIBRARY_SCHEMA_VERSION).contains(&version) {
             migration::migrate(&mut connection, &paths, version)?;
         } else if version != LIBRARY_SCHEMA_VERSION {
             return Err(AppError::new("incompatible-schema"));
@@ -1867,7 +1864,7 @@ mod tests {
             let temp = tempfile::tempdir().unwrap();
             let paths =
                 LibraryPaths::resolve(None, Some(&temp.path().join("library.sqlite"))).unwrap();
-            let mut store = LibraryStore::open(paths, true).unwrap();
+            let mut store = LibraryStore::create_or_migrate(paths).unwrap();
             seed_hydration_books(&mut store, count);
             let expected: Vec<_> = (0..count)
                 .map(|index| store.get(&format!("book-{index:05}")).unwrap().unwrap())
@@ -1895,7 +1892,7 @@ mod tests {
     fn search_hydration_preserves_literal_escaping_and_deduplication() {
         let temp = tempfile::tempdir().unwrap();
         let paths = LibraryPaths::resolve(None, Some(&temp.path().join("library.sqlite"))).unwrap();
-        let mut store = LibraryStore::open(paths, true).unwrap();
+        let mut store = LibraryStore::create_or_migrate(paths).unwrap();
         seed_hydration_books(&mut store, 2);
         store
             .connection
@@ -1922,7 +1919,7 @@ mod tests {
             let temp = tempfile::tempdir().unwrap();
             let paths =
                 LibraryPaths::resolve(None, Some(&temp.path().join("library.sqlite"))).unwrap();
-            let mut store = LibraryStore::open(paths, true).unwrap();
+            let mut store = LibraryStore::create_or_migrate(paths).unwrap();
             seed_hydration_books(&mut store, 501);
             store.connection.execute(invalid, []).unwrap();
             assert_eq!(
@@ -1944,7 +1941,7 @@ mod tests {
     fn required_hydration_rejects_missing_selected_records() {
         let temp = tempfile::tempdir().unwrap();
         let paths = LibraryPaths::resolve(None, Some(&temp.path().join("library.sqlite"))).unwrap();
-        let mut store = LibraryStore::open(paths, true).unwrap();
+        let mut store = LibraryStore::create_or_migrate(paths).unwrap();
         seed_hydration_books(&mut store, 501);
         let ids: Vec<_> = (0..501).map(|index| format!("book-{index:05}")).collect();
         store
@@ -1965,7 +1962,7 @@ mod tests {
     fn benchmark_search_and_trash_hydration() {
         let temp = tempfile::tempdir().unwrap();
         let paths = LibraryPaths::resolve(None, Some(&temp.path().join("library.sqlite"))).unwrap();
-        let mut store = LibraryStore::open(paths, true).unwrap();
+        let mut store = LibraryStore::create_or_migrate(paths).unwrap();
         seed_hydration_books(&mut store, 10_000);
         for operation in ["search", "trash"] {
             if operation == "trash" {
@@ -2003,7 +2000,7 @@ mod tests {
     fn import_prefers_caller_title_then_epub_metadata_then_filename_conventions() {
         let temp = tempfile::tempdir().unwrap();
         let paths = LibraryPaths::resolve(None, Some(&temp.path().join("library.sqlite"))).unwrap();
-        let mut store = LibraryStore::open(paths, true).unwrap();
+        let mut store = LibraryStore::create_or_migrate(paths).unwrap();
         let mut import = |name: &str, bytes: &[u8], title: Option<&str>| {
             let source = temp.path().join(name);
             fs::write(&source, bytes).unwrap();
@@ -2111,7 +2108,7 @@ mod tests {
     fn custom_metadata_queries_match_safe_fields_and_literals_without_exposing_audit() {
         let temp = tempfile::tempdir().unwrap();
         let paths = LibraryPaths::resolve(None, Some(&temp.path().join("library.sqlite"))).unwrap();
-        let mut store = LibraryStore::open(paths, true).unwrap();
+        let mut store = LibraryStore::create_or_migrate(paths).unwrap();
         let source = temp.path().join("earthsea.txt");
         fs::write(&source, "earthsea").unwrap();
         let item = store.import(&source, Some("Earthsea"), false).unwrap();
@@ -2176,7 +2173,7 @@ mod tests {
     fn structured_queries_execute_conjunctive_field_and_negation_terms() {
         let temp = tempfile::tempdir().unwrap();
         let paths = LibraryPaths::resolve(None, Some(&temp.path().join("library.sqlite"))).unwrap();
-        let mut store = LibraryStore::open(paths, true).unwrap();
+        let mut store = LibraryStore::create_or_migrate(paths).unwrap();
         for (file, title, author, tag, publisher) in [
             (
                 "earthsea.txt",
@@ -2242,13 +2239,13 @@ mod tests {
         let paths = LibraryPaths::resolve(None, Some(&temp.path().join("library.sqlite"))).unwrap();
         let source = temp.path().join("source.epub");
         fs::write(&source, b"epub").unwrap();
-        let error = match LibraryStore::open(paths, false) {
+        let error = match LibraryStore::open_existing(paths) {
             Ok(_) => panic!("opening a missing library must fail"),
             Err(error) => error,
         };
         assert_eq!(error.code(), "storage-unavailable");
         let paths = LibraryPaths::resolve(None, Some(&temp.path().join("library.sqlite"))).unwrap();
-        let mut store = LibraryStore::open(paths, true).unwrap();
+        let mut store = LibraryStore::create_or_migrate(paths).unwrap();
         let item = store.import(&source, Some("Book"), false).unwrap();
         assert_eq!(item.title, "Book");
         assert_eq!(store.list(false).unwrap().len(), 1);
@@ -2270,7 +2267,7 @@ mod tests {
         let paths = LibraryPaths::resolve(None, Some(&temp.path().join("library.sqlite"))).unwrap();
         let source = temp.path().join("source.epub");
         fs::write(&source, b"epub source").unwrap();
-        let mut store = LibraryStore::open(paths, true).unwrap();
+        let mut store = LibraryStore::create_or_migrate(paths).unwrap();
         let item = store
             .import(&source, Some("Original title"), false)
             .unwrap();
@@ -2335,7 +2332,7 @@ mod tests {
         let paths = LibraryPaths::resolve(None, Some(&temp.path().join("library.sqlite"))).unwrap();
         let source = temp.path().join("source.epub");
         fs::write(&source, b"epub source").unwrap();
-        let mut store = LibraryStore::open(paths, true).unwrap();
+        let mut store = LibraryStore::create_or_migrate(paths).unwrap();
         let item = store
             .import(&source, Some("Original title"), false)
             .unwrap();
@@ -2403,7 +2400,7 @@ mod tests {
         let paths = LibraryPaths::resolve(None, Some(&temp.path().join("library.sqlite"))).unwrap();
         let source = temp.path().join("source.epub");
         fs::write(&source, b"epub source").unwrap();
-        let mut store = LibraryStore::open(paths, true).unwrap();
+        let mut store = LibraryStore::create_or_migrate(paths).unwrap();
         let item = store.import(&source, Some("Book"), false).unwrap();
         let artifact = temp.path().join("converted.pdf");
         fs::write(&artifact, b"verified pdf").unwrap();
@@ -2452,7 +2449,7 @@ mod tests {
         let paths = LibraryPaths::resolve(None, Some(&temp.path().join("library.sqlite"))).unwrap();
         let source = temp.path().join("source.epub");
         fs::write(&source, b"epub source").unwrap();
-        let mut store = LibraryStore::open(paths, true).unwrap();
+        let mut store = LibraryStore::create_or_migrate(paths).unwrap();
         let item = store.import(&source, Some("Book"), false).unwrap();
         store
             .connection
@@ -2492,7 +2489,7 @@ mod tests {
         let paths = LibraryPaths::resolve(None, Some(&database)).unwrap();
         let source = temp.path().join("source.epub");
         fs::write(&source, b"epub source").unwrap();
-        let mut store = LibraryStore::open(paths, true).unwrap();
+        let mut store = LibraryStore::create_or_migrate(paths).unwrap();
         let item = store.import(&source, Some("Book"), false).unwrap();
         drop(store);
 
@@ -2509,7 +2506,7 @@ mod tests {
             let barrier = Arc::clone(&barrier);
             workers.push(std::thread::spawn(move || {
                 let paths = LibraryPaths::resolve(None, Some(&database)).unwrap();
-                let mut store = LibraryStore::open(paths, false).unwrap();
+                let mut store = LibraryStore::open_existing(paths).unwrap();
                 barrier.wait();
                 store.attach_verified_artifact(
                     &item_id,
@@ -2526,7 +2523,7 @@ mod tests {
         }
 
         let paths = LibraryPaths::resolve(None, Some(&database)).unwrap();
-        let store = LibraryStore::open(paths, false).unwrap();
+        let store = LibraryStore::open_existing(paths).unwrap();
         let attached = store.get(&item.id).unwrap().unwrap();
         assert_eq!(attached.formats.len(), 2);
         let pdf = attached
@@ -2593,7 +2590,7 @@ mod existing_open_tests {
         ] {
             let temp = tempfile::tempdir().unwrap();
             let paths = paths(temp.path());
-            let mut store = LibraryStore::open(paths.clone(), true).unwrap();
+            let mut store = LibraryStore::create_or_migrate(paths.clone()).unwrap();
             let source = temp.path().join("source.epub");
             fs::write(&source, b"book").unwrap();
             let item = store.import(&source, None, false).unwrap();
@@ -2617,7 +2614,7 @@ mod existing_open_tests {
     fn strict_existing_open_keeps_missing_external_files_manageable() {
         let temp = tempfile::tempdir().unwrap();
         let paths = paths(temp.path());
-        let mut store = LibraryStore::open(paths.clone(), true).unwrap();
+        let mut store = LibraryStore::create_or_migrate(paths.clone()).unwrap();
         let source = temp.path().join("source.epub");
         fs::write(&source, b"book").unwrap();
         let item = store.import(&source, None, false).unwrap();
@@ -2637,7 +2634,7 @@ mod existing_open_tests {
     fn strict_existing_open_rejects_copied_roots_and_traversal() {
         let temp = tempfile::tempdir().unwrap();
         let paths = paths(temp.path());
-        let mut store = LibraryStore::open(paths.clone(), true).unwrap();
+        let mut store = LibraryStore::create_or_migrate(paths.clone()).unwrap();
         let source = temp.path().join("source.epub");
         fs::write(&source, b"book").unwrap();
         let item = store.import(&source, None, false).unwrap();
@@ -2674,7 +2671,7 @@ mod existing_open_tests {
     fn strict_existing_open_rejects_items_tree_symlink_outside_root() {
         let temp = tempfile::tempdir().unwrap();
         let paths = paths(temp.path());
-        let mut store = LibraryStore::open(paths.clone(), true).unwrap();
+        let mut store = LibraryStore::create_or_migrate(paths.clone()).unwrap();
         let source = temp.path().join("source.epub");
         fs::write(&source, b"book").unwrap();
         store.import(&source, None, false).unwrap();

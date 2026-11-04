@@ -38,7 +38,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().canonicalize().unwrap();
         let paths = LibraryPaths::resolve(None, Some(&root.join("library.sqlite"))).unwrap();
-        let mut store = LibraryStore::open(paths, true).unwrap();
+        let mut store = LibraryStore::create_or_migrate(paths).unwrap();
         let source = root.join("source.epub");
         fs::write(&source, b"fixture book").unwrap();
         let item = store.import(&source, Some("Original"), false).unwrap();
@@ -344,7 +344,7 @@ mod tests {
         let alias = temp.path().join("alias");
         symlink(&b, &alias).unwrap();
         let paths = LibraryPaths::resolve(None, Some(&alias.join("library.sqlite"))).unwrap();
-        let mut store = LibraryStore::open(paths, false).unwrap();
+        let mut store = LibraryStore::create_or_migrate(paths).unwrap();
         let source = temp.path().join("second.epub");
         fs::write(&source, b"different book").unwrap();
         store.import(&source, None, false).unwrap();

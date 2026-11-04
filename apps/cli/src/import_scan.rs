@@ -420,7 +420,7 @@ mod tests {
 
     fn open_store(root: &Path) -> LibraryStore {
         let paths = LibraryPaths::resolve(None, Some(&root.join("library.sqlite"))).unwrap();
-        LibraryStore::open(paths, true).unwrap()
+        LibraryStore::create_or_migrate(paths).unwrap()
     }
 
     #[test]

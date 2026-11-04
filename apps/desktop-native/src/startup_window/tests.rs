@@ -68,7 +68,7 @@ fn begin(f: &Fixture, restore: bool, cx: &mut TestAppContext) {
 fn backup(f: &Fixture) -> PathBuf {
     let paths =
         LibraryPaths::resolve(None, Some(&f._temp.path().join("good/library.sqlite"))).unwrap();
-    let mut store = LibraryStore::open(paths, true).unwrap();
+    let mut store = LibraryStore::create_or_migrate(paths).unwrap();
     let source = f._temp.path().join("source.epub");
     fs::write(&source, b"recovery source book").unwrap();
     store

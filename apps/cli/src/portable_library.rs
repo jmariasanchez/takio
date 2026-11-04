@@ -211,7 +211,7 @@ fn rebuild_into(
     temporary_paths: LibraryPaths,
 ) -> AppResult<serde_json::Value> {
     create_private_dir(temporary)?;
-    let mut store = LibraryStore::open(temporary_paths.clone(), true)
+    let mut store = LibraryStore::create_or_migrate(temporary_paths.clone())
         .map_err(|_| AppError::new("storage-unavailable"))?;
     store
         .replace_custom_column_definitions(&source.definitions)
