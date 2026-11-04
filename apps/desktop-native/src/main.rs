@@ -9,6 +9,7 @@ mod engine;
 mod library_location;
 mod preferences;
 mod preparation;
+mod small_file;
 #[cfg(feature = "snapshot")]
 mod snapshot;
 mod startup;
@@ -91,8 +92,11 @@ fn main() -> ExitCode {
         }
     };
     let profile = std::env::var_os("TAKIO_DESKTOP_PROFILE_DIR").map(std::path::PathBuf::from);
-    let preference_path =
-        preferences::location(&paths.root, data_override.is_some(), profile.as_deref());
+    let preference_path = takio::library::paths::desktop_preference_location(
+        &paths.root,
+        data_override.is_some(),
+        profile.as_deref(),
+    );
     application().run(move |cx: &mut App| {
         cx.set_global(Theme::LIGHT);
         cx.bind_keys([
@@ -123,11 +127,11 @@ fn main() -> ExitCode {
             let view = cx.new(|cx| StartupWindow::new(paths, preference_path, window, cx));
             let close_view = view.clone();
             window.on_window_should_close(cx, move |_, cx| {
-                close_view.update(cx, |view, cx| view.can_close(cx))
+                close_view.update(cx, |view, cx| view.request_close(cx))
             });
             let quit_view = view.clone();
             cx.on_action(move |_: &Quit, cx| {
-                if quit_view.update(cx, |view, cx| view.can_close(cx)) {
+                if quit_view.update(cx, |view, cx| view.request_close(cx)) {
                     cx.quit();
                 }
             });

@@ -703,7 +703,7 @@ impl LibraryState {
         self.session.activity.preparation_preview()
     }
 
-    pub fn can_close(&mut self, cx: &mut Context<Self>) -> bool {
+    pub fn request_close(&mut self, cx: &mut Context<Self>) -> bool {
         if self.busy() || self.switching_library() {
             self.set_status(
                 "Wait for the current operation to finish before closing Takio".into(),
@@ -1644,7 +1644,7 @@ mod tests {
                 let running = activity.is_running();
                 state.session.activity = activity;
                 assert!(!state.can_mutate());
-                assert_eq!(state.can_close(cx), !running);
+                assert_eq!(state.request_close(cx), !running);
                 state.update_metadata(item.id.clone(), LibraryPatch::default(), cx);
                 assert_eq!(
                     state
@@ -2522,7 +2522,7 @@ mod tests {
         f.state.update(cx, |s, cx| {
             s.select_all(cx);
             s.session.metadata_editing = true;
-            assert!(!s.can_close(cx));
+            assert!(!s.request_close(cx));
             s.set_section(Section::Trash, cx);
             assert_eq!(s.session.section, Section::Library);
             s.trash_selected(cx);
@@ -2654,7 +2654,7 @@ mod tests {
         f.state.update(cx, |s, cx| {
             s.select_all(cx);
             s.send_selected_to(destination.clone(), cx);
-            assert!(!s.can_close(cx));
+            assert!(!s.request_close(cx));
             s.send_selected_to(destination.clone(), cx);
             s.eject(destination.clone(), cx);
             s.reload(cx);

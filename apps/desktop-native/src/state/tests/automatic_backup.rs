@@ -70,10 +70,10 @@ fn automatic_backup_state_opt_in_roundtrip_disable_and_daily_clock(cx: &mut Test
     f.state.update(cx, |s, cx| {
         s.check_automatic_backup(last + crate::automatic_backup::DAILY_SECONDS - 1, cx);
         assert!(!s.busy());
-        assert!(s.can_close(cx));
+        assert!(s.request_close(cx));
         s.check_automatic_backup(last + crate::automatic_backup::DAILY_SECONDS, cx);
         assert!(s.busy());
-        assert!(!s.can_close(cx));
+        assert!(!s.request_close(cx));
     });
     settle(&f.state, cx);
     assert_eq!(fs::read_dir(output.path()).unwrap().count(), 3);
@@ -124,7 +124,7 @@ fn automatic_backup_state_defers_for_edits_reviews_busy_loading_and_switch(
         s.check_automatic_backup(10, cx);
         assert!(s.busy());
         assert!(!s.can_mutate());
-        assert!(!s.can_close(cx));
+        assert!(!s.request_close(cx));
     });
     match requests.try_recv().unwrap() {
         Request::AutomaticBackupRun { now: 10, reply, .. } => reply
@@ -315,7 +315,7 @@ fn automatic_backup_state_bad_settings_remain_disabled_and_visible_without_rewri
         );
         s.check_automatic_backup(u64::MAX, cx);
         assert!(!s.busy());
-        assert!(s.can_close(cx));
+        assert!(s.request_close(cx));
     });
     assert_eq!(fs::read(settings).unwrap(), b"invalid settings marker");
 }

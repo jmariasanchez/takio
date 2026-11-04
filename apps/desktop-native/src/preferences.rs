@@ -5,27 +5,13 @@
 //! Entry checks reject symlinks and special files, but do not claim protection
 //! against hostile concurrent ancestor or target replacement.
 
-use std::fs::{self, File};
-use std::io::{Read, Write};
+use std::fs;
 use std::path::{Path, PathBuf};
 
-use takio::error::{AppError, AppResult};
+use crate::small_file;
+use takio::error::{AppError, AppResult, ErrorCode};
 
 const MAX_BYTES: usize = 64 * 1024;
-
-/// Explicit profiles isolate preferences, even when a data override is set.
-#[must_use]
-pub fn location(
-    default_root: &Path,
-    data_override: bool,
-    profile_override: Option<&Path>,
-) -> Option<PathBuf> {
-    takio::library::paths::desktop_preference_location(
-        default_root,
-        data_override,
-        profile_override,
-    )
-}
 
 fn validate_root(value: &str) -> AppResult<&Path> {
     let root = Path::new(value);
@@ -39,27 +25,16 @@ fn validate_root(value: &str) -> AppResult<&Path> {
     Ok(root)
 }
 
-/// Check the reserved entry without following a final-component symlink.
-fn regular_or_missing(path: &Path) -> AppResult<bool> {
-    match fs::symlink_metadata(path) {
-        Ok(metadata) if metadata.is_file() => Ok(true),
-        Ok(_) => Err(takio::app_error!("preference-unsafe-path")),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
-        Err(error) => Err(error.into()),
-    }
-}
-
 pub fn load(path: &Path) -> AppResult<Option<PathBuf>> {
-    if !regular_or_missing(path)? {
+    let Some(bytes) = small_file::read_bounded(
+        path,
+        MAX_BYTES,
+        ErrorCode::PreferenceUnsafePath,
+        ErrorCode::PreferenceInvalid,
+    )?
+    else {
         return Ok(None);
-    }
-    let mut bytes = Vec::new();
-    File::open(path)?
-        .take((MAX_BYTES + 1) as u64)
-        .read_to_end(&mut bytes)?;
-    if bytes.len() > MAX_BYTES {
-        return Err(takio::app_error!("preference-invalid"));
-    }
+    };
     let value = std::str::from_utf8(&bytes).map_err(|_| takio::app_error!("preference-invalid"))?;
     Ok(Some(validate_root(value)?.to_path_buf()))
 }
@@ -69,21 +44,18 @@ pub fn save(path: &Path, root: &Path) -> AppResult<()> {
         .to_str()
         .ok_or_else(|| takio::app_error!("preference-invalid"))?;
     validate_root(value)?;
-    regular_or_missing(path)?;
+    small_file::regular_or_missing(path, ErrorCode::PreferenceUnsafePath)?;
     let parent = path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
-    fs::create_dir_all(parent)?;
-    let mut staged = tempfile::NamedTempFile::new_in(parent)?;
-    staged.write_all(value.as_bytes())?;
-    staged.as_file().sync_all()?;
-    // Recheck after staging so failed saves preserve existing reserved entries.
-    regular_or_missing(path)?;
-    staged
-        .persist(path)
-        .map_err(|error| AppError::from(error.error))?;
-    Ok(())
+    fs::create_dir_all(parent).map_err(|_| AppError::new(ErrorCode::WriteFailed))?;
+    small_file::write_atomic(
+        path,
+        parent,
+        value.as_bytes(),
+        ErrorCode::PreferenceUnsafePath,
+    )
 }
 
 #[cfg(test)]
@@ -95,9 +67,23 @@ mod tests {
         let paths = crate::engine::resolve_paths(data_override.as_deref()).unwrap();
         assert_eq!(paths.root, *data_override.as_ref().unwrap());
         assert_eq!(paths.database, paths.root.join("library.sqlite"));
-        assert!(super::location(&paths.root, data_override.is_some(), None).is_none());
+        assert!(
+            takio::library::paths::desktop_preference_location(
+                &paths.root,
+                data_override.is_some(),
+                None
+            )
+            .is_none()
+        );
         let profile = temp.path().join("profile");
-        assert!(super::location(&paths.root, data_override.is_some(), Some(&profile)).is_some());
+        assert!(
+            takio::library::paths::desktop_preference_location(
+                &paths.root,
+                data_override.is_some(),
+                Some(&profile)
+            )
+            .is_some()
+        );
         assert!(!paths.root.exists());
     }
 
@@ -239,22 +225,5 @@ mod tests {
         assert!(save(&preference, temp.path()).is_err());
         assert!(load(&preference).is_err());
         assert!(fs::symlink_metadata(preference).is_ok());
-    }
-
-    #[test]
-    fn location_precedence_is_pure() {
-        let default = Path::new("/default");
-        let profile = Path::new("/profile");
-        assert_eq!(
-            location(default, false, None),
-            Some(default.join("desktop/last-library"))
-        );
-        assert_eq!(location(default, true, None), None);
-        for data_override in [true, false] {
-            assert_eq!(
-                location(default, data_override, Some(profile)),
-                Some(profile.join("last-library"))
-            );
-        }
     }
 }

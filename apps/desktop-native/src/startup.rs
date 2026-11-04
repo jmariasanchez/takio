@@ -21,7 +21,8 @@ pub fn open(
                 Err(error) => {
                     // Falling back to the same location would turn strict open
                     // failure into implicit creation or migration of that library.
-                    if resolved_location(&root)? == resolved_location(&default.root)? {
+                    let default_location = resolved_location(&default.root)?;
+                    if resolved_location(&root).is_ok_and(|saved| saved == default_location) {
                         return Err(error);
                     }
                     warning = Some(format!(
@@ -147,6 +148,21 @@ mod tests {
     use crate::engine::Request;
     use takio::library::query::Filters;
     use takio::library::store::LibraryStore;
+
+    #[test]
+    fn unresolvable_saved_root_falls_back_without_touching_bad_path() {
+        let temp = tempfile::tempdir().unwrap();
+        let bad = temp.path().join("missing/../saved");
+        let preference = temp.path().join("profile/last-library");
+        preferences::save(&preference, &bad).unwrap();
+        let default =
+            LibraryPaths::resolve(None, Some(&temp.path().join("default/library.sqlite"))).unwrap();
+        let (engine, report) = open(default.clone(), Some(&preference)).unwrap();
+        assert_eq!(engine.root(), default.root.canonicalize().unwrap());
+        assert!(report.warning.is_some());
+        assert!(!temp.path().join("missing").exists());
+        assert!(!temp.path().join("saved").exists());
+    }
 
     #[test]
     fn failed_saved_default_is_never_recreated_or_migrated() {

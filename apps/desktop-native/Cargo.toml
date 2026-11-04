@@ -14,7 +14,8 @@ path = "src/main.rs"
 [dependencies]
 takio.workspace = true
 gpui.workspace = true
-image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
+# Declare our codecs explicitly even though GPUI unifies additional image features.
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp", "tiff"] }
 tempfile.workspace = true
 
 # font-kit must be enabled on the platform crate or macOS installs a no-op

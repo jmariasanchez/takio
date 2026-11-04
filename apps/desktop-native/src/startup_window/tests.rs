@@ -94,13 +94,13 @@ fn corrupt_default_has_recovery_choices_and_every_cancel_is_read_only(cx: &mut T
         );
         assert!(view.message.contains("The library could not be read"));
     });
-    assert!(f.view.update(cx, |view, cx| view.can_close(cx)));
+    assert!(f.view.update(cx, |view, cx| view.request_close(cx)));
     assert!(!f.preference.exists());
     original_unchanged(&f);
 
     begin(&f, false, cx);
     assert!(cx.did_prompt_for_paths());
-    assert!(!f.view.update(cx, |view, cx| view.can_close(cx)));
+    assert!(!f.view.update(cx, |view, cx| view.request_close(cx)));
     // Repeated controls cannot open a second dialog or start an operation.
     begin(&f, true, cx);
     assert!(!cx.has_pending_prompt());
@@ -212,7 +212,7 @@ fn startup_restore_collision_and_bad_backup_keep_recovery_screen_usable(cx: &mut
         cx.simulate_new_path_selection(|_| Some(destination.clone()));
         settle(&f.view, cx);
         assert!(f.view.read_with(cx, |view, _| view.workspace.is_none()));
-        assert!(f.view.update(cx, |view, cx| view.can_close(cx)));
+        assert!(f.view.update(cx, |view, cx| view.request_close(cx)));
         original_unchanged(&f);
         assert!(!f.preference.exists());
     }

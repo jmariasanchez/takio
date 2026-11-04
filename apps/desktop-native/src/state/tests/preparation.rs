@@ -116,7 +116,7 @@ fn preparation_confirmation_captures_id_and_success_reloads_without_sending(
         s.confirm_preparation(cx);
         s.confirm_preparation(cx);
         assert!(s.busy());
-        assert!(!s.can_close(cx));
+        assert!(!s.request_close(cx));
         s.cancel_preparation(cx);
         assert!(s.busy());
     });

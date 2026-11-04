@@ -147,7 +147,7 @@ fn library_switch_pending_freezes_dispatch_and_failure_releases_busy(cx: &mut Te
         state.engine = engine;
         state.select_only(0, cx);
         state.open_library("/unused/candidate".into(), cx);
-        assert!(!state.can_close(cx));
+        assert!(!state.request_close(cx));
         assert!(!state.can_mutate());
         state.open_library("/unused/duplicate".into(), cx);
         state.import(vec!["/unused/book".into()], ImportMode::Move, cx);

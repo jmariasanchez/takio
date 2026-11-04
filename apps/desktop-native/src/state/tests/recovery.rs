@@ -139,7 +139,7 @@ fn recovery_blocks_overlap_and_close_until_reply(cx: &mut TestAppContext) {
                 s.back_up_library(destination.clone(), cx);
             }
             assert!(s.busy());
-            assert!(!s.can_close(cx));
+            assert!(!s.request_close(cx));
             s.back_up_library(destination.clone(), cx);
             s.restore_backup_copy(source.clone(), destination.clone(), cx);
             s.import(vec![source], ImportMode::Copy, cx);
@@ -160,7 +160,7 @@ fn recovery_blocks_overlap_and_close_until_reply(cx: &mut TestAppContext) {
         assert!(requests.try_recv().is_err());
         settle(&f.state, cx);
         f.state.update(cx, |s, cx| {
-            assert!(s.can_close(cx));
+            assert!(s.request_close(cx));
             assert!(s.can_mutate());
             assert!(s.recovery_outcome.is_none());
             assert!(s.status.as_ref().unwrap().is_error);

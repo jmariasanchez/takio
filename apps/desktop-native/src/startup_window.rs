@@ -54,9 +54,9 @@ impl StartupWindow {
         view
     }
 
-    pub fn can_close(&mut self, cx: &mut Context<Self>) -> bool {
+    pub fn request_close(&mut self, cx: &mut Context<Self>) -> bool {
         if let Some(state) = &self.state {
-            return state.update(cx, |state, cx| state.can_close(cx));
+            return state.update(cx, |state, cx| state.request_close(cx));
         }
         !self.busy
     }
@@ -269,7 +269,7 @@ impl Render for StartupWindow {
                     .child("Restore Backup to New Folder..."))
                 .child(div().id("startup-quit").px_4().py_2().rounded_md().bg(theme.panel_bg)
                     .map(|el| crate::views::search::accessible_button(el, "Quit", enabled))
-                    .cursor_pointer().on_click(cx.listener(|this, _, _, cx| { if this.can_close(cx) { cx.quit(); } }))
+                    .cursor_pointer().on_click(cx.listener(|this, _, _, cx| { if this.request_close(cx) { cx.quit(); } }))
                     .child("Quit")))
             .child(div().text_sm().text_color(theme.text_secondary).child(if self.busy {
                 "Please wait, or cancel the open chooser. Closing is blocked until the operation finishes."

@@ -2,13 +2,13 @@
 //! No retention deletion, daemon, or hostile concurrent path-swap guarantee is provided.
 
 use std::cell::Cell;
-use std::fs::{self, File};
-use std::io::{Read, Write};
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use takio::error::{AppError, AppResult};
+use crate::small_file;
+use takio::error::{AppError, AppResult, ErrorCode};
 use takio::library::store::{BackupReport, LibraryStore};
 
 const SETTINGS_NAME: &str = ".takio-automatic-backup";
@@ -78,15 +78,6 @@ pub fn now_seconds() -> u64 {
         .as_secs()
 }
 
-fn regular_or_missing(path: &Path) -> AppResult<bool> {
-    match fs::symlink_metadata(path) {
-        Ok(metadata) if metadata.is_file() => Ok(true),
-        Ok(_) => Err(takio::app_error!("automatic-backup-unsafe-settings")),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
-        Err(error) => Err(error.into()),
-    }
-}
-
 fn path_text(path: &Path) -> AppResult<&str> {
     path.to_str()
         .filter(|value| {
@@ -98,16 +89,15 @@ fn path_text(path: &Path) -> AppResult<&str> {
 /// Read-only and bounded. Missing settings mean disabled and create no files.
 pub fn load(root: &Path) -> AppResult<Config> {
     let path = root.join(SETTINGS_NAME);
-    if !regular_or_missing(&path)? {
+    let Some(bytes) = small_file::read_bounded(
+        &path,
+        MAX_BYTES,
+        ErrorCode::AutomaticBackupUnsafeSettings,
+        ErrorCode::AutomaticBackupInvalidSettings,
+    )?
+    else {
         return Ok(Config::default());
-    }
-    let mut bytes = Vec::new();
-    File::open(path)?
-        .take((MAX_BYTES + 1) as u64)
-        .read_to_end(&mut bytes)?;
-    if bytes.len() > MAX_BYTES {
-        return Err(takio::app_error!("automatic-backup-invalid-settings"));
-    }
+    };
     let text = std::str::from_utf8(&bytes)
         .map_err(|_| takio::app_error!("automatic-backup-invalid-settings"))?;
     let fields: Vec<_> = text.split('\n').collect();
@@ -145,7 +135,7 @@ pub fn load(root: &Path) -> AppResult<Config> {
 fn save(root: &Path, config: &Config) -> AppResult<()> {
     let root = root.canonicalize()?;
     let path = root.join(SETTINGS_NAME);
-    regular_or_missing(&path)?;
+    small_file::regular_or_missing(&path, ErrorCode::AutomaticBackupUnsafeSettings)?;
     let destination = config
         .destination
         .as_deref()
@@ -168,14 +158,12 @@ fn save(root: &Path, config: &Config) -> AppResult<()> {
         return Err(takio::app_error!("automatic-backup-invalid-settings"));
     }
     // The existing library is the parent. Never manufacture a missing library or drive.
-    let mut staged = tempfile::NamedTempFile::new_in(&root)?;
-    staged.write_all(text.as_bytes())?;
-    staged.as_file().sync_all()?;
-    regular_or_missing(&path)?;
-    staged
-        .persist(&path)
-        .map_err(|error| AppError::from(error.error))?;
-    Ok(())
+    small_file::write_atomic(
+        &path,
+        &root,
+        text.as_bytes(),
+        ErrorCode::AutomaticBackupUnsafeSettings,
+    )
 }
 
 fn validate_destination(root: &Path, destination: &Path) -> AppResult<PathBuf> {
