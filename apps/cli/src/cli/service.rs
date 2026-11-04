@@ -144,6 +144,74 @@ enum Operation {
     Purge(ItemIdRequest),
 }
 
+/// Compile-checked names for the service operations the one-shot CLI calls.
+/// Each maps to the serde tag of the matching [`Operation`] variant.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum OperationName {
+    CustomColumnsList,
+    CustomColumnsCreate,
+    CustomColumnsRename,
+    CustomColumnsRemove,
+    DuplicatesList,
+    DuplicatesKeep,
+    DuplicatesReopen,
+    DuplicatesMerge,
+    Update,
+    AttachFormat,
+    RemoveFormat,
+    ReplaceFormat,
+    CoverSet,
+    CoverRemove,
+    Trash,
+    Restore,
+    Purge,
+}
+
+impl OperationName {
+    #[cfg(test)]
+    const ALL: [Self; 17] = [
+        Self::CustomColumnsList,
+        Self::CustomColumnsCreate,
+        Self::CustomColumnsRename,
+        Self::CustomColumnsRemove,
+        Self::DuplicatesList,
+        Self::DuplicatesKeep,
+        Self::DuplicatesReopen,
+        Self::DuplicatesMerge,
+        Self::Update,
+        Self::AttachFormat,
+        Self::RemoveFormat,
+        Self::ReplaceFormat,
+        Self::CoverSet,
+        Self::CoverRemove,
+        Self::Trash,
+        Self::Restore,
+        Self::Purge,
+    ];
+
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::CustomColumnsList => "library_custom_columns_list",
+            Self::CustomColumnsCreate => "library_custom_columns_create",
+            Self::CustomColumnsRename => "library_custom_columns_rename",
+            Self::CustomColumnsRemove => "library_custom_columns_remove",
+            Self::DuplicatesList => "library_duplicates_list",
+            Self::DuplicatesKeep => "library_duplicates_keep",
+            Self::DuplicatesReopen => "library_duplicates_reopen",
+            Self::DuplicatesMerge => "library_duplicates_merge",
+            Self::Update => "library_update",
+            Self::AttachFormat => "library_attach_format",
+            Self::RemoveFormat => "library_remove_format",
+            Self::ReplaceFormat => "library_replace_format",
+            Self::CoverSet => "library_cover_set",
+            Self::CoverRemove => "library_cover_remove",
+            Self::Trash => "library_trash",
+            Self::Restore => "library_restore",
+            Self::Purge => "library_purge",
+        }
+    }
+}
+
 impl Operation {
     fn execute(self, store: &mut LibraryStore) -> AppResult<Value> {
         match self {
@@ -220,11 +288,11 @@ pub(super) fn write_store(
 fn run_operation(
     library: Option<&str>,
     database: Option<&Path>,
-    command: &str,
+    command: OperationName,
     args: &Value,
 ) -> AppResult<Value> {
     // Decode before opening a writable library so invalid requests have no filesystem effects.
-    let operation: Operation = decode_request(&json!({"command":command,"args":args}))?;
+    let operation: Operation = decode_request(&json!({"command": command.as_str(), "args": args}))?;
     match operation {
         Operation::CustomColumnsList(_) => custom_columns_list(&*read_store(library, database)?),
         Operation::DuplicatesList(request) => {
@@ -257,7 +325,7 @@ impl CliEnvelope {
 pub(super) fn run_cli_operation(
     library: Option<&str>,
     database: Option<&Path>,
-    command: &str,
+    command: OperationName,
     args: &Value,
     envelope: CliEnvelope,
 ) -> AppResult<Value> {
@@ -323,6 +391,18 @@ pub(super) fn service_request(store: &mut LibraryStore, request: &Value) -> AppR
 mod tests {
     use super::CliEnvelope;
     use serde_json::json;
+
+    #[test]
+    fn every_cli_operation_name_selects_its_service_variant() {
+        for name in super::OperationName::ALL {
+            let value = json!({"command": name.as_str(), "args": {}});
+            let error = serde_json::from_value::<super::Operation>(value)
+                .err()
+                .map(|error| error.to_string())
+                .unwrap_or_default();
+            assert!(!error.contains("unknown variant"), "{name:?}: {error}");
+        }
+    }
 
     #[test]
     fn cli_envelopes_are_the_only_wire_adaptations() {

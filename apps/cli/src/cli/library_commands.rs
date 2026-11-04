@@ -99,7 +99,7 @@ pub(super) fn library(
         LibraryCommand::Update { db, id, patch_json } => print_success(run_cli_operation(
             library,
             db.as_deref(),
-            "library_update",
+            OperationName::Update,
             &json!({"id":id,"patch":read_json(&patch_json)?}),
             CliEnvelope::Direct,
         )?),
@@ -207,7 +207,7 @@ pub(super) fn library(
         LibraryCommand::Remove { db, id } => print_success(run_cli_operation(
             library,
             db.as_deref(),
-            "library_trash",
+            OperationName::Trash,
             &json!({"id":id}),
             CliEnvelope::Direct,
         )?),
@@ -298,24 +298,27 @@ pub(super) fn custom_columns(
     library: Option<&str>,
 ) -> AppResult<()> {
     let (db, operation, args, envelope) = match command {
-        CustomColumnsCommand::List { db } => {
-            (db, "library_custom_columns_list", json!({}), "definitions")
-        }
+        CustomColumnsCommand::List { db } => (
+            db,
+            OperationName::CustomColumnsList,
+            json!({}),
+            "definitions",
+        ),
         CustomColumnsCommand::Create { db, key, label } => (
             db,
-            "library_custom_columns_create",
+            OperationName::CustomColumnsCreate,
             json!({"key":key,"label":label}),
             "definition",
         ),
         CustomColumnsCommand::Rename { db, key, label } => (
             db,
-            "library_custom_columns_rename",
+            OperationName::CustomColumnsRename,
             json!({"key":key,"label":label}),
             "definition",
         ),
         CustomColumnsCommand::Remove { db, key } => (
             db,
-            "library_custom_columns_remove",
+            OperationName::CustomColumnsRemove,
             json!({"key":key}),
             "definition",
         ),
@@ -367,16 +370,16 @@ pub(super) fn library_duplicates(
 ) -> AppResult<()> {
     let (db, operation, request_json) = match command {
         DuplicateCommand::List { db, request_json } => {
-            (db, "library_duplicates_list", request_json)
+            (db, OperationName::DuplicatesList, request_json)
         }
         DuplicateCommand::Keep { db, request_json } => {
-            (db, "library_duplicates_keep", request_json)
+            (db, OperationName::DuplicatesKeep, request_json)
         }
         DuplicateCommand::Reopen { db, request_json } => {
-            (db, "library_duplicates_reopen", request_json)
+            (db, OperationName::DuplicatesReopen, request_json)
         }
         DuplicateCommand::Merge { db, request_json } => {
-            (db, "library_duplicates_merge", request_json)
+            (db, OperationName::DuplicatesMerge, request_json)
         }
     };
     print_success(run_cli_operation(
@@ -538,7 +541,7 @@ pub(super) fn library_format(command: FormatCommand, library: Option<&str>) -> A
             source_path,
         } => (
             db,
-            "library_attach_format",
+            OperationName::AttachFormat,
             json!({"id":id,"source":{"path":source_path,"kind":"copy"}}),
         ),
         FormatCommand::Attach {
@@ -547,16 +550,16 @@ pub(super) fn library_format(command: FormatCommand, library: Option<&str>) -> A
             source_path,
         } => (
             db,
-            "library_attach_format",
+            OperationName::AttachFormat,
             json!({"id":id,"source":{"path":source_path,"kind":"reference"}}),
         ),
         FormatCommand::Remove { db, id, format } => (
             db,
-            "library_remove_format",
+            OperationName::RemoveFormat,
             json!({"id":id,"format":format}),
         ),
         FormatCommand::Replace { db, request_json } => {
-            (db, "library_replace_format", read_json(&request_json)?)
+            (db, OperationName::ReplaceFormat, read_json(&request_json)?)
         }
     };
     print_success(run_cli_operation(
@@ -575,10 +578,10 @@ pub(super) fn library_cover(command: CoverCommand, library: Option<&str>) -> App
             source_path,
         } => (
             db,
-            "library_cover_set",
+            OperationName::CoverSet,
             json!({"id":id,"sourcePath":source_path}),
         ),
-        CoverCommand::Remove { db, id } => (db, "library_cover_remove", json!({"id":id})),
+        CoverCommand::Remove { db, id } => (db, OperationName::CoverRemove, json!({"id":id})),
     };
     print_success(run_cli_operation(
         library,
@@ -617,21 +620,21 @@ pub(super) fn library_trash(command: TrashCommand, library: Option<&str>) -> App
         TrashCommand::Move { db, request_json } => print_success(run_cli_operation(
             library,
             db.as_deref(),
-            "library_trash",
+            OperationName::Trash,
             &read_json(&request_json)?,
             CliEnvelope::Direct,
         )?),
         TrashCommand::Restore { db, request_json } => print_success(run_cli_operation(
             library,
             db.as_deref(),
-            "library_restore",
+            OperationName::Restore,
             &read_json(&request_json)?,
             CliEnvelope::Direct,
         )?),
         TrashCommand::Purge { db, request_json } => print_success(run_cli_operation(
             library,
             db.as_deref(),
-            "library_purge",
+            OperationName::Purge,
             &read_json(&request_json)?,
             CliEnvelope::Direct,
         )?),
