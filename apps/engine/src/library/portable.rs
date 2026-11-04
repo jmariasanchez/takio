@@ -745,11 +745,11 @@ fn fingerprint(path: &Path, relative: &str) -> AppResult<PortableArtifact> {
 }
 
 fn read_bounded_regular(path: &Path, max: u64) -> AppResult<Vec<u8>> {
-    let metadata = fs::symlink_metadata(path).map_err(|_| crate::app_error!("source-invalid"))?;
+    let metadata = fs::symlink_metadata(path).map_err(crate::io_error!("source-invalid"))?;
     if !metadata.is_file() || metadata.file_type().is_symlink() || metadata.len() > max {
         return Err(crate::app_error!("source-invalid"));
     }
-    let bytes = fs::read(path).map_err(|_| crate::app_error!("source-invalid"))?;
+    let bytes = fs::read(path).map_err(crate::io_error!("source-invalid"))?;
     if bytes.len() as u64 != metadata.len() {
         return Err(crate::app_error!("source-invalid"));
     }
