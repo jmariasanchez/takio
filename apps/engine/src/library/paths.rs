@@ -84,45 +84,38 @@ pub fn validate_import_sources(paths: &LibraryPaths, sources: &[PathBuf]) -> App
 }
 
 fn path_for_overlap(path: &Path) -> AppResult<PathBuf> {
-    // `link/..` follows the link's real parent, not its lexical parent.
-    if let Ok(resolved) = path.canonicalize() {
-        return Ok(resolved);
+    resolve_for_creation(path).map_err(|_| crate::app_error!("invalid-arguments"))
+}
+
+/// Resolve existing ancestors without creating a missing suffix. Parent components
+/// are applied after resolving symlinks, so `link/../missing` uses the real parent.
+/// This is a point-in-time path check, not protection against concurrent replacement.
+pub fn resolve_for_creation(path: &Path) -> std::io::Result<PathBuf> {
+    if path.as_os_str().is_empty() {
+        return Err(std::io::Error::other("empty path"));
     }
     let absolute = if path.is_absolute() {
         path.to_path_buf()
     } else {
         std::env::current_dir()?.join(path)
     };
-    let mut normalized = PathBuf::new();
+    let mut resolved = PathBuf::new();
     for component in absolute.components() {
         match component {
-            Component::Prefix(_) | Component::RootDir | Component::Normal(_) => {
-                normalized.push(component.as_os_str());
-            }
+            Component::Prefix(_) | Component::RootDir => resolved.push(component.as_os_str()),
             Component::CurDir => {}
             Component::ParentDir => {
-                if !normalized.pop() {
-                    return Err(crate::app_error!("invalid-arguments"));
+                resolved.pop();
+            }
+            Component::Normal(name) => {
+                resolved.push(name);
+                match std::fs::symlink_metadata(&resolved) {
+                    Ok(_) => resolved = resolved.canonicalize()?,
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => return Err(error),
                 }
             }
         }
-    }
-    let mut ancestor = normalized.as_path();
-    let mut missing = Vec::new();
-    while std::fs::symlink_metadata(ancestor).is_err() {
-        let leaf = ancestor
-            .file_name()
-            .ok_or_else(|| crate::app_error!("invalid-arguments"))?;
-        missing.push(leaf.to_os_string());
-        ancestor = ancestor
-            .parent()
-            .ok_or_else(|| crate::app_error!("invalid-arguments"))?;
-    }
-    let mut resolved = ancestor
-        .canonicalize()
-        .map_err(|_| crate::app_error!("invalid-arguments"))?;
-    for component in missing.into_iter().rev() {
-        resolved.push(component);
     }
     Ok(resolved)
 }
@@ -173,6 +166,31 @@ fn validate_library_name(name: &str) -> AppResult<()> {
 mod tests {
     use super::{LibraryPaths, validate_library_name};
     use std::path::Path;
+
+    #[cfg(unix)]
+    #[test]
+    fn creation_resolution_handles_missing_suffix_symlinks_and_parent_components() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        std::fs::create_dir_all(root.join("real/child")).unwrap();
+        std::os::unix::fs::symlink(root.join("real/child"), root.join("link")).unwrap();
+        for (input, expected) in [
+            ("missing/leaf", "missing/leaf"),
+            ("link/missing/leaf", "real/child/missing/leaf"),
+            ("link/../missing", "real/missing"),
+            ("link/missing/../leaf", "real/child/leaf"),
+        ] {
+            assert_eq!(
+                super::resolve_for_creation(&root.join(input)).unwrap(),
+                root.join(expected)
+            );
+        }
+        assert!(!root.join("missing").exists());
+        std::os::unix::fs::symlink(root.join("absent"), root.join("dangling")).unwrap();
+        assert!(super::resolve_for_creation(&root.join("dangling/leaf")).is_err());
+        std::fs::write(root.join("file"), b"kept").unwrap();
+        assert!(super::resolve_for_creation(&root.join("file/leaf")).is_err());
+    }
 
     #[test]
     fn explicit_database_derives_siblings_without_creating_anything() -> super::AppResult<()> {

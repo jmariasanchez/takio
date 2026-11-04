@@ -117,31 +117,7 @@ fn resolved_location(path: &Path) -> std::io::Result<PathBuf> {
     {
         return Err(std::io::Error::other("invalid library location"));
     }
-    let mut ancestor = path;
-    let mut suffix = Vec::new();
-    loop {
-        match std::fs::symlink_metadata(ancestor) {
-            Ok(_) => {
-                let mut resolved = ancestor.canonicalize()?;
-                for name in suffix.iter().rev() {
-                    resolved.push(name);
-                }
-                return Ok(resolved);
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                suffix.push(
-                    ancestor
-                        .file_name()
-                        .ok_or_else(|| std::io::Error::other("unresolvable library location"))?
-                        .to_os_string(),
-                );
-                ancestor = ancestor
-                    .parent()
-                    .ok_or_else(|| std::io::Error::other("unresolvable library location"))?;
-            }
-            Err(error) => return Err(error),
-        }
-    }
+    takio::library::paths::resolve_for_creation(path)
 }
 
 #[cfg(test)]

@@ -154,38 +154,8 @@ fn normalized(path: &Path) -> AppResult<PathBuf> {
     {
         return Err(crate::app_error!("invalid-arguments"));
     }
-    let absolute = if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        std::env::current_dir()?.join(path)
-    };
-    let mut ancestor = absolute.as_path();
-    let mut suffix = Vec::new();
-    loop {
-        match fs::symlink_metadata(ancestor) {
-            Ok(_) => {
-                let mut resolved = ancestor
-                    .canonicalize()
-                    .map_err(|_| crate::app_error!("source-invalid"))?;
-                for component in suffix.iter().rev() {
-                    resolved.push(component);
-                }
-                return Ok(resolved);
-            }
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                suffix.push(
-                    ancestor
-                        .file_name()
-                        .ok_or_else(|| crate::app_error!("invalid-arguments"))?
-                        .to_os_string(),
-                );
-                ancestor = ancestor
-                    .parent()
-                    .ok_or_else(|| crate::app_error!("invalid-arguments"))?;
-            }
-            Err(error) => return Err(error.into()),
-        }
-    }
+    crate::library::paths::resolve_for_creation(path)
+        .map_err(|_| crate::app_error!("source-invalid"))
 }
 
 pub(super) fn disjoint_destination(destination: &Path, source: &Path) -> AppResult<PathBuf> {

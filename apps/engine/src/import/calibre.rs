@@ -262,44 +262,10 @@ fn validate_destination(paths: &LibraryPaths, root: &Path, database: &Path) -> A
 }
 
 fn resolve_for_creation(path: &Path) -> AppResult<PathBuf> {
-    let normalized = normalize_absolute(path)?;
-    let mut ancestor = normalized.as_path();
-    let mut suffix = Vec::new();
-    while !ancestor.exists() {
-        suffix.push(
-            ancestor
-                .file_name()
-                .ok_or_else(|| crate::app_error!("invalid-arguments"))?
-                .to_owned(),
-        );
-        ancestor = ancestor
-            .parent()
-            .ok_or_else(|| crate::app_error!("invalid-arguments"))?;
-    }
-    let mut resolved = ancestor.canonicalize()?;
-    for component in suffix.into_iter().rev() {
-        resolved.push(component);
-    }
-    Ok(resolved)
-}
-
-fn normalize_absolute(path: &Path) -> AppResult<PathBuf> {
     if !path.is_absolute() {
         return Err(crate::app_error!("invalid-arguments"));
     }
-    let mut normalized = PathBuf::new();
-    for component in path.components() {
-        match component {
-            Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
-            Component::RootDir => normalized.push(component.as_os_str()),
-            Component::CurDir => {}
-            Component::ParentDir => {
-                normalized.pop();
-            }
-            Component::Normal(value) => normalized.push(value),
-        }
-    }
-    Ok(normalized)
+    Ok(crate::library::paths::resolve_for_creation(path)?)
 }
 
 fn same_file(left: &Path, right: &Path) -> AppResult<bool> {
