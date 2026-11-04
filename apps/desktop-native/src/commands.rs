@@ -222,6 +222,35 @@ pub fn menus() -> Vec<Menu> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hardware_commands_use_reader_terminology_in_menus_and_palette() {
+        for command in COMMANDS {
+            let label = command.label.to_ascii_lowercase();
+            assert!(!label.contains("device") && !label.contains("destination"));
+        }
+        for action in [
+            Box::new(crate::RefreshReaders) as Box<dyn Action>,
+            Box::new(crate::EjectReader),
+        ] {
+            let command = COMMANDS
+                .iter()
+                .find(|command| (command.action)().name() == action.name())
+                .unwrap();
+            assert_eq!(command.menu, "Reader");
+            assert!(command.label.contains("Reader"));
+        }
+        for code in [
+            takio::error::ErrorCode::DestinationUnavailable,
+            takio::error::ErrorCode::UnknownDestination,
+            takio::error::ErrorCode::DestinationFileExists,
+        ] {
+            let status = crate::state::humanize_error(code);
+            assert!(status.contains("reader"));
+            assert!(!status.contains("device") && !status.contains("destination"));
+        }
+    }
+
     #[test]
     fn every_command_has_matching_menu_palette_and_binding_metadata() {
         let menus = menus();
