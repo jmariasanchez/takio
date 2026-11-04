@@ -1,7 +1,4 @@
-//! Native preparation bindings. Filesystem and attachment policy live in the engine.
-pub use takio::conversion::prepare::{
-    PreparationPreview, prepare_with_backend, preview_with_backend,
-};
+//! Native worker preparation integration checks.
 
 #[cfg(all(test, unix))]
 mod tests {

@@ -26,7 +26,7 @@ pub fn run(launch: &crate::startup::launch::LaunchEnvironment) {
         Engine::create_or_migrate(paths).unwrap_or_else(|error| crate::fatal(error.code()));
 
     let mut cx = VisualTestAppContext::new(gpui_platform::current_platform(false));
-    cx.update(crate::theme::initialize);
+    cx.update(crate::install_app_globals);
     let state = cx.new(|cx| match volumes {
         Some(volumes) => LibraryState::new_with_volumes(engine, volumes, cx),
         None => LibraryState::new(engine, cx),

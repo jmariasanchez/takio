@@ -1,3 +1,22 @@
+pub(super) const BACKUP_BUSY: &str = "Finish the current operation or save/cancel your edits, then choose Back Up Library again. No new backup was started.";
+pub(super) const RESTORE_BUSY: &str = "Finish the current operation or save/cancel your edits, then choose Restore Backup again. No restore was started.";
+pub(super) const BACKUP_DETAIL: &str = "Includes the catalogue, Trash and managed files. External referenced files and conversion jobs are not included. Keep a copy on a separate drive.";
+pub(super) const SEND_CANCELLED: &str = "Send review cancelled. Nothing was sent.";
+pub(super) const PREPARATION_CANCELLED: &str = "Preparation cancelled. No copy was prepared.";
+
+pub(super) fn restore_detail(referenced_formats: u64) -> String {
+    format!(
+        "Your current library is unchanged and still open. {referenced_formats} external reference(s) still need their original files. Conversion jobs are not restored."
+    )
+}
+
+pub(super) fn preparation_started() -> String {
+    format!(
+        "Preparing an AZW3 copy locally ({}-second conversion limit). EPUB kept. Nothing sent.",
+        takio::conversion::prepare::PREPARATION_TIMEOUT.as_secs()
+    )
+}
+
 pub fn humanize_error(code: takio::error::ErrorCode) -> String {
     use takio::error::ErrorCode::*;
     match code {
@@ -29,6 +48,7 @@ pub fn humanize_error(code: takio::error::ErrorCode) -> String {
         FormatNotFound => "That book has no file to send".into(),
         NoCompatibleFormat => "No file this reader can open. KOReader reads EPUB, PDF, MOBI, AZW3, TXT and CBZ. A stock Kindle needs AZW3, MOBI, PDF or TXT.".into(),
         InvalidArguments => "Check the book details and selection, then try again".into(),
+        InvalidTitle => "Title is required.".into(),
         ReaderScanInProgress => "Reader scan is still finishing. Wait for it to stop, then try Eject again.".into(),
         EjectFailed => "The reader could not be ejected".into(),
         AutomaticBackupDestinationOverlap | AutomaticBackupDestinationUnavailable
@@ -36,7 +56,7 @@ pub fn humanize_error(code: takio::error::ErrorCode) -> String {
         | BackupFailed | CandidateCoverChanged | CandidateCoverInvalid | CandidateCoverUnavailable
         | CoverOutputExists | CoverWriteFailed | DiagnosticsFailed | DuplicateSourcePreserved
         | ExtractionFailed | FormatChanged | FormatMismatch | IncompatibleSchema | InputUnavailable
-        | IntegrityFailed | Interrupted | InvalidQuery | InvalidStoredData | InvalidTitle
+        | IntegrityFailed | Interrupted | InvalidQuery | InvalidStoredData
         | InvalidTransition | LastFormat | LibraryIsBackup | MaintenanceTimeout
         | MetadataExtractionFailed | MetadataFetchFailed | MetadataInvalid | MetadataTimeout
         | MetadataUnavailable | MigrationFailed | NotTrashed | OpenFailed | OperationCanceled

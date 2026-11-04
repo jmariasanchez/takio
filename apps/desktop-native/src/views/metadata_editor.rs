@@ -1,13 +1,20 @@
 //! A local metadata draft. The library is changed only by explicit Save.
 use gpui::{
     App, Context, Entity, EventEmitter, FocusHandle, KeyBinding, Render, Window, actions, div,
-    prelude::*, px,
+    prelude::*,
 };
 use takio::library::model::{BookAuthor, LibraryItem, LibraryPatch, Patch};
 
 use super::text_input::TextInput;
 use crate::state::{LibraryEntity, humanize_error};
-use crate::theme::{Theme, metrics};
+use crate::theme::Theme;
+
+const FIELD_LABELS: [&str; 4] = [
+    "Title (required)",
+    "Authors (separate with semicolons)",
+    "Series",
+    "Tags (separate with semicolons)",
+];
 
 actions!(
     metadata_editor,
@@ -38,10 +45,10 @@ impl Draft {
         }
     }
 
-    fn patch(&self, item: &LibraryItem) -> Result<LibraryPatch, String> {
+    fn patch(&self, item: &LibraryItem) -> takio::error::AppResult<LibraryPatch> {
         let title = self.title.trim();
         if title.is_empty() {
-            return Err("Title is required.".into());
+            return Err(takio::app_error!("invalid-title"));
         }
         let original = Self::from_item(item);
         let mut patch = LibraryPatch::default();
@@ -126,12 +133,7 @@ impl MetadataEditor {
         let draft = Draft::from_item(&item);
         let fields = [draft.title, draft.authors, draft.series, draft.tags]
             .map(|text| cx.new(|cx| TextInput::new(text, cx)));
-        for (field, label) in fields.iter().zip([
-            "Title (required)",
-            "Authors (separate with semicolons)",
-            "Series",
-            "Tags (separate with semicolons)",
-        ]) {
+        for (field, label) in fields.iter().zip(FIELD_LABELS) {
             field.update(cx, |field, _| field.set_label(label));
         }
         let return_focus = window.focused(cx);
@@ -193,7 +195,7 @@ impl MetadataEditor {
         let patch = match self.draft(cx).patch(&self.original) {
             Ok(patch) => patch,
             Err(error) => {
-                self.error = Some(error);
+                self.error = Some(humanize_error(error.kind()));
                 self.fields[0].update(cx, |field, cx| field.focus(window, cx));
                 cx.notify();
                 return;
@@ -278,27 +280,22 @@ impl Render for MetadataEditor {
                     .child("Changes apply to this book only."),
             )
             .children(
-                [
-                    "Title (required)",
-                    "Authors (separate with ;)",
-                    "Series",
-                    "Tags (separate with ;)",
-                ]
-                .into_iter()
-                .zip(self.fields.iter())
-                .map(|(label, field)| {
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap_1()
-                        .child(
-                            div()
-                                .text_sm()
-                                .text_color(theme.text_secondary)
-                                .child(label),
-                        )
-                        .child(field.clone())
-                }),
+                FIELD_LABELS
+                    .into_iter()
+                    .zip(self.fields.iter())
+                    .map(|(label, field)| {
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap_1()
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .text_color(theme.text_secondary)
+                                    .child(label),
+                            )
+                            .child(field.clone())
+                    }),
             )
             .children(
                 self.error
@@ -313,7 +310,7 @@ impl Render for MetadataEditor {
                         div()
                             .id("save-details")
                             .map(|el| {
-                                super::text_input::accessible_button(
+                                super::button::accessible_button(
                                     el,
                                     if busy {
                                         "Saving details"
@@ -325,17 +322,19 @@ impl Render for MetadataEditor {
                             })
                             .key_context("MetadataButton")
                             .track_focus(&self.save_focus)
-                            .px_3()
-                            .py_1()
-                            .rounded(px(metrics::RADIUS))
-                            .border_1()
+                            .map(|el| {
+                                super::button::style(
+                                    el,
+                                    !busy,
+                                    super::button::Variant::Primary,
+                                    theme,
+                                )
+                            })
                             .border_color(if self.save_focus.is_focused(window) {
                                 theme.accent
                             } else {
                                 theme.border
                             })
-                            .bg(theme.row_selected)
-                            .cursor_pointer()
                             .child(if busy { "Saving..." } else { "Save" })
                             .on_click(cx.listener(|this, _, window, cx| this.save(window, cx))),
                     )
@@ -343,7 +342,7 @@ impl Render for MetadataEditor {
                         div()
                             .id("cancel-details")
                             .map(|el| {
-                                super::text_input::accessible_button(
+                                super::button::accessible_button(
                                     el,
                                     "Cancel editing details",
                                     !busy,
@@ -351,17 +350,19 @@ impl Render for MetadataEditor {
                             })
                             .key_context("MetadataButton")
                             .track_focus(&self.cancel_focus)
-                            .px_3()
-                            .py_1()
-                            .rounded(px(metrics::RADIUS))
-                            .border_1()
+                            .map(|el| {
+                                super::button::style(
+                                    el,
+                                    !busy,
+                                    super::button::Variant::Secondary,
+                                    theme,
+                                )
+                            })
                             .border_color(if self.cancel_focus.is_focused(window) {
                                 theme.accent
                             } else {
                                 theme.border
                             })
-                            .opacity(if busy { 0.5 } else { 1.0 })
-                            .cursor_pointer()
                             .child("Cancel")
                             .on_click(cx.listener(|this, _, window, cx| this.cancel(window, cx))),
                     ),
@@ -460,12 +461,14 @@ mod tests {
         let item = item();
         let mut draft = Draft::from_item(&item);
         draft.title = " \t\n ".into();
-        assert_eq!(draft.patch(&item).unwrap_err(), "Title is required.");
+        let error = draft.patch(&item).unwrap_err();
+        assert_eq!(error.kind(), takio::error::ErrorCode::InvalidTitle);
+        assert_eq!(humanize_error(error.kind()), "Title is required.");
     }
 
     fn setup(cx: &mut TestAppContext) -> (tempfile::TempDir, LibraryEntity) {
         cx.executor().allow_parking();
-        cx.update(crate::theme::initialize);
+        cx.update(crate::install_app_globals);
         let temp = tempfile::tempdir().unwrap();
         let paths = LibraryPaths::resolve(None, Some(&temp.path().join("library.sqlite"))).unwrap();
         let engine = Engine::create_or_migrate(paths).unwrap();

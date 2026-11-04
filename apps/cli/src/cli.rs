@@ -1,3 +1,8 @@
+mod jobs;
+use jobs::*;
+mod service;
+use service::*;
+
 use std::collections::BTreeMap;
 use std::io::{BufRead, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
@@ -674,80 +679,6 @@ enum MetadataCandidatesCommand {
 }
 
 #[derive(Subcommand)]
-enum JobsCommand {
-    #[command(about = "Queue a conversion job")]
-    Enqueue {
-        #[arg(long)]
-        db: Option<PathBuf>,
-        #[arg(long)]
-        input: Option<PathBuf>,
-        #[arg(long = "from")]
-        from: Option<FormatId>,
-        #[arg(long = "to")]
-        to: FormatId,
-        #[arg(long)]
-        output: PathBuf,
-        #[arg(long)]
-        library_item_id: Option<String>,
-    },
-    #[command(about = "List jobs, optionally filtered by status")]
-    List {
-        #[arg(long)]
-        db: Option<PathBuf>,
-        #[arg(long)]
-        status: Option<JobStatus>,
-    },
-    #[command(about = "Get one job")]
-    Get {
-        #[arg(long)]
-        db: Option<PathBuf>,
-        #[arg(long)]
-        id: String,
-    },
-    #[command(about = "Cancel a queued job")]
-    Cancel {
-        #[arg(long)]
-        db: Option<PathBuf>,
-        #[arg(long)]
-        id: String,
-    },
-    #[command(about = "Requeue a failed or canceled job")]
-    Retry {
-        #[arg(long)]
-        db: Option<PathBuf>,
-        #[arg(long)]
-        id: String,
-    },
-    #[command(about = "Claim and run the oldest queued job in the foreground")]
-    RunNext {
-        #[arg(long)]
-        db: Option<PathBuf>,
-        #[arg(long, default_value = "default")]
-        profile: String,
-        #[arg(long, default_value_t = 300)]
-        timeout_seconds: u64,
-    },
-    #[command(about = "Run queued jobs in the foreground up to a bounded count")]
-    Drain {
-        #[arg(long)]
-        db: Option<PathBuf>,
-        #[arg(long, default_value_t = MAX_BATCH)]
-        max_jobs: usize,
-        #[arg(long, default_value = "default")]
-        profile: String,
-        #[arg(long, default_value_t = 300)]
-        timeout_seconds: u64,
-    },
-    #[command(about = "Retry attaching a completed job's output to its library item")]
-    RetryAttachment {
-        #[arg(long)]
-        db: Option<PathBuf>,
-        #[arg(long)]
-        id: String,
-    },
-}
-
-#[derive(Subcommand)]
 enum DestinationCommand {
     #[command(about = "List mounted volumes that can receive books")]
     List {
@@ -838,6 +769,14 @@ enum DestinationCommand {
 }
 
 pub fn run() -> AppResult<()> {
+    let desktop_environment = DesktopEnvironment {
+        data_override: std::env::var_os(takio::library::paths::TAKIO_DATA_DIR).is_some(),
+        profile: std::env::var_os(takio::library::paths::TAKIO_DESKTOP_PROFILE_DIR)
+            .map(PathBuf::from),
+        default_root: LibraryPaths::resolve(None, None)
+            .ok()
+            .map(|paths| paths.root),
+    };
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
         Err(error) => {
@@ -887,7 +826,7 @@ pub fn run() -> AppResult<()> {
             profile.parse()?,
             Duration::from_secs(timeout_seconds),
         )?),
-        Command::Library(command) => library(command, cli.library.as_deref()),
+        Command::Library(command) => library(command, cli.library.as_deref(), &desktop_environment),
         Command::Jobs(command) => jobs(command, cli.library.as_deref()),
         Command::Destination(command) => destination(command, cli.library.as_deref()),
         Command::Send {
@@ -1041,8 +980,7 @@ fn metadata_candidates(command: MetadataCandidatesCommand, library: Option<&str>
             if id.trim().is_empty() || timeout_seconds == 0 {
                 return Err(takio::app_error!("invalid-arguments"));
             }
-            let paths = LibraryPaths::resolve(library, db.as_deref())?;
-            let store = LibraryStore::open_read_only(paths)?;
+            let store = read_store(library, db.as_deref())?;
             let item = store
                 .get(&id)?
                 .ok_or_else(|| takio::app_error!("not-found"))?;
@@ -1146,8 +1084,7 @@ fn metadata_candidates(command: MetadataCandidatesCommand, library: Option<&str>
                 &provenance,
             )?;
 
-            let paths = LibraryPaths::resolve(library, db.as_deref())?;
-            let mut store = LibraryStore::create_or_migrate(paths)?;
+            let mut store = write_store(library, db.as_deref())?;
             let item = apply_prepared_metadata_candidate(&mut store, &id, &prepared)?;
             let mut applied = json!({
                 "itemId": id,
@@ -1233,7 +1170,11 @@ fn plan(
     }
 }
 
-fn library(command: LibraryCommand, library: Option<&str>) -> AppResult<()> {
+fn library(
+    command: LibraryCommand,
+    library: Option<&str>,
+    desktop_environment: &DesktopEnvironment,
+) -> AppResult<()> {
     match command {
         LibraryCommand::CustomColumns { command } => custom_columns(command, library),
         LibraryCommand::Service { db } => library_service(library, db.as_deref()),
@@ -1247,8 +1188,7 @@ fn library(command: LibraryCommand, library: Option<&str>) -> AppResult<()> {
             print_success(json!({"report":integrity_value(&report)}))
         }
         LibraryCommand::Backup { db, dest } => {
-            let paths = LibraryPaths::resolve(library, db.as_deref())?;
-            let store = LibraryStore::open_read_only(paths)?;
+            let store = read_store(library, db.as_deref())?;
             let report = store.verify()?;
             let backup = store.backup(&dest)?;
             print_success(
@@ -1265,8 +1205,7 @@ fn library(command: LibraryCommand, library: Option<&str>) -> AppResult<()> {
             source_path,
             title,
         } => {
-            let paths = LibraryPaths::resolve(library, db.as_deref())?;
-            let mut store = LibraryStore::create_or_migrate(paths)?;
+            let mut store = write_store(library, db.as_deref())?;
             print_success(store.import_with_outcome(
                 &source_path,
                 title.as_deref(),
@@ -1280,8 +1219,7 @@ fn library(command: LibraryCommand, library: Option<&str>) -> AppResult<()> {
             mode,
         } => {
             let mode = mode.into();
-            let paths = LibraryPaths::resolve(library, db.as_deref())?;
-            let mut store = LibraryStore::create_or_migrate(paths)?;
+            let mut store = write_store(library, db.as_deref())?;
             print_success(store.import_with_outcome(&source_path, title.as_deref(), mode)?)
         }
         LibraryCommand::List {
@@ -1289,11 +1227,10 @@ fn library(command: LibraryCommand, library: Option<&str>) -> AppResult<()> {
             human,
             volumes_root,
         } => {
-            let paths = LibraryPaths::resolve(library, db.as_deref())?;
-            let store = LibraryStore::open_read_only(paths)?;
+            let store = read_store(library, db.as_deref())?;
             let items = store.list(false)?;
             if human {
-                print_human_list(&store, &items, &volumes_root)
+                print_human_list(&store, &items, &volumes_root, desktop_environment)
             } else {
                 print_success(json!({"items":items}))
             }
@@ -1304,21 +1241,21 @@ fn library(command: LibraryCommand, library: Option<&str>) -> AppResult<()> {
         }
         LibraryCommand::Search { db, query } => {
             let paths = LibraryPaths::resolve(library, db.as_deref())?;
-            print_success(json!({"items":LibraryStore::open_read_only(paths)?.search(&query)?}))
+            print_success(
+                json!({"items":LibraryStore::open_read_only(paths)?.query_items(&query, &Default::default())?}),
+            )
         }
         LibraryCommand::Query { db, request_json } => {
             let request = read_json(&request_json)?;
-            let paths = LibraryPaths::resolve(library, db.as_deref())?;
-            let store = LibraryStore::open_read_only(paths)?;
+            let store = read_store(library, db.as_deref())?;
             print_success(library_query_value(&store, &request)?)
         }
-        LibraryCommand::Update { db, id, patch_json } => {
-            let patch: LibraryPatch = serde_json::from_value(read_json(&patch_json)?)
-                .map_err(|_| takio::app_error!("invalid-arguments"))?;
-            let paths = LibraryPaths::resolve(library, db.as_deref())?;
-            let mut store = LibraryStore::create_or_migrate(paths)?;
-            print_success(json!({"item":store.update(&id, patch)?}))
-        }
+        LibraryCommand::Update { db, id, patch_json } => print_success(run_operation(
+            library,
+            db.as_deref(),
+            "library_update",
+            &json!({"id":id,"patch":read_json(&patch_json)?}),
+        )?),
         LibraryCommand::UpdateMany {
             db,
             ids,
@@ -1327,13 +1264,17 @@ fn library(command: LibraryCommand, library: Option<&str>) -> AppResult<()> {
             if ids.is_empty() || !valid_selection(&ids, MAX_BATCH) {
                 return Err(takio::app_error!("invalid-arguments"));
             }
-            let patch: LibraryPatch = serde_json::from_value(read_json(&patch_json)?)
-                .map_err(|_| takio::app_error!("invalid-arguments"))?;
-            let paths = LibraryPaths::resolve(library, db.as_deref())?;
-            let mut store = LibraryStore::create_or_migrate(paths)?;
+            let patch: LibraryPatch = decode_request(&read_json(&patch_json)?)?;
+            let mut store = write_store(library, db.as_deref())?;
             let mut outcomes = Vec::with_capacity(ids.len());
             for id in ids {
-                match store.update(&id, patch.clone()) {
+                match update_item(
+                    &mut store,
+                    UpdateRequest {
+                        id: id.clone(),
+                        patch: patch.clone(),
+                    },
+                ) {
                     Ok(item) => outcomes.push(UpdateOutcome::Updated {
                         item_id: id,
                         item: Box::new(item),
@@ -1414,17 +1355,16 @@ fn library(command: LibraryCommand, library: Option<&str>) -> AppResult<()> {
         }
         LibraryCommand::ExportMany { db, request_json } => {
             let request = read_json(&request_json)?;
-            let paths = LibraryPaths::resolve(library, db.as_deref())?;
-            let store = LibraryStore::open_read_only(paths)?;
+            let store = read_store(library, db.as_deref())?;
             print_success(export_many(&store, &request)?)
         }
         LibraryCommand::Remove { db, id } => {
-            let paths = LibraryPaths::resolve(library, db.as_deref())?;
-            let mut store = LibraryStore::create_or_migrate(paths)?;
+            let mut value =
+                run_operation(library, db.as_deref(), "library_trash", &json!({"id":id}))?;
             // Keep the historical library-remove wire envelope at the adapter boundary.
-            print_success(
-                json!({"item":store.trash(&id)?,"cleanupPending":false,"cleanupPendingPaths":[]}),
-            )
+            value["cleanupPending"] = json!(false);
+            value["cleanupPendingPaths"] = json!([]);
+            print_success(value)
         }
         LibraryCommand::ImportCalibre { db, library_root } => {
             let paths = LibraryPaths::resolve(library, db.as_deref())?;
@@ -1445,8 +1385,7 @@ fn library(command: LibraryCommand, library: Option<&str>) -> AppResult<()> {
             if query.trim().is_empty() || !valid_selection(&ids, limit) || timeout_seconds == 0 {
                 return Err(takio::app_error!("invalid-arguments"));
             }
-            let paths = LibraryPaths::resolve(library, db.as_deref())?;
-            let store = LibraryStore::open_read_only(paths)?;
+            let store = read_store(library, db.as_deref())?;
             print_success(content_search(
                 &store,
                 &query,
@@ -1464,8 +1403,7 @@ fn library(command: LibraryCommand, library: Option<&str>) -> AppResult<()> {
             if !valid_selection(&ids, limit) || timeout_seconds == 0 {
                 return Err(takio::app_error!("invalid-arguments"));
             }
-            let paths = LibraryPaths::resolve(library, db.as_deref())?;
-            let store = LibraryStore::open_read_only(paths)?;
+            let store = read_store(library, db.as_deref())?;
             print_success(validate_library_formats(
                 &store,
                 &ids,
@@ -1474,8 +1412,7 @@ fn library(command: LibraryCommand, library: Option<&str>) -> AppResult<()> {
             )?)
         }
         LibraryCommand::PortableExport { db, dest } => {
-            let paths = LibraryPaths::resolve(library, db.as_deref())?;
-            let store = LibraryStore::open_read_only(paths)?;
+            let store = read_store(library, db.as_deref())?;
             print_success(portable::export(&store, &dest)?)
         }
         LibraryCommand::Rebuild { db, source } => {
@@ -1513,32 +1450,32 @@ fn library(command: LibraryCommand, library: Option<&str>) -> AppResult<()> {
 }
 
 fn custom_columns(command: CustomColumnsCommand, library: Option<&str>) -> AppResult<()> {
-    let database = match &command {
-        CustomColumnsCommand::List { db }
-        | CustomColumnsCommand::Create { db, .. }
-        | CustomColumnsCommand::Rename { db, .. }
-        | CustomColumnsCommand::Remove { db, .. } => db.as_deref(),
+    let (db, operation, args, envelope) = match command {
+        CustomColumnsCommand::List { db } => {
+            (db, "library_custom_columns_list", json!({}), "definitions")
+        }
+        CustomColumnsCommand::Create { db, key, label } => (
+            db,
+            "library_custom_columns_create",
+            json!({"key":key,"label":label}),
+            "definition",
+        ),
+        CustomColumnsCommand::Rename { db, key, label } => (
+            db,
+            "library_custom_columns_rename",
+            json!({"key":key,"label":label}),
+            "definition",
+        ),
+        CustomColumnsCommand::Remove { db, key } => (
+            db,
+            "library_custom_columns_remove",
+            json!({"key":key}),
+            "definition",
+        ),
     };
-    let paths = LibraryPaths::resolve(library, database)?;
-    if matches!(command, CustomColumnsCommand::List { .. }) {
-        let store = LibraryStore::open_read_only(paths)?;
-        return print_success(json!({"definitions":store.list_custom_column_definitions()?}));
-    }
-    let mut store = LibraryStore::create_or_migrate(paths)?;
-    match command {
-        CustomColumnsCommand::List { .. } => {
-            print_success(json!({"definitions":store.list_custom_column_definitions()?}))
-        }
-        CustomColumnsCommand::Create { key, label, .. } => print_success(
-            json!({"definition":store.create_custom_column_definition(&key, &label)?}),
-        ),
-        CustomColumnsCommand::Rename { key, label, .. } => print_success(
-            json!({"definition":store.rename_custom_column_definition(&key, &label)?}),
-        ),
-        CustomColumnsCommand::Remove { key, .. } => {
-            print_success(json!({"definition":store.remove_custom_column_definition(&key)?}))
-        }
-    }
+    let value = run_operation(library, db.as_deref(), operation, &args)?;
+    // The one-shot CLI historically wraps definitions; the service returns them directly.
+    print_success(json!({envelope:value}))
 }
 
 fn library_saved_views(command: SavedViewsCommand, library: Option<&str>) -> AppResult<()> {
@@ -1576,46 +1513,26 @@ fn library_saved_views(command: SavedViewsCommand, library: Option<&str>) -> App
 }
 
 fn library_duplicates(command: DuplicateCommand, library: Option<&str>) -> AppResult<()> {
-    match command {
+    let (db, operation, request_json) = match command {
         DuplicateCommand::List { db, request_json } => {
-            let request =
-                serde_json::from_value::<ListDuplicateCandidatesRequest>(read_json(&request_json)?)
-                    .map_err(|_| takio::app_error!("invalid-arguments"))?;
-            let paths = LibraryPaths::resolve(library, db.as_deref())?;
-            let store = LibraryStore::open_read_only(paths)?;
-            print_success(
-                serde_json::to_value(store.list_duplicate_candidates(&request)?)
-                    .map_err(|_| takio::app_error!("storage-unavailable"))?,
-            )
+            (db, "library_duplicates_list", request_json)
         }
         DuplicateCommand::Keep { db, request_json } => {
-            let request =
-                serde_json::from_value::<DuplicatePairReviewRequest>(read_json(&request_json)?)
-                    .map_err(|_| takio::app_error!("invalid-arguments"))?;
-            let paths = LibraryPaths::resolve(library, db.as_deref())?;
-            LibraryStore::create_or_migrate(paths)?.keep_duplicate_pair(&request)?;
-            print_success(Value::Null)
+            (db, "library_duplicates_keep", request_json)
         }
         DuplicateCommand::Reopen { db, request_json } => {
-            let request =
-                serde_json::from_value::<DuplicatePairReviewRequest>(read_json(&request_json)?)
-                    .map_err(|_| takio::app_error!("invalid-arguments"))?;
-            let paths = LibraryPaths::resolve(library, db.as_deref())?;
-            LibraryStore::create_or_migrate(paths)?.reopen_duplicate_pair(&request)?;
-            print_success(Value::Null)
+            (db, "library_duplicates_reopen", request_json)
         }
         DuplicateCommand::Merge { db, request_json } => {
-            let request =
-                serde_json::from_value::<MergeDuplicatePairRequest>(read_json(&request_json)?)
-                    .map_err(|_| takio::app_error!("invalid-arguments"))?;
-            let paths = LibraryPaths::resolve(library, db.as_deref())?;
-            let result = LibraryStore::create_or_migrate(paths)?.merge_duplicate_pair(&request)?;
-            print_success(
-                serde_json::to_value(result)
-                    .map_err(|_| takio::app_error!("storage-unavailable"))?,
-            )
+            (db, "library_duplicates_merge", request_json)
         }
-    }
+    };
+    print_success(run_operation(
+        library,
+        db.as_deref(),
+        operation,
+        &read_json(&request_json)?,
+    )?)
 }
 
 const MAX_BATCH: usize = 256;
@@ -1760,176 +1677,51 @@ fn validate_library_formats(
     )
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ColumnLabelRequest {
-    key: String,
-    label: String,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ColumnKeyRequest {
-    key: String,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "lowercase")]
-enum SourceKind {
-    Copy,
-    Reference,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct FormatSource {
-    path: PathBuf,
-    kind: SourceKind,
-}
-
-impl FormatSource {
-    fn provenance(&self) -> takio::library::model::Provenance {
-        match self.kind {
-            SourceKind::Copy => takio::library::model::Provenance::Managed,
-            SourceKind::Reference => takio::library::model::Provenance::Referenced,
-        }
-    }
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct AttachFormatRequest {
-    id: String,
-    source: FormatSource,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct ReplaceFormatRequest {
-    id: String,
-    format: FormatId,
-    expected_current: takio::library::store::ExpectedFormatSnapshot,
-    source: FormatSource,
-}
-
-fn decode_request<T: DeserializeOwned>(value: &Value) -> AppResult<T> {
-    serde_json::from_value(value.clone()).map_err(|_| takio::app_error!("invalid-arguments"))
-}
-
-fn encode_response(value: impl serde::Serialize) -> AppResult<Value> {
-    serde_json::to_value(value).map_err(|_| takio::app_error!("storage-unavailable"))
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ItemIdRequest {
-    #[serde(deserialize_with = "nonempty_item_id")]
-    id: String,
-}
-
-fn nonempty_item_id<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<String, D::Error> {
-    let id = String::deserialize(deserializer)?;
-    if id.is_empty() {
-        return Err(serde::de::Error::custom("item id must not be empty"));
-    }
-    Ok(id)
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct UpdateRequest {
-    id: String,
-    patch: LibraryPatch,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RemoveFormatRequest {
-    id: String,
-    format: FormatId,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct CoverSetRequest {
-    id: String,
-    source_path: PathBuf,
-}
-
-fn replace_format_request(
-    store: &mut LibraryStore,
-    request: ReplaceFormatRequest,
-) -> AppResult<Value> {
-    if request.id.is_empty() {
-        return Err(takio::app_error!("invalid-arguments"));
-    }
-    let result = store.replace_format(
-        &request.id,
-        request.format,
-        &request.expected_current,
-        &request.source.path,
-        request.source.provenance(),
-    )?;
-    serde_json::to_value(result).map_err(|_| takio::app_error!("storage-unavailable"))
-}
-
 fn library_format(command: FormatCommand, library: Option<&str>) -> AppResult<()> {
-    match command {
+    let (db, operation, args) = match command {
         FormatCommand::Import {
             db,
             id,
             source_path,
-        } => {
-            let paths = LibraryPaths::resolve(library, db.as_deref())?;
-            let mut store = LibraryStore::create_or_migrate(paths)?;
-            print_success(
-                json!({"item":store.attach_format(&id, &source_path, takio::library::model::Provenance::Managed)?}),
-            )
-        }
+        } => (
+            db,
+            "library_attach_format",
+            json!({"id":id,"source":{"path":source_path,"kind":"copy"}}),
+        ),
         FormatCommand::Attach {
             db,
             id,
             source_path,
-        } => {
-            let paths = LibraryPaths::resolve(library, db.as_deref())?;
-            let mut store = LibraryStore::create_or_migrate(paths)?;
-            print_success(
-                json!({"item":store.attach_format(&id, &source_path, takio::library::model::Provenance::Referenced)?}),
-            )
-        }
-        FormatCommand::Remove { db, id, format } => {
-            let paths = LibraryPaths::resolve(library, db.as_deref())?;
-            let mut store = LibraryStore::create_or_migrate(paths)?;
-            print_success(store.remove_format(&id, format)?)
-        }
+        } => (
+            db,
+            "library_attach_format",
+            json!({"id":id,"source":{"path":source_path,"kind":"reference"}}),
+        ),
+        FormatCommand::Remove { db, id, format } => (
+            db,
+            "library_remove_format",
+            json!({"id":id,"format":format}),
+        ),
         FormatCommand::Replace { db, request_json } => {
-            let request: ReplaceFormatRequest = decode_request(&read_json(&request_json)?)?;
-            if request.id.is_empty() {
-                return Err(takio::app_error!("invalid-arguments"));
-            }
-            let paths = LibraryPaths::resolve(library, db.as_deref())?;
-            let mut store = LibraryStore::create_or_migrate(paths)?;
-            print_success(replace_format_request(&mut store, request)?)
+            (db, "library_replace_format", read_json(&request_json)?)
         }
-    }
+    };
+    print_success(run_operation(library, db.as_deref(), operation, &args)?)
 }
 fn library_cover(command: CoverCommand, library: Option<&str>) -> AppResult<()> {
-    match command {
+    let (db, operation, args) = match command {
         CoverCommand::Set {
             db,
             id,
             source_path,
-        } => {
-            let paths = LibraryPaths::resolve(library, db.as_deref())?;
-            let mut store = LibraryStore::create_or_migrate(paths)?;
-            print_success(store.set_cover(&id, &source_path)?)
-        }
-        CoverCommand::Remove { db, id } => {
-            let paths = LibraryPaths::resolve(library, db.as_deref())?;
-            let mut store = LibraryStore::create_or_migrate(paths)?;
-            print_success(store.remove_cover(&id)?)
-        }
-    }
+        } => (
+            db,
+            "library_cover_set",
+            json!({"id":id,"sourcePath":source_path}),
+        ),
+        CoverCommand::Remove { db, id } => (db, "library_cover_remove", json!({"id":id})),
+    };
+    print_success(run_operation(library, db.as_deref(), operation, &args)?)
 }
 fn library_trash(command: TrashCommand, library: Option<&str>) -> AppResult<()> {
     match command {
@@ -1958,159 +1750,24 @@ fn library_trash(command: TrashCommand, library: Option<&str>) -> AppResult<()> 
                 json!({"items":items,"total":total,"page":{"offset":offset,"limit":limit}}),
             )
         }
-        TrashCommand::Move { db, request_json } => {
-            let request: ItemIdRequest = decode_request(&read_json(&request_json)?)?;
-            let id = &request.id;
-            let paths = LibraryPaths::resolve(library, db.as_deref())?;
-            let mut store = LibraryStore::create_or_migrate(paths)?;
-            print_success(json!({"item":store.trash(id)?}))
-        }
-        TrashCommand::Restore { db, request_json } => {
-            let request: ItemIdRequest = decode_request(&read_json(&request_json)?)?;
-            let id = &request.id;
-            let paths = LibraryPaths::resolve(library, db.as_deref())?;
-            let mut store = LibraryStore::create_or_migrate(paths)?;
-            print_success(json!({"item":store.restore(id)?}))
-        }
-        TrashCommand::Purge { db, request_json } => {
-            let request: ItemIdRequest = decode_request(&read_json(&request_json)?)?;
-            let id = &request.id;
-            let paths = LibraryPaths::resolve(library, db.as_deref())?;
-            let mut store = LibraryStore::create_or_migrate(paths)?;
-            print_success(store.purge(id)?)
-        }
-    }
-}
-
-fn library_service(library: Option<&str>, database: Option<&Path>) -> AppResult<()> {
-    let paths = LibraryPaths::resolve(library, database)?;
-    let mut store = LibraryStore::create_or_migrate(paths)?;
-    let stdin = std::io::stdin();
-    let mut input = stdin.lock();
-    let stdout = std::io::stdout();
-    let mut output = stdout.lock();
-    let mut line = String::new();
-    loop {
-        line.clear();
-        let read = input
-            .read_line(&mut line)
-            .map_err(|_| takio::app_error!("storage-unavailable"))?;
-        if read == 0 {
-            return Ok(());
-        }
-        let request = serde_json::from_str::<Value>(line.trim_end());
-        let (id, result) = match request {
-            Ok(request) => {
-                let id = request
-                    .get("id")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .to_owned();
-                let result = service_request(&mut store, &request);
-                (id, result)
-            }
-            Err(_) => (String::new(), Err(takio::app_error!("invalid-arguments"))),
-        };
-        let mut response = match result {
-            Ok(value) => crate::output::success(value),
-            Err(error) => crate::output::failure(error.kind()),
-        };
-        response["id"] = json!(id);
-        writeln!(output, "{response}").map_err(|_| takio::app_error!("terminal-unavailable"))?;
-        output
-            .flush()
-            .map_err(|_| takio::app_error!("terminal-unavailable"))?;
-    }
-}
-
-fn service_request(store: &mut LibraryStore, request: &Value) -> AppResult<Value> {
-    let command = request
-        .get("command")
-        .and_then(Value::as_str)
-        .ok_or_else(|| takio::app_error!("invalid-arguments"))?;
-    let args = request
-        .get("args")
-        .ok_or_else(|| takio::app_error!("invalid-arguments"))?;
-    match command {
-        "library_custom_columns_list" => {
-            if args.as_object().is_none_or(|args| !args.is_empty()) {
-                return Err(takio::app_error!("invalid-arguments"));
-            }
-            encode_response(store.list_custom_column_definitions()?)
-        }
-        "library_custom_columns_create" => {
-            let request: ColumnLabelRequest = decode_request(args)?;
-            encode_response(store.create_custom_column_definition(&request.key, &request.label)?)
-        }
-        "library_custom_columns_rename" => {
-            let request: ColumnLabelRequest = decode_request(args)?;
-            encode_response(store.rename_custom_column_definition(&request.key, &request.label)?)
-        }
-        "library_custom_columns_remove" => {
-            let request: ColumnKeyRequest = decode_request(args)?;
-            encode_response(store.remove_custom_column_definition(&request.key)?)
-        }
-        "library_duplicates_list" => {
-            let request: ListDuplicateCandidatesRequest = decode_request(args)?;
-            encode_response(store.list_duplicate_candidates(&request)?)
-        }
-        "library_duplicates_keep" => {
-            let request: DuplicatePairReviewRequest = decode_request(args)?;
-            store.keep_duplicate_pair(&request)?;
-            Ok(Value::Null)
-        }
-        "library_duplicates_reopen" => {
-            let request: DuplicatePairReviewRequest = decode_request(args)?;
-            store.reopen_duplicate_pair(&request)?;
-            Ok(Value::Null)
-        }
-        "library_duplicates_merge" => {
-            let request: MergeDuplicatePairRequest = decode_request(args)?;
-            encode_response(store.merge_duplicate_pair(&request)?)
-        }
-        "library_update" => {
-            let request: UpdateRequest = decode_request(args)?;
-            Ok(json!({"item":store.update(&request.id, request.patch)?}))
-        }
-        "library_attach_format" => {
-            let request: AttachFormatRequest = decode_request(args)?;
-            if request.id.is_empty() {
-                return Err(takio::app_error!("invalid-arguments"));
-            }
-            Ok(
-                json!({"item":store.attach_format(&request.id, &request.source.path, request.source.provenance())?}),
-            )
-        }
-        "library_remove_format" => {
-            let request: RemoveFormatRequest = decode_request(args)?;
-            encode_response(store.remove_format(&request.id, request.format)?)
-        }
-        "library_cover_set" => {
-            let request: CoverSetRequest = decode_request(args)?;
-            encode_response(store.set_cover(&request.id, &request.source_path)?)
-        }
-        "library_cover_remove" => {
-            let request: ItemIdRequest = decode_request(args)?;
-            let id = &request.id;
-            encode_response(store.remove_cover(id)?)
-        }
-        "library_trash" => {
-            let request: ItemIdRequest = decode_request(args)?;
-            let id = &request.id;
-            Ok(json!({"item":store.trash(id)?}))
-        }
-        "library_restore" => {
-            let request: ItemIdRequest = decode_request(args)?;
-            let id = &request.id;
-            Ok(json!({"item":store.restore(id)?}))
-        }
-        "library_purge" => {
-            let request: ItemIdRequest = decode_request(args)?;
-            let id = &request.id;
-            encode_response(store.purge(id)?)
-        }
-        "library_replace_format" => replace_format_request(store, decode_request(args)?),
-        _ => Err(takio::app_error!("invalid-arguments")),
+        TrashCommand::Move { db, request_json } => print_success(run_operation(
+            library,
+            db.as_deref(),
+            "library_trash",
+            &read_json(&request_json)?,
+        )?),
+        TrashCommand::Restore { db, request_json } => print_success(run_operation(
+            library,
+            db.as_deref(),
+            "library_restore",
+            &read_json(&request_json)?,
+        )?),
+        TrashCommand::Purge { db, request_json } => print_success(run_operation(
+            library,
+            db.as_deref(),
+            "library_purge",
+            &read_json(&request_json)?,
+        )?),
     }
 }
 
@@ -2205,115 +1862,7 @@ fn export_many(
 
 fn library_query_value(store: &LibraryStore, request: &Value) -> AppResult<Value> {
     let result = takio::library::query::query(store, decode_request(request)?)?;
-    serde_json::to_value(result).map_err(|_| takio::app_error!("storage-unavailable"))
-}
-
-fn jobs(command: JobsCommand, library: Option<&str>) -> AppResult<()> {
-    match command {
-        JobsCommand::Enqueue {
-            db,
-            input,
-            from,
-            to,
-            output,
-            library_item_id,
-        } => {
-            let input = match (input, library_item_id.as_deref(), from) {
-                (Some(input), None, None) => input,
-                (None, Some(item_id), Some(format)) => {
-                    let paths = LibraryPaths::resolve(library, None)?;
-                    let item = LibraryStore::open_read_only(paths)?
-                        .get(item_id)?
-                        .ok_or_else(|| takio::app_error!("not-found"))?;
-                    item.formats
-                        .into_iter()
-                        .find(|candidate| candidate.format == format)
-                        .map(|candidate| candidate.source_path)
-                        .ok_or_else(|| takio::app_error!("format-not-found"))?
-                }
-                _ => return Err(takio::app_error!("invalid-arguments")),
-            };
-            let path = job_path(library, db.as_deref())?;
-            print_success(json!({"job":JobStore::open(&path)?.enqueue(
-                &input,
-                to,
-                &absolute(&output)?,
-                library_item_id.as_deref(),
-            )?}))
-        }
-        JobsCommand::List { db, status } => {
-            let path = job_path(library, db.as_deref())?;
-            print_success(json!({"jobs":JobStore::open(&path)?.list(status)?}))
-        }
-        JobsCommand::Get { db, id } => {
-            let path = job_path(library, db.as_deref())?;
-            print_success(json!({"job":JobStore::open(&path)?.get(&id)?}))
-        }
-        JobsCommand::Cancel { db, id } => {
-            let path = job_path(library, db.as_deref())?;
-            print_success(json!({"job":JobStore::open(&path)?.cancel(&id)?}))
-        }
-        JobsCommand::Retry { db, id } => {
-            let path = job_path(library, db.as_deref())?;
-            print_success(json!({"job":JobStore::open(&path)?.retry(&id)?}))
-        }
-        JobsCommand::RunNext {
-            db,
-            profile,
-            timeout_seconds,
-        } => {
-            let path = job_path(library, db.as_deref())?;
-            let mut store = JobStore::open(&path)?;
-            let job = store.run_next(profile.parse()?, Duration::from_secs(timeout_seconds))?;
-            let job = job
-                .map(|job| reconcile_job_attachment(&mut store, library, job))
-                .transpose()?;
-            print_success(json!({"job":job}))
-        }
-        JobsCommand::Drain {
-            db,
-            max_jobs,
-            profile,
-            timeout_seconds,
-        } => {
-            let path = job_path(library, db.as_deref())?;
-            let mut store = JobStore::open(&path)?;
-            let values = store.drain(
-                max_jobs,
-                profile.parse()?,
-                Duration::from_secs(timeout_seconds),
-            )?;
-            let values = values
-                .into_iter()
-                .map(|job| reconcile_job_attachment(&mut store, library, job))
-                .collect::<AppResult<Vec<_>>>()?;
-            print_success(json!({"jobs":values,"counts":{"processed":values.len()}}))
-        }
-        JobsCommand::RetryAttachment { db, id } => {
-            if db.is_some() || id.trim().is_empty() {
-                return Err(takio::app_error!("invalid-arguments"));
-            }
-            let path = job_path(library, None)?;
-            let mut store = JobStore::open(&path)?;
-            let job = store.retry_attachment(&id)?;
-            print_success(json!({"job":reconcile_job_attachment(&mut store, library, job)?}))
-        }
-    }
-}
-
-fn reconcile_job_attachment(
-    jobs: &mut JobStore,
-    library: Option<&str>,
-    job: takio::conversion::jobs::ConversionJob,
-) -> AppResult<takio::conversion::jobs::ConversionJob> {
-    if job.attachment.as_ref().map(|value| value.status) != Some(JobAttachmentStatus::Pending) {
-        return Ok(job);
-    }
-    let paths = LibraryPaths::resolve(library, None)?;
-    match LibraryStore::create_or_migrate(paths) {
-        Ok(mut store) => jobs.reconcile_attachment(&mut store, job),
-        Err(error) => jobs.finish_attachment(&job.id, Some(error.kind())),
-    }
+    encode_response(result)
 }
 
 fn destination(command: DestinationCommand, library: Option<&str>) -> AppResult<()> {
@@ -2397,8 +1946,7 @@ fn destination(command: DestinationCommand, library: Option<&str>) -> AppResult<
             human,
         } => {
             let device = destinations::resolve(&dest, &volumes_root)?;
-            let paths = LibraryPaths::resolve(library, db.as_deref())?;
-            let mut store = LibraryStore::create_or_migrate(paths)?;
+            let mut store = write_store(library, db.as_deref())?;
             let mut cache = reader_shelf::HashCache::load(&store.paths().root);
             let scan = reader_shelf::import_unmatched(&mut store, &device, &mut cache)?;
             let _ = cache.save(&store.paths().root);
@@ -2522,14 +2070,6 @@ fn read_json(input: &str) -> AppResult<Value> {
     }
     serde_json::from_slice(&bytes).map_err(|_| takio::app_error!("invalid-arguments"))
 }
-fn job_path(library: Option<&str>, db: Option<&Path>) -> AppResult<PathBuf> {
-    if db.is_some() && library.is_some() {
-        return Err(takio::app_error!("invalid-arguments"));
-    }
-    Ok(db
-        .map(Path::to_path_buf)
-        .unwrap_or(LibraryPaths::resolve(library, None)?.jobs))
-}
 fn reader_relative(device: &destinations::Destination, path: &Path) -> String {
     path.strip_prefix(&device.path)
         .unwrap_or(path)
@@ -2553,6 +2093,7 @@ fn print_human_list(
     store: &LibraryStore,
     items: &[takio::library::model::LibraryItem],
     volumes_root: &Path,
+    desktop_environment: &DesktopEnvironment,
 ) -> AppResult<()> {
     // Only recognizable readers are scanned; a generic USB drive is never walked implicitly.
     let readers: Vec<_> = destinations::list(volumes_root)
@@ -2648,7 +2189,7 @@ fn print_human_list(
     }
     println!();
     println!("{} book(s) in the library", items.len());
-    if let Some(note) = desktop_library_note(store.paths()) {
+    if let Some(note) = desktop_library_note(store.paths(), desktop_environment) {
         println!("{note}");
     }
     if readers.is_empty() {
@@ -2662,12 +2203,17 @@ fn print_human_list(
 
 /// When the desktop app was switched to another library, say so: otherwise the CLI
 /// and the app would silently list different books.
-fn desktop_library_note(paths: &LibraryPaths) -> Option<String> {
-    let profile = std::env::var_os(takio::library::paths::TAKIO_DESKTOP_PROFILE_DIR);
+struct DesktopEnvironment {
+    data_override: bool,
+    profile: Option<PathBuf>,
+    default_root: Option<PathBuf>,
+}
+
+fn desktop_library_note(paths: &LibraryPaths, environment: &DesktopEnvironment) -> Option<String> {
     let preference = takio::library::paths::desktop_preference_location(
-        &LibraryPaths::resolve(None, None).ok()?.root,
-        std::env::var_os(takio::library::paths::TAKIO_DATA_DIR).is_some(),
-        profile.as_deref().map(Path::new),
+        environment.default_root.as_deref()?,
+        environment.data_override,
+        environment.profile.as_deref(),
     )?;
     let remembered = std::fs::read_to_string(preference).ok()?;
     let remembered = Path::new(remembered.trim());
@@ -2718,6 +2264,53 @@ fn open_path(path: &Path) -> AppResult<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn item_id_request_types_reject_blank_ids_at_decode() {
+        fn rejects<T: DeserializeOwned>(mut value: Value) {
+            for id in ["", " ", "\t\n"] {
+                value["id"] = json!(id);
+                assert!(decode_request::<T>(&value).is_err());
+            }
+            value["id"] = json!("book-1");
+            assert!(decode_request::<T>(&value).is_ok());
+        }
+        rejects::<ItemIdRequest>(json!({"id":""}));
+        rejects::<AttachFormatRequest>(
+            json!({"id":"","source":{"path":"book.epub","kind":"copy"}}),
+        );
+        rejects::<UpdateRequest>(json!({"id":"","patch":{"title":"Title"}}));
+        rejects::<RemoveFormatRequest>(json!({"id":"","format":"epub"}));
+        rejects::<CoverSetRequest>(json!({"id":"","sourcePath":"cover.jpg"}));
+    }
+
+    #[test]
+    fn desktop_note_uses_captured_profile_without_process_environment() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = LibraryPaths::resolve(None, Some(&temp.path().join("library.sqlite"))).unwrap();
+        let profile = temp.path().join("profile");
+        std::fs::create_dir(&profile).unwrap();
+        let environment = DesktopEnvironment {
+            data_override: true,
+            profile: Some(profile),
+            default_root: Some(temp.path().to_owned()),
+        };
+        let preference = takio::library::paths::desktop_preference_location(
+            temp.path(),
+            true,
+            environment.profile.as_deref(),
+        )
+        .unwrap();
+        let other = temp.path().join("other-library");
+        std::fs::write(&preference, other.to_str().unwrap()).unwrap();
+        assert!(
+            desktop_library_note(&paths, &environment)
+                .unwrap()
+                .contains("other-library")
+        );
+        std::fs::write(preference, paths.root.to_str().unwrap()).unwrap();
+        assert!(desktop_library_note(&paths, &environment).is_none());
+    }
+
     #[test]
     fn typed_update_outcomes_keep_wire_shape() {
         for &code in ErrorCode::ALL {

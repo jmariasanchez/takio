@@ -19,7 +19,7 @@ use takio::import::scan::{ImportOutcome, SkipReason};
 use takio::library::model::{LibraryItem, LibraryPatch};
 
 use crate::engine::{Engine, Request, SendPreview, SendPreviewEntry, SendReport};
-use crate::preparation::PreparationPreview;
+use takio::conversion::prepare::PreparationPreview;
 use takio::library::model::ImportMode;
 use takio::library::query::{Facets, Filters};
 
@@ -251,8 +251,8 @@ impl LibraryState {
     }
 
     /// Update the query text and coalesce same-frame edits before dispatch.
-    /// Eight milliseconds leaves room in the 80ms target for query and rendering,
-    /// unlike the former 60ms floor. Generation guards still block stale actions.
+    /// Eight milliseconds leaves room in the 80ms target for query and rendering.
+    /// Generation guards block stale actions.
     pub fn set_query(&mut self, query: String, cx: &mut Context<Self>) {
         if self.switching_library() || self.session.query == query {
             return;
@@ -486,7 +486,7 @@ impl LibraryState {
 
     pub fn back_up_library(&mut self, destination: PathBuf, cx: &mut Context<Self>) {
         if !self.can_mutate() {
-            self.set_status("Finish the current operation or save/cancel your edits, then choose Back Up Library again. No new backup was started.".into(), true, cx);
+            self.set_status(errors::BACKUP_BUSY.into(), true, cx);
             return;
         }
         self.session.activity = Activity::Running(Operation::Mutation);
@@ -499,17 +499,21 @@ impl LibraryState {
             this.session.activity = Activity::Idle;
             match result {
                 Ok(report) => {
-                    let summary = format!("Backup verified: {} managed format(s)", report.managed_files);
+                    let summary = format!(
+                        "Backup verified: {} managed format(s)",
+                        report.managed_files
+                    );
                     this.session.recovery_outcome = Some(RecoveryOutcome {
                         path: report.destination_path,
                         summary: summary.clone(),
-                        detail: "Includes the catalogue, Trash and managed files. External referenced files and conversion jobs are not included. Keep a copy on a separate drive.".into(),
+                        detail: errors::BACKUP_DETAIL.into(),
                     });
                     this.set_status(summary, false, cx);
                 }
                 Err(error) => this.set_status(humanize_recovery_error(error.kind()), true, cx),
             }
-        }).detach();
+        })
+        .detach();
     }
 
     pub fn restore_backup_copy(
@@ -519,7 +523,7 @@ impl LibraryState {
         cx: &mut Context<Self>,
     ) {
         if !self.can_mutate() {
-            self.set_status("Finish the current operation or save/cancel your edits, then choose Restore Backup again. No restore was started.".into(), true, cx);
+            self.set_status(errors::RESTORE_BUSY.into(), true, cx);
             return;
         }
         self.session.activity = Activity::Running(Operation::Mutation);
@@ -538,18 +542,27 @@ impl LibraryState {
             this.session.activity = Activity::Idle;
             match result {
                 Ok(report) => {
-                    let summary = format!("Restore verified: {} book(s), {} in Trash, {} managed format(s)",
-                        report.report.active_items, report.report.trashed_items, report.report.verified_managed_formats);
+                    let summary = format!(
+                        "Restore verified: {} book(s), {} in Trash, {} managed format(s)",
+                        report.report.active_items,
+                        report.report.trashed_items,
+                        report.report.verified_managed_formats
+                    );
                     this.session.recovery_outcome = Some(RecoveryOutcome {
-                        path: report.database_path.parent().expect("restored database has a parent").to_path_buf(),
+                        path: report
+                            .database_path
+                            .parent()
+                            .expect("restored database has a parent")
+                            .to_path_buf(),
                         summary: summary.clone(),
-                        detail: format!("Your current library is unchanged and still open. {} external reference(s) still need their original files. Conversion jobs are not restored.", report.report.referenced_formats),
+                        detail: errors::restore_detail(report.report.referenced_formats),
                     });
                     this.set_status(summary, false, cx);
                 }
                 Err(error) => this.set_status(humanize_recovery_error(error.kind()), true, cx),
             }
-        }).detach();
+        })
+        .detach();
     }
 
     pub fn import(&mut self, roots: Vec<PathBuf>, mode: ImportMode, cx: &mut Context<Self>) {
@@ -566,7 +579,7 @@ impl LibraryState {
     }
 
     pub fn import_from_reader(&mut self, destination: Destination, cx: &mut Context<Self>) {
-        if self.session.section != Section::Library || !self.can_mutate() {
+        if !self.can_mutate_library() {
             return;
         }
         self.session.activity = Activity::Running(Operation::Mutation);
@@ -591,14 +604,18 @@ impl LibraryState {
             match result {
                 Ok(scan) => {
                     let counts = scan.counts;
-                    let skipped_for = |wanted| scan.outcomes.iter().filter(|outcome| matches!(outcome, ImportOutcome::Skipped { reason, .. } if *reason == wanted)).count();
-                    let documents = skipped_for(SkipReason::LikelyDocument);
+                    fn skipped_for(outcomes: &[ImportOutcome], wanted: SkipReason) -> usize {
+                        outcomes.iter().filter(|outcome| {
+                            matches!(outcome, ImportOutcome::Skipped { reason, .. } if *reason == wanted)
+                        }).count()
+                    }
+                    let documents = skipped_for(&scan.outcomes, SkipReason::LikelyDocument);
                     let mut skipped = match documents {
                         0 => counts.skipped.to_string(),
                         1 => format!("{} (1 short PDF looked like a document)", counts.skipped),
                         n => format!("{} ({n} short PDFs looked like documents)", counts.skipped),
                     };
-                    let unsupported = skipped_for(SkipReason::UnsupportedFormat);
+                    let unsupported = skipped_for(&scan.outcomes, SkipReason::UnsupportedFormat);
                     if unsupported > 0 {
                         skipped.push_str(&format!(
                             " ({unsupported} in a format Takio cannot store, such as Kindle store books)"
@@ -623,6 +640,16 @@ impl LibraryState {
 
     pub fn can_mutate(&self) -> bool {
         self.session.activity.is_idle() && !self.session.metadata_editing && !self.session.loading
+    }
+
+    fn can_mutate_library(&self) -> bool {
+        self.can_mutate() && self.session.section == Section::Library
+    }
+
+    fn can_confirm_review(&self) -> bool {
+        !self.session.loading
+            && !self.session.metadata_editing
+            && self.session.section == Section::Library
     }
 
     pub fn busy(&self) -> bool {
@@ -705,7 +732,7 @@ impl LibraryState {
     }
 
     pub fn begin_metadata_editing(&mut self, cx: &mut Context<Self>) -> bool {
-        if !self.can_mutate() || self.session.section != Section::Library {
+        if !self.can_mutate_library() {
             return false;
         }
         self.session.metadata_save_result = None;
@@ -724,6 +751,7 @@ impl LibraryState {
     }
 
     pub fn update_metadata(&mut self, id: String, patch: LibraryPatch, cx: &mut Context<Self>) {
+        // Saving is the mutation that completes metadata editing, not a competing action.
         if !self.session.activity.is_idle()
             || self.session.loading
             || self.session.section != Section::Library
@@ -1026,7 +1054,7 @@ impl LibraryState {
         item_ids: Vec<String>,
         cx: &mut Context<Self>,
     ) {
-        if self.session.section != Section::Library || !self.can_mutate() {
+        if !self.can_mutate_library() {
             return;
         }
         if item_ids.is_empty() {
@@ -1065,7 +1093,7 @@ impl LibraryState {
         self.await_reply(receiver, cx, move |this, result, cx| {
             this.session.activity = Activity::Idle;
             if this.send_preview_generation != generation || this.session.section != Section::Library {
-                this.set_status("Send review cancelled. Nothing was sent.".into(), false, cx);
+                this.set_status(errors::SEND_CANCELLED.into(), false, cx);
                 return;
             }
             match result {
@@ -1084,15 +1112,12 @@ impl LibraryState {
         self.send_preview_generation.advance();
         if matches!(self.session.activity, Activity::ReviewingSend(_)) {
             self.session.activity = Activity::Idle;
-            self.set_status("Send review cancelled. Nothing was sent.".into(), false, cx);
+            self.set_status(errors::SEND_CANCELLED.into(), false, cx);
         }
     }
 
     pub fn confirm_send_preview(&mut self, cx: &mut Context<Self>) {
-        if self.session.loading
-            || self.session.metadata_editing
-            || self.session.section != Section::Library
-        {
+        if !self.can_confirm_review() {
             return;
         }
         let Some(preview) = self.session.activity.take_send_preview() else {
@@ -1196,7 +1221,7 @@ impl LibraryState {
     // ----- explicit local preparation -------------------------------------
 
     pub fn prepare_selected(&mut self, cx: &mut Context<Self>) {
-        if !self.can_mutate() || self.session.section != Section::Library {
+        if !self.can_mutate_library() {
             return;
         }
         let ids = self.selected_ids();
@@ -1208,7 +1233,7 @@ impl LibraryState {
     }
 
     pub fn prepare_item(&mut self, item_id: String, cx: &mut Context<Self>) {
-        if !self.can_mutate() || self.session.section != Section::Library {
+        if !self.can_mutate_library() {
             return;
         }
         self.session.activity = Activity::Running(Operation::PreviewingPreparation);
@@ -1228,11 +1253,7 @@ impl LibraryState {
             this.session.activity = Activity::Idle;
             if this.preparation_generation != generation || this.session.section != Section::Library
             {
-                this.set_status(
-                    "Preparation cancelled. No copy was prepared.".into(),
-                    false,
-                    cx,
-                );
+                this.set_status(errors::PREPARATION_CANCELLED.into(), false, cx);
                 return;
             }
             match result {
@@ -1262,19 +1283,12 @@ impl LibraryState {
             if matches!(self.session.activity, Activity::ReviewingPreparation(_)) {
                 self.session.activity = Activity::Idle;
             }
-            self.set_status(
-                "Preparation cancelled. No copy was prepared.".into(),
-                false,
-                cx,
-            );
+            self.set_status(errors::PREPARATION_CANCELLED.into(), false, cx);
         }
     }
 
     pub fn confirm_preparation(&mut self, cx: &mut Context<Self>) {
-        if self.session.loading
-            || self.session.metadata_editing
-            || self.session.section != Section::Library
-        {
+        if !self.can_confirm_review() {
             return;
         }
         let Some(preview) = self.session.activity.take_preparation_preview() else {
@@ -1286,7 +1300,7 @@ impl LibraryState {
             return;
         }
         self.session.activity = Activity::Running(Operation::Mutation);
-        self.set_status(format!("Preparing an AZW3 copy locally ({}-second conversion limit). EPUB kept. Nothing sent.", takio::conversion::prepare::PREPARATION_TIMEOUT.as_secs()), false, cx);
+        self.set_status(errors::preparation_started(), false, cx);
         let receiver = self
             .engine
             .request(|reply| Request::PrepareReviewed { preview, reply });

@@ -104,7 +104,15 @@ pub struct MergeDuplicatePairRequest {
     pub review_token: String,
     pub metadata: LibraryPatch,
     pub add_source_formats: Vec<FormatId>,
-    pub cover: String,
+    pub cover: MergeCoverChoice,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, Eq, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum MergeCoverChoice {
+    Target,
+    Source,
+    None,
 }
 
 #[derive(Debug, Serialize)]
@@ -283,15 +291,14 @@ impl LibraryStore {
                 params![request.target_id, request.source_id],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )?;
-        let selected_cover = match request.cover.as_str() {
-            "target" => target_cover.clone(),
-            "source" => Some(
+        let selected_cover = match request.cover {
+            MergeCoverChoice::Target => target_cover.clone(),
+            MergeCoverChoice::Source => Some(
                 source_cover
                     .clone()
                     .ok_or_else(|| crate::app_error!("invalid-arguments"))?,
             ),
-            "none" => None,
-            _ => return Err(crate::app_error!("invalid-arguments")),
+            MergeCoverChoice::None => None,
         };
         if let Some(path) = &selected_cover
             && !Path::new(path).starts_with(&self.paths.covers)
@@ -379,7 +386,6 @@ fn validate_merge_request(request: &MergeDuplicatePairRequest) -> AppResult<()> 
         || request.target_id == request.source_id
         || !valid_review_token(&request.review_token)
         || request.metadata.is_empty()
-        || !matches!(request.cover.as_str(), "target" | "source" | "none")
     {
         return Err(crate::app_error!("invalid-arguments"));
     }

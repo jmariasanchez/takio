@@ -7,13 +7,13 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
-use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
-use crossterm::execute;
-use crossterm::terminal::{
-    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
-};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
+use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+use ratatui::crossterm::execute;
+use ratatui::crossterm::terminal::{
+    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
+};
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -182,7 +182,7 @@ impl App {
         let result = if self.query.is_empty() {
             self.store.list(false)
         } else {
-            self.store.search(&self.query)
+            self.store.query_items(&self.query, &Default::default())
         };
         match result {
             Ok(items) => {
@@ -591,7 +591,7 @@ impl App {
         }
     }
 
-    fn confirm_candidate(&mut self) {
+    fn request_candidate_confirmation(&mut self) {
         let Some(review) = self.candidate_review.as_ref() else {
             return;
         };
@@ -728,7 +728,7 @@ impl App {
                 KeyCode::Char(' ') => self.toggle_candidate_field(),
                 KeyCode::Char('c') => self.toggle_candidate_cover(),
                 KeyCode::Char('o') => self.refresh_candidate_review_online(),
-                KeyCode::Enter | KeyCode::Char('a') => self.confirm_candidate(),
+                KeyCode::Enter | KeyCode::Char('a') => self.request_candidate_confirmation(),
                 _ => {}
             },
             Mode::ConfirmCandidate => match code {
@@ -822,7 +822,7 @@ impl Drop for TerminalCleanup {
         if self.alternate_screen {
             let _ = execute!(stdout, LeaveAlternateScreen);
         }
-        let _ = execute!(stdout, crossterm::cursor::Show);
+        let _ = execute!(stdout, ratatui::crossterm::cursor::Show);
     }
 }
 
@@ -1913,8 +1913,12 @@ mod tests {
         review.selected_fields.insert("title".to_owned());
         app.query = "Original".to_owned();
 
-        app.confirm_candidate();
+        app.request_candidate_confirmation();
         assert_eq!(app.mode, Mode::ConfirmCandidate);
+        assert_eq!(
+            app.store.get(&item.id).expect("get").expect("item").title,
+            item.title
+        );
         app.apply_candidate();
 
         let updated = app.store.get(&item.id).expect("get").expect("item");
@@ -1940,7 +1944,7 @@ mod tests {
             .expect("review")
             .selected_fields
             .clear();
-        app.confirm_candidate();
+        app.request_candidate_confirmation();
         assert_eq!(app.mode, Mode::CandidateReview);
         assert_eq!(
             app.status,
@@ -2213,7 +2217,7 @@ mod tests {
         app.handle_key(KeyCode::Char('c'), KeyModifiers::NONE);
         app.query = "Original".to_owned();
 
-        app.confirm_candidate();
+        app.request_candidate_confirmation();
         assert_eq!(app.mode, Mode::ConfirmCandidate);
         app.apply_candidate();
 
@@ -2243,7 +2247,7 @@ mod tests {
         let candidate = candidate_with_cover(&app, &item, json!({}));
         app.accept_candidate_results(vec![candidate]);
         app.handle_key(KeyCode::Char('c'), KeyModifiers::NONE);
-        app.confirm_candidate();
+        app.request_candidate_confirmation();
 
         for (width, height) in [(44, 14), (60, 16)] {
             let rendered = rendered_text(&app, width, height);

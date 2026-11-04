@@ -8,12 +8,14 @@ mod recovery;
 mod automatic_backup;
 
 mod library;
+mod panels;
 
 use gpui::{
     App, Context, Entity, ExternalPaths, FocusHandle, Focusable, IntoElement, ParentElement,
     PathPromptOptions, PromptButton, PromptLevel, Render, Styled, Window, div, prelude::*, px,
 };
 
+use super::button::button as toolbar_button;
 use crate::state::{LibraryEntity, Section, humanize_error};
 use crate::theme::{Theme, metrics};
 use crate::views::library_list::LibraryList;
@@ -44,6 +46,30 @@ pub struct Workspace {
 }
 
 impl Workspace {
+    /// Always completes for cleanup, but only returns a response for a mutable,
+    /// unchanged library. The backup pause spans the entire native dialog.
+    fn after_dialog<F>(
+        &mut self,
+        response: F,
+        cx: &mut Context<Self>,
+        then: impl FnOnce(&mut Self, Option<F::Output>, &mut Context<Self>) + 'static,
+    ) where
+        F: std::future::Future + 'static,
+    {
+        let epoch = self.state.read(cx).library_epoch();
+        let pause = self.state.read(cx).automatic_backup().pause();
+        cx.spawn(async move |this, cx| {
+            let response = response.await;
+            drop(pause);
+            let _ = this.update(cx, |this, cx| {
+                let state = this.state.read(cx);
+                let current = state.library_epoch() == epoch && state.can_mutate();
+                then(this, current.then_some(response), cx);
+            });
+        })
+        .detach();
+    }
+
     pub(crate) fn benchmark_search(&self) -> Entity<TextInput> {
         self.search.clone()
     }
@@ -84,8 +110,6 @@ impl Workspace {
             self.choose_import_paths(mode, cx);
             return;
         }
-        let epoch = self.state.read(cx).library_epoch();
-        let pause = self.state.read(cx).automatic_backup().pause();
         let answer = window.prompt(
             PromptLevel::Warning,
             "Move originals into Takio?",
@@ -93,25 +117,14 @@ impl Workspace {
             &[PromptButton::cancel("Cancel"), PromptButton::new("Choose files to move")],
             cx,
         );
-        cx.spawn(async move |this, cx| {
-            let accepted = answer.await == Ok(1);
-            drop(pause);
-            if accepted {
-                let _ = this.update(cx, |this, cx| {
-                    if this.state.read(cx).library_epoch() == epoch
-                        && this.state.read(cx).can_mutate()
-                    {
-                        this.choose_import_paths(mode, cx);
-                    }
-                });
+        self.after_dialog(answer, cx, move |this, answer, cx| {
+            if answer == Some(Ok(1)) {
+                this.choose_import_paths(mode, cx);
             }
-        })
-        .detach();
+        });
     }
 
     fn choose_import_paths(&mut self, mode: ImportMode, cx: &mut Context<Self>) {
-        let epoch = self.state.read(cx).library_epoch();
-        let pause = self.state.read(cx).automatic_backup().pause();
         let receiver = cx.prompt_for_paths(PathPromptOptions {
             files: true,
             directories: true,
@@ -125,19 +138,13 @@ impl Workspace {
                 .into(),
             ),
         });
-        let state = self.state.clone();
-        cx.spawn(async move |_, cx| {
-            let response = receiver.await;
-            drop(pause);
-            if let Ok(Ok(Some(paths))) = response {
-                state.update(cx, |state, cx| {
-                    if state.library_epoch() == epoch {
-                        state.import(paths, mode, cx);
-                    }
+        self.after_dialog(receiver, cx, move |this, response, cx| {
+            if let Some(Ok(Ok(Some(paths)))) = response {
+                this.state.update(cx, |state, cx| {
+                    state.import(paths, mode, cx);
                 });
             }
-        })
-        .detach();
+        });
     }
 
     fn confirm_purge(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -149,8 +156,6 @@ impl Workspace {
         if ids.is_empty() {
             return;
         }
-        let epoch = state.library_epoch();
-        let pause = state.automatic_backup().pause();
         let answer = window.prompt(
             PromptLevel::Warning,
             &format!("Permanently delete {} book(s)?", ids.len()),
@@ -158,19 +163,13 @@ impl Workspace {
             &[PromptButton::cancel("Cancel"), PromptButton::new("Delete permanently")],
             cx,
         );
-        let state = self.state.clone();
-        cx.spawn(async move |_, cx| {
-            let accepted = answer.await == Ok(1);
-            drop(pause);
-            if accepted {
-                state.update(cx, |state, cx| {
-                    if state.library_epoch() == epoch {
-                        state.purge_confirmed(ids, cx);
-                    }
+        self.after_dialog(answer, cx, move |this, answer, cx| {
+            if answer == Some(Ok(1)) {
+                this.state.update(cx, |state, cx| {
+                    state.purge_confirmed(ids, cx);
                 });
             }
-        })
-        .detach();
+        });
     }
 
     fn choose_reader(&mut self, action: ReaderAction, window: &mut Window, cx: &mut Context<Self>) {
@@ -179,7 +178,6 @@ impl Workspace {
         if !state.can_mutate() {
             return;
         }
-        let epoch = state.library_epoch();
         let ids = state.selected_ids();
         if send && (state.session().section != Section::Library || ids.is_empty()) {
             self.state.update(cx, |state, cx| {
@@ -217,24 +215,17 @@ impl Workspace {
         } else {
             "Eject which reader?".to_owned()
         };
-        let pause = self.state.read(cx).automatic_backup().pause();
         let answer = window.prompt(PromptLevel::Info, &message,
             Some(if send { "Next, review compatible formats and any blocked books. Nothing is sent until you confirm Send ready." } else { "Wait for a successful eject before unplugging the USB cable." }),
             &buttons, cx);
-        let state = self.state.clone();
-        cx.spawn(async move |_, cx| {
-            let response = answer.await;
-            drop(pause);
-            if let Ok(index) = response
+        self.after_dialog(answer, cx, move |this, response, cx| {
+            if let Some(Ok(index)) = response
                 && let Some(destination) = index
                     .checked_sub(1)
                     .and_then(|index| readers.get(index))
                     .cloned()
             {
-                state.update(cx, |state, cx| {
-                    if state.library_epoch() != epoch || state.switching_library() {
-                        return;
-                    }
+                this.state.update(cx, |state, cx| {
                     if send {
                         state.send_ids_to(destination, ids, cx);
                     } else {
@@ -242,13 +233,12 @@ impl Workspace {
                     }
                 });
             }
-        })
-        .detach();
+        });
     }
 
     fn preparation_review(
         &self,
-        preview: crate::preparation::PreparationPreview,
+        preview: takio::conversion::prepare::PreparationPreview,
         theme: Theme,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
@@ -349,22 +339,11 @@ impl Render for Workspace {
         let selected = read.session().selected.len();
         let status = read.session().status.clone();
         let loading = read.session().loading;
-        let section = read.session().section;
-        let can_mutate = read.can_mutate();
         let report = read.session().delivery_report.clone();
         let preview = read.send_preview().cloned();
         let preparation = read.preparation_preview().cloned();
         let recovery = read.session().recovery_outcome.clone();
         let exclusions = read.session().delivery_exclusions.clone();
-        let library_path = read.library_root();
-        let library_root = library_path.display().to_string();
-        let library_name = library_path
-            .file_name()
-            .unwrap_or(library_path.as_os_str())
-            .to_string_lossy();
-        let library_label = format!("Library: {library_name}");
-        let can_switch =
-            read.can_switch_library() && !self.library_picker_open && !self.recovery_prompt_open;
 
         let summary = if selected > 0 {
             format!("{selected} of {count} selected")
@@ -520,10 +499,7 @@ impl Render for Workspace {
                 this.state.update(cx, |state, cx| state.trash_selected(cx));
             }))
             .on_action(cx.listener(|this, _: &OpenSelected, _, cx| {
-                let path = this
-                    .state
-                    .read(cx)
-                    .primary_source_path();
+                let path = this.state.read(cx).primary_source_path();
                 if let Some(path) = path {
                     cx.open_with_system(&path);
                 }
@@ -551,328 +527,26 @@ impl Render for Workspace {
                             .flex_1()
                             .min_w_0()
                             .h_full()
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_col()
-                                    .flex_shrink_0()
-                                    .gap_1()
-                                    .px_3()
-                                    .py_2()
-                                    .border_b_1()
-                                    .border_color(theme.border)
-                                    .child(
-                                        div()
-                                            .flex()
-                                            .items_center()
-                                            .gap_2()
-                                            .child(
-                                                div()
-                                                    .flex_1()
-                                                    .min_w_0()
-                                                    .overflow_hidden()
-                                                    .text_ellipsis()
-                                                    .whitespace_nowrap()
-                                                    .text_xs()
-                                                    .child(library_label),
-                                            )
-                                            .child(
-                                                toolbar_button(
-                                                    "open-library",
-                                                    "Open library...",
-                                                    can_switch,
-                                                    theme,
-                                                )
-                                                .on_click(cx.listener(|this, _, _, cx| {
-                                                    this.prompt_open_library(cx)
-                                                })),
-                                            ),
-                                    )
-                                    .child(
-                                        div()
-                                            .id("current-library-path")
-                                            .overflow_x_scroll()
-                                            .whitespace_nowrap()
-                                            .text_xs()
-                                            .text_color(theme.text_secondary)
-                                            .child(library_root),
-                                    ),
-                            )
-                            .child(
-                                div()
-                                    .min_h(px(metrics::TOOLBAR_HEIGHT))
-                                    .flex_shrink_0()
-                                    .flex()
-                                    .flex_wrap()
-                                    .items_center()
-                                    .gap_2()
-                                    .px_3()
-                                    .border_b_1()
-                                    .border_color(theme.border)
-                                    .child(self.search.clone())
-                                    .child(div().flex_1())
-                                    .child(
-                                        toolbar_button("add-books", "Add books", can_mutate, theme)
-                                            .on_click(cx.listener(|this, _, window, cx| {
-                                                this.prompt_import(ImportMode::Copy, window, cx)
-                                            })),
-                                    )
-                                    .when(section == Section::Library && selected > 0, |toolbar| {
-                                        toolbar.child(
-                                            toolbar_button(
-                                                "trash-books",
-                                                "Trash",
-                                                can_mutate,
-                                                theme,
-                                            )
-                                            .on_click(
-                                                cx.listener(|this, _, _, cx| {
-                                                    this.state.update(cx, |state, cx| {
-                                                        state.trash_selected(cx)
-                                                    })
-                                                }),
-                                            ),
-                                        )
-                                    })
-                                    .when(section == Section::Library && selected == 1, |toolbar| {
-                                        toolbar.child(
-                                            toolbar_button(
-                                                "prepare-book",
-                                                "Prepare for Kindle",
-                                                can_mutate,
-                                                theme,
-                                            )
-                                            .on_click(
-                                                cx.listener(|this, _, _, cx| {
-                                                    this.state.update(cx, |state, cx| {
-                                                        state.prepare_selected(cx)
-                                                    });
-                                                }),
-                                            ),
-                                        )
-                                    })
-                                    .when(section == Section::Trash, |toolbar| {
-                                        toolbar
-                                            .child(
-                                                toolbar_button(
-                                                    "restore-books",
-                                                    "Restore",
-                                                    can_mutate && selected > 0,
-                                                    theme,
-                                                )
-                                                .on_click(cx.listener(|this, _, _, cx| {
-                                                    this.state.update(cx, |state, cx| {
-                                                        state.restore_selected(cx)
-                                                    })
-                                                })),
-                                            )
-                                            .child(
-                                                toolbar_button(
-                                                    "purge-books",
-                                                    "Delete permanently",
-                                                    can_mutate && selected > 0,
-                                                    theme,
-                                                )
-                                                .on_click(cx.listener(|this, _, window, cx| {
-                                                    this.confirm_purge(window, cx)
-                                                })),
-                                            )
-                                    }),
-                            )
+                            .child(self.library_header(theme, cx))
+                            .child(self.library_toolbar(theme, cx))
                             .child(div().flex_1().min_h_0().child(self.list.clone()))
-                            .children(recovery.map(|outcome| {
-                                div()
-                                    .id("recovery-result")
-                                    .role(gpui::Role::Group)
-                                    .aria_label(format!(
-                                        "Recovery result: {}. {}. {}",
-                                        outcome.summary,
-                                        outcome.detail,
-                                        outcome.path.display()
-                                    ))
-                                    .flex()
-                                    .flex_col()
-                                    .gap_2()
-                                    .flex_shrink_0()
-                                    .max_h(px(220.))
-                                    .border_t_1()
-                                    .border_color(theme.border)
-                                    .p_3()
-                                    .text_sm()
-                                    .child(
-                                        div()
-                                            .flex()
-                                            .flex_wrap()
-                                            .flex_shrink_0()
-                                            .gap_2()
-                                            .child(
-                                                toolbar_button(
-                                                    "reveal-recovery",
-                                                    "Reveal folder",
-                                                    true,
-                                                    theme,
-                                                )
-                                                .on_click(cx.listener(|this, _, _, cx| {
-                                                    this.reveal_recovery(cx)
-                                                })),
-                                            )
-                                            .child(
-                                                toolbar_button(
-                                                    "dismiss-recovery",
-                                                    "Dismiss",
-                                                    true,
-                                                    theme,
-                                                )
-                                                .on_click(cx.listener(|this, _, _, cx| {
-                                                    this.state.update(cx, |state, cx| {
-                                                        state.dismiss_recovery_outcome(cx);
-                                                    });
-                                                })),
-                                            ),
-                                    )
-                                    .child(
-                                        div()
-                                            .id("recovery-details")
-                                            .min_h_0()
-                                            .overflow_y_scroll()
-                                            .child(div().child(outcome.summary))
-                                            .child(
-                                                div()
-                                                    .text_xs()
-                                                    .text_color(theme.text_secondary)
-                                                    .child(outcome.detail),
-                                            )
-                                            .child(div().text_xs().child(
-                                                outcome.path.to_string_lossy().into_owned(),
-                                            )),
-                                    )
-                            }))
+                            .children(
+                                recovery.map(|outcome| self.recovery_panel(outcome, theme, cx)),
+                            )
                             .children(preview.map(|preview| self.send_review(preview, theme, cx)))
                             .children(
                                 preparation
                                     .map(|preview| self.preparation_review(preview, theme, cx)),
                             )
-                            .children(report.map(|report| {
-                                div()
-                                    .flex()
-                                    .flex_col()
-                                    .max_h(px(180.))
-                                    .border_t_1()
-                                    .border_color(theme.border)
-                                    .p_3()
-                                    .gap_2()
-                                    .child(
-                                        div()
-                                            .flex()
-                                            .justify_between()
-                                            .child(div().text_sm().child("Transfer results"))
-                                            .child(
-                                                div()
-                                                    .id("dismiss-transfers")
-                                                    .map(|el| {
-                                                        super::text_input::accessible_button(
-                                                            el,
-                                                            "Dismiss transfer results",
-                                                            true,
-                                                        )
-                                                    })
-                                                    .cursor_pointer()
-                                                    .text_sm()
-                                                    .text_color(theme.accent)
-                                                    .child("Dismiss")
-                                                    .on_click(cx.listener(|this, _, _, cx| {
-                                                        this.state.update(cx, |state, cx| {
-                                                            state.dismiss_delivery_report(cx);
-                                                        })
-                                                    })),
-                                            ),
-                                    )
-                                    .child(
-                                        div()
-                                            .id("transfer-results")
-                                            .role(gpui::Role::Group)
-                                            .aria_label("Transfer results")
-                                            .overflow_y_scroll()
-                                            .children(report.entries.into_iter().map(|entry| {
-                                                let (message, error) = match entry.result {
-                                                    Ok(delivery) if delivery.record_error.is_some() => {
-                                                        ("Delivered and verified, but history was not updated".to_owned(), true)
-                                                    }
-                                                    Ok(_) => {
-                                                        ("Sent and verified".to_owned(), false)
-                                                    }
-                                                    Err(error) => {
-                                                        (humanize_error(error.kind()), true)
-                                                    }
-                                                };
-                                                div()
-                                                    .id(gpui::SharedString::from(entry.item_id))
-                                                    .role(gpui::Role::Label)
-                                                    .aria_label(format!(
-                                                        "{}: {message}",
-                                                        entry.title
-                                                    ))
-                                                    .py_1()
-                                                    .text_xs()
-                                                    .text_color(if error {
-                                                        theme.danger
-                                                    } else {
-                                                        theme.text_secondary
-                                                    })
-                                                    .child(format!("{}: {message}", entry.title))
-                                            }))
-                                            .children(exclusions.into_iter().map(|entry| {
-                                                div()
-                                                    .py_1()
-                                                    .text_xs()
-                                                    .text_color(theme.text_secondary)
-                                                    .child(format!(
-                                                        "{}: Not sent (blocked in review). {}",
-                                                        entry.title,
-                                                        humanize_error(
-                                                            entry
-                                                                .result
-                                                                .as_ref()
-                                                                .unwrap_err()
-                                                                .kind()
-                                                        )
-                                                    ))
-                                            })),
-                                    )
-                            })),
+                            .children(
+                                report.map(|report| {
+                                    self.transfer_panel(report, exclusions, theme, cx)
+                                }),
+                            ),
                     )
                     .child(self.inspector.clone()),
             )
             .child(status_bar)
             .child(gpui::deferred(self.palette.clone()).with_priority(10))
     }
-}
-
-fn toolbar_button(
-    id: &'static str,
-    label: impl Into<gpui::SharedString>,
-    enabled: bool,
-    theme: Theme,
-) -> gpui::Stateful<gpui::Div> {
-    let label = label.into();
-    div()
-        .id(id)
-        .map(|el| super::text_input::accessible_button(el, label.clone(), enabled))
-        .debug_selector(move || id.to_owned())
-        .px_2()
-        .py_1()
-        .text_sm()
-        .rounded(px(metrics::RADIUS))
-        .bg(theme.row_selected_inactive)
-        .text_color(if enabled {
-            theme.text
-        } else {
-            theme.text_tertiary
-        })
-        .when(enabled, |button| {
-            button
-                .cursor_pointer()
-                .hover(|style| style.bg(theme.row_hover))
-        })
-        .child(label)
 }

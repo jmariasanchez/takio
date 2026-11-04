@@ -56,7 +56,7 @@ impl Measurements {
     }
 }
 
-// Default mode retains the original state-dispatch-to-notification benchmark.
+// Default mode measures state dispatch to notification.
 // Render mode injects through the production Search EntityInputHandler, then
 // waits for the next frame callback after the settled workspace's paint pass.
 // This includes real input handling, query, layout and paint submission, but is
@@ -312,7 +312,7 @@ pub fn run(started: Instant, launch: &crate::startup::launch::LaunchEnvironment)
     let engine =
         Engine::create_or_migrate(paths).unwrap_or_else(|error| crate::fatal(error.code()));
     gpui_platform::application().run(move |cx: &mut App| {
-        crate::theme::initialize(cx);
+        crate::install_app_globals(cx);
         cx.set_menus(crate::commands::menus());
         let volumes = engine.root().join("benchmark-volumes");
         let state = cx.new(|cx| LibraryState::new_with_volumes(engine, volumes, cx));

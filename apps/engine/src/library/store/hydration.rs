@@ -11,6 +11,9 @@ use crate::error::AppResult;
 use crate::library::model::{BookAuthor, BookFormat, LibraryItem, Provenance};
 
 pub(super) fn read_item_from(connection: &Connection, id: &str) -> AppResult<Option<LibraryItem>> {
+    if id.trim().is_empty() {
+        return Err(crate::app_error!("invalid-arguments"));
+    }
     let mut items = read_items_bulk(connection, std::slice::from_ref(&id.to_owned()))?;
     Ok(items.pop())
 }

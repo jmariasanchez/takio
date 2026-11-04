@@ -36,6 +36,6 @@ pub fn insert_metadata_audit(database: &Path, item_id: &str, value: &str) -> rus
 /// Create an empty historical catalogue for non-migration/read-only tests.
 pub fn legacy_schema_v1(database: &Path) -> rusqlite::Result<()> {
     Connection::open(database)?.execute_batch(include_str!(
-        "../tests/fixtures/legacy-library-schemas/schema-v1.sql"
+        "library/store/migration/reference_schemas/schema-v1.sql"
     ))
 }

@@ -27,7 +27,7 @@ impl ActivationReport {
     pub fn remember(root: PathBuf, preference: Option<&Path>) -> Self {
         let preference = match preference {
             None => PreferenceOutcome::NotRequested,
-            Some(path) if crate::startup::preferences::save(path, &root).is_ok() => {
+            Some(path) if crate::settings::preferences::save(path, &root).is_ok() => {
                 PreferenceOutcome::Saved
             }
             Some(_) => PreferenceOutcome::SessionOnly,
@@ -73,7 +73,7 @@ mod tests {
         let saved = ActivationReport::remember(root.clone(), Some(&path));
         assert_eq!(saved.preference, PreferenceOutcome::Saved);
         assert_eq!(
-            crate::startup::preferences::load(&path).unwrap(),
+            crate::settings::preferences::load(&path).unwrap(),
             Some(root.clone())
         );
         let failed = ActivationReport::remember(root.clone(), Some(&root));
@@ -84,7 +84,7 @@ mod tests {
         assert_eq!(untouched.preference, PreferenceOutcome::NotRequested);
         assert!(!untouched.message().1);
         assert_eq!(
-            crate::startup::preferences::load(&path).unwrap(),
+            crate::settings::preferences::load(&path).unwrap(),
             Some(root)
         );
     }

@@ -60,7 +60,7 @@ impl Sidebar {
             sidebar = sidebar.child(
                 div()
                     .id(label)
-                    .map(|el| super::text_input::accessible_button(el, label, available))
+                    .map(|el| super::button::accessible_button(el, label, available))
                     .aria_selected(section == target)
                     .h(px(26.))
                     .px_2()
@@ -116,7 +116,7 @@ impl Sidebar {
                     div()
                         .id("refresh-readers")
                         .map(|el| {
-                            super::text_input::accessible_button(el, "Refresh readers", !refreshing)
+                            super::button::accessible_button(el, "Refresh readers", !refreshing)
                         })
                         .text_xs()
                         .cursor_pointer()
@@ -141,7 +141,7 @@ impl Sidebar {
         if has_stock_kindle {
             sidebar = sidebar.child(div().px_2().py_2().flex().flex_col().gap_1()
             .child(div().text_xs().text_color(theme.text_secondary).child("Have an EPUB? Reveal its file in the inspector, then upload it yourself on Amazon."))
-            .child(div().id("amazon-send-to-kindle").map(|el| super::text_input::accessible_button(el, "Open Send to Kindle website", true)).debug_selector(|| "amazon-send-to-kindle".to_owned()).text_xs().text_color(theme.accent).cursor_pointer()
+            .child(div().id("amazon-send-to-kindle").map(|el| super::button::accessible_button(el, "Open Send to Kindle website", true)).debug_selector(|| "amazon-send-to-kindle".to_owned()).text_xs().text_color(theme.accent).cursor_pointer()
                 .child("Open Send to Kindle website")
                 .on_click(|_, _, cx| cx.open_url("https://www.amazon.com/sendtokindle")))
             .child(div().text_xs().text_color(theme.text_tertiary).child("Opens your browser. Takio does not upload files or confirm Amazon delivery.")));
@@ -213,14 +213,21 @@ impl Sidebar {
                     div()
                         .id(("import-reader", index))
                         .map(|el| {
-                            super::text_input::accessible_button(
+                            super::button::accessible_button(
                                 el,
                                 format!("Add {unmatched} books from reader"),
                                 can_import,
                             )
                         })
                         .debug_selector(|| "import-reader".to_owned())
-                        .map(|el| small_action(el, can_import, theme))
+                        .map(|el| {
+                            super::button::style(
+                                el,
+                                can_import,
+                                super::button::Variant::Compact,
+                                theme,
+                            )
+                        })
                         .child(format!("Add {unmatched} to library"))
                         .on_click(cx.listener(move |this, _, _, cx| {
                             if !can_import {
@@ -241,14 +248,21 @@ impl Sidebar {
                         div()
                             .id(("send-device", index))
                             .map(|el| {
-                                super::text_input::accessible_button(
+                                super::button::accessible_button(
                                     el,
                                     format!("Review {selected} books to send"),
                                     can_send,
                                 )
                             })
                             .debug_selector(|| "send-device".to_owned())
-                            .map(|el| small_action(el, can_send, theme))
+                            .map(|el| {
+                                super::button::style(
+                                    el,
+                                    can_send,
+                                    super::button::Variant::Compact,
+                                    theme,
+                                )
+                            })
                             .child(if can_send {
                                 format!("Review {selected} to send")
                             } else {
@@ -267,9 +281,16 @@ impl Sidebar {
                         div()
                             .id(("eject", index))
                             .map(|el| {
-                                super::text_input::accessible_button(el, "Eject reader", available)
+                                super::button::accessible_button(el, "Eject reader", available)
                             })
-                            .map(|el| small_action(el, available, theme))
+                            .map(|el| {
+                                super::button::style(
+                                    el,
+                                    available,
+                                    super::button::Variant::Compact,
+                                    theme,
+                                )
+                            })
                             .child("Eject")
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 if !available {
@@ -298,7 +319,7 @@ impl Sidebar {
             groups = groups.child(
                 div()
                     .id("clear-filters")
-                    .map(|el| super::text_input::accessible_button(el, "Clear filters", available))
+                    .map(|el| super::button::accessible_button(el, "Clear filters", available))
                     .px_2()
                     .py_1()
                     .cursor_pointer()
@@ -343,7 +364,7 @@ impl Sidebar {
             groups = groups.child(
                 div()
                     .id(name)
-                    .map(|el| super::text_input::accessible_button(el, name, true))
+                    .map(|el| super::button::accessible_button(el, name, true))
                     .aria_expanded(!collapsed)
                     .px_2()
                     .py_1()
@@ -369,7 +390,7 @@ impl Sidebar {
                     div()
                         .id(gpui::SharedString::from(format!("facet:{name}:{value}")))
                         .map(|el| {
-                            super::text_input::accessible_button(
+                            super::button::accessible_button(
                                 el,
                                 format!("{name}: {value}, {count} books"),
                                 available,
@@ -426,21 +447,6 @@ impl Sidebar {
         }
         groups
     }
-}
-
-fn small_action(element: Stateful<Div>, enabled: bool, theme: Theme) -> Stateful<Div> {
-    element
-        .text_xs()
-        .px_2()
-        .py_1()
-        .rounded(px(metrics::RADIUS))
-        .bg(theme.row_selected_inactive)
-        .text_color(if enabled {
-            theme.accent
-        } else {
-            theme.text_tertiary
-        })
-        .when(enabled, |button| button.cursor_pointer())
 }
 
 /// The text under a reader in the sidebar, from its last scan.

@@ -13,8 +13,6 @@ impl Workspace {
             return;
         }
         self.library_picker_open = true;
-        let epoch = self.state.read(cx).library_epoch();
-        let pause = self.state.read(cx).automatic_backup().pause();
         let receiver = cx.prompt_for_paths(PathPromptOptions {
             files: false,
             directories: true,
@@ -22,27 +20,19 @@ impl Workspace {
             prompt: Some("Open library".into()),
         });
         cx.notify();
-        cx.spawn(async move |this, cx| {
-            let response = receiver.await;
-            drop(pause);
-            let _ = this.update(cx, |this, cx| {
+        self.after_dialog(receiver, cx, |this, response, cx| {
                 this.library_picker_open = false;
-                if this.state.read(cx).library_epoch() != epoch {
-                    cx.notify();
-                    return;
-                }
                 match response {
-                    Ok(Ok(Some(mut paths))) if paths.len() == 1 => {
+                    Some(Ok(Ok(Some(mut paths)))) if paths.len() == 1 => {
                         this.state.update(cx, |state, cx| state.open_library(paths.remove(0), cx));
                     }
-                    Ok(Ok(_)) => {},
+                    None | Some(Ok(Ok(_))) => {},
                     _ => this.state.update(cx, |state, cx| {
                         state.set_status("The library chooser could not be opened. Try again. Your current library is unchanged.".into(), true, cx);
                     }),
                 }
                 cx.notify();
-            });
-        }).detach();
+        });
     }
 
     pub(super) fn reset_library_views(&mut self, window: &mut Window, cx: &mut Context<Self>) {

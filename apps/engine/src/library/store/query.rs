@@ -71,6 +71,7 @@ impl LibraryStore {
     }
 
     pub fn search(&self, query: &str) -> AppResult<Vec<LibraryItem>> {
+        validate_query(query, &Filters::default())?;
         let needle = format!(
             "%{}%",
             query
@@ -140,6 +141,7 @@ pub(super) fn query_item_ids(
     let mut sql = String::from("SELECT li.id FROM library_items li WHERE li.trashed_at IS NULL");
     let mut values = Vec::<SqlValue>::new();
     for scope in scopes {
+        validate_query(scope.query, scope.filters)?;
         append_query_scope(&mut sql, &mut values, *scope)?;
     }
     sql.push_str(" ORDER BY li.title COLLATE NOCASE, li.id");
@@ -149,6 +151,13 @@ pub(super) fn query_item_ids(
             row.get::<_, String>(0)
         })?
         .collect::<Result<Vec<_>, _>>()?)
+}
+
+fn validate_query(query: &str, filters: &Filters) -> AppResult<()> {
+    if query.encode_utf16().count() > 1024 {
+        return Err(crate::app_error!("invalid-arguments"));
+    }
+    filters.validate()
 }
 
 fn append_query_scope(

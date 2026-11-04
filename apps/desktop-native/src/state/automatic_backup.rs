@@ -21,7 +21,7 @@ impl LibraryState {
                 Err(error) => this.set_status(format!("Automatic recovery copies remain disabled: settings could not be read ({}). Enable again from File to choose a destination.", error.code()), true, cx),
             }
             this.start_automatic_backup_timer(cx);
-            this.check_automatic_backup(now_seconds(), cx);
+            this.run_automatic_backup_if_due(now_seconds(), cx);
             cx.notify();
         }).detach();
     }
@@ -37,7 +37,7 @@ impl LibraryState {
                     if this.library_epoch != epoch {
                         return false;
                     }
-                    this.check_automatic_backup(now_seconds(), cx);
+                    this.run_automatic_backup_if_due(now_seconds(), cx);
                     true
                 }) else {
                     return;
@@ -88,7 +88,7 @@ impl LibraryState {
                         "Automatic recovery copies enabled: daily while Takio is open. All copies are kept, with no automatic deletion.".into()
                     }, false, cx);
                     this.start_automatic_backup_timer(cx);
-                    this.check_automatic_backup(now_seconds(), cx);
+                    this.run_automatic_backup_if_due(now_seconds(), cx);
                 }
                 Err(error) => {
                     let message = if disabling {
@@ -102,7 +102,7 @@ impl LibraryState {
         }).detach();
     }
 
-    pub fn check_automatic_backup(&mut self, now: u64, cx: &mut Context<Self>) {
+    pub fn run_automatic_backup_if_due(&mut self, now: u64, cx: &mut Context<Self>) {
         if !self.automatic_backup.due(now)
             || !self.can_mutate()
             || self.refreshing_destinations

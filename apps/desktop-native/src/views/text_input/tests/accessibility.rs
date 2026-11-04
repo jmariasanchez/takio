@@ -16,7 +16,7 @@ use crate::test_support::settle;
 
 pub(crate) fn fixture(cx: &mut TestAppContext) -> (tempfile::TempDir, LibraryEntity) {
     cx.executor().allow_parking();
-    cx.update(crate::theme::initialize);
+    cx.update(crate::install_app_globals);
     let temp = tempfile::tempdir().unwrap();
     let paths =
         LibraryPaths::resolve(None, Some(&temp.path().join("library/library.sqlite"))).unwrap();
@@ -52,7 +52,7 @@ pub(crate) fn fixture(cx: &mut TestAppContext) -> (tempfile::TempDir, LibraryEnt
 
 #[gpui::test]
 fn search_node_reports_actual_role_label_value_and_set_value_capability(cx: &mut TestAppContext) {
-    cx.update(crate::theme::initialize);
+    cx.update(crate::install_app_globals);
     let window = cx.add_window(|_, cx| {
         let mut input = TextInput::new("a\u{1f642}b".into(), cx);
         input.set_label("Title (required)");

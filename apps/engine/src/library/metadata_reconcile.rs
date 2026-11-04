@@ -4,7 +4,9 @@ use std::sync::{Arc, Mutex, mpsc};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+#[cfg(feature = "cli-signals")]
 use signal_hook::consts::signal::{SIGINT, SIGTERM};
+#[cfg(feature = "cli-signals")]
 use signal_hook::iterator::{Handle, Signals};
 
 use crate::error::AppResult;
@@ -113,12 +115,14 @@ pub struct ReconcileResponse {
     counts: ReconcileCounts,
 }
 
+#[cfg(feature = "cli-signals")]
 pub struct CancellationSignals {
     canceled: Arc<AtomicBool>,
     handle: Handle,
     thread: Option<std::thread::JoinHandle<()>>,
 }
 
+#[cfg(feature = "cli-signals")]
 impl CancellationSignals {
     pub fn install() -> AppResult<Self> {
         let mut signals = Signals::new([SIGINT, SIGTERM])?;
@@ -142,6 +146,7 @@ impl CancellationSignals {
     }
 }
 
+#[cfg(feature = "cli-signals")]
 impl Drop for CancellationSignals {
     fn drop(&mut self) {
         self.handle.close();
@@ -533,6 +538,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "cli-signals")]
     fn installed_signal_handler_sets_the_cancellation_flag() {
         let signals = CancellationSignals::install().expect("install signals");
         let canceled = signals.flag();

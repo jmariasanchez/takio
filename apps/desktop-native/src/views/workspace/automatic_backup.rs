@@ -12,7 +12,6 @@ impl Workspace {
         self.recovery_prompt_open = true;
         self.state
             .update(cx, |state, cx| state.set_automatic_backup_prompt(true, cx));
-        let epoch = self.state.read(cx).library_epoch();
         let config = &self.state.read(cx).automatic_backup().config;
         let current = if config.enabled {
             format!(
@@ -29,7 +28,6 @@ impl Workspace {
             "{current}{}",
             crate::settings::automatic_backup::EXPLANATION
         );
-        let pause = self.state.read(cx).automatic_backup().pause();
         let answer = window.prompt(
             PromptLevel::Info,
             "Enable automatic recovery copies?",
@@ -40,33 +38,23 @@ impl Workspace {
             ],
             cx,
         );
-        cx.spawn(async move |this, cx| {
-            let accepted = answer.await == Ok(1);
-            drop(pause);
-            let _ = this.update(cx, |this, cx| {
-                if !accepted || this.state.read(cx).library_epoch() != epoch || !this.state.read(cx).can_mutate() {
+        self.after_dialog(answer, cx, |this, answer, cx| {
+                if answer != Some(Ok(1)) {
                     this.finish_automatic_backup_prompt(cx);
                     return;
                 }
-                let pause = this.state.read(cx).automatic_backup().pause();
                 let receiver = cx.prompt_for_paths(PathPromptOptions { files: false, directories: true, multiple: false, prompt: Some("Keep all recovery copies here".into()) });
-                cx.spawn(async move |this, cx| {
-                    let response = receiver.await;
-                    drop(pause);
-                    let _ = this.update(cx, |this, cx| {
+                this.after_dialog(receiver, cx, |this, response, cx| {
                         this.finish_automatic_backup_prompt(cx);
-                        if this.state.read(cx).library_epoch() != epoch { return; }
                         match response {
-                            Ok(Ok(Some(mut paths))) if paths.len() == 1 => {
+                            Some(Ok(Ok(Some(mut paths)))) if paths.len() == 1 => {
                                 this.state.update(cx, |state, cx| state.configure_automatic_backup(paths.pop(), cx));
                             }
-                            Ok(Ok(_)) => {}
+                            None | Some(Ok(Ok(_))) => {}
                             _ => this.state.update(cx, |state, cx| state.set_status("Could not open the recovery destination chooser. Settings were not changed.".into(), true, cx)),
                         }
-                    });
-                }).detach();
-            });
-        }).detach();
+                });
+        });
     }
 
     fn finish_automatic_backup_prompt(&mut self, cx: &mut Context<Self>) {

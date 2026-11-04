@@ -106,7 +106,7 @@ impl LibraryList {
         let state = self.state.clone();
         div()
             .id(label)
-            .map(|el| super::text_input::accessible_button(el, format!("Sort by {label}"), enabled))
+            .map(|el| super::button::accessible_button(el, format!("Sort by {label}"), enabled))
             .aria_description(if active {
                 if sort.ascending {
                     "Sorted ascending"

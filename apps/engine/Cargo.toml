@@ -11,6 +11,7 @@ name = "takio"
 
 [features]
 test-support = []
+cli-signals = ["dep:signal-hook"]
 
 [dependencies]
 chrono = { version = "0.4", features = ["serde"] }
@@ -19,18 +20,21 @@ flate2.workspace = true
 hex.workspace = true
 lopdf = { version = "0.46", default-features = false }
 regex = "1.11"
-roxmltree = "0.20"
+roxmltree = "0.21"
 rusqlite.workspace = true
 same-file = "1.0"
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
-signal-hook.workspace = true
+signal-hook = { workspace = true, optional = true }
 tempfile.workspace = true
 thiserror = "2.0"
 unicode-normalization = "0.1"
 uuid.workspace = true
 walkdir = "2.5"
+
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1.1", features = ["process"] }
 
 [lints]
 workspace = true

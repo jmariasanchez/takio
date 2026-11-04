@@ -15,24 +15,15 @@ type TableInfoSignature = Vec<(String, String, String, i64, Option<String>, i64)
 type ForeignKeySignature = Vec<(String, String, String, String, String, String)>;
 type SchemaSignature = Vec<(String, String, String, String)>;
 
-const V1_SCHEMA: &str =
-    include_str!("../../../tests/fixtures/legacy-library-schemas/schema-v1.sql");
-const V2_SCHEMA: &str =
-    include_str!("../../../tests/fixtures/legacy-library-schemas/schema-v2.sql");
-const V3_SCHEMA: &str =
-    include_str!("../../../tests/fixtures/legacy-library-schemas/schema-v3.sql");
-const V4_SCHEMA: &str =
-    include_str!("../../../tests/fixtures/legacy-library-schemas/schema-v4.sql");
-const V5_SCHEMA: &str =
-    include_str!("../../../tests/fixtures/legacy-library-schemas/schema-v5.sql");
-const V6_SCHEMA: &str =
-    include_str!("../../../tests/fixtures/legacy-library-schemas/schema-v6.sql");
-const V7_SCHEMA: &str =
-    include_str!("../../../tests/fixtures/legacy-library-schemas/schema-v7.sql");
-const V8_SCHEMA: &str =
-    include_str!("../../../tests/fixtures/legacy-library-schemas/schema-v8.sql");
-const V9_SCHEMA: &str =
-    include_str!("../../../tests/fixtures/legacy-library-schemas/schema-v9.sql");
+const V1_SCHEMA: &str = include_str!("migration/reference_schemas/schema-v1.sql");
+const V2_SCHEMA: &str = include_str!("migration/reference_schemas/schema-v2.sql");
+const V3_SCHEMA: &str = include_str!("migration/reference_schemas/schema-v3.sql");
+const V4_SCHEMA: &str = include_str!("migration/reference_schemas/schema-v4.sql");
+const V5_SCHEMA: &str = include_str!("migration/reference_schemas/schema-v5.sql");
+const V6_SCHEMA: &str = include_str!("migration/reference_schemas/schema-v6.sql");
+const V7_SCHEMA: &str = include_str!("migration/reference_schemas/schema-v7.sql");
+const V8_SCHEMA: &str = include_str!("migration/reference_schemas/schema-v8.sql");
+const V9_SCHEMA: &str = include_str!("migration/reference_schemas/schema-v9.sql");
 
 const CANONICAL_V11_INDEXES: &str = "
     CREATE INDEX library_items_by_title ON library_items(title COLLATE NOCASE,id);
@@ -319,7 +310,7 @@ fn current_schema_contract(connection: &Connection) -> Result<bool, rusqlite::Er
         || foreign_key_signature(connection)? != foreign_key_signature(&reference)?
         || index_signature(connection)? != index_signature(&reference)?
         || table_index_contract(connection)? != table_index_contract(&reference)?
-        || check_signature(connection)? != check_signature(&reference)?
+        || check_constraint_signature(connection)? != check_constraint_signature(&reference)?
     {
         return Ok(false);
     }
@@ -348,7 +339,9 @@ fn table_sql(connection: &Connection, table: &str) -> Result<String, rusqlite::E
     )
 }
 
-fn check_signature(connection: &Connection) -> Result<Vec<(String, Vec<String>)>, rusqlite::Error> {
+fn check_constraint_signature(
+    connection: &Connection,
+) -> Result<Vec<(String, Vec<String>)>, rusqlite::Error> {
     let mut statement = connection.prepare(
         "SELECT name,sql FROM sqlite_schema WHERE type='table' AND name NOT GLOB 'sqlite_*' ORDER BY name",
     )?;
@@ -1136,15 +1129,15 @@ mod tests {
     use super::*;
     use crate::library::store::{LIBRARY_SCHEMA_VERSION, LibraryStore};
 
-    const V1: &str = include_str!("../../../tests/fixtures/legacy-library-schemas/schema-v1.sql");
-    const V2: &str = include_str!("../../../tests/fixtures/legacy-library-schemas/schema-v2.sql");
-    const V3: &str = include_str!("../../../tests/fixtures/legacy-library-schemas/schema-v3.sql");
-    const V4: &str = include_str!("../../../tests/fixtures/legacy-library-schemas/schema-v4.sql");
-    const V5: &str = include_str!("../../../tests/fixtures/legacy-library-schemas/schema-v5.sql");
-    const V6: &str = include_str!("../../../tests/fixtures/legacy-library-schemas/schema-v6.sql");
-    const V7: &str = include_str!("../../../tests/fixtures/legacy-library-schemas/schema-v7.sql");
-    const V8: &str = include_str!("../../../tests/fixtures/legacy-library-schemas/schema-v8.sql");
-    const V9: &str = include_str!("../../../tests/fixtures/legacy-library-schemas/schema-v9.sql");
+    const V1: &str = include_str!("migration/reference_schemas/schema-v1.sql");
+    const V2: &str = include_str!("migration/reference_schemas/schema-v2.sql");
+    const V3: &str = include_str!("migration/reference_schemas/schema-v3.sql");
+    const V4: &str = include_str!("migration/reference_schemas/schema-v4.sql");
+    const V5: &str = include_str!("migration/reference_schemas/schema-v5.sql");
+    const V6: &str = include_str!("migration/reference_schemas/schema-v6.sql");
+    const V7: &str = include_str!("migration/reference_schemas/schema-v7.sql");
+    const V8: &str = include_str!("migration/reference_schemas/schema-v8.sql");
+    const V9: &str = include_str!("migration/reference_schemas/schema-v9.sql");
 
     fn paths(temp: &tempfile::TempDir) -> LibraryPaths {
         LibraryPaths::resolve(None, Some(&temp.path().join("library.sqlite"))).unwrap()

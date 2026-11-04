@@ -5,6 +5,21 @@ use std::path::Component;
 #[cfg(test)]
 mod tests;
 
+pub(super) fn is_backup_root(root: &Path) -> AppResult<bool> {
+    match fs::symlink_metadata(root.join("manifest.json")) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error.into()),
+    }
+}
+
+pub(super) fn reject_backup_root(root: &Path) -> AppResult<()> {
+    if is_backup_root(root)? {
+        return Err(crate::app_error!("invalid-arguments"));
+    }
+    Ok(())
+}
+
 // Resolve only the recorded library root, never an owned entry. Canonicalizing
 // attachment paths would hide symlink escapes and change their ownership meaning.
 pub(super) fn ownership_paths(

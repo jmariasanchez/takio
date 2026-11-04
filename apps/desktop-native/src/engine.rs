@@ -11,9 +11,12 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 
-use crate::preparation::{self, PreparationPreview};
-pub use crate::startup::library_location::OpenedLibrary;
+mod library_location;
+#[cfg(all(test, unix))]
+mod preparation_tests;
+use library_location::OpenedLibrary;
 use takio::conversion::BackendDiscovery;
+use takio::conversion::prepare::{self as preparation, PreparationPreview};
 #[cfg(test)]
 use takio::delivery::destinations::DestinationKind;
 use takio::delivery::destinations::{self, DeliveryResult, Destination};
@@ -64,11 +67,13 @@ impl ReaderScanWorker {
                 .into_iter()
                 .take_while(|_| job.current.load(Ordering::Acquire))
                 .map(|destination| {
-                    let shelf = takio::delivery::reader_shelf::scan_cached(
-                        &destination,
-                        &job.fingerprints,
-                        &mut hashes,
-                    );
+                    let shelf = takio::delivery::reauthorize(&destination).and_then(|authorized| {
+                        takio::delivery::reader_shelf::scan_cached(
+                            &authorized,
+                            &job.fingerprints,
+                            &mut hashes,
+                        )
+                    });
                     (destination, shelf)
                 })
                 .collect();
@@ -342,7 +347,7 @@ impl Engine {
     }
 
     pub fn open_existing(directory: PathBuf) -> AppResult<Self> {
-        let (store, _) = crate::startup::library_location::open(&directory)?;
+        let (store, _) = library_location::open(&directory)?;
         Self::start(store, None)
     }
 
@@ -409,15 +414,13 @@ fn worker_with_reader_scans(
     while let Ok(request) = receiver.recv() {
         match request {
             Request::OpenLibrary { directory, reply } => {
-                let result = crate::startup::library_location::open(&directory).map(
-                    |(candidate, opened)| {
-                        store = candidate;
-                        if let Some(scans) = &reader_scans {
-                            scans.invalidate();
-                        }
-                        opened
-                    },
-                );
+                let result = library_location::open(&directory).map(|(candidate, opened)| {
+                    store = candidate;
+                    if let Some(scans) = &reader_scans {
+                        scans.invalidate();
+                    }
+                    opened
+                });
                 let _ = reply.send(result);
             }
             Request::Backup { destination, reply } => {
@@ -490,13 +493,17 @@ fn worker_with_reader_scans(
                 let _ = reply.send(result);
             }
             Request::Trash { ids, reply } => {
-                let _ = reply.send(Ok(each(&ids, |id| store.trash(id).map(Into::into))));
+                let _ = reply.send(Ok(mutation_report_for(&ids, |id| {
+                    store.trash(id).map(Into::into)
+                })));
             }
             Request::Restore { ids, reply } => {
-                let _ = reply.send(Ok(each(&ids, |id| store.restore(id).map(Into::into))));
+                let _ = reply.send(Ok(mutation_report_for(&ids, |id| {
+                    store.restore(id).map(Into::into)
+                })));
             }
             Request::Purge { ids, reply } => {
-                let _ = reply.send(Ok(each(&ids, |id| store.purge(id))));
+                let _ = reply.send(Ok(mutation_report_for(&ids, |id| store.purge(id))));
             }
             Request::ListDestinations {
                 volumes_root,
@@ -507,38 +514,36 @@ fn worker_with_reader_scans(
             Request::ScanReaderShelves {
                 destinations,
                 reply,
-            } => match (&reader_scans, store.active_fingerprints()) {
-                (Some(scans), Ok(fingerprints)) => scans.submit(ReaderScanJob {
-                    root: store.paths().root.clone(),
-                    destinations: destinations
-                        .into_iter()
-                        .filter(|destination| destination.is_reader())
-                        .collect(),
-                    fingerprints,
-                    current: Arc::new(AtomicBool::new(true)),
-                    reply,
-                }),
-                (_, Err(error)) => {
-                    let _ = reply.send(Err(error));
-                }
-                (None, _) => {
+            } => {
+                let Some(scans) = &reader_scans else {
                     let _ = reply.send(Err(takio::app_error!("reader-scan-unavailable")));
+                    continue;
+                };
+                match store.active_fingerprints() {
+                    Ok(fingerprints) => scans.submit(ReaderScanJob {
+                        root: store.paths().root.clone(),
+                        destinations: destinations
+                            .into_iter()
+                            .filter(|destination| destination.is_reader())
+                            .collect(),
+                        fingerprints,
+                        current: Arc::new(AtomicBool::new(true)),
+                        reply,
+                    }),
+                    Err(error) => {
+                        let _ = reply.send(Err(error));
+                    }
                 }
-            },
+            }
             Request::ImportFromReader { destination, reply } => {
                 let mut reader_hashes = takio::delivery::reader_shelf::HashCache::default();
-                let result = destination
-                    .path
-                    .parent()
-                    .ok_or_else(|| takio::app_error!("unknown-destination"))
-                    .and_then(|root| destinations::authorize(&destination.path, root))
-                    .and_then(|destination| {
-                        takio::delivery::reader_shelf::import_unmatched(
-                            &mut store,
-                            &destination,
-                            &mut reader_hashes,
-                        )
-                    });
+                let result = takio::delivery::reauthorize(&destination).and_then(|destination| {
+                    takio::delivery::reader_shelf::import_unmatched(
+                        &mut store,
+                        &destination,
+                        &mut reader_hashes,
+                    )
+                });
                 let _ = reply.send(result);
             }
             Request::PreviewSend {
@@ -565,13 +570,16 @@ fn worker_with_reader_scans(
                         continue;
                     }
                 }
-                let _ = reply.send(destinations::eject(&destination));
+                let _ = reply.send(
+                    takio::delivery::reauthorize(&destination)
+                        .and_then(|destination| destinations::eject(&destination)),
+                );
             }
         }
     }
 }
 
-fn each(
+fn mutation_report_for(
     ids: &[String],
     mut op: impl FnMut(&str) -> AppResult<takio::library::store::MutationResult>,
 ) -> MutationReport {
@@ -1476,6 +1484,59 @@ mod tests {
             preview_and_send_one(&store, &destination, &item.id)
                 .unwrap_err()
                 .code(),
+            "unknown-destination"
+        );
+        assert!(!destination.path.exists());
+    }
+
+    #[test]
+    fn worker_refuses_disconnected_reader_for_every_reader_operation() {
+        let (temp, mut store, destination) = delivery_fixture();
+        let item = add_book(&mut store, temp.path(), "Disconnected worker", "azw3");
+        let paths = store.paths().clone();
+        let preview = preview_send(&store, &destination, std::slice::from_ref(&item.id)).unwrap();
+        let entries = preview.entries;
+        drop(store);
+        fs::remove_dir_all(&destination.path).unwrap();
+        let engine = Engine::open_existing(paths.root).unwrap();
+        let preview_error = recv(engine.request(|reply| Request::PreviewSend {
+            destination: destination.clone(),
+            item_ids: vec![item.id],
+            reply,
+        }))
+        .unwrap_err();
+        assert_eq!(preview_error.code(), "unknown-destination");
+        let send = recv(engine.request(|reply| Request::SendReviewed {
+            destination: destination.clone(),
+            entries,
+            reply,
+        }))
+        .unwrap();
+        assert!(
+            send.entries
+                .iter()
+                .all(|entry| entry.result.as_ref().unwrap_err().code() == "unknown-destination")
+        );
+        let import_error = recv(engine.request(|reply| Request::ImportFromReader {
+            destination: destination.clone(),
+            reply,
+        }))
+        .unwrap_err();
+        assert_eq!(import_error.code(), "unknown-destination");
+        let eject_error = recv(engine.request(|reply| Request::Eject {
+            destination: destination.clone(),
+            reply,
+        }))
+        .unwrap_err();
+        assert_eq!(eject_error.code(), "unknown-destination");
+        let shelves = recv(engine.request(|reply| Request::ScanReaderShelves {
+            destinations: vec![destination.clone()],
+            reply,
+        }))
+        .unwrap();
+        assert_eq!(shelves.len(), 1);
+        assert_eq!(
+            shelves[0].1.as_ref().unwrap_err().code(),
             "unknown-destination"
         );
         assert!(!destination.path.exists());

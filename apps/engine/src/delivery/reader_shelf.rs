@@ -1,6 +1,8 @@
 //! Read-only view of the books on a mounted reader, matched to the library.
 //!
-//! Nothing on the reader or in the catalogue is written. A small cache next to the
+//! Scanning writes neither the reader nor the catalogue. Explicit `import_unmatched`
+//! copies selected reader books into the catalogue, leaving reader files untouched.
+//! A small cache next to the
 //! catalogue remembers the fingerprints of unchanged reader files, so a reader on a
 //! slow USB connection is read in full only once. A file counts as one of
 //! the library's books only when its exact size and SHA-256 equal a managed
@@ -204,9 +206,9 @@ impl HashCache {
     ///
     /// # Errors
     ///
-    /// Returns the I/O error when the cache could not be written. Callers may ignore
+    /// Returns an engine error when the cache could not be written. Callers may ignore
     /// it: the cache is only an optimization.
-    pub fn save(&mut self, library_root: &Path) -> std::io::Result<()> {
+    pub fn save(&mut self, library_root: &Path) -> AppResult<()> {
         if !self.dirty || !fs::symlink_metadata(library_root).is_ok_and(|meta| meta.is_dir()) {
             return Ok(());
         }

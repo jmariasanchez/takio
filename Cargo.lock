@@ -5763,7 +5763,6 @@ version = "0.1.0"
 dependencies = [
  "assert_cmd",
  "clap",
- "crossterm",
  "flate2",
  "hex",
  "predicates",
@@ -5799,8 +5798,9 @@ dependencies = [
  "hex",
  "lopdf",
  "regex",
- "roxmltree 0.20.0",
+ "roxmltree 0.21.1",
  "rusqlite",
+ "rustix 1.1.4",
  "same-file",
  "serde",
  "serde_json",

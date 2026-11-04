@@ -1,11 +1,10 @@
 //! Resolve a remembered library without recreating a missing selected database.
 pub mod activation;
 pub mod launch;
-pub mod library_location;
-pub mod preferences;
 pub mod window;
 
 use crate::engine::Engine;
+use crate::settings::preferences;
 use activation::ActivationReport;
 use std::path::{Path, PathBuf};
 use takio::{

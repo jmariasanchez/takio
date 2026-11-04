@@ -177,25 +177,6 @@ pub fn fetch(
     )
 }
 
-pub fn fetch_cancellable(
-    title: Option<&str>,
-    authors: &[String],
-    identifiers: &BTreeMap<String, String>,
-    cover_output: Option<&Path>,
-    timeout: Duration,
-    canceled: &AtomicBool,
-) -> AppResult<FetchedMetadata> {
-    fetch_with_cancellation(
-        title,
-        authors,
-        identifiers,
-        cover_output,
-        timeout,
-        Some(canceled),
-        false,
-    )
-}
-
 pub(crate) fn fetch_candidate_cancellable(
     title: Option<&str>,
     authors: &[String],

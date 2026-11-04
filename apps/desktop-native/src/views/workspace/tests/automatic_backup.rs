@@ -80,7 +80,7 @@ fn native_automatic_backup_enable_reload_mutate_restore_and_disable(cx: &mut Tes
                 .automatic_backup()
                 .due(last_success + crate::settings::automatic_backup::DAILY_SECONDS - 1)
         );
-        state.check_automatic_backup(
+        state.run_automatic_backup_if_due(
             last_success + crate::settings::automatic_backup::DAILY_SECONDS - 1,
             cx,
         );
@@ -149,7 +149,7 @@ fn native_automatic_backup_enable_reload_mutate_restore_and_disable(cx: &mut Tes
             state.automatic_backup().config,
             crate::settings::automatic_backup::Config::default()
         );
-        state.check_automatic_backup(u64::MAX, cx);
+        state.run_automatic_backup_if_due(u64::MAX, cx);
         assert!(!state.busy());
         assert!(state.automatic_backup().last_attempt.is_none());
     });
@@ -173,7 +173,7 @@ fn native_automatic_backup_enable_reload_mutate_restore_and_disable(cx: &mut Tes
     f.state.update(cx, |state, cx| {
         assert!(!state.session().status.as_ref().unwrap().is_error);
         assert!(!state.automatic_backup().config.enabled);
-        state.check_automatic_backup(u64::MAX, cx);
+        state.run_automatic_backup_if_due(u64::MAX, cx);
         assert!(!state.busy());
     });
     assert!(
@@ -211,7 +211,7 @@ fn automatic_backup_due_for_dialog_test(f: &Fixture, cx: &mut TestAppContext) {
 fn automatic_backup_assert_dialog_paused(f: &Fixture, cx: &mut TestAppContext) {
     f.state.update(cx, |state, cx| {
         assert!(!state.automatic_backup().due(1));
-        state.check_automatic_backup(1, cx);
+        state.run_automatic_backup_if_due(1, cx);
         assert!(!state.busy());
         assert!(state.automatic_backup().last_attempt.is_none());
     });

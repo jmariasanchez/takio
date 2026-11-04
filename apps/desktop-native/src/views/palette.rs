@@ -209,7 +209,7 @@ mod tests {
 
     #[gpui::test]
     fn palette_shared_input_composition_refilters_and_resets_highlight(cx: &mut TestAppContext) {
-        cx.update(crate::theme::initialize);
+        cx.update(crate::install_app_globals);
         let window = cx.add_window(|window, cx| {
             let focus = cx.focus_handle();
             let mut palette = super::Palette::new(focus, cx);

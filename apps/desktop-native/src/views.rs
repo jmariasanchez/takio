@@ -1,3 +1,4 @@
+pub mod button;
 pub mod inspector;
 pub mod library_list;
 pub mod metadata_editor;

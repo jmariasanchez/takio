@@ -33,7 +33,7 @@ fn fixture_with_preparation_backend(
     cx: &mut TestAppContext,
 ) -> Fixture {
     cx.executor().allow_parking();
-    cx.update(crate::theme::initialize);
+    cx.update(crate::install_app_globals);
     let temp = tempfile::tempdir().unwrap();
     let paths =
         LibraryPaths::resolve(None, Some(&temp.path().join("library/library.sqlite"))).unwrap();

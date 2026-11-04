@@ -88,7 +88,7 @@ fn handle(request: Request, store: &LibraryStore, token: &str) {
                     success(json!({"books":books,"offset":offset,"limit":limit,"total":total})),
                 );
             }
-            Err(error) => respond_error(request, error.kind(), 503),
+            Err(error) => respond_store_error(request, error),
         }
         return;
     }
@@ -107,12 +107,7 @@ fn handle(request: Request, store: &LibraryStore, token: &str) {
                 Ok(item) => {
                     respond_catalog_json(request, success(json!({"book":catalog_record(&item)})))
                 }
-                Err(error)
-                    if matches!(error.kind(), ErrorCode::NotFound | ErrorCode::ItemTrashed) =>
-                {
-                    respond_error(request, ErrorCode::NotFound, 404)
-                }
-                Err(error) => respond_error(request, error.kind(), 503),
+                Err(error) => respond_store_error(request, error),
             }
         }
         [version, books, id, formats, format]
@@ -135,15 +130,22 @@ fn handle(request: Request, store: &LibraryStore, token: &str) {
                         respond_file(request, &attachment.source_path, format);
                     }
                 }
-                Err(error)
-                    if matches!(error.kind(), ErrorCode::NotFound | ErrorCode::ItemTrashed) =>
-                {
-                    respond_error(request, ErrorCode::NotFound, 404)
-                }
-                Err(error) => respond_error(request, error.kind(), 503),
+                Err(error) => respond_store_error(request, error),
             }
         }
         _ => respond_error(request, ErrorCode::NotFound, 404),
+    }
+}
+
+fn respond_store_error(request: Request, error: takio::error::AppError) {
+    let (code, status) = store_error_status(error.kind());
+    respond_error(request, code, status);
+}
+
+fn store_error_status(code: ErrorCode) -> (ErrorCode, u16) {
+    match code {
+        ErrorCode::NotFound | ErrorCode::ItemTrashed => (ErrorCode::NotFound, 404),
+        _ => (code, 503),
     }
 }
 
@@ -317,6 +319,19 @@ fn loopback(host: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn store_errors_share_one_http_status_contract() {
+        for &code in super::ErrorCode::ALL {
+            let expected = match code {
+                super::ErrorCode::NotFound | super::ErrorCode::ItemTrashed => {
+                    (super::ErrorCode::NotFound, 404)
+                }
+                _ => (code, 503),
+            };
+            assert_eq!(super::store_error_status(code), expected);
+        }
+    }
+
     use std::collections::BTreeMap;
     use std::path::PathBuf;
 

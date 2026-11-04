@@ -11,9 +11,8 @@ name = "takio"
 path = "src/main.rs"
 
 [dependencies]
-takio.workspace = true
+takio = { workspace = true, features = ["cli-signals"] }
 clap = { version = "4.5", features = ["derive", "env", "wrap_help"] }
-crossterm = "0.28"
 ratatui = "0.29"
 serde.workspace = true
 serde_json.workspace = true

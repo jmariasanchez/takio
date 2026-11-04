@@ -464,25 +464,6 @@ impl Render for TextInput {
     }
 }
 
-/// Click handlers also receive AccessKit Click and unmodified Enter/Space in GPUI.
-pub(crate) fn accessible_button(
-    element: gpui::Stateful<gpui::Div>,
-    label: impl Into<gpui::SharedString>,
-    enabled: bool,
-) -> gpui::Stateful<gpui::Div> {
-    element
-        .role(gpui::Role::Button)
-        .aria_label(label)
-        .tab_index(0)
-        .tab_stop(enabled)
-        .focus_visible(|style| style.border_2().border_color(gpui::rgb(0x007aff)))
-        .a11y_synthetic_children(move |builder| {
-            if !enabled {
-                builder.parent_node().set_disabled();
-            }
-        })
-}
-
 #[cfg(test)]
 pub(crate) mod tests {
     pub(crate) mod accessibility;
@@ -492,7 +473,7 @@ pub(crate) mod tests {
 
     #[gpui::test]
     fn standalone_input_supports_utf16_composition_and_read_only(cx: &mut TestAppContext) {
-        cx.update(crate::theme::initialize);
+        cx.update(crate::install_app_globals);
         let window = cx.add_window(|_, cx| TextInput::new("a\u{1f642}b".into(), cx));
         window
             .update(cx, |input, window, cx| {
@@ -518,7 +499,7 @@ pub(crate) mod tests {
 
     #[gpui::test]
     fn edit_menu_select_all_targets_the_focused_text(cx: &mut TestAppContext) {
-        cx.update(crate::theme::initialize);
+        cx.update(crate::install_app_globals);
         let (input, cx) = cx.add_window_view(|window, cx| {
             let input = TextInput::new("Book details".into(), cx);
             input.focus(window, cx);

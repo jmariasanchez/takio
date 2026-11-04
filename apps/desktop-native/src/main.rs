@@ -5,7 +5,6 @@ mod bench;
 mod commands;
 mod covers;
 mod engine;
-mod preparation;
 mod settings;
 #[cfg(feature = "snapshot")]
 mod snapshot;
@@ -24,6 +23,11 @@ use std::io::Write;
 use std::process::ExitCode;
 
 use crate::startup::{launch, window::StartupWindow};
+
+fn install_app_globals(cx: &mut App) {
+    theme::initialize(cx);
+    views::text_input::install(cx);
+}
 
 actions!(
     takio,
@@ -87,7 +91,7 @@ fn main() -> ExitCode {
     };
     let preference_path = launch.preference_path(&paths.root);
     application().run(move |cx: &mut App| {
-        theme::initialize(cx);
+        install_app_globals(cx);
         cx.bind_keys(commands::keybindings());
         cx.set_menus(commands::menus());
 

@@ -16,7 +16,6 @@ impl Workspace {
             return;
         }
         self.recovery_prompt_open = true;
-        let epoch = self.state.read(cx).library_epoch();
         let (title, detail, proceed) = if restore {
             (
                 "Restore a backup to a new folder?",
@@ -30,7 +29,6 @@ impl Workspace {
                 "Choose location",
             )
         };
-        let pause = self.state.read(cx).automatic_backup().pause();
         let answer = window.prompt(
             PromptLevel::Info,
             title,
@@ -38,55 +36,35 @@ impl Workspace {
             &[PromptButton::cancel("Cancel"), PromptButton::new(proceed)],
             cx,
         );
-        cx.spawn(async move |this, cx| {
-            let accepted = answer.await == Ok(1);
-            drop(pause);
-            let _ = this.update(cx, |this, cx| {
-                if !accepted
-                    || this.state.read(cx).library_epoch() != epoch
-                    || !this.state.read(cx).can_mutate()
-                {
-                    this.recovery_prompt_open = false;
-                } else if restore {
-                    this.choose_backup_source(cx);
-                } else {
-                    this.choose_recovery_destination(None, cx);
-                }
-            });
-        })
-        .detach();
+        self.after_dialog(answer, cx, move |this, answer, cx| {
+            if answer != Some(Ok(1)) {
+                this.recovery_prompt_open = false;
+            } else if restore {
+                this.choose_backup_source(cx);
+            } else {
+                this.choose_recovery_destination(None, cx);
+            }
+        });
     }
 
     fn choose_backup_source(&mut self, cx: &mut Context<Self>) {
-        let epoch = self.state.read(cx).library_epoch();
-        let pause = self.state.read(cx).automatic_backup().pause();
         let receiver = cx.prompt_for_paths(PathPromptOptions {
             files: false,
             directories: true,
             multiple: false,
             prompt: Some("Choose backup".into()),
         });
-        cx.spawn(async move |this, cx| {
-            let response = receiver.await;
-            drop(pause);
-            let _ = this.update(cx, |this, cx| match response {
-                Ok(Ok(Some(paths)))
-                    if paths.len() == 1
-                        && this.state.read(cx).library_epoch() == epoch
-                        && this.state.read(cx).can_mutate() =>
-                {
-                    this.choose_recovery_destination(paths.into_iter().next(), cx);
-                }
-                Ok(Ok(_)) => this.recovery_prompt_open = false,
-                _ => this.recovery_picker_failed(cx),
-            });
-        })
-        .detach();
+        self.after_dialog(receiver, cx, |this, response, cx| match response {
+            Some(Ok(Ok(Some(paths)))) if paths.len() == 1 => {
+                this.choose_recovery_destination(paths.into_iter().next(), cx);
+            }
+            None | Some(Ok(Ok(_))) => this.recovery_prompt_open = false,
+            _ => this.recovery_picker_failed(cx),
+        });
     }
 
     fn choose_recovery_destination(&mut self, source: Option<PathBuf>, cx: &mut Context<Self>) {
         let epoch = self.state.read(cx).library_epoch();
-        let pause = self.state.read(cx).automatic_backup().pause();
         let home = crate::recovery_chooser_directory();
         let receiver = cx.prompt_for_new_path(
             &home,
@@ -96,28 +74,34 @@ impl Workspace {
                 "Takio Backup"
             }),
         );
-        cx.spawn(async move |this, cx| {
-            let response = receiver.await;
-            drop(pause);
-            let _ = this.update(cx, |this, cx| {
-                this.recovery_prompt_open = false;
-                if this.state.read(cx).library_epoch() != epoch {
-                    return;
-                }
-                match response {
-                    Ok(Ok(Some(destination))) => this.state.update(cx, |state, cx| {
-                        if let Some(source) = source {
-                            state.restore_backup_copy(source, destination, cx);
-                        } else {
-                            state.back_up_library(destination, cx);
-                        }
-                    }),
-                    Ok(Ok(None)) => {}
-                    _ => this.recovery_picker_failed(cx),
-                }
-            });
-        })
-        .detach();
+        self.after_dialog(receiver, cx, move |this, response, cx| {
+            this.recovery_prompt_open = false;
+            if response.is_none() && this.state.read(cx).library_epoch() == epoch {
+                let detail = if source.is_some() {
+                    "No restore was started."
+                } else {
+                    "No new backup was started."
+                };
+                this.state.update(cx, |state, cx| {
+                    state.set_status(
+                        format!("Finish the current operation or save/cancel your edits. {detail}"),
+                        true,
+                        cx,
+                    );
+                });
+            }
+            match response {
+                Some(Ok(Ok(Some(destination)))) => this.state.update(cx, |state, cx| {
+                    if let Some(source) = source {
+                        state.restore_backup_copy(source, destination, cx);
+                    } else {
+                        state.back_up_library(destination, cx);
+                    }
+                }),
+                None | Some(Ok(Ok(None))) => {}
+                _ => this.recovery_picker_failed(cx),
+            }
+        });
     }
 
     fn recovery_picker_failed(&mut self, cx: &mut Context<Self>) {

@@ -197,7 +197,7 @@ fn duplicate_merge_rolls_back_and_purge_preserves_transferred_owned_files() {
         metadata: serde_json::from_value(serde_json::json!({"title":"Merged","tags":["reviewed"]}))
             .unwrap(),
         add_source_formats: vec![FormatId::Pdf],
-        cover: "source".to_owned(),
+        cover: MergeCoverChoice::Source,
     };
     store
         .connection
@@ -288,7 +288,7 @@ fn duplicate_merge_rolls_back_when_result_hydration_fails() {
             review_token: candidate.review_token,
             metadata: serde_json::from_value(serde_json::json!({"title":"Merged"})).unwrap(),
             add_source_formats: vec![FormatId::Pdf],
-            cover: "none".to_owned(),
+            cover: MergeCoverChoice::None,
         })
         .unwrap_err();
     assert_eq!(error.code(), "storage-unavailable");
@@ -368,7 +368,7 @@ fn shared_merged_formats_survive_target_remove_and_replace() {
                 review_token: token,
                 metadata: serde_json::from_value(serde_json::json!({"title":"Merged"})).unwrap(),
                 add_source_formats: vec![FormatId::Pdf],
-                cover: "none".to_owned(),
+                cover: MergeCoverChoice::None,
             })
             .unwrap();
     };
@@ -534,7 +534,7 @@ fn duplicate_merge_rejects_empty_contract_arrays() {
                     review_token: token.clone(),
                     metadata: serde_json::from_value(metadata).unwrap(),
                     add_source_formats: vec![FormatId::Pdf],
-                    cover: "none".to_owned(),
+                    cover: MergeCoverChoice::None,
                 })
                 .unwrap_err()
                 .code(),

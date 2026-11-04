@@ -6,7 +6,6 @@ use gpui::{Rgba, WindowAppearance};
 
 pub fn initialize(cx: &mut gpui::App) {
     cx.set_global(Theme::LIGHT);
-    crate::views::text_input::install(cx);
 }
 
 pub fn install(window: &mut gpui::Window, cx: &mut gpui::App) {

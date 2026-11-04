@@ -68,13 +68,13 @@ fn automatic_backup_state_opt_in_roundtrip_disable_and_daily_clock(cx: &mut Test
         );
     }
     f.state.update(cx, |s, cx| {
-        s.check_automatic_backup(
+        s.run_automatic_backup_if_due(
             last + crate::settings::automatic_backup::DAILY_SECONDS - 1,
             cx,
         );
         assert!(!s.busy());
         assert!(s.request_close(cx));
-        s.check_automatic_backup(last + crate::settings::automatic_backup::DAILY_SECONDS, cx);
+        s.run_automatic_backup_if_due(last + crate::settings::automatic_backup::DAILY_SECONDS, cx);
         assert!(s.busy());
         assert!(!s.request_close(cx));
     });
@@ -84,7 +84,7 @@ fn automatic_backup_state_opt_in_roundtrip_disable_and_daily_clock(cx: &mut Test
         .update(cx, |s, cx| s.configure_automatic_backup(None, cx));
     settle(&f.state, cx);
     f.state.update(cx, |s, cx| {
-        s.check_automatic_backup(u64::MAX, cx);
+        s.run_automatic_backup_if_due(u64::MAX, cx);
         assert!(!s.busy());
     });
     assert_eq!(fs::read_dir(output.path()).unwrap().count(), 3);
@@ -122,11 +122,11 @@ fn automatic_backup_state_defers_for_edits_reviews_busy_loading_and_switch(
             s.session.loading = blocked == 2;
             s.refreshing_destinations = blocked == 4;
             s.session.automatic_backup_prompt_open = blocked == 6;
-            s.check_automatic_backup(10, cx);
+            s.run_automatic_backup_if_due(10, cx);
             assert!(s.automatic_backup.last_attempt.is_none());
         }
         s.session.activity = Activity::Idle;
-        s.check_automatic_backup(10, cx);
+        s.run_automatic_backup_if_due(10, cx);
         assert!(s.busy());
         assert!(!s.can_mutate());
         assert!(!s.request_close(cx));
@@ -151,12 +151,12 @@ fn automatic_backup_state_defers_for_edits_reviews_busy_loading_and_switch(
                 .text
                 .contains("one hour")
         );
-        s.check_automatic_backup(
+        s.run_automatic_backup_if_due(
             10 + crate::settings::automatic_backup::FAILURE_RETRY_SECONDS - 1,
             cx,
         );
         assert!(!s.busy());
-        s.check_automatic_backup(
+        s.run_automatic_backup_if_due(
             10 + crate::settings::automatic_backup::FAILURE_RETRY_SECONDS,
             cx,
         );
@@ -199,7 +199,7 @@ fn automatic_backup_state_switch_cancels_old_config_and_restored_library_default
         assert_eq!(s.library_epoch, 1);
         assert!(!s.automatic_backup.config.enabled);
         assert!(s.automatic_backup.last_attempt.is_none());
-        s.check_automatic_backup(u64::MAX, cx);
+        s.run_automatic_backup_if_due(u64::MAX, cx);
         assert!(!s.busy());
     });
     cx.executor().advance_clock(Duration::from_secs(60));
@@ -237,7 +237,7 @@ fn automatic_backup_state_disable_save_failure_still_stops_session(cx: &mut Test
                 .text
                 .contains("previous setting may return")
         );
-        s.check_automatic_backup(u64::MAX, cx);
+        s.run_automatic_backup_if_due(u64::MAX, cx);
         assert!(!s.busy());
     });
     assert!(requests.try_recv().is_err());
@@ -259,7 +259,7 @@ fn automatic_backup_state_keeps_success_and_daily_throttle_when_timestamp_save_f
     fs::create_dir(&settings).unwrap();
     f.state.update(cx, |s, cx| {
         s.automatic_backup.config = config;
-        s.check_automatic_backup(100, cx);
+        s.run_automatic_backup_if_due(100, cx);
     });
     settle(&f.state, cx);
     let backup = f.state.update(cx, |s, cx| {
@@ -273,7 +273,7 @@ fn automatic_backup_state_keeps_success_and_daily_throttle_when_timestamp_save_f
                 .contains("Copy kept")
         );
         assert_eq!(s.automatic_backup.config.last_success, Some(100));
-        s.check_automatic_backup(
+        s.run_automatic_backup_if_due(
             100 + crate::settings::automatic_backup::FAILURE_RETRY_SECONDS,
             cx,
         );
@@ -344,7 +344,7 @@ fn automatic_backup_state_bad_settings_remain_disabled_and_visible_without_rewri
                 .text
                 .contains("settings could not be read")
         );
-        s.check_automatic_backup(u64::MAX, cx);
+        s.run_automatic_backup_if_due(u64::MAX, cx);
         assert!(!s.busy());
         assert!(s.request_close(cx));
     });

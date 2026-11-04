@@ -260,10 +260,17 @@ pub struct SavedView {
 pub use duplicates::{
     DuplicateCandidate, DuplicateCandidatePage, DuplicateDisposition, DuplicatePageRequest,
     DuplicatePairReviewRequest, DuplicateScanSummary, DuplicateSignal,
-    ListDuplicateCandidatesRequest, MergeDuplicatePairRequest, MergeDuplicatePairResult,
+    ListDuplicateCandidatesRequest, MergeCoverChoice, MergeDuplicatePairRequest,
+    MergeDuplicatePairResult,
 };
 
 impl LibraryStore {
+    /// Backup markers belong to the engine. Even malformed or symlinked markers
+    /// reserve a directory for restore, never writable library activation.
+    pub fn is_backup_root(root: &Path) -> AppResult<bool> {
+        recovery::is_backup_root(root)
+    }
+
     pub fn open_read_only(paths: LibraryPaths) -> AppResult<ReadOnlyLibraryStore> {
         if !paths.database.is_file() {
             return Err(crate::app_error!("storage-unavailable"));
@@ -287,6 +294,7 @@ impl LibraryStore {
     /// Validate an existing default before writable startup opening. Returns true
     /// only for a supported legacy catalogue requiring the verified migration.
     pub fn requires_verified_migration(paths: LibraryPaths) -> AppResult<bool> {
+        recovery::reject_backup_root(&paths.root)?;
         if !fs::symlink_metadata(&paths.database)?.file_type().is_file() {
             return Err(crate::app_error!("storage-unavailable"));
         }
@@ -335,6 +343,7 @@ impl LibraryStore {
     /// Open a current, readable catalogue without creating or migrating it.
     /// Managed file contents are not read: missing attachments remain manageable.
     pub fn open_existing(paths: LibraryPaths) -> AppResult<Self> {
+        recovery::reject_backup_root(&paths.root)?;
         fn regular_database(paths: &LibraryPaths) -> AppResult<()> {
             if !fs::symlink_metadata(&paths.database)?.file_type().is_file() {
                 return Err(crate::app_error!("storage-unavailable"));
@@ -394,6 +403,7 @@ impl LibraryStore {
     /// Create a catalogue or explicitly migrate a supported existing schema.
     /// Use `open_read_only` for reads and `open_existing` for non-migrating writes.
     pub fn create_or_migrate(paths: LibraryPaths) -> AppResult<Self> {
+        recovery::reject_backup_root(&paths.root)?;
         fs::create_dir_all(&paths.root)?;
         fs::create_dir_all(&paths.items)?;
         fs::create_dir_all(&paths.covers)?;
@@ -1351,10 +1361,6 @@ impl LibraryStore {
     /// Permanently deletes a trashed item and reports any preserved orphan paths.
     /// Unknown IDs return `not-found`; active items return `not-trashed`.
     pub fn purge(&mut self, id: &str) -> AppResult<MutationResult> {
-        self.purge_trashed(id)
-    }
-
-    fn purge_trashed(&mut self, id: &str) -> AppResult<MutationResult> {
         let item = self
             .read_item(id)?
             .ok_or_else(|| crate::app_error!("not-found"))?;
@@ -1849,6 +1855,111 @@ mod tests {
 
     use super::hydration::read_items_required;
     use super::*;
+
+    #[test]
+    fn backup_markers_block_writable_opens_without_changing_the_backup() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = LibraryPaths::resolve(None, Some(&temp.path().join("library.sqlite"))).unwrap();
+        drop(LibraryStore::create_or_migrate(paths.clone()).unwrap());
+        let before = fs::read(&paths.database).unwrap();
+        fs::write(paths.root.join("manifest.json"), b"invalid backup marker").unwrap();
+        assert!(LibraryStore::is_backup_root(&paths.root).unwrap());
+        for result in [
+            LibraryStore::create_or_migrate(paths.clone()),
+            LibraryStore::open_existing(paths.clone()),
+        ] {
+            assert_eq!(result.err().unwrap().code(), "invalid-arguments");
+        }
+        assert_eq!(
+            LibraryStore::requires_verified_migration(paths.clone())
+                .unwrap_err()
+                .code(),
+            "invalid-arguments"
+        );
+        assert!(LibraryStore::open_read_only(paths.clone()).is_ok());
+        assert_eq!(fs::read(&paths.database).unwrap(), before);
+        #[cfg(unix)]
+        {
+            fs::remove_file(paths.root.join("manifest.json")).unwrap();
+            std::os::unix::fs::symlink("missing-manifest", paths.root.join("manifest.json"))
+                .unwrap();
+            assert!(LibraryStore::is_backup_root(&paths.root).unwrap());
+            assert_eq!(
+                LibraryStore::create_or_migrate(paths).err().unwrap().code(),
+                "invalid-arguments"
+            );
+        }
+    }
+
+    #[test]
+    fn empty_ids_have_one_error_contract_for_reads_and_mutations() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = LibraryPaths::resolve(None, Some(&temp.path().join("library.sqlite"))).unwrap();
+        let mut store = LibraryStore::create_or_migrate(paths).unwrap();
+        for id in ["", " \t"] {
+            assert_eq!(store.get(id).unwrap_err().code(), "invalid-arguments");
+            assert_eq!(store.trash(id).unwrap_err().code(), "invalid-arguments");
+            assert_eq!(store.restore(id).unwrap_err().code(), "invalid-arguments");
+            assert_eq!(
+                store
+                    .update(id, LibraryPatch::default())
+                    .unwrap_err()
+                    .code(),
+                "invalid-arguments"
+            );
+            assert_eq!(
+                store
+                    .set_cover(id, &temp.path().join("missing.jpg"))
+                    .unwrap_err()
+                    .code(),
+                "invalid-arguments"
+            );
+            assert_eq!(store.purge(id).unwrap_err().code(), "invalid-arguments");
+        }
+    }
+
+    #[test]
+    fn direct_queries_validate_before_selecting_or_caching() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = LibraryPaths::resolve(None, Some(&temp.path().join("library.sqlite"))).unwrap();
+        let store = LibraryStore::create_or_migrate(paths).unwrap();
+        let long = "x".repeat(1025);
+        assert_eq!(store.search(&long).unwrap_err().code(), "invalid-arguments");
+        for (query, filters) in [
+            (long.as_str(), Filters::default()),
+            (
+                "",
+                Filters {
+                    authors: vec![" ".into()],
+                    ..Filters::default()
+                },
+            ),
+        ] {
+            assert_eq!(
+                store.query_items(query, &filters).unwrap_err().code(),
+                "invalid-arguments"
+            );
+            assert_eq!(
+                store
+                    .query_items_shared(query, &filters)
+                    .unwrap_err()
+                    .code(),
+                "invalid-arguments"
+            );
+            assert_eq!(
+                store
+                    .query_items_scoped(&[LibraryQueryScope {
+                        query,
+                        syntax: LibraryQuerySyntax::StructuredV1,
+                        filters: &filters
+                    }])
+                    .unwrap_err()
+                    .code(),
+                "invalid-arguments"
+            );
+        }
+        assert!(store.search(&"x".repeat(1024)).unwrap().is_empty());
+    }
 
     pub(super) fn seed_hydration_books(store: &mut LibraryStore, count: usize) {
         let transaction = store.connection.transaction().unwrap();
@@ -2606,7 +2717,7 @@ mod tests {
                 if version == 1 {
                     connection
                         .execute_batch(include_str!(
-                            "../../tests/fixtures/legacy-library-schemas/schema-v1.sql"
+                            "store/migration/reference_schemas/schema-v1.sql"
                         ))
                         .unwrap();
                 }

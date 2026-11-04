@@ -544,9 +544,7 @@ fn startup_preflight_preserves_supported_legacy_migration_and_rejects_corruption
     let paths = LibraryPaths::resolve(None, Some(&temp.path().join("library.sqlite"))).unwrap();
     let connection = Connection::open(&paths.database).unwrap();
     connection
-        .execute_batch(include_str!(
-            "../../../../tests/fixtures/legacy-library-schemas/schema-v1.sql"
-        ))
+        .execute_batch(include_str!("../migration/reference_schemas/schema-v1.sql"))
         .unwrap();
     connection.execute("DELETE FROM library_items", []).unwrap();
     drop(connection);

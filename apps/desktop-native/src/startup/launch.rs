@@ -1,4 +1,5 @@
-//! One launch-time capture, shared by normal, benchmark, and snapshot entry points.
+//! Launch-time library-path capture shared by normal, benchmark, and snapshot entry points.
+//! Probe-specific flags are owned and read by their respective entry points.
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 

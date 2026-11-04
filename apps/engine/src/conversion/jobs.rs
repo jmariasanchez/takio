@@ -146,7 +146,18 @@ impl JobStore {
         } else if version != 4 {
             return Err(crate::app_error!("incompatible-schema"));
         }
-        connection.execute("UPDATE jobs SET status='failed',finished_at=?1,error_code=?2,owner_pid=NULL WHERE status='running'",params![Utc::now().to_rfc3339(), ErrorCode::ConversionInterrupted.as_str()])?;
+        let owners = connection
+            .prepare("SELECT id,owner_pid FROM jobs WHERE status='running'")?
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, Option<u32>>(1)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        for (id, owner) in owners {
+            if owner.is_some_and(owner_may_be_alive) {
+                continue;
+            }
+            connection.execute("UPDATE jobs SET status='failed',finished_at=?1,error_code=?2,owner_pid=NULL WHERE id=?3 AND status='running' AND owner_pid IS ?4",params![Utc::now().to_rfc3339(), ErrorCode::ConversionInterrupted.as_str(), id, owner])?;
+        }
         Ok(Self { connection })
     }
 
@@ -323,8 +334,11 @@ impl JobStore {
         };
         let job = parse_job(row)?;
         let started = Utc::now().to_rfc3339();
-        transaction.execute("UPDATE jobs SET status='running',started_at=?2,owner_pid=?3 WHERE id=?1 AND status='queued'",params![job.id,started,std::process::id()])?;
+        let changed = transaction.execute("UPDATE jobs SET status='running',started_at=?2,owner_pid=?3 WHERE id=?1 AND status='queued'",params![job.id,started,std::process::id()])?;
         transaction.commit()?;
+        if changed == 0 {
+            return Ok(None);
+        }
         let result = convert(
             &job.input_path,
             &job.output_path,
@@ -356,15 +370,40 @@ impl JobStore {
     }
 
     fn complete(&mut self, id: &str, artifact: &Artifact) -> AppResult<()> {
-        self.connection.execute(
+        let changed = self.connection.execute(
         "UPDATE jobs SET status='completed',finished_at=?2,owner_pid=NULL,artifact_bytes=?3,artifact_sha256=?4,
          attachment_status=CASE WHEN library_item_id IS NULL THEN NULL ELSE 'pending' END WHERE id=?1 AND status='running'",
         params![id,Utc::now().to_rfc3339(),i64::try_from(artifact.bytes).map_err(|_|crate::app_error!("artifact-invalid"))?,artifact.sha256])?;
+        if changed == 0 {
+            return Err(crate::app_error!("invalid-transition"));
+        }
         Ok(())
     }
     fn fail(&mut self, id: &str, code: ErrorCode) -> AppResult<()> {
-        self.connection.execute("UPDATE jobs SET status='failed',finished_at=?2,owner_pid=NULL,error_code=?3 WHERE id=?1 AND status='running'",params![id,Utc::now().to_rfc3339(),code.as_str()])?;
+        let changed = self.connection.execute("UPDATE jobs SET status='failed',finished_at=?2,owner_pid=NULL,error_code=?3 WHERE id=?1 AND status='running'",params![id,Utc::now().to_rfc3339(),code.as_str()])?;
+        if changed == 0 {
+            return Err(crate::app_error!("invalid-transition"));
+        }
         Ok(())
+    }
+}
+
+fn owner_may_be_alive(pid: u32) -> bool {
+    #[cfg(unix)]
+    {
+        let Some(pid) = i32::try_from(pid)
+            .ok()
+            .and_then(rustix::process::Pid::from_raw)
+        else {
+            return true;
+        };
+        // Permission errors and unknown outcomes must never invalidate live work.
+        rustix::process::test_kill_process(pid) != Err(rustix::io::Errno::SRCH)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = pid;
+        true
     }
 }
 
@@ -484,6 +523,121 @@ fn create_schema(connection: &Connection) -> AppResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reopening_preserves_live_owner_and_recovers_dead_owner() {
+        let temp = tempfile::tempdir().unwrap();
+        let input = temp.path().join("book.epub");
+        std::fs::write(&input, b"book").unwrap();
+        let database = temp.path().join("jobs.sqlite");
+        let mut store = JobStore::open(&database).unwrap();
+        let job = store
+            .enqueue(&input, FormatId::Pdf, &temp.path().join("book.pdf"), None)
+            .unwrap();
+        store
+            .connection
+            .execute(
+                "UPDATE jobs SET status='running',owner_pid=?1",
+                [std::process::id()],
+            )
+            .unwrap();
+        let reader = JobStore::open(&database).unwrap();
+        assert_eq!(
+            reader.get(&job.id).unwrap().unwrap().status,
+            JobStatus::Running
+        );
+        drop(reader);
+        #[cfg(unix)]
+        {
+            let mut live = std::process::Command::new("/bin/sleep")
+                .arg("30")
+                .spawn()
+                .unwrap();
+            store
+                .connection
+                .execute("UPDATE jobs SET owner_pid=?1", [live.id()])
+                .unwrap();
+            let status = JobStore::open(&database)
+                .unwrap()
+                .get(&job.id)
+                .unwrap()
+                .unwrap()
+                .status;
+            live.kill().unwrap();
+            live.wait().unwrap();
+            assert_eq!(status, JobStatus::Running);
+            let mut child = std::process::Command::new("/bin/sh")
+                .args(["-c", "exit 0"])
+                .spawn()
+                .unwrap();
+            let dead_pid = child.id();
+            child.wait().unwrap();
+            store
+                .connection
+                .execute("UPDATE jobs SET owner_pid=?1", [dead_pid])
+                .unwrap();
+            let reader = JobStore::open(&database).unwrap();
+            assert_eq!(
+                reader.get(&job.id).unwrap().unwrap().error_code,
+                Some(ErrorCode::ConversionInterrupted)
+            );
+        }
+    }
+
+    #[test]
+    fn completion_and_failure_reject_lost_claims() {
+        let temp = tempfile::tempdir().unwrap();
+        let input = temp.path().join("book.epub");
+        std::fs::write(&input, b"book").unwrap();
+        let mut store = JobStore::open(&temp.path().join("jobs.sqlite")).unwrap();
+        let job = store
+            .enqueue(&input, FormatId::Pdf, &temp.path().join("book.pdf"), None)
+            .unwrap();
+        let artifact = Artifact {
+            path: job.output_path.clone(),
+            bytes: 4,
+            sha256: "hash".into(),
+            created_at: Utc::now().to_rfc3339(),
+        };
+        assert_eq!(
+            store.complete(&job.id, &artifact).unwrap_err().kind(),
+            ErrorCode::InvalidTransition
+        );
+        assert_eq!(
+            store
+                .fail(&job.id, ErrorCode::ConversionInterrupted)
+                .unwrap_err()
+                .kind(),
+            ErrorCode::InvalidTransition
+        );
+        assert_eq!(
+            store.get(&job.id).unwrap().unwrap().status,
+            JobStatus::Queued
+        );
+    }
+
+    #[test]
+    fn lost_claim_does_not_run_conversion() {
+        let temp = tempfile::tempdir().unwrap();
+        let input = temp.path().join("book.epub");
+        std::fs::write(&input, b"book").unwrap();
+        let mut store = JobStore::open(&temp.path().join("jobs.sqlite")).unwrap();
+        let job = store
+            .enqueue(&input, FormatId::Pdf, &temp.path().join("book.pdf"), None)
+            .unwrap();
+        store.connection.execute_batch("CREATE TRIGGER suppress_claim BEFORE UPDATE OF status ON jobs WHEN NEW.status='running' BEGIN SELECT RAISE(IGNORE); END;").unwrap();
+        assert!(
+            store
+                .run_next(ConversionProfile::default(), Duration::from_secs(1))
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            store.get(&job.id).unwrap().unwrap().status,
+            JobStatus::Queued
+        );
+        assert!(!job.output_path.exists());
+    }
 
     #[test]
     fn persisted_error_codes_round_trip_and_unknown_codes_are_rejected() {
