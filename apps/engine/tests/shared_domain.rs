@@ -6,7 +6,7 @@ use takio::library::store::LibraryStore;
 #[test]
 fn typed_metadata_candidate_applies_only_reviewed_fields() {
     use std::collections::BTreeSet;
-    use takio::metadata::candidates::{
+    use takio::library::metadata_candidates::{
         CandidateSelection, apply_prepared_metadata_candidate, filename_candidates,
         prepare_metadata_candidate,
     };

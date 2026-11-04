@@ -1,6 +1,7 @@
+//! Embedded metadata parsers and candidate cover staging. This is a leaf layer:
+//! it must not depend on the library store. Store-consuming candidate workflows
+//! live in `library::metadata_candidates` and `library::metadata_reconcile`.
 pub mod candidate_cover;
-pub mod candidates;
-pub mod reconcile;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, OpenOptions};

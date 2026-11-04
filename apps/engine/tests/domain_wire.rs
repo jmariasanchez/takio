@@ -6,7 +6,7 @@ fn per_item_error_codes_keep_exact_wire_shapes() {
     use takio::import::calibre::{CalibreImportReport, CalibreImportWarning};
     use takio::import::scan::{ImportCounts, ImportOutcome};
     use takio::library::export::ExportStatus;
-    use takio::metadata::reconcile::ReconcileOutcome;
+    use takio::library::metadata_reconcile::ReconcileOutcome;
     for &code in ErrorCode::ALL {
         assert_eq!(
             serde_json::to_value(ExportStatus::Failed { code }).unwrap(),

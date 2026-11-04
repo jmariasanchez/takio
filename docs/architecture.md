@@ -71,8 +71,8 @@ fault injection for adapter tests, without coupling adapters to engine tables.
 | `metadata` | Embedded recognition, bounded external metadata extraction/fetching, OPF parsing, and cover publication |
 | `metadata::pdf` (internal) | Bounded embedded PDF metadata and page counts |
 | `metadata::candidate_cover` | Bounded staged cover artifacts, ownership checks, and lifecycle locking |
-| `metadata::candidates` | Typed metadata candidate preparation and reviewed application |
-| `metadata::reconcile` | Bounded multi-item candidate reconciliation and cancellation |
+| `library::metadata_candidates` | Typed metadata candidate preparation and reviewed application (consumes the store) |
+| `library::metadata_reconcile` | Bounded multi-item candidate reconciliation and cancellation (consumes the store) |
 | `conversion` | Calibre discovery, planning, execution, and artifact verification |
 | `conversion::executable_discovery` (internal) | Backend precedence and canonical executable resolution |
 | `conversion::maintenance` | Ebook polishing and bounded text extraction |

@@ -20,6 +20,11 @@ use takio::import::calibre::import_calibre_library;
 use takio::import::scan::{ImportCounts, ImportOutcome, scan_imports};
 use takio::library::catalog::write_catalog;
 use takio::library::diagnostics::integrity_value;
+use takio::library::metadata_candidates::{
+    CandidateSelection, apply_prepared_metadata_candidate, filename_candidates,
+    metadata_candidates_for_item_at, metadata_candidates_for_reconcile, prepare_metadata_candidate,
+};
+use takio::library::metadata_reconcile::{CancellationSignals, ReconcileRequest, reconcile};
 use takio::library::model::LibraryPatch;
 use takio::library::paths::{LibraryPaths, absolute, validate_import_sources};
 use takio::library::portable;
@@ -27,11 +32,6 @@ use takio::library::store::{
     DuplicatePairReviewRequest, LIBRARY_SCHEMA_VERSION, LibraryStore,
     ListDuplicateCandidatesRequest, MergeDuplicatePairRequest,
 };
-use takio::metadata::candidates::{
-    CandidateSelection, apply_prepared_metadata_candidate, filename_candidates,
-    metadata_candidates_for_item_at, metadata_candidates_for_reconcile, prepare_metadata_candidate,
-};
-use takio::metadata::reconcile::{CancellationSignals, ReconcileRequest, reconcile};
 use takio::metadata::{self, discover_ebook_meta, discover_fetch_ebook_metadata};
 
 #[derive(Serialize)]
@@ -2125,7 +2125,7 @@ fn import_watch(
     let paths = LibraryPaths::resolve(library, db)?;
     validate_import_sources(&paths, source_paths)?;
     let mut store = LibraryStore::create_or_migrate(paths)?;
-    let signals = takio::metadata::reconcile::CancellationSignals::install()?;
+    let signals = takio::library::metadata_reconcile::CancellationSignals::install()?;
     let canceled = signals.flag();
     let result = watch_cycles(
         &mut store,

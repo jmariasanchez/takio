@@ -23,14 +23,14 @@ use serde_json::Value;
 use takio::conversion::jobs::JobStore;
 use takio::delivery::destinations;
 use takio::error::AppResult;
-use takio::library::model::LibraryItem;
-use takio::library::paths::LibraryPaths;
-use takio::library::store::LibraryStore;
-use takio::metadata::candidates::{
+use takio::library::metadata_candidates::{
     CandidateCoverDescriptor, CandidateSelection, MetadataCandidate,
     apply_prepared_metadata_candidate, metadata_candidates_for_item_at_cancellable,
     prepare_metadata_candidate, release_metadata_candidate_covers,
 };
+use takio::library::model::LibraryItem;
+use takio::library::paths::LibraryPaths;
+use takio::library::store::LibraryStore;
 
 const ACCENT: Color = Color::Rgb(70, 210, 170);
 const ACCENT_2: Color = Color::Rgb(120, 150, 255);
