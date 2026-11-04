@@ -116,7 +116,7 @@ fn fixture_with_preparation_backend(
     }
 }
 
-fn preparation_catalogue(f: &Fixture) -> Vec<LibraryItem> {
+fn preparation_catalog(f: &Fixture) -> Vec<LibraryItem> {
     f.engine
         .request(|reply| Request::Query {
             query: String::new(),
@@ -155,7 +155,7 @@ fn preparation_files(f: &Fixture) -> std::collections::BTreeMap<PathBuf, Vec<u8>
 #[gpui::test]
 fn native_preparation_toolbar_review_and_pointer_cancel_are_read_only(cx: &mut TestAppContext) {
     let f = fixture_with_preparation_backend(false, Some(true), cx);
-    let before_catalogue = format!("{:?}", preparation_catalogue(&f));
+    let before_catalog = format!("{:?}", preparation_catalog(&f));
     let before_files = preparation_files(&f);
     click_control(&f, "prepare-book", cx);
     settle(&f.state, cx);
@@ -166,7 +166,7 @@ fn native_preparation_toolbar_review_and_pointer_cancel_are_read_only(cx: &mut T
         assert!(!state.can_mutate());
         assert!(state.session().delivery_report.is_none());
     });
-    assert_eq!(format!("{:?}", preparation_catalogue(&f)), before_catalogue);
+    assert_eq!(format!("{:?}", preparation_catalog(&f)), before_catalog);
     assert_eq!(preparation_files(&f), before_files);
     click_control(&f, "cancel-preparation", cx);
     settle(&f.state, cx);
@@ -174,14 +174,14 @@ fn native_preparation_toolbar_review_and_pointer_cancel_are_read_only(cx: &mut T
         assert!(state.preparation_preview().is_none());
         assert!(state.can_mutate());
     });
-    assert_eq!(format!("{:?}", preparation_catalogue(&f)), before_catalogue);
+    assert_eq!(format!("{:?}", preparation_catalog(&f)), before_catalog);
     assert_eq!(preparation_files(&f), before_files);
 }
 
 #[gpui::test]
 fn native_preparation_menu_action_review_and_cancel_are_read_only(cx: &mut TestAppContext) {
     let f = fixture_with_preparation_backend(false, Some(true), cx);
-    let before_catalogue = format!("{:?}", preparation_catalogue(&f));
+    let before_catalog = format!("{:?}", preparation_catalog(&f));
     let before_files = preparation_files(&f);
     f.window
         .update(cx, |_, window, cx| {
@@ -203,7 +203,7 @@ fn native_preparation_menu_action_review_and_cancel_are_read_only(cx: &mut TestA
         f.state
             .read_with(cx, |state, _| state.preparation_preview().is_none())
     );
-    assert_eq!(format!("{:?}", preparation_catalogue(&f)), before_catalogue);
+    assert_eq!(format!("{:?}", preparation_catalog(&f)), before_catalog);
     assert_eq!(preparation_files(&f), before_files);
 }
 
@@ -211,7 +211,7 @@ fn native_preparation_menu_action_review_and_cancel_are_read_only(cx: &mut TestA
 fn native_preparation_pending_action_cancel_discards_late_review(cx: &mut TestAppContext) {
     let f = fixture_with_preparation_backend(false, Some(true), cx);
     let before_files = preparation_files(&f);
-    let before_catalogue = format!("{:?}", preparation_catalogue(&f));
+    let before_catalog = format!("{:?}", preparation_catalog(&f));
     f.window
         .update(cx, |_, window, cx| {
             window.dispatch_action(Box::new(PrepareSelected), cx);
@@ -224,7 +224,7 @@ fn native_preparation_pending_action_cancel_discards_late_review(cx: &mut TestAp
         assert!(state.can_mutate());
     });
     assert_eq!(preparation_files(&f), before_files);
-    assert_eq!(format!("{:?}", preparation_catalogue(&f)), before_catalogue);
+    assert_eq!(format!("{:?}", preparation_catalog(&f)), before_catalog);
 }
 
 #[gpui::test]
@@ -233,7 +233,7 @@ fn native_preparation_missing_backend_blocks_pointer_and_action_confirmation(
 ) {
     let f = fixture_with_preparation_backend(false, Some(false), cx);
     let before_files = preparation_files(&f);
-    let before_catalogue = format!("{:?}", preparation_catalogue(&f));
+    let before_catalog = format!("{:?}", preparation_catalog(&f));
     click_control(&f, "prepare-book", cx);
     settle(&f.state, cx);
     f.state.read_with(cx, |state, _| {
@@ -261,7 +261,7 @@ fn native_preparation_missing_backend_blocks_pointer_and_action_confirmation(
         assert!(state.session().delivery_report.is_none());
     });
     assert_eq!(preparation_files(&f), before_files);
-    assert_eq!(format!("{:?}", preparation_catalogue(&f)), before_catalogue);
+    assert_eq!(format!("{:?}", preparation_catalog(&f)), before_catalog);
 }
 
 #[gpui::test]
@@ -283,8 +283,8 @@ fn native_preparation_confirmation_keeps_captured_book_and_never_sends(cx: &mut 
         })
         .unwrap();
     settle(&f.state, cx);
-    let catalogue = preparation_catalogue(&f);
-    for book in &catalogue {
+    let catalog = preparation_catalog(&f);
+    for book in &catalog {
         assert_eq!(book.formats.len(), if book.id == chosen { 2 } else { 1 });
         assert!(
             book.formats

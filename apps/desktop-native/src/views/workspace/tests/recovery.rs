@@ -156,7 +156,7 @@ type RecoverySnapshot = (
 
 pub(super) fn recovery_snapshot(f: &Fixture) -> RecoverySnapshot {
     (
-        format!("{:?}", preparation_catalogue(f)),
+        format!("{:?}", preparation_catalog(f)),
         trash_ids(&f.engine),
         preparation_files(f),
     )

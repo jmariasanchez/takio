@@ -22,7 +22,7 @@ fn switching_ready(state: &Entity<LibraryState>, cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn library_switch_resets_view_and_routes_mutation_to_new_catalogue(cx: &mut TestAppContext) {
+fn library_switch_resets_view_and_routes_mutation_to_new_catalog(cx: &mut TestAppContext) {
     let f = fixture(cx);
     switching_ready(&f.state, cx);
     let a = f.state.read_with(cx, |state, _| state.library_root.clone());

@@ -2,7 +2,7 @@ use super::preparation::preparation_channel;
 use super::*;
 
 #[gpui::test]
-fn recovery_round_trip_keeps_whole_catalogue_trash_and_originals(cx: &mut TestAppContext) {
+fn recovery_round_trip_keeps_whole_catalog_trash_and_originals(cx: &mut TestAppContext) {
     let f = fixture(cx);
     let output = tempfile::tempdir().unwrap();
     let backup = output.path().join("backup");

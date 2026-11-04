@@ -3783,7 +3783,7 @@ fn destination_books_lists_reader_files_and_library_matches_without_writing() {
         .unwrap()
         .map(|entry| entry.unwrap().path())
         .collect();
-    let catalogue = fs::read(&database).unwrap();
+    let catalog = fs::read(&database).unwrap();
 
     let output = cargo_bin_cmd!("takio")
         .args(["destination", "books", "--db"])
@@ -3832,7 +3832,7 @@ fn destination_books_lists_reader_files_and_library_matches_without_writing() {
     before.sort();
     assert_eq!(after, before, "the reader is not modified");
     assert!(!volumes.join("Kindle/.takio").exists());
-    assert_eq!(fs::read(&database).unwrap(), catalogue);
+    assert_eq!(fs::read(&database).unwrap(), catalog);
 
     // Before any library exists, the reader's books are listed as not in it, and
     // nothing is created: no library, and no cache in the unrelated folder. A cache

@@ -39,7 +39,7 @@ pub(super) fn switch_to(f: &Fixture, root: &std::path::Path, cx: &mut TestAppCon
         .unwrap();
 }
 
-fn switch_old_catalogue(f: &Fixture) -> Vec<LibraryItem> {
+fn switch_old_catalog(f: &Fixture) -> Vec<LibraryItem> {
     let paths =
         LibraryPaths::resolve(None, Some(&f._temp.path().join("library/library.sqlite"))).unwrap();
     takio::library::store::LibraryStore::open_read_only(paths)
@@ -72,7 +72,7 @@ fn library_switch_header_pointer_cancel_preserves_current_library(cx: &mut TestA
         assert_eq!((state.library_root(), state.library_epoch()), before);
         assert!(!state.switching_library());
     });
-    assert_eq!(switch_old_catalogue(&f).len(), 2);
+    assert_eq!(switch_old_catalog(&f).len(), 2);
     assert_files_unchanged(&f);
 }
 
@@ -105,7 +105,7 @@ fn library_switch_picker_cancel_duplicate_and_late_edit_are_safe(cx: &mut TestAp
         assert!(state.session().metadata_editing);
         assert_eq!(state.session().items.len(), 2);
     });
-    assert_eq!(switch_old_catalogue(&f).len(), 2);
+    assert_eq!(switch_old_catalog(&f).len(), 2);
     assert_files_unchanged(&f);
 }
 
@@ -177,7 +177,7 @@ fn library_switch_old_purge_confirmation_cannot_delete_restored_same_ids(cx: &mu
     cx.simulate_prompt_answer("Delete permanently");
     settle(&f.state, cx);
     assert_eq!(trash_ids(&f.engine), before);
-    assert_eq!(switch_old_catalogue(&f).len(), 2);
+    assert_eq!(switch_old_catalog(&f).len(), 2);
     assert_files_unchanged(&f);
     assert!(
         f.state
@@ -213,8 +213,8 @@ fn library_switch_old_copy_and_move_pickers_never_import_or_move(cx: &mut TestAp
             std::fs::read(&source).unwrap(),
             b"late import source must survive"
         );
-        assert_eq!(preparation_catalogue(&f).len(), 2);
-        assert_eq!(switch_old_catalogue(&f).len(), 2);
+        assert_eq!(preparation_catalog(&f).len(), 2);
+        assert_eq!(switch_old_catalog(&f).len(), 2);
         assert_files_unchanged(&f);
     }
 }
@@ -300,7 +300,7 @@ fn library_switch_recovery_modal_overlap_and_stale_source_are_safe(cx: &mut Test
             .update(cx, |workspace, _, _| workspace.recovery_prompt_open)
             .unwrap()
     );
-    assert_eq!(switch_old_catalogue(&f).len(), 2);
+    assert_eq!(switch_old_catalog(&f).len(), 2);
 }
 
 #[gpui::test]

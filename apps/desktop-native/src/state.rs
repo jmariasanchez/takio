@@ -1936,7 +1936,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn rapid_sorts_do_not_requery_the_loaded_catalogue(cx: &mut TestAppContext) {
+    fn rapid_sorts_do_not_requery_the_loaded_catalog(cx: &mut TestAppContext) {
         let f = fixture(cx);
         let (engine, id) = f
             .state
@@ -2240,7 +2240,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn purge_reports_committed_catalogue_change_and_pending_cleanup(cx: &mut TestAppContext) {
+    fn purge_reports_committed_catalog_change_and_pending_cleanup(cx: &mut TestAppContext) {
         let f = fixture(cx);
         let item = f.state.read_with(cx, |s, _| s.session.items[0].clone());
         f.state.update(cx, |s, cx| {

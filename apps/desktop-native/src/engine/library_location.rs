@@ -212,7 +212,7 @@ mod tests {
     }
 
     #[test]
-    fn missing_managed_bytes_do_not_prevent_catalogue_management() {
+    fn missing_managed_bytes_do_not_prevent_catalog_management() {
         let (_temp, root, id) = fixture();
         let (store, _) = open(&root).unwrap();
         fs::remove_file(&store.list(false).unwrap()[0].source_path).unwrap();
