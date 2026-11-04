@@ -12,7 +12,7 @@ fn typed_patch_preserves_sparse_wire_shape_and_explicit_nulls() {
         json!({})
     );
     let wire = json!({
-        "title":"Title", "author":null, "authors":[{"name":"Writer"}],
+        "title":"Title", "authors":[{"name":"Writer"}],
         "series":"Series", "seriesIndex":1.5, "publisher":"Publisher",
         "languages":["en"], "identifiers":{"isbn":"123"},
         "customMetadata":{"key":"value"}, "publishedDate":"2026-01-01",
@@ -20,6 +20,22 @@ fn typed_patch_preserves_sparse_wire_shape_and_explicit_nulls() {
     });
     let patch: LibraryPatch = serde_json::from_value(wire.clone()).unwrap();
     assert_eq!(serde_json::to_value(&patch).unwrap(), wire);
+    // The scalar alias is input-only: ignored beside `authors`, folded otherwise.
+    let mut with_alias = wire.clone();
+    with_alias["author"] = json!(null);
+    let aliased: LibraryPatch = serde_json::from_value(with_alias).unwrap();
+    assert_eq!(serde_json::to_value(&aliased).unwrap(), wire);
+    let scalar: LibraryPatch = serde_json::from_value(json!({"author":"Solo"})).unwrap();
+    assert_eq!(
+        serde_json::to_value(&scalar).unwrap(),
+        json!({"authors":[{"name":"Solo"}]})
+    );
+    let cleared: LibraryPatch = serde_json::from_value(json!({"author":null})).unwrap();
+    assert_eq!(
+        serde_json::to_value(&cleared).unwrap(),
+        json!({"authors":null})
+    );
+    assert!(serde_json::from_value::<LibraryPatch>(json!({"unknown":1})).is_err());
     let mut expected = wire
         .as_object()
         .unwrap()

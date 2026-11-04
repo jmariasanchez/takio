@@ -682,7 +682,6 @@ fn patch_for(book: &CalibreBook) -> LibraryPatch {
             .filter(|rating| rating.is_finite() && (0.0..=10.0).contains(rating))),
         description: set(book.description.clone()),
         tags: Patch::Set(book.tags.clone()),
-        ..LibraryPatch::default()
     }
 }
 

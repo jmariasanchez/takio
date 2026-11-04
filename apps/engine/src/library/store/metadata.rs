@@ -58,7 +58,6 @@ pub(super) fn validate_library_patch(
     }
     for value in [
         patch.title.value(),
-        patch.author.value(),
         patch.series.value(),
         patch.publisher.value(),
         patch.description.value(),

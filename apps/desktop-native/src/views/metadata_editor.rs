@@ -435,7 +435,6 @@ mod tests {
         let patch = draft.patch(&item).unwrap();
         assert_eq!(patch.title, Patch::Set("New title".into()));
         assert!(patch.authors.is_missing());
-        assert!(patch.author.is_missing());
         assert!(patch.series_index.is_missing());
         assert!(patch.publisher.is_missing());
         assert!(patch.languages.is_missing());

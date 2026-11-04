@@ -117,10 +117,8 @@ fn cli_query_and_native_facets_share_mixed_author_counts() {
                 ..Default::default()
             }
         } else {
-            LibraryPatch {
-                author: Patch::Set("Shared author".into()),
-                ..Default::default()
-            }
+            // Legacy JSON clients send the scalar alias.
+            serde_json::from_value(json!({"author": "Shared author"})).unwrap()
         };
         store.update(&item.id, patch).unwrap();
     }
@@ -162,10 +160,7 @@ fn cli_query_does_not_rewrite_unicode_filter_values() {
     store
         .update(
             &item.id,
-            LibraryPatch {
-                author: Patch::Set(author.into()),
-                ..Default::default()
-            },
+            serde_json::from_value(json!({"author": author})).unwrap(),
         )
         .unwrap();
     let filters = takio::library::query::Filters {

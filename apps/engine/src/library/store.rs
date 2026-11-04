@@ -435,6 +435,7 @@ impl LibraryStore {
             return Err(crate::app_error!("incompatible-schema"));
         } else {
             migration::verify_schema_version(&connection, version)?;
+            migration::backfill_current_structured_authors(&mut connection)?;
         }
         Ok(Self {
             connection,
@@ -1151,17 +1152,9 @@ impl LibraryStore {
             }
             item.title = title.to_owned();
         }
-        // Structured `authors` are the source of truth. The legacy scalar
-        // `author` is a derived display value, so a scalar-only patch is
-        // translated into a single structured author instead of diverging.
-        let authors_patch = match (patch.authors, patch.author) {
-            (Patch::Missing, Patch::Set(value)) => Patch::Set(vec![BookAuthor {
-                name: required_text(value)?,
-                sort_name: None,
-            }]),
-            (Patch::Missing, Patch::Null) => Patch::Null,
-            (authors, _) => authors,
-        };
+        // Structured `authors` are the only author input. The legacy scalar
+        // JSON key was folded into `authors` when the patch was decoded.
+        let authors_patch = patch.authors;
         let authors_changed = !matches!(authors_patch, Patch::Missing);
         match authors_patch {
             Patch::Missing => {}

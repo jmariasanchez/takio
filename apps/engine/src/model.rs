@@ -242,16 +242,14 @@ pub fn derived_display_author(authors: &[BookAuthor]) -> Option<String> {
     })
 }
 
+/// A sparse metadata change. Structured `authors` are the only author input:
+/// the legacy scalar `author` JSON key is accepted on the wire and folded into
+/// one structured author when `authors` is absent, then dropped.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase", from = "LibraryPatchWire")]
 pub struct LibraryPatch {
     #[serde(default, skip_serializing_if = "Patch::is_missing")]
     pub title: Patch<String>,
-    /// Input-only compatibility alias for existing JSON clients. The store
-    /// translates a scalar-only patch into one structured author and ignores it
-    /// whenever `authors` is present. Engine code never produces it.
-    #[serde(default, skip_serializing_if = "Patch::is_missing")]
-    pub author: Patch<String>,
     #[serde(default, skip_serializing_if = "Patch::is_missing")]
     pub authors: Patch<Vec<BookAuthor>>,
     #[serde(default, skip_serializing_if = "Patch::is_missing")]
@@ -276,11 +274,69 @@ pub struct LibraryPatch {
     pub tags: Patch<Vec<String>>,
 }
 
+/// Accepted JSON shape, including the input-only scalar `author` alias.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct LibraryPatchWire {
+    #[serde(default)]
+    title: Patch<String>,
+    #[serde(default)]
+    author: Patch<String>,
+    #[serde(default)]
+    authors: Patch<Vec<BookAuthor>>,
+    #[serde(default)]
+    series: Patch<String>,
+    #[serde(default)]
+    series_index: Patch<f64>,
+    #[serde(default)]
+    publisher: Patch<String>,
+    #[serde(default)]
+    languages: Patch<Vec<String>>,
+    #[serde(default)]
+    identifiers: Patch<BTreeMap<String, String>>,
+    #[serde(default)]
+    custom_metadata: Patch<BTreeMap<String, String>>,
+    #[serde(default)]
+    published_date: Patch<String>,
+    #[serde(default)]
+    rating: Patch<f64>,
+    #[serde(default)]
+    description: Patch<String>,
+    #[serde(default)]
+    tags: Patch<Vec<String>>,
+}
+
+impl From<LibraryPatchWire> for LibraryPatch {
+    fn from(wire: LibraryPatchWire) -> Self {
+        let authors = match (wire.authors, wire.author) {
+            (Patch::Missing, Patch::Set(name)) => Patch::Set(vec![BookAuthor {
+                name,
+                sort_name: None,
+            }]),
+            (Patch::Missing, Patch::Null) => Patch::Null,
+            (authors, _) => authors,
+        };
+        Self {
+            authors,
+            title: wire.title,
+            series: wire.series,
+            series_index: wire.series_index,
+            publisher: wire.publisher,
+            languages: wire.languages,
+            identifiers: wire.identifiers,
+            custom_metadata: wire.custom_metadata,
+            published_date: wire.published_date,
+            rating: wire.rating,
+            description: wire.description,
+            tags: wire.tags,
+        }
+    }
+}
+
 impl LibraryPatch {
     /// Present wire field names, including explicit nulls, in stable review order.
     pub fn field_names(&self) -> Vec<String> {
         [
-            ("author", self.author.is_missing()),
             ("authors", self.authors.is_missing()),
             ("customMetadata", self.custom_metadata.is_missing()),
             ("description", self.description.is_missing()),
@@ -308,7 +364,7 @@ impl LibraryPatch {
             };
         }
         retain! {
-            title => "title", author => "author", authors => "authors",
+            title => "title", authors => "authors",
             series => "series", series_index => "seriesIndex", publisher => "publisher",
             languages => "languages", identifiers => "identifiers",
             custom_metadata => "customMetadata", published_date => "publishedDate",
@@ -320,7 +376,6 @@ impl LibraryPatch {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.title.is_missing()
-            && self.author.is_missing()
             && self.authors.is_missing()
             && self.series.is_missing()
             && self.series_index.is_missing()

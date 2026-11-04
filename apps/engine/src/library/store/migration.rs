@@ -869,6 +869,16 @@ const LIBRARY_ADOPTIONS_DDL: &str =
 /// scalar, so give each such row one structured author. Rows that already have
 /// structured authors are left untouched, which makes this idempotent; it runs
 /// inside the migration transaction after the verified backup is taken.
+/// Writable opens of a current-schema library repair scalar-only author rows,
+/// for example rows another writer stored without structured authors. The
+/// insert is idempotent and touches only items that have no structured author.
+pub(super) fn backfill_current_structured_authors(connection: &mut Connection) -> AppResult<()> {
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    backfill_structured_authors(&transaction)?;
+    transaction.commit()?;
+    Ok(())
+}
+
 fn backfill_structured_authors(transaction: &Transaction<'_>) -> Result<(), rusqlite::Error> {
     transaction.execute(
         "INSERT INTO library_item_authors(library_item_id,name,sort_name,position)
@@ -1357,6 +1367,32 @@ mod tests {
             )
             .unwrap();
         assert_eq!(rows, 1);
+        // A current-schema row written scalar-only by another writer is
+        // repaired on the next writable open, and only once.
+        reopened
+            .connection
+            .execute(
+                "DELETE FROM library_item_authors WHERE library_item_id='book-v4-minimal'",
+                [],
+            )
+            .unwrap();
+        reopened
+            .connection
+            .execute(
+                "UPDATE library_items SET author='  Scalar Writer ' WHERE id='book-v4-minimal'",
+                [],
+            )
+            .unwrap();
+        let paths = reopened.paths().clone();
+        drop(reopened);
+        for _ in 0..2 {
+            let store = LibraryStore::create_or_migrate(paths.clone()).unwrap();
+            let minimal = store.get("book-v4-minimal").unwrap().unwrap();
+            assert_eq!(
+                minimal.author_names().collect::<Vec<_>>(),
+                ["Scalar Writer"]
+            );
+        }
     }
 
     #[test]
