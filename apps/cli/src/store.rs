@@ -439,6 +439,9 @@ impl LibraryStore {
         title: Option<&str>,
         move_source: bool,
     ) -> AppResult<ImportResult> {
+        // Every import path (CLI, TUI, desktop, folder scans) funnels through here, so the
+        // owned-path guard lives here rather than in each caller.
+        crate::import_scan::validate_import_sources(&self.paths, &[source.to_path_buf()])?;
         let source = canonical_file(source)?;
         let format = detect_format(&source).ok_or_else(|| AppError::new("unsupported-format"))?;
         let (filename_title, filename_authors) = metadata_from_filename(&source);

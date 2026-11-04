@@ -110,6 +110,28 @@ fn fixture() -> (tempfile::TempDir, LibraryStore, LibraryItem) {
 }
 
 #[test]
+fn import_refuses_sources_inside_library_owned_paths() {
+    let (_temp, mut store, item) = fixture();
+    let item_dir = item.formats[0].source_path.parent().unwrap().to_path_buf();
+    let stray = item_dir.join("stray.epub");
+    fs::write(&stray, b"unrelated bytes inside an owned directory").unwrap();
+    for move_source in [false, true] {
+        assert_eq!(
+            store
+                .import_with_outcome(&stray, None, move_source)
+                .unwrap_err()
+                .code(),
+            "invalid-arguments"
+        );
+        assert_eq!(
+            fs::read(&stray).unwrap(),
+            b"unrelated bytes inside an owned directory"
+        );
+        assert_eq!(store.list(true).unwrap().len(), 1);
+    }
+}
+
+#[test]
 fn duplicate_import_explicitly_preserves_copy_and_move_sources() {
     let (temp, mut store, item) = fixture();
     let source = temp.path().join("duplicate.epub");
