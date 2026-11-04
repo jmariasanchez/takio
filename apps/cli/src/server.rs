@@ -27,9 +27,11 @@ pub fn serve(store: &LibraryStore, host: &str, port: u16) -> AppResult<()> {
         host.to_owned()
     };
     let actual_port = address.to_ip().map_or(port, |value| value.port());
-    print_success(
-        json!({"server":{"url":format!("http://{display_host}:{actual_port}"),"token":token,"mode":"foreground-read-only"}}),
-    )?;
+    print_success(json!({"server": {
+        "url": format!("http://{display_host}:{actual_port}"),
+        "token": token,
+        "mode": "foreground-read-only",
+    }}))?;
     for request in server.incoming_requests() {
         handle(request, store, &token);
     }

@@ -233,6 +233,13 @@ impl StartupWindow {
     }
 }
 
+const BUSY_HEADING: &str = "Opening or recovering library";
+const ATTENTION_HEADING: &str = "Your library needs attention";
+const BUSY_FOOTER: &str =
+    "Please wait, or cancel the open chooser. Closing is blocked until the operation finishes.";
+const ATTENTION_FOOTER: &str =
+    "The original remains in place. Recovery does not repair or overwrite it.";
+
 impl Render for StartupWindow {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if let Some(workspace) = &self.workspace {
@@ -240,6 +247,43 @@ impl Render for StartupWindow {
         }
         let theme = *cx.global::<Theme>();
         let enabled = !self.busy;
+        let (heading, footer) = if self.busy {
+            (BUSY_HEADING, BUSY_FOOTER)
+        } else {
+            (ATTENTION_HEADING, ATTENTION_FOOTER)
+        };
+        let button = |id: &'static str, label: &'static str, background| {
+            div()
+                .id(id)
+                .px_4()
+                .py_2()
+                .rounded_md()
+                .bg(background)
+                .map(|el| crate::views::button::accessible_button(el, label, enabled))
+                .cursor_pointer()
+        };
+        let open = button(
+            "startup-open-library",
+            "Open Existing Library",
+            theme.accent,
+        )
+        .text_color(theme.panel_bg)
+        .on_click(cx.listener(|this, _, window, cx| this.choose_existing(window, cx)))
+        .child("Open Existing Library...");
+        let restore = button(
+            "startup-restore-copy",
+            "Restore Backup to New Folder",
+            theme.panel_bg,
+        )
+        .on_click(cx.listener(|this, _, window, cx| this.confirm_restore(window, cx)))
+        .child("Restore Backup to New Folder...");
+        let quit = button("startup-quit", "Quit", theme.panel_bg)
+            .on_click(cx.listener(|this, _, _, cx| {
+                if this.request_close(cx) {
+                    cx.quit();
+                }
+            }))
+            .child("Quit");
         div()
             .size_full()
             .track_focus(&self.focus)
@@ -251,29 +295,35 @@ impl Render for StartupWindow {
             .items_center()
             .p_8()
             .gap_4()
-            .on_action(cx.listener(|this, _: &crate::OpenLibrary, window, cx| this.choose_existing(window, cx)))
-            .on_action(cx.listener(|this, _: &crate::RestoreBackupCopy, window, cx| this.confirm_restore(window, cx)))
-            .child(div().text_xl().child(if self.busy { "Opening or recovering library" } else { "Your library needs attention" }))
-            .child(div().max_w(px(720.)).child(format!("Default library: {}", self.default.root.display())))
-            .child(div().id("startup-status").role(gpui::Role::Status).aria_label(self.message.clone()).max_w(px(720.)).child(self.message.clone()))
-            .child(div().flex().gap_3()
-                .child(div().id("startup-open-library").px_4().py_2().rounded_md().bg(theme.accent).text_color(theme.panel_bg)
-                    .map(|el| crate::views::button::accessible_button(el, "Open Existing Library", enabled))
-                    .cursor_pointer().on_click(cx.listener(|this, _, window, cx| this.choose_existing(window, cx)))
-                    .child("Open Existing Library..."))
-                .child(div().id("startup-restore-copy").px_4().py_2().rounded_md().bg(theme.panel_bg)
-                    .map(|el| crate::views::button::accessible_button(el, "Restore Backup to New Folder", enabled))
-                    .cursor_pointer().on_click(cx.listener(|this, _, window, cx| this.confirm_restore(window, cx)))
-                    .child("Restore Backup to New Folder..."))
-                .child(div().id("startup-quit").px_4().py_2().rounded_md().bg(theme.panel_bg)
-                    .map(|el| crate::views::button::accessible_button(el, "Quit", enabled))
-                    .cursor_pointer().on_click(cx.listener(|this, _, _, cx| { if this.request_close(cx) { cx.quit(); } }))
-                    .child("Quit")))
-            .child(div().text_sm().text_color(theme.text_secondary).child(if self.busy {
-                "Please wait, or cancel the open chooser. Closing is blocked until the operation finishes."
-            } else {
-                "The original remains in place. Recovery does not repair or overwrite it."
+            .on_action(cx.listener(|this, _: &crate::OpenLibrary, window, cx| {
+                this.choose_existing(window, cx)
             }))
+            .on_action(
+                cx.listener(|this, _: &crate::RestoreBackupCopy, window, cx| {
+                    this.confirm_restore(window, cx)
+                }),
+            )
+            .child(div().text_xl().child(heading))
+            .child(
+                div()
+                    .max_w(px(720.))
+                    .child(format!("Default library: {}", self.default.root.display())),
+            )
+            .child(
+                div()
+                    .id("startup-status")
+                    .role(gpui::Role::Status)
+                    .aria_label(self.message.clone())
+                    .max_w(px(720.))
+                    .child(self.message.clone()),
+            )
+            .child(div().flex().gap_3().child(open).child(restore).child(quit))
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(theme.text_secondary)
+                    .child(footer),
+            )
     }
 }
 

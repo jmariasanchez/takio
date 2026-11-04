@@ -80,11 +80,18 @@ pub fn plan_send(
     if !format.source_path.is_file() {
         return Err(unavailable());
     }
-    let mut source = std::fs::File::open(&format.source_path).map_err(|_| unavailable())?;
-    if !source.metadata().map_err(|_| unavailable())?.is_file() {
+    let mut source =
+        std::fs::File::open(&format.source_path).map_err(crate::io_error!("source-unavailable"))?;
+    if !source
+        .metadata()
+        .map_err(crate::io_error!("source-unavailable"))?
+        .is_file()
+    {
         return Err(unavailable());
     }
-    source.read(&mut [0u8; 1]).map_err(|_| unavailable())?;
+    source
+        .read(&mut [0u8; 1])
+        .map_err(crate::io_error!("source-unavailable"))?;
     let ready = ReadyFile {
         format: format.format,
         source_path: format.source_path.clone(),

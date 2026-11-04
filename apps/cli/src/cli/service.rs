@@ -354,7 +354,7 @@ pub(super) fn library_service(library: Option<&str>, database: Option<&Path>) ->
         line.clear();
         let read = input
             .read_line(&mut line)
-            .map_err(|_| takio::app_error!("storage-unavailable"))?;
+            .map_err(takio::io_error!("storage-unavailable"))?;
         if read == 0 {
             return Ok(());
         }

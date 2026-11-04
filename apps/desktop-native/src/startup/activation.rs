@@ -1,6 +1,8 @@
 //! UI-owned activation reporting. Call persistence only on a background worker.
 use std::path::{Path, PathBuf};
 
+const SESSION_ONLY_WARNING: &str = "Opened this library for this session only, but could not remember its location. The previous library was not replaced. Check the profile folder permissions.";
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PreferenceOutcome {
     Saved,
@@ -32,8 +34,8 @@ impl ActivationReport {
             }
             Some(_) => PreferenceOutcome::SessionOnly,
         };
-        let warning = (preference == PreferenceOutcome::SessionOnly).then(||
-            "Opened this library for this session only, but could not remember its location. The previous library was not replaced. Check the profile folder permissions.".into());
+        let warning =
+            (preference == PreferenceOutcome::SessionOnly).then(|| SESSION_ONLY_WARNING.into());
         Self {
             root,
             preference,
