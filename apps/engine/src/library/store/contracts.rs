@@ -37,18 +37,23 @@ fn present_query_syntax<'de, D: serde::Deserializer<'de>>(
     LibraryQuerySyntax::deserialize(deserializer).map(Some)
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct SavedViewFilters {
-    pub authors: Vec<String>,
-    pub tags: Vec<String>,
-    pub series: Vec<String>,
-    pub languages: Vec<String>,
-    #[serde(deserialize_with = "saved_view_formats")]
-    pub formats: Vec<FormatId>,
+pub type SavedViewFilters = super::Filters;
+
+#[cfg(test)]
+mod filter_wire_tests {
+    #[test]
+    fn live_and_saved_filters_share_typed_case_insensitive_wire_contract() {
+        let mut wire = serde_json::json!({"authors":[],"tags":[],"series":[],"languages":[],"formats":["EPUB"]});
+        let filters: super::SavedViewFilters = serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(filters.formats, [crate::format::FormatId::Epub]);
+        wire["formats"] = serde_json::json!(["epub"]);
+        assert_eq!(serde_json::to_value(filters).unwrap(), wire);
+        wire["formats"] = serde_json::json!(["unknown"]);
+        assert!(serde_json::from_value::<super::super::Filters>(wire).is_err());
+    }
 }
 
-fn saved_view_formats<'de, D: serde::Deserializer<'de>>(
+pub(super) fn saved_view_formats<'de, D: serde::Deserializer<'de>>(
     deserializer: D,
 ) -> Result<Vec<FormatId>, D::Error> {
     Vec::<String>::deserialize(deserializer)?
@@ -112,30 +117,7 @@ pub(super) fn validate_saved_view_definition(definition: &SavedViewDefinition) -
     ) {
         parse_structured_query(&definition.query)?;
     }
-    for values in [
-        &definition.filters.authors,
-        &definition.filters.tags,
-        &definition.filters.series,
-        &definition.filters.languages,
-    ] {
-        let mut seen = std::collections::HashSet::new();
-        if values.iter().any(|value| {
-            let value = value.trim();
-            value.is_empty() || !seen.insert(value.to_ascii_lowercase())
-        }) {
-            return Err(crate::app_error!("invalid-arguments"));
-        }
-    }
-    let mut seen = std::collections::HashSet::new();
-    if definition
-        .filters
-        .formats
-        .iter()
-        .any(|format| !seen.insert(format.as_str()))
-    {
-        return Err(crate::app_error!("invalid-arguments"));
-    }
-    Ok(())
+    definition.filters.validate_values(true)
 }
 
 #[cfg(test)]

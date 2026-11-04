@@ -308,6 +308,11 @@ impl Sidebar {
         let state = self.state.read(cx);
         let facets = &state.session().facets;
         let filters = &state.session().filters;
+        let formats = filters
+            .formats
+            .iter()
+            .map(|format| format.as_str().to_owned())
+            .collect::<Vec<_>>();
         let available = state.can_mutate();
         let mut groups = div()
             .id("facets")
@@ -351,7 +356,7 @@ impl Sidebar {
                 "Formats",
                 FilterDimension::Format,
                 &facets.formats,
-                &filters.formats,
+                &formats,
             ),
             (
                 "Languages",

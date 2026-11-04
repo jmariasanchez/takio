@@ -50,7 +50,7 @@ fn shared_queries_preserve_full_metadata_literals_filters_and_chunk_order() {
             let tags = first.tags.clone();
             let series = first.series.iter().cloned().collect::<Vec<_>>();
             let languages = first.languages.clone();
-            let formats = vec![first.format.as_str().to_owned()];
+            let formats = vec![first.format];
             for selected in [
                 Filters {
                     authors: authors.clone(),

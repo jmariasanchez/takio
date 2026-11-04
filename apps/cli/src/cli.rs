@@ -367,8 +367,8 @@ enum LibraryCommand {
     Catalog {
         #[arg(long)]
         db: Option<PathBuf>,
-        #[arg(long, value_parser = ["json", "csv", "html"])]
-        format: String,
+        #[arg(long)]
+        format: takio::library::catalog::CatalogFormat,
         #[arg(long)]
         output: PathBuf,
     },
@@ -1058,8 +1058,7 @@ fn metadata_candidates(command: MetadataCandidatesCommand, library: Option<&str>
                 // recorded as a candidate audit entry and answer a plain
                 // envelope rather than the candidate apply response schema.
                 let patch_value = read_json(patch_json.as_deref().unwrap_or_default())?;
-                let patch: LibraryPatch = serde_json::from_value(patch_value)
-                    .map_err(|_| takio::app_error!("invalid-arguments"))?;
+                let patch: LibraryPatch = decode_request(&patch_value)?;
                 let paths = LibraryPaths::resolve(library, db.as_deref())?;
                 let mut store = LibraryStore::create_or_migrate(paths)?;
                 if cover {
@@ -1373,7 +1372,7 @@ fn library(
         LibraryCommand::Catalog { db, format, output } => {
             let paths = LibraryPaths::resolve(library, db.as_deref())?;
             let items = LibraryStore::open_read_only(paths)?.list(false)?;
-            print_success(json!({"catalog":write_catalog(&items, &format, &output)?}))
+            print_success(json!({"catalog":write_catalog(&items, format, &output)?}))
         }
         LibraryCommand::ContentSearch {
             db,
@@ -1893,7 +1892,7 @@ fn destination(command: DestinationCommand, library: Option<&str>) -> AppResult<
             let mut cache = reader_shelf::HashCache::load(&paths.root);
             let (root, database) = (paths.root.clone(), paths.database.clone());
             let shelf =
-                reader_shelf::scan_cached(&device, &catalogue_fingerprints(paths)?, &mut cache)?;
+                reader_shelf::scan_cached(&device, &catalog_fingerprints(paths)?, &mut cache)?;
             // Never leave a cache in a folder that holds no library.
             if database.is_file() {
                 let _ = cache.save(&root);
@@ -2080,7 +2079,7 @@ fn reader_relative(device: &destinations::Destination, path: &Path) -> String {
 /// Fingerprints from an existing library, opened read-only so a scan never creates one.
 /// A library that was never created has no books, so every reader file is listed as
 /// not in it rather than failing.
-fn catalogue_fingerprints(
+fn catalog_fingerprints(
     paths: LibraryPaths,
 ) -> AppResult<Vec<takio::library::store::ActiveFingerprint>> {
     match std::fs::symlink_metadata(&paths.database) {
@@ -2627,9 +2626,13 @@ mod tests {
     #[test]
     fn empty_catalog_output_is_rejected_without_writing() {
         assert_eq!(
-            write_catalog(&[], "json", Path::new(""))
-                .unwrap_err()
-                .code(),
+            write_catalog(
+                &[],
+                takio::library::catalog::CatalogFormat::Json,
+                Path::new("")
+            )
+            .unwrap_err()
+            .code(),
             "invalid-arguments"
         );
     }
@@ -2654,7 +2657,12 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let items = vec![rich_book(), sparse_book()];
         let output = temp.path().join("catalog.json");
-        write_catalog(&items, "json", &output).unwrap();
+        write_catalog(
+            &items,
+            takio::library::catalog::CatalogFormat::Json,
+            &output,
+        )
+        .unwrap();
         let actual: Value = serde_json::from_slice(&std::fs::read(output).unwrap()).unwrap();
         assert_eq!(
             actual,
@@ -2662,7 +2670,7 @@ mod tests {
         );
 
         let output = temp.path().join("catalog.csv");
-        write_catalog(&items, "csv", &output).unwrap();
+        write_catalog(&items, takio::library::catalog::CatalogFormat::Csv, &output).unwrap();
         let csv = std::fs::read_to_string(output).unwrap();
         assert_eq!(
             csv,

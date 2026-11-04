@@ -11,8 +11,10 @@ pub(super) fn preparation_review(item: &LibraryItem, available: bool) -> Prepara
         item_id: item.id.clone(),
         title: item.title.clone(),
         source_path: item.source_path.clone(),
-        source_bytes: fs::metadata(&item.source_path).unwrap().len(),
-        source_sha256: "reviewed-test-fingerprint".into(),
+        source: takio::fingerprint::Fingerprint {
+            bytes: fs::metadata(&item.source_path).unwrap().len(),
+            sha256: "reviewed-test-fingerprint".into(),
+        },
         backend: takio::conversion::BackendDiscovery {
             available,
             path: available.then(|| PathBuf::from("/unused-test-converter")),
@@ -130,7 +132,7 @@ fn preparation_confirmation_captures_id_and_success_reloads_without_sending(
     match requests.try_recv().unwrap() {
         Request::PrepareReviewed { preview, reply } => {
             assert_eq!(preview.item_id, item.id);
-            assert_eq!(preview.source_sha256, "reviewed-test-fingerprint");
+            assert_eq!(preview.source.sha256, "reviewed-test-fingerprint");
             reply.send(Ok((*item).clone())).unwrap();
         }
         _ => panic!("expected explicit preparation"),

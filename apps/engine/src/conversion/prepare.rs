@@ -17,8 +17,7 @@ pub struct PreparationPreview {
     pub item_id: String,
     pub title: String,
     pub source_path: PathBuf,
-    pub source_bytes: u64,
-    pub source_sha256: String,
+    pub source: crate::fingerprint::Fingerprint,
     pub backend: BackendDiscovery,
 }
 
@@ -29,16 +28,12 @@ pub fn preview_with_backend(
 ) -> AppResult<PreparationPreview> {
     let item = eligible_item(store, item_id)?;
     let source_path = epub_path(&item)?;
-    let crate::fingerprint::Fingerprint {
-        bytes: source_bytes,
-        sha256: source_sha256,
-    } = source_fingerprint(&source_path)?;
+    let source = source_fingerprint(&source_path)?;
     Ok(PreparationPreview {
         item_id: item.id,
         title: item.title,
         source_path,
-        source_bytes,
-        source_sha256,
+        source,
         backend,
     })
 }
@@ -70,12 +65,7 @@ pub fn prepare_with_backend(
     let input = stage.path().join("source.epub");
     fs::copy(&reviewed.source_path, &input)
         .map_err(|_| crate::app_error!("prepare-source-unavailable"))?;
-    if source_fingerprint(&input)?
-        != (crate::fingerprint::Fingerprint {
-            bytes: reviewed.source_bytes,
-            sha256: reviewed.source_sha256.clone(),
-        })
-    {
+    if source_fingerprint(&input)? != reviewed.source {
         return Err(crate::app_error!("prepare-source-changed"));
     }
     let output = stage.path().join("prepared.azw3");
@@ -97,21 +87,17 @@ pub fn prepare_with_backend(
         &reviewed.item_id,
         &output,
         FormatId::Azw3,
-        artifact.bytes,
-        &artifact.sha256,
+        &crate::fingerprint::Fingerprint {
+            bytes: artifact.bytes,
+            sha256: artifact.sha256,
+        },
     )
 }
 
 fn validate_review(store: &LibraryStore, reviewed: &PreparationPreview) -> AppResult<()> {
     let item = eligible_item(store, &reviewed.item_id)?;
     let path = epub_path(&item)?;
-    if path != reviewed.source_path
-        || source_fingerprint(&path)?
-            != (crate::fingerprint::Fingerprint {
-                bytes: reviewed.source_bytes,
-                sha256: reviewed.source_sha256.clone(),
-            })
-    {
+    if path != reviewed.source_path || source_fingerprint(&path)? != reviewed.source {
         return Err(crate::app_error!("prepare-source-changed"));
     }
     Ok(())

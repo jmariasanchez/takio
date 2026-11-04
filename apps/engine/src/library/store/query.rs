@@ -181,7 +181,13 @@ fn append_query_scope(
         ));
     }
     if !scope.filters.formats.is_empty() {
-        let placeholders = query_placeholders(&scope.filters.formats, values);
+        let formats = scope
+            .filters
+            .formats
+            .iter()
+            .map(|format| format.as_str().to_owned())
+            .collect::<Vec<_>>();
+        let placeholders = query_placeholders(&formats, values);
         sql.push_str(&format!(
             " AND EXISTS(SELECT 1 FROM library_item_formats ff
                          WHERE ff.library_item_id=li.id

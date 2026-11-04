@@ -309,8 +309,10 @@ impl JobStore {
             item_id,
             &artifact.path,
             job.output_format,
-            artifact.bytes,
-            &artifact.sha256,
+            &crate::fingerprint::Fingerprint {
+                bytes: artifact.bytes,
+                sha256: artifact.sha256.clone(),
+            },
         );
         self.finish_attachment(&job.id, result.err().map(|error| error.kind()))
     }

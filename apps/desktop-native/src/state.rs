@@ -349,12 +349,25 @@ impl LibraryState {
         if self.switching_library() {
             return;
         }
+        if matches!(dimension, FilterDimension::Format) {
+            let Ok(format) = value.parse::<takio::format::FormatId>() else {
+                return;
+            };
+            let formats = &mut self.session.filters.formats;
+            if let Some(position) = formats.iter().position(|existing| *existing == format) {
+                formats.remove(position);
+            } else {
+                formats.push(format);
+            }
+            self.reload(cx);
+            return;
+        }
         let list = match dimension {
             FilterDimension::Author => &mut self.session.filters.authors,
             FilterDimension::Tag => &mut self.session.filters.tags,
             FilterDimension::Series => &mut self.session.filters.series,
             FilterDimension::Language => &mut self.session.filters.languages,
-            FilterDimension::Format => &mut self.session.filters.formats,
+            FilterDimension::Format => unreachable!("format filters handled above"),
         };
         let lower = value.to_lowercase();
         if let Some(position) = list.iter().position(|existing| *existing == lower) {
@@ -2049,7 +2062,7 @@ mod tests {
         assert_eq!(
             f.state
                 .read_with(cx, |s, _| s.session.filters.formats.clone()),
-            ["epub"],
+            [takio::format::FormatId::Epub],
             "lowercased"
         );
         assert_eq!(titles(&f.state, cx).len(), 3);

@@ -68,12 +68,42 @@ pub struct CatalogReport {
     pub books: usize,
     pub bytes: usize,
     pub sha256: String,
-    pub format: String,
+    pub format: CatalogFormat,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CatalogFormat {
+    Json,
+    Csv,
+    Html,
+}
+
+impl CatalogFormat {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Json => "json",
+            Self::Csv => "csv",
+            Self::Html => "html",
+        }
+    }
+}
+
+impl std::str::FromStr for CatalogFormat {
+    type Err = crate::error::AppError;
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "json" => Ok(Self::Json),
+            "csv" => Ok(Self::Csv),
+            "html" => Ok(Self::Html),
+            _ => Err(crate::app_error!("invalid-arguments")),
+        }
+    }
 }
 
 pub fn write_catalog(
     items: &[LibraryItem],
-    format: &str,
+    format: CatalogFormat,
     output: &std::path::Path,
 ) -> crate::error::AppResult<CatalogReport> {
     use crate::error::AppResult;
@@ -81,11 +111,10 @@ pub fn write_catalog(
     use std::io::Write;
     if output.exists()
         || output.parent().is_none_or(|parent| !parent.is_dir())
-        || !matches!(format, "json" | "csv" | "html")
         || output
             .extension()
             .and_then(|value| value.to_str())
-            .is_none_or(|value| !value.eq_ignore_ascii_case(format))
+            .is_none_or(|value| !value.eq_ignore_ascii_case(format.as_str()))
     {
         return Err(crate::app_error!(if output.exists() {
             crate::error::ErrorCode::OutputFileExists
@@ -94,16 +123,15 @@ pub fn write_catalog(
         }));
     }
     let body = match format {
-        "json" => format!(
+        CatalogFormat::Json => format!(
             "{}\n",
             serde_json::to_string_pretty(
                 &json!({"version":1,"books":items.iter().map(catalog_record).collect::<Vec<_>>()})
             )
             .map_err(|_| crate::app_error!("write-failed"))?
         ),
-        "csv" => render_catalog_csv(items),
-        "html" => render_catalog_html(items),
-        _ => return Err(crate::app_error!("invalid-arguments")),
+        CatalogFormat::Csv => render_catalog_csv(items),
+        CatalogFormat::Html => render_catalog_html(items),
     };
     if body.len() > 64 * 1024 * 1024 {
         return Err(crate::app_error!("write-failed"));
@@ -140,7 +168,7 @@ pub fn write_catalog(
         books: items.len(),
         bytes: body.len(),
         sha256: hex::encode(Sha256::digest(body.as_bytes())),
-        format: format.to_owned(),
+        format,
     })
 }
 
@@ -233,6 +261,24 @@ fn html_escape(value: &str) -> String {
 
 #[cfg(any(test, feature = "test-support"))]
 pub mod tests {
+    #[test]
+    fn catalog_formats_keep_wire_names_and_reject_unknown_values() {
+        for format in [
+            super::CatalogFormat::Json,
+            super::CatalogFormat::Csv,
+            super::CatalogFormat::Html,
+        ] {
+            assert_eq!(
+                format.as_str().parse::<super::CatalogFormat>().unwrap(),
+                format
+            );
+            assert_eq!(
+                serde_json::to_value(format).unwrap(),
+                serde_json::json!(format.as_str())
+            );
+        }
+        assert!("xml".parse::<super::CatalogFormat>().is_err());
+    }
     use super::*;
 
     pub fn sparse_book() -> LibraryItem {

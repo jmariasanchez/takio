@@ -114,21 +114,7 @@ pub fn query(store: &LibraryStore, request: QueryRequest) -> AppResult<QueryResu
                 .saved_view(id)?
                 .ok_or_else(|| crate::app_error!("not-found"))?
                 .definition;
-            let filters = Filters {
-                authors: definition.filters.authors,
-                tags: definition.filters.tags,
-                series: definition.filters.series,
-                languages: definition.filters.languages,
-                formats: definition
-                    .filters
-                    .formats
-                    .into_iter()
-                    .map(|format| format.as_str().to_owned())
-                    .collect(),
-            };
-            filters
-                .validate()
-                .map_err(|_| crate::app_error!("invalid-stored-data"))?;
+            let filters = definition.filters;
             Ok((
                 definition.query,
                 definition

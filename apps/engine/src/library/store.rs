@@ -142,7 +142,8 @@ pub struct Filters {
     pub tags: Vec<String>,
     pub series: Vec<String>,
     pub languages: Vec<String>,
-    pub formats: Vec<String>,
+    #[serde(deserialize_with = "contracts::saved_view_formats")]
+    pub formats: Vec<FormatId>,
 }
 
 impl Filters {
@@ -155,16 +156,27 @@ impl Filters {
     }
 
     pub fn validate(&self) -> AppResult<()> {
-        for values in [
-            &self.authors,
-            &self.tags,
-            &self.series,
-            &self.languages,
-            &self.formats,
-        ] {
-            if values.iter().any(|value| value.trim().is_empty()) {
+        self.validate_values(false)
+    }
+
+    fn validate_values(&self, unique: bool) -> AppResult<()> {
+        for values in [&self.authors, &self.tags, &self.series, &self.languages] {
+            let mut seen = std::collections::HashSet::new();
+            if values.iter().any(|value| {
+                let value = value.trim();
+                value.is_empty() || (unique && !seen.insert(value.to_ascii_lowercase()))
+            }) {
                 return Err(crate::app_error!("invalid-arguments"));
             }
+        }
+        let mut seen = std::collections::HashSet::new();
+        if unique
+            && self
+                .formats
+                .iter()
+                .any(|format| !seen.insert(format.as_str()))
+        {
+            return Err(crate::app_error!("invalid-arguments"));
         }
         Ok(())
     }
@@ -326,7 +338,7 @@ impl LibraryStore {
             query_cache: RefCell::default(),
         };
         if version == LIBRARY_SCHEMA_VERSION {
-            store.validate_catalogue()?;
+            store.validate_catalog()?;
             return Ok(false);
         }
         migration::verify_schema_version(&store.connection, version)?;
@@ -362,7 +374,7 @@ impl LibraryStore {
             paths: paths.clone(),
             query_cache: RefCell::default(),
         };
-        preflight.validate_catalogue()?;
+        preflight.validate_catalog()?;
         let paths = preflight.paths.clone();
         drop(preflight);
 
@@ -379,11 +391,11 @@ impl LibraryStore {
             query_cache: RefCell::default(),
         };
         // Validate the actual writable handle too, in case the candidate changed.
-        store.validate_catalogue()?;
+        store.validate_catalog()?;
         Ok(store)
     }
 
-    fn validate_catalogue(&mut self) -> AppResult<()> {
+    fn validate_catalog(&mut self) -> AppResult<()> {
         let version: i64 = self
             .connection
             .pragma_query_value(None, "user_version", |row| row.get(0))?;
@@ -749,39 +761,34 @@ impl LibraryStore {
         id: &str,
         source: &Path,
         format: FormatId,
-        expected_bytes: u64,
-        expected_sha256: &str,
+        expected: &Fingerprint,
     ) -> AppResult<LibraryItem> {
         let item = self
             .read_item(id)?
             .ok_or_else(|| crate::app_error!("not-found"))?;
-        let expected = Fingerprint {
-            bytes: expected_bytes,
-            sha256: expected_sha256.to_owned(),
-        };
         if let Some(existing) = read_stored_format(&self.connection, id, format)? {
             if existing.provenance == Provenance::Managed
-                && existing.fingerprint.as_ref() == Some(&expected)
-                && hash_file(&existing.path).ok().as_ref() == Some(&expected)
+                && existing.fingerprint.as_ref() == Some(expected)
+                && hash_file(&existing.path).ok().as_ref() == Some(expected)
             {
                 return Ok(item);
             }
             return Err(crate::app_error!("format-exists"));
         }
         let source = canonical_file(source)?;
-        if detect_format(&source) != Some(format) || hash_file(&source)? != expected {
+        if detect_format(&source) != Some(format) || hash_file(&source)? != *expected {
             return Err(crate::app_error!("artifact-invalid"));
         }
         let now = Utc::now().to_rfc3339();
-        let content_bytes = as_i64(expected_bytes)?;
+        let content_bytes = as_i64(expected.bytes)?;
         let target = self.managed_path(id, format);
         let transaction = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         if let Some(existing) = read_stored_format(&transaction, id, format)? {
             if existing.provenance == Provenance::Managed
-                && existing.fingerprint.as_ref() == Some(&expected)
-                && hash_file(&existing.path).ok().as_ref() == Some(&expected)
+                && existing.fingerprint.as_ref() == Some(expected)
+                && hash_file(&existing.path).ok().as_ref() == Some(expected)
             {
                 return Ok(item);
             }
@@ -792,12 +799,12 @@ impl LibraryStore {
             [id],
             |row| row.get(0),
         )?;
-        publish_copy(&source, &target, &expected)?;
+        publish_copy(&source, &target, expected)?;
         let inserted = transaction.execute(
             "INSERT INTO library_item_formats
              (library_item_id, format, source_path, added_at, provenance, position, content_bytes, content_sha256)
              VALUES (?1, ?2, ?3, ?4, 'managed', ?5, ?6, ?7)",
-            params![id, format.as_str(), target.to_string_lossy(), now, position, content_bytes, expected_sha256],
+            params![id, format.as_str(), target.to_string_lossy(), now, position, content_bytes, expected.sha256],
         );
         if let Err(error) = inserted {
             let _ = fs::remove_file(&target);
@@ -2597,37 +2604,19 @@ mod tests {
 
         fs::write(&artifact, b"mutated pdf").unwrap();
         let error = store
-            .attach_verified_artifact(
-                &item.id,
-                &artifact,
-                FormatId::Pdf,
-                expected.bytes,
-                &expected.sha256,
-            )
+            .attach_verified_artifact(&item.id, &artifact, FormatId::Pdf, &expected)
             .unwrap_err();
         assert_eq!(error.code(), "artifact-invalid");
 
         fs::write(&artifact, b"verified pdf").unwrap();
         let attached = store
-            .attach_verified_artifact(
-                &item.id,
-                &artifact,
-                FormatId::Pdf,
-                expected.bytes,
-                &expected.sha256,
-            )
+            .attach_verified_artifact(&item.id, &artifact, FormatId::Pdf, &expected)
             .unwrap();
         assert_eq!(attached.formats.len(), 2);
 
         fs::write(&artifact, b"changed after attachment").unwrap();
         let retried = store
-            .attach_verified_artifact(
-                &item.id,
-                &artifact,
-                FormatId::Pdf,
-                expected.bytes,
-                &expected.sha256,
-            )
+            .attach_verified_artifact(&item.id, &artifact, FormatId::Pdf, &expected)
             .unwrap();
         assert_eq!(retried.formats.len(), 2);
     }
@@ -2657,13 +2646,7 @@ mod tests {
         let target = store.managed_path(&item.id, FormatId::Pdf);
 
         let error = store
-            .attach_verified_artifact(
-                &item.id,
-                &artifact,
-                FormatId::Pdf,
-                expected.bytes,
-                &expected.sha256,
-            )
+            .attach_verified_artifact(&item.id, &artifact, FormatId::Pdf, &expected)
             .unwrap_err();
 
         assert_eq!(error.code(), "storage-unavailable");
@@ -2701,13 +2684,7 @@ mod tests {
                 let paths = LibraryPaths::resolve(None, Some(&database)).unwrap();
                 let mut store = LibraryStore::open_existing(paths).unwrap();
                 barrier.wait();
-                store.attach_verified_artifact(
-                    &item_id,
-                    &artifact,
-                    FormatId::Pdf,
-                    expected.bytes,
-                    &expected.sha256,
-                )
+                store.attach_verified_artifact(&item_id, &artifact, FormatId::Pdf, &expected)
             }));
         }
         barrier.wait();
