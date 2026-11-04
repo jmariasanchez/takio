@@ -9,13 +9,37 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use chrono::Utc;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::output::{AppError, AppResult};
 
 // Compatibility for embedders. New engine code imports the format module directly.
 pub use crate::format::{FormatId, detect_format};
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConversionProfile {
+    #[default]
+    Default,
+    GenericEink,
+    Kindle,
+    Kobo,
+}
+
+impl std::str::FromStr for ConversionProfile {
+    type Err = AppError;
+
+    fn from_str(value: &str) -> AppResult<Self> {
+        match value {
+            "default" => Ok(Self::Default),
+            "generic_eink" => Ok(Self::GenericEink),
+            "kindle" => Ok(Self::Kindle),
+            "kobo" => Ok(Self::Kobo),
+            _ => Err(AppError::new("invalid-arguments")),
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, Serialize)]
 pub struct ConversionCapability {
@@ -110,7 +134,7 @@ pub fn convert(
     input: &Path,
     output: &Path,
     output_format: FormatId,
-    profile: &str,
+    profile: ConversionProfile,
     timeout: Duration,
 ) -> AppResult<Artifact> {
     convert_inner(input, output, output_format, profile, timeout, None)
@@ -121,7 +145,7 @@ pub fn convert_with_backend(
     input: &Path,
     output: &Path,
     output_format: FormatId,
-    profile: &str,
+    profile: ConversionProfile,
     timeout: Duration,
     backend: &Path,
 ) -> AppResult<Artifact> {
@@ -139,7 +163,7 @@ fn convert_inner(
     input: &Path,
     output: &Path,
     output_format: FormatId,
-    profile: &str,
+    profile: ConversionProfile,
     timeout: Duration,
     backend: Option<&Path>,
 ) -> AppResult<Artifact> {
@@ -186,17 +210,16 @@ fn convert_inner(
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     match profile {
-        "default" => {}
-        "generic_eink" => {
+        ConversionProfile::Default => {}
+        ConversionProfile::GenericEink => {
             command.args(["--output-profile", "generic_eink"]);
         }
-        "kindle" => {
+        ConversionProfile::Kindle => {
             command.args(["--output-profile", "kindle"]);
         }
-        "kobo" => {
+        ConversionProfile::Kobo => {
             command.args(["--output-profile", "tablet"]);
         }
-        _ => return Err(AppError::new("invalid-arguments")),
     }
     let mut child = command
         .spawn()

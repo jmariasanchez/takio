@@ -6,7 +6,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::conversion::{Artifact, FormatId, convert, detect_format};
+use crate::conversion::{Artifact, ConversionProfile, FormatId, convert, detect_format};
 use crate::error::{AppError, AppResult};
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -274,7 +274,7 @@ impl JobStore {
 
     pub fn run_next(
         &mut self,
-        profile: &str,
+        profile: ConversionProfile,
         timeout: Duration,
     ) -> AppResult<Option<ConversionJob>> {
         let transaction = self.connection.transaction()?;
@@ -310,7 +310,7 @@ impl JobStore {
     pub fn drain(
         &mut self,
         max_jobs: usize,
-        profile: &str,
+        profile: ConversionProfile,
         timeout: Duration,
     ) -> AppResult<Vec<ConversionJob>> {
         let mut jobs = Vec::new();

@@ -978,7 +978,9 @@ mod tests {
     fn preview_refreshes_capabilities_and_prefers_attached_formats() {
         let (temp, mut store, mut destination) = delivery_fixture();
         let item = add_book(&mut store, temp.path(), "Preferred preview", "epub");
-        destination.features.push("koreader".into());
+        destination
+            .features
+            .push(destinations::DestinationFeature::Koreader);
         let ids = vec![item.id.clone()];
         let preview = preview_send(&store, &destination, &ids).unwrap();
         assert!(preview.destination.features.is_empty());
@@ -1019,7 +1021,10 @@ mod tests {
         destination.features.clear();
         fs::create_dir(destination.path.join("koreader")).unwrap();
         let preview = preview_send(&store, &destination, &ids).unwrap();
-        assert_eq!(preview.destination.features, vec!["koreader"]);
+        assert_eq!(
+            preview.destination.features,
+            vec![destinations::DestinationFeature::Koreader]
+        );
         assert_eq!(
             preview.entries[0]
                 .result
@@ -1279,7 +1284,7 @@ mod tests {
         assert_eq!(fs::read(&result.path).unwrap(), b"azw3");
         assert_eq!(
             destinations::inventory(&destination).unwrap()[0].status,
-            "present"
+            destinations::InventoryStatus::Present
         );
         assert!(!destination.path.join("documents/Preferred.epub").exists());
     }
@@ -1288,7 +1293,9 @@ mod tests {
     fn stock_kindle_rejects_epub_even_with_stale_koreader_feature() {
         let (temp, mut store, mut destination) = delivery_fixture();
         let item = add_book(&mut store, temp.path(), "Incompatible", "epub");
-        destination.features.push("koreader".into());
+        destination
+            .features
+            .push(destinations::DestinationFeature::Koreader);
         let error = preview_and_send_one(&store, &destination, &item.id).unwrap_err();
         assert_eq!(error.code(), "no-compatible-format");
         assert_eq!(

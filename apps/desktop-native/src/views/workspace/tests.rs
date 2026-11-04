@@ -841,7 +841,10 @@ fn sidebar_pointer_send_ready_uses_reviewed_selection(cx: &mut TestAppContext) {
     let inventory = takio::destinations::inventory(&reader).unwrap();
     assert_eq!(inventory.len(), 1);
     assert_eq!(inventory[0].record.item_id, chosen.id);
-    assert_eq!(inventory[0].status, "present");
+    assert_eq!(
+        inventory[0].status,
+        takio::destinations::InventoryStatus::Present
+    );
     assert_eq!(
         std::fs::read_dir(reader.path.join("documents"))
             .unwrap()

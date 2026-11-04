@@ -117,7 +117,7 @@ pub fn send_library_item(
         &plan.item_id,
         &plan.ready.source_path,
         &plan.file_name,
-        plan.ready.format.as_str(),
+        plan.ready.format,
         options.subdir,
         options.overwrite,
     )

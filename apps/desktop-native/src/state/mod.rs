@@ -2724,7 +2724,10 @@ mod tests {
         });
         let inventory = takio::destinations::inventory(&destination).unwrap();
         assert_eq!(inventory.len(), 1);
-        assert_eq!(inventory[0].status, "present");
+        assert_eq!(
+            inventory[0].status,
+            takio::destinations::InventoryStatus::Present
+        );
         assert!(pdf.exists());
     }
 }

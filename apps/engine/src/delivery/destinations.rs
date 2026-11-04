@@ -20,6 +20,20 @@ pub enum DestinationKind {
     Generic,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DestinationFeature {
+    Koreader,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum InventoryStatus {
+    Missing,
+    Present,
+    Changed,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Destination {
@@ -28,7 +42,7 @@ pub struct Destination {
     pub path: PathBuf,
     pub kind: DestinationKind,
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
-    pub features: Vec<String>,
+    pub features: Vec<DestinationFeature>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -47,7 +61,7 @@ pub struct DeliveryRecord {
 pub struct InventoryEntry {
     #[serde(flatten)]
     pub record: DeliveryRecord,
-    pub status: &'static str,
+    pub status: InventoryStatus,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -107,7 +121,7 @@ pub fn list(root: &Path) -> AppResult<Vec<Destination>> {
             DestinationKind::Generic
         };
         let features = if names.iter().any(|value| value == "koreader") {
-            vec!["koreader".to_owned()]
+            vec![DestinationFeature::Koreader]
         } else {
             Vec::new()
         };
@@ -164,7 +178,7 @@ impl Destination {
     /// KOReader was detected on this volume (a jailbroken Kindle or a Kobo with it installed).
     #[must_use]
     pub fn has_koreader(&self) -> bool {
-        self.features.iter().any(|feature| feature == "koreader")
+        self.features.contains(&DestinationFeature::Koreader)
     }
 
     /// Reader name with its reading software, for example "Kindle (KOReader)".
@@ -227,7 +241,7 @@ pub fn send(
     item_id: &str,
     source: &Path,
     file_name: &str,
-    format: &str,
+    format: FormatId,
     subdir: Option<&Path>,
     overwrite: OverwritePolicy,
 ) -> AppResult<DeliveryResult> {
@@ -289,7 +303,7 @@ pub fn send(
         relative_path,
         bytes: expected.bytes,
         sha256: expected.sha256.clone(),
-        format: format.to_owned(),
+        format: format.as_str().to_owned(),
         timestamp: Utc::now().to_rfc3339(),
     };
     let record_error = record_delivery(destination, record).err();
@@ -314,16 +328,16 @@ pub fn inventory(destination: &Destination) -> AppResult<Vec<InventoryEntry>> {
             let path = destination.path.join(relative);
             ensure_contained(&destination.path, &path)?;
             let status = if !path.exists() {
-                "missing"
+                InventoryStatus::Missing
             } else if hash_file(&path)?
                 == (Fingerprint {
                     bytes: record.bytes,
                     sha256: record.sha256.clone(),
                 })
             {
-                "present"
+                InventoryStatus::Present
             } else {
-                "changed"
+                InventoryStatus::Changed
             };
             Ok(InventoryEntry { record, status })
         })
@@ -581,7 +595,7 @@ mod tests {
             "book",
             &source,
             "book.txt",
-            "txt",
+            FormatId::Txt,
             None,
             OverwritePolicy::Refuse,
         )
@@ -609,7 +623,7 @@ mod tests {
                 "book",
                 &source,
                 "book.txt",
-                "txt",
+                FormatId::Txt,
                 None,
                 OverwritePolicy::Refuse
             )
@@ -842,7 +856,7 @@ mod tests {
             "book-1",
             &source,
             "Book.epub",
-            "epub",
+            FormatId::Epub,
             None,
             OverwritePolicy::Refuse,
         )
@@ -855,7 +869,7 @@ mod tests {
         );
         assert_eq!(
             inventory(&destination).expect("inventory")[0].status,
-            "present"
+            InventoryStatus::Present
         );
 
         fs::write(&source, b"replacement bytes").unwrap();
@@ -865,7 +879,7 @@ mod tests {
                 "book-1",
                 &source,
                 "Book.epub",
-                "epub",
+                FormatId::Epub,
                 None,
                 OverwritePolicy::Refuse
             )
@@ -879,12 +893,15 @@ mod tests {
             "book-1",
             &source,
             "Book.epub",
-            "epub",
+            FormatId::Epub,
             None,
             OverwritePolicy::Replace,
         )
         .unwrap();
         assert_eq!(fs::read(&result.path).unwrap(), b"replacement bytes");
-        assert_eq!(inventory(&destination).unwrap()[0].status, "present");
+        assert_eq!(
+            inventory(&destination).unwrap()[0].status,
+            InventoryStatus::Present
+        );
     }
 }

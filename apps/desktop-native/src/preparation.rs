@@ -96,7 +96,7 @@ pub(crate) fn prepare_with_backend(
         &input,
         &output,
         FormatId::Azw3,
-        "kindle",
+        conversion::ConversionProfile::Kindle,
         timeout,
         backend_path,
     )?;

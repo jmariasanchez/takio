@@ -44,6 +44,13 @@ const SKIPPED_DIRECTORIES: &[&str] = &[
     "lost.dir",
 ];
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ShelfMatchSource {
+    Content,
+    DeliveryRecord,
+}
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ShelfEntry {
@@ -57,7 +64,7 @@ pub struct ShelfEntry {
     pub title: Option<String>,
     /// `content` or `delivery-record` for a matched book.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub matched_by: Option<&'static str>,
+    pub matched_by: Option<ShelfMatchSource>,
     /// What KOReader recorded for this file, when its sidecar is readable.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reading: Option<ReadingState>,
@@ -385,11 +392,13 @@ pub fn scan(
             {
                 matched = candidates
                     .and_then(|candidates| candidates.iter().find(|(known, _)| *known == sha256))
-                    .map(|(_, id)| (*id, "content"))
+                    .map(|(_, id)| (*id, ShelfMatchSource::Content))
                     .or_else(|| {
                         record
                             .filter(|record| record.sha256 == sha256)
-                            .map(|record| (record.item_id.as_str(), "delivery-record"))
+                            .map(|record| {
+                                (record.item_id.as_str(), ShelfMatchSource::DeliveryRecord)
+                            })
                     });
             }
             books.push(ShelfEntry {
@@ -629,7 +638,7 @@ mod tests {
         let matched = &shelf.books[1];
         assert_eq!(matched.item_id.as_deref(), Some(kindred.as_str()));
         assert_eq!(matched.title.as_deref(), Some("Kindred"));
-        assert_eq!(matched.matched_by, Some("content"));
+        assert_eq!(matched.matched_by, Some(ShelfMatchSource::Content));
         assert!(
             shelf.books[0].item_id.is_none(),
             "same size, different bytes"
@@ -672,7 +681,7 @@ mod tests {
             &id,
             &referenced,
             "Kindred.pdf",
-            "pdf",
+            crate::format::FormatId::Pdf,
             None,
             destinations::OverwritePolicy::Refuse,
         )
@@ -690,7 +699,7 @@ mod tests {
             .find(|entry| entry.path == "documents/Kindred.pdf")
             .unwrap();
         assert_eq!(sent.item_id.as_deref(), Some(id.as_str()));
-        assert_eq!(sent.matched_by, Some("delivery-record"));
+        assert_eq!(sent.matched_by, Some(ShelfMatchSource::DeliveryRecord));
 
         fs::write(
             f.kindle.join("documents/Kindred.pdf"),

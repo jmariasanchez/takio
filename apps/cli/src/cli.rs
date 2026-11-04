@@ -850,7 +850,7 @@ pub fn run() -> AppResult<()> {
             to,
             json,
             profile,
-        } => plan(&input, to, &profile, json),
+        } => plan(&input, to, profile.parse()?, json),
         Command::Convert {
             input,
             to,
@@ -861,7 +861,7 @@ pub fn run() -> AppResult<()> {
             &input,
             &output,
             to,
-            &profile,
+            profile.parse()?,
             Duration::from_secs(timeout_seconds),
         )?),
         Command::Library(command) => library(command, cli.library.as_deref()),
@@ -1182,14 +1182,16 @@ fn devices(as_json: bool) -> AppResult<()> {
         Ok(())
     }
 }
-fn plan(input: &Path, to: FormatId, profile: &str, as_json: bool) -> AppResult<()> {
+fn plan(
+    input: &Path,
+    to: FormatId,
+    profile: crate::conversion::ConversionProfile,
+    as_json: bool,
+) -> AppResult<()> {
     let input = input
         .canonicalize()
         .map_err(|_| AppError::new("input-unavailable"))?;
     let from = detect_format(&input).ok_or_else(|| AppError::new("unsupported-format"))?;
-    if !["default", "generic_eink", "kindle", "kobo"].contains(&profile) {
-        return Err(AppError::new("invalid-arguments"));
-    }
     let available = discover_ebook_convert().available
         && CALIBRE_CAPABILITIES
             .iter()
@@ -2214,7 +2216,7 @@ fn jobs(command: JobsCommand, library: Option<&str>) -> AppResult<()> {
         } => {
             let path = job_path(library, db.as_deref())?;
             let mut store = JobStore::open(&path)?;
-            let job = store.run_next(&profile, Duration::from_secs(timeout_seconds))?;
+            let job = store.run_next(profile.parse()?, Duration::from_secs(timeout_seconds))?;
             let job = job
                 .map(|job| reconcile_job_attachment(&store, library, job))
                 .transpose()?;
@@ -2228,7 +2230,11 @@ fn jobs(command: JobsCommand, library: Option<&str>) -> AppResult<()> {
         } => {
             let path = job_path(library, db.as_deref())?;
             let mut store = JobStore::open(&path)?;
-            let values = store.drain(max_jobs, &profile, Duration::from_secs(timeout_seconds))?;
+            let values = store.drain(
+                max_jobs,
+                profile.parse()?,
+                Duration::from_secs(timeout_seconds),
+            )?;
             let values = values
                 .into_iter()
                 .map(|job| reconcile_job_attachment(&store, library, job))
