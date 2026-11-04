@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::error::{AppError, AppResult};
-use crate::library::model::{LibraryItem, LibraryPatch, Patch};
+use crate::library::model::{BookAuthor, LibraryItem, LibraryPatch, Patch};
 use crate::library::store::{LibraryStore, METADATA_AUDIT_KEY, validate_candidate_patch};
 pub use crate::metadata::candidate_cover::CandidateCoverDescriptor;
 use crate::metadata::{self, discover_ebook_meta, discover_fetch_ebook_metadata};
@@ -72,7 +72,7 @@ struct CandidateOrigin<'a> {
 }
 
 struct CandidateData {
-    metadata: Value,
+    metadata: LibraryPatch,
     cover: Option<crate::metadata::candidate_cover::CapturedCover>,
 }
 
@@ -97,7 +97,7 @@ pub struct MetadataCandidate {
     pub id: String,
     pub source: CandidateSource,
     pub confidence: CandidateConfidence,
-    pub patch: BTreeMap<String, Value>,
+    pub patch: LibraryPatch,
     pub provenance: CandidateProvenance,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cover: Option<CandidateCoverDescriptor>,
@@ -129,7 +129,7 @@ impl MetadataCandidate {
         if self.patch.is_empty() && self.cover.is_none() {
             return Err(invalid());
         }
-        Ok(self.patch.keys().cloned().collect())
+        Ok(self.patch.field_names())
     }
 }
 
@@ -172,18 +172,8 @@ pub fn prepare_metadata_candidate(
     } else {
         all_fields
     };
-    let selected_patch: serde_json::Map<_, _> = fields
-        .iter()
-        .filter_map(|field| {
-            candidate
-                .patch
-                .get(field)
-                .cloned()
-                .map(|value| (field.clone(), value))
-        })
-        .collect();
-    let patch: LibraryPatch = serde_json::from_value(Value::Object(selected_patch))
-        .map_err(|_| crate::app_error!("invalid-arguments"))?;
+    let mut patch = candidate.patch;
+    patch.retain_fields(&fields.iter().cloned().collect());
     if patch.is_empty() && !(selection.include_cover && candidate.cover.is_some()) {
         return Err(crate::app_error!("invalid-arguments"));
     }
@@ -311,8 +301,7 @@ impl CandidateCoverStages<'_> {
                 Ok::<_, AppError>(descriptor)
             })
             .transpose()?;
-        let patch: BTreeMap<String, Value> = serde_json::from_value(data.metadata)
-            .map_err(|_| crate::app_error!("metadata-invalid"))?;
+        let patch = data.metadata;
         Ok(
             (!patch.is_empty() || cover.is_some()).then(|| MetadataCandidate {
                 schema_version: 1,
@@ -526,16 +515,22 @@ fn filename_candidates_for_stem(
         let Some(title) = clean("title") else {
             continue;
         };
-        let mut patch = BTreeMap::from([("title".into(), json!(title))]);
+        let mut patch = LibraryPatch {
+            title: Patch::Set(title),
+            ..LibraryPatch::default()
+        };
         if let Some(author) = clean("author") {
-            patch.insert("author".into(), json!(author));
-            patch.insert("authors".into(), json!([{"name":author}]));
+            patch.author = Patch::Set(author.clone());
+            patch.authors = Patch::Set(vec![BookAuthor {
+                name: author,
+                sort_name: None,
+            }]);
         }
         if let Some(series) = clean("series") {
-            patch.insert("series".into(), json!(series));
+            patch.series = Patch::Set(series);
         }
         if let Some(index) = clean("seriesIndex").and_then(|value| value.parse::<f64>().ok()) {
-            patch.insert("seriesIndex".into(), json!(index));
+            patch.series_index = Patch::Set(index);
         }
         candidates.push(MetadataCandidate {
             schema_version: 1,

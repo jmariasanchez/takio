@@ -4,6 +4,41 @@ use takio::library::paths::LibraryPaths;
 use takio::library::store::LibraryStore;
 
 #[test]
+fn typed_patch_preserves_sparse_wire_shape_and_explicit_nulls() {
+    use serde_json::json;
+    use takio::library::model::LibraryPatch;
+    assert_eq!(
+        serde_json::to_value(LibraryPatch::default()).unwrap(),
+        json!({})
+    );
+    let wire = json!({
+        "title":"Title", "author":null, "authors":[{"name":"Writer"}],
+        "series":"Series", "seriesIndex":1.5, "publisher":"Publisher",
+        "languages":["en"], "identifiers":{"isbn":"123"},
+        "customMetadata":{"key":"value"}, "publishedDate":"2026-01-01",
+        "rating":8.0, "description":"Details", "tags":["fiction"]
+    });
+    let patch: LibraryPatch = serde_json::from_value(wire.clone()).unwrap();
+    assert_eq!(serde_json::to_value(&patch).unwrap(), wire);
+    let mut expected = wire
+        .as_object()
+        .unwrap()
+        .keys()
+        .cloned()
+        .collect::<Vec<_>>();
+    expected.sort();
+    assert_eq!(patch.field_names(), expected);
+    for field in patch.field_names() {
+        let mut selected = patch.clone();
+        selected.retain_fields(&[field.clone()].into_iter().collect());
+        assert_eq!(selected.field_names(), vec![field.clone()]);
+        let actual = serde_json::to_value(selected).unwrap();
+        assert_eq!(actual.as_object().unwrap().len(), 1);
+        assert_eq!(actual[&field], wire[&field]);
+    }
+}
+
+#[test]
 fn candidate_closed_sets_preserve_wire_spellings() {
     use takio::library::metadata_candidates::{
         CandidateBackend, CandidateConfidence, CandidateSource,

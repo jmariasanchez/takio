@@ -507,7 +507,7 @@ impl App {
         review.fields = review
             .candidates
             .get(review.selected_candidate)
-            .map(|candidate| candidate.patch.keys().cloned().collect())
+            .map(|candidate| candidate.patch.field_names())
             .unwrap_or_default();
         review.selected_field = 0;
         review.selected_fields = review.fields.iter().cloned().collect();
@@ -1470,7 +1470,7 @@ fn draw_candidate_review(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) 
     let patch = review
         .candidates
         .get(review.selected_candidate)
-        .map(|candidate| &candidate.patch);
+        .and_then(|candidate| serde_json::to_value(&candidate.patch).ok());
     let cover = review
         .candidates
         .get(review.selected_candidate)
@@ -1495,6 +1495,7 @@ fn draw_candidate_review(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) 
                     .and_then(|value| value.get(field))
                     .map_or_else(|| "(empty)".to_owned(), value_summary);
                 let proposed = patch
+                    .as_ref()
                     .and_then(|value| value.get(field))
                     .map_or_else(|| "(clear)".to_owned(), value_summary);
                 ListItem::new(vec![

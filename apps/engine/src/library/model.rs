@@ -184,35 +184,74 @@ impl LibraryItem {
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct LibraryPatch {
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Patch::is_missing")]
     pub title: Patch<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Patch::is_missing")]
     pub author: Patch<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Patch::is_missing")]
     pub authors: Patch<Vec<BookAuthor>>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Patch::is_missing")]
     pub series: Patch<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Patch::is_missing")]
     pub series_index: Patch<f64>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Patch::is_missing")]
     pub publisher: Patch<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Patch::is_missing")]
     pub languages: Patch<Vec<String>>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Patch::is_missing")]
     pub identifiers: Patch<BTreeMap<String, String>>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Patch::is_missing")]
     pub custom_metadata: Patch<BTreeMap<String, String>>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Patch::is_missing")]
     pub published_date: Patch<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Patch::is_missing")]
     pub rating: Patch<f64>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Patch::is_missing")]
     pub description: Patch<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Patch::is_missing")]
     pub tags: Patch<Vec<String>>,
 }
 
 impl LibraryPatch {
+    /// Present wire field names, including explicit nulls, in stable review order.
+    pub fn field_names(&self) -> Vec<String> {
+        [
+            ("author", self.author.is_missing()),
+            ("authors", self.authors.is_missing()),
+            ("customMetadata", self.custom_metadata.is_missing()),
+            ("description", self.description.is_missing()),
+            ("identifiers", self.identifiers.is_missing()),
+            ("languages", self.languages.is_missing()),
+            ("publishedDate", self.published_date.is_missing()),
+            ("publisher", self.publisher.is_missing()),
+            ("rating", self.rating.is_missing()),
+            ("series", self.series.is_missing()),
+            ("seriesIndex", self.series_index.is_missing()),
+            ("tags", self.tags.is_missing()),
+            ("title", self.title.is_missing()),
+        ]
+        .into_iter()
+        .filter(|(_, missing)| !missing)
+        .map(|(name, _)| name.to_owned())
+        .collect()
+    }
+
+    /// Remove fields the user did not approve without changing retained nulls.
+    pub fn retain_fields(&mut self, fields: &std::collections::BTreeSet<String>) {
+        macro_rules! retain {
+            ($($field:ident => $name:literal),+ $(,)?) => {
+                $(if !fields.contains($name) { self.$field = Patch::Missing; })+
+            };
+        }
+        retain! {
+            title => "title", author => "author", authors => "authors",
+            series => "series", series_index => "seriesIndex", publisher => "publisher",
+            languages => "languages", identifiers => "identifiers",
+            custom_metadata => "customMetadata", published_date => "publishedDate",
+            rating => "rating", description => "description", tags => "tags",
+        }
+    }
+
     /// True when no field was supplied at all.
     #[must_use]
     pub fn is_empty(&self) -> bool {

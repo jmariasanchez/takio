@@ -17,13 +17,12 @@ use flate2::read::{DeflateDecoder, ZlibDecoder};
 use regex::bytes::Regex;
 use roxmltree::Document;
 use serde::Serialize;
-use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 use tempfile::Builder;
 
 use crate::error::AppResult;
 use crate::executable_discovery::discover_executable;
-use crate::library::model::BookAuthor;
+use crate::library::model::{BookAuthor, LibraryPatch, Patch};
 use crate::metadata::candidate_cover::CapturedCover;
 
 mod pdf;
@@ -58,7 +57,7 @@ pub struct PublishedCover {
 #[serde(rename_all = "camelCase")]
 pub struct ExtractedMetadata {
     pub source_path: PathBuf,
-    pub metadata: Value,
+    pub metadata: LibraryPatch,
     pub cover: Option<CoverSummary>,
     #[serde(skip)]
     pub(crate) cover_data: Option<CapturedCover>,
@@ -66,7 +65,7 @@ pub struct ExtractedMetadata {
 
 #[derive(Clone, Debug, Serialize)]
 pub struct FetchedMetadata {
-    pub metadata: Value,
+    pub metadata: LibraryPatch,
     pub cover: Option<PublishedCover>,
     #[serde(skip)]
     pub(crate) cover_data: Option<CapturedCover>,
@@ -281,18 +280,18 @@ fn fetch_with_cancellation(
     })
 }
 
-pub fn parse_opf(bytes: &[u8]) -> AppResult<Value> {
+pub fn parse_opf(bytes: &[u8]) -> AppResult<LibraryPatch> {
     let source = std::str::from_utf8(bytes).map_err(|_| crate::app_error!("metadata-invalid"))?;
     let document = Document::parse(source).map_err(|_| crate::app_error!("metadata-invalid"))?;
     let metadata = document
         .descendants()
         .find(|node| node.is_element() && node.tag_name().name() == "metadata")
         .ok_or_else(|| crate::app_error!("metadata-invalid"))?;
-    let mut patch = Map::new();
+    let mut patch = LibraryPatch::default();
     let children = metadata.children().filter(roxmltree::Node::is_element);
     let nodes = children.collect::<Vec<_>>();
     if let Some(value) = first_text(&nodes, "title") {
-        patch.insert("title".to_owned(), json!(value));
+        patch.title = Patch::Set(value);
     }
     let authors = nodes
         .iter()
@@ -301,32 +300,29 @@ pub fn parse_opf(bytes: &[u8]) -> AppResult<Value> {
             attribute(node, "role").is_none_or(|value| value.eq_ignore_ascii_case("aut"))
         })
         .filter_map(|node| {
-            normalized_text(node.text()).map(|name| {
-                let mut author = Map::new();
-                author.insert("name".to_owned(), json!(name));
-                if let Some(sort_name) = attribute(node, "file-as") {
-                    author.insert("sortName".to_owned(), json!(sort_name));
-                }
-                Value::Object(author)
+            normalized_text(node.text()).map(|name| BookAuthor {
+                name,
+                sort_name: attribute(node, "file-as"),
             })
         })
         .collect::<Vec<_>>();
     if !authors.is_empty() {
-        patch.insert("authors".to_owned(), Value::Array(authors));
+        patch.authors = Patch::Set(authors);
     }
-    for (target, source) in [("publisher", "publisher"), ("description", "description")] {
-        if let Some(value) = first_text(&nodes, source) {
-            patch.insert(target.to_owned(), json!(value));
-        }
+    if let Some(value) = first_text(&nodes, "publisher") {
+        patch.publisher = Patch::Set(value);
+    }
+    if let Some(value) = first_text(&nodes, "description") {
+        patch.description = Patch::Set(value);
     }
     let tags = unique_texts(&nodes, "subject");
-    patch.insert("tags".to_owned(), json!(tags));
+    patch.tags = Patch::Set(tags);
     let languages = unique_texts(&nodes, "language")
         .into_iter()
         .map(|value| value.replace('_', "-"))
         .collect::<Vec<_>>();
     if !languages.is_empty() {
-        patch.insert("languages".to_owned(), json!(languages));
+        patch.languages = Patch::Set(languages);
     }
     let mut identifiers = BTreeMap::new();
     for node in nodes
@@ -341,10 +337,10 @@ pub fn parse_opf(bytes: &[u8]) -> AppResult<Value> {
         }
     }
     if !identifiers.is_empty() {
-        patch.insert("identifiers".to_owned(), json!(identifiers));
+        patch.identifiers = Patch::Set(identifiers);
     }
     if let Some(value) = first_text(&nodes, "date").and_then(normalize_date) {
-        patch.insert("publishedDate".to_owned(), json!(value));
+        patch.published_date = Patch::Set(value);
     }
     for node in nodes.iter().filter(|node| node.tag_name().name() == "meta") {
         let Some(name) = attribute(node, "name") else {
@@ -355,13 +351,13 @@ pub fn parse_opf(bytes: &[u8]) -> AppResult<Value> {
         };
         match name.to_ascii_lowercase().as_str() {
             "calibre:series" => {
-                patch.insert("series".to_owned(), json!(content));
+                patch.series = Patch::Set(content);
             }
             "calibre:series_index" => {
                 if let Ok(value) = content.parse::<f64>()
                     && value.is_finite()
                 {
-                    patch.insert("seriesIndex".to_owned(), json!(value));
+                    patch.series_index = Patch::Set(value);
                 }
             }
             "calibre:rating" => {
@@ -369,13 +365,13 @@ pub fn parse_opf(bytes: &[u8]) -> AppResult<Value> {
                     && value.is_finite()
                     && (0.0..=10.0).contains(&value)
                 {
-                    patch.insert("rating".to_owned(), json!(value));
+                    patch.rating = Patch::Set(value);
                 }
             }
             _ => {}
         }
     }
-    Ok(Value::Object(patch))
+    Ok(patch)
 }
 
 fn first_text(nodes: &[roxmltree::Node<'_, '_>], name: &str) -> Option<String> {
@@ -434,11 +430,13 @@ pub fn embedded_epub(path: &Path) -> (Option<String>, Vec<BookAuthor>) {
         return (None, Vec::new());
     };
     let placeholder = |value: &str| matches!(value.to_lowercase().as_str(), "unknown" | "untitled");
-    let title = metadata["title"]
-        .as_str()
-        .filter(|value| !placeholder(value))
-        .map(str::to_owned);
-    let authors = serde_json::from_value::<Vec<BookAuthor>>(metadata["authors"].clone())
+    let title = metadata
+        .title
+        .into_set()
+        .filter(|value| !placeholder(value));
+    let authors = metadata
+        .authors
+        .into_set()
         .unwrap_or_default()
         .into_iter()
         .filter(|author| !placeholder(&author.name))
@@ -944,6 +942,7 @@ pub(crate) fn pdf_fixture(pages: usize) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn published_cover_owns_metadata_and_preserves_wire_shape() {
@@ -1191,6 +1190,7 @@ mod tests {
             br#"<?xml version="1.0"?><package xmlns:dc="http://purl.org/dc/elements/1.1/"><metadata><dc:title> Example  Book </dc:title><dc:creator role="aut" file-as="Writer, Ada">Ada Writer</dc:creator><dc:subject>Rust</dc:subject><dc:language>en_US</dc:language><dc:identifier scheme="ISBN">123</dc:identifier><meta name="calibre:series" content="Examples"/></metadata></package>"#,
         )
         .unwrap();
+        let value = serde_json::to_value(value).unwrap();
         assert_eq!(value["title"], "Example Book");
         assert_eq!(value["authors"][0]["sortName"], "Writer, Ada");
         assert_eq!(value["languages"][0], "en-US");
