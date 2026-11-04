@@ -20,17 +20,17 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Tabs, Wrap};
 use serde_json::Value;
 
-use crate::destinations;
-use crate::jobs::JobStore;
-use crate::metadata_candidates::{
+use takio::conversion::jobs::JobStore;
+use takio::delivery::destinations;
+use takio::error::AppResult;
+use takio::library::model::LibraryItem;
+use takio::library::paths::LibraryPaths;
+use takio::library::store::LibraryStore;
+use takio::metadata::candidates::{
     CandidateCoverDescriptor, CandidateSelection, MetadataCandidate,
     apply_prepared_metadata_candidate, metadata_candidates_for_item_at_cancellable,
     prepare_metadata_candidate, release_metadata_candidate_covers,
 };
-use crate::model::LibraryItem;
-use crate::output::AppResult;
-use crate::paths::LibraryPaths;
-use crate::store::LibraryStore;
 
 const ACCENT: Color = Color::Rgb(70, 210, 170);
 const ACCENT_2: Color = Color::Rgb(120, 150, 255);
@@ -242,7 +242,7 @@ impl App {
                 let path = Path::new(input);
                 match self
                     .store
-                    .import(path, None, takio::model::ImportMode::Copy)
+                    .import(path, None, takio::library::model::ImportMode::Copy)
                 {
                     Ok(item) => {
                         self.status = format!("Imported {}", item.title);
@@ -284,10 +284,11 @@ impl App {
                 self.refresh();
             }
             "import" if !argument.is_empty() => {
-                match self
-                    .store
-                    .import(Path::new(argument), None, takio::model::ImportMode::Copy)
-                {
+                match self.store.import(
+                    Path::new(argument),
+                    None,
+                    takio::library::model::ImportMode::Copy,
+                ) {
                     Ok(item) => {
                         self.status = format!("Imported {}", item.title);
                         self.refresh();
@@ -1731,7 +1732,7 @@ mod tests {
             .import(
                 &source,
                 Some("Original Title"),
-                takio::model::ImportMode::Copy,
+                takio::library::model::ImportMode::Copy,
             )
             .expect("import book");
         app.refresh();
@@ -1788,13 +1789,13 @@ mod tests {
             serde_json::to_string(&item.id).expect("encode item id"),
             serde_json::to_string(&item.source_path).expect("encode source path")
         );
-        let cover = crate::candidate_cover::stage(
+        let cover = takio::metadata::candidate_cover::stage(
             &app.paths.root,
             &item.id,
             "embedded:1",
             "embedded",
             &encoded_provenance,
-            &crate::candidate_cover::CapturedCover {
+            &takio::metadata::candidate_cover::CapturedCover {
                 bytes: b"cover fixture".to_vec(),
                 media_type: "image/png".to_owned(),
                 extension: ".png".to_owned(),
@@ -1955,7 +1956,7 @@ mod tests {
         std::fs::write(&other_source, b"other fixture").expect("write other source");
         let other = app
             .store
-            .import(&other_source, None, takio::model::ImportMode::Copy)
+            .import(&other_source, None, takio::library::model::ImportMode::Copy)
             .expect("import other book");
         app.refresh();
         install_candidate_review(&mut app, &reviewed);
@@ -1980,7 +1981,11 @@ mod tests {
             let source = temp.path().join(format!("{title}.epub"));
             std::fs::write(&source, title.as_bytes()).expect("write source");
             app.store
-                .import(&source, Some(title), takio::model::ImportMode::Copy)
+                .import(
+                    &source,
+                    Some(title),
+                    takio::library::model::ImportMode::Copy,
+                )
                 .expect("import book");
         }
         app.refresh();
@@ -2120,7 +2125,7 @@ mod tests {
             thread::sleep(Duration::from_millis(5));
         }
 
-        let staged = std::fs::read_dir(crate::candidate_cover::root(&app.paths.root))
+        let staged = std::fs::read_dir(takio::metadata::candidate_cover::root(&app.paths.root))
             .expect("candidate cover stages")
             .filter_map(Result::ok)
             .filter(|entry| {

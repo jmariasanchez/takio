@@ -8,8 +8,8 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use takio::output::{AppError, AppResult};
-use takio::store::{BackupReport, LibraryStore};
+use takio::error::{AppError, AppResult};
+use takio::library::store::{BackupReport, LibraryStore};
 
 const SETTINGS_NAME: &str = ".takio-automatic-backup";
 const MAX_BYTES: usize = 16 * 1024;

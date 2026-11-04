@@ -7,11 +7,11 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-pub use crate::candidate_cover::CandidateCoverDescriptor;
+use crate::error::{AppError, AppResult};
+use crate::library::model::{LibraryItem, LibraryPatch, Patch};
+use crate::library::store::{LibraryStore, METADATA_AUDIT_KEY, validate_candidate_patch};
+pub use crate::metadata::candidate_cover::CandidateCoverDescriptor;
 use crate::metadata::{self, discover_ebook_meta, discover_fetch_ebook_metadata};
-use crate::model::{LibraryItem, LibraryPatch, Patch};
-use crate::output::{AppError, AppResult};
-use crate::store::{LibraryStore, METADATA_AUDIT_KEY, validate_candidate_patch};
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -69,7 +69,7 @@ impl MetadataCandidate {
             return Err(invalid());
         }
         if let Some(cover) = &self.cover {
-            crate::candidate_cover::validate_descriptor(cover).map_err(|_| invalid())?;
+            crate::metadata::candidate_cover::validate_descriptor(cover).map_err(|_| invalid())?;
         }
         if self.patch.is_empty() && self.cover.is_none() {
             return Err(invalid());
@@ -214,7 +214,7 @@ impl Drop for CandidateCoverStages<'_> {
     fn drop(&mut self) {
         if !self.retain {
             for id in &self.artifact_ids {
-                crate::candidate_cover::consume(self.library_root, id);
+                crate::metadata::candidate_cover::consume(self.library_root, id);
             }
         }
     }
@@ -224,7 +224,10 @@ impl CandidateCoverStages<'_> {
         &mut self,
         item_id: &str,
         origin: (&str, &str, &str),
-        data: (Value, Option<crate::candidate_cover::CapturedCover>),
+        data: (
+            Value,
+            Option<crate::metadata::candidate_cover::CapturedCover>,
+        ),
         provenance: CandidateProvenance,
         canceled: &AtomicBool,
     ) -> AppResult<Option<MetadataCandidate>> {
@@ -238,7 +241,7 @@ impl CandidateCoverStages<'_> {
             .map(|cover| {
                 let encoded = serde_json::to_string(&provenance)
                     .map_err(|_| crate::app_error!("metadata-invalid"))?;
-                let descriptor = crate::candidate_cover::stage(
+                let descriptor = crate::metadata::candidate_cover::stage(
                     self.library_root,
                     item_id,
                     id,
@@ -271,7 +274,7 @@ pub fn release_metadata_candidate_covers(library_root: &Path, candidates: &[Meta
         .iter()
         .filter_map(|candidate| candidate.cover.as_ref())
     {
-        crate::candidate_cover::consume(library_root, &cover.artifact_id);
+        crate::metadata::candidate_cover::consume(library_root, &cover.artifact_id);
     }
 }
 

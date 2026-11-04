@@ -3,13 +3,14 @@
 //! These checks intentionally do not claim platform-tree or VoiceOver validation.
 use super::*;
 use crate::{
-    engine::{Engine, Filters, ImportMode, Request},
+    engine::{Engine, Request},
     state::{LibraryState, Section},
     views::{library_list::LibraryList, sidebar::Sidebar, workspace::Workspace},
 };
 use gpui::Focusable;
 use gpui::{AppContext, Element, TestAppContext};
-use takio::paths::LibraryPaths;
+use takio::library::paths::LibraryPaths;
+use takio::library::{model::ImportMode, query::Filters};
 
 use crate::test_support::settle;
 

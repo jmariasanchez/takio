@@ -77,6 +77,7 @@ error_codes! {
     Interrupted => "interrupted",
     InvalidArguments => "invalid-arguments",
     InvalidQuery => "invalid-query",
+    InvalidRequest => "invalid-request",
     InvalidStoredData => "invalid-stored-data",
     InvalidTitle => "invalid-title",
     InvalidTransition => "invalid-transition",
@@ -89,7 +90,9 @@ error_codes! {
     MetadataInvalid => "metadata-invalid",
     MetadataTimeout => "metadata-timeout",
     MetadataUnavailable => "metadata-unavailable",
+    MethodNotAllowed => "method-not-allowed",
     MigrationFailed => "migration-failed",
+    MissingFile => "missing-file",
     NoCompatibleFormat => "no-compatible-format",
     NoEpubSource => "no-epub-source",
     NotFound => "not-found",
@@ -109,6 +112,7 @@ error_codes! {
     ReaderScanInProgress => "reader-scan-in-progress",
     ReaderScanUnavailable => "reader-scan-unavailable",
     RestoreFailed => "restore-failed",
+    ResponseTooLarge => "response-too-large",
     RollbackFailed => "rollback-failed",
     SendReviewChanged => "send-review-changed",
     ServerUnavailable => "server-unavailable",
@@ -120,6 +124,7 @@ error_codes! {
     TerminalUnavailable => "terminal-unavailable",
     UnknownDestination => "unknown-destination",
     UnknownJob => "unknown-job",
+    Unauthorized => "unauthorized",
     Unreadable => "unreadable",
     UnsupportedConversion => "unsupported-conversion",
     UnsupportedFormat => "unsupported-format",
@@ -208,19 +213,6 @@ impl From<std::io::Error> for AppError {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn output_compatibility_reexport_is_the_same_error_type() {
-        let error: crate::output::AppError = AppError::with_exit_code(ErrorCode::NotFound, 3);
-        fn compatibility_result(error: AppError) -> crate::output::AppResult<()> {
-            Err(error)
-        }
-        let error = compatibility_result(error).unwrap_err();
-        assert_eq!(error.code(), "not-found");
-        assert_eq!(error.kind(), ErrorCode::NotFound);
-        assert_eq!(error.exit_code(), 3);
-        assert_eq!(error.to_string(), "not-found");
-    }
 
     #[test]
     fn every_error_code_preserves_its_wire_string() {

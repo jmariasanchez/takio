@@ -10,9 +10,9 @@ use serde::{Deserialize, Serialize};
 
 use super::LibraryStore;
 use super::hydration::read_item_from;
-use crate::conversion::FormatId;
 use crate::error::AppResult;
-use crate::model::{LibraryItem, LibraryPatch};
+use crate::format::FormatId;
+use crate::library::model::{LibraryItem, LibraryPatch};
 
 mod metadata;
 mod scan;

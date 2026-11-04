@@ -7,7 +7,7 @@ use rusqlite::{Connection, Transaction, TransactionBehavior, backup::Backup, par
 use sha2::{Digest, Sha256};
 
 use crate::error::AppResult;
-use crate::paths::LibraryPaths;
+use crate::library::paths::LibraryPaths;
 
 use super::LIBRARY_SCHEMA_VERSION;
 
@@ -1118,7 +1118,7 @@ pub(super) fn fail_after_step(version: Option<i64>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::{LIBRARY_SCHEMA_VERSION, LibraryStore};
+    use crate::library::store::{LIBRARY_SCHEMA_VERSION, LibraryStore};
 
     const V1: &str = include_str!("../../../tests/fixtures/legacy-library-schemas/schema-v1.sql");
     const V2: &str = include_str!("../../../tests/fixtures/legacy-library-schemas/schema-v2.sql");

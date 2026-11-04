@@ -15,13 +15,13 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
-use crate::conversion::detect_format;
-use crate::destinations::{self, Destination, DestinationKind};
+use crate::delivery::destinations::{self, Destination, DestinationKind};
+use crate::delivery::koreader::ReadingState;
+use crate::error::AppResult;
 use crate::fingerprint::Fingerprint;
-use crate::import_scan::{ImportScan, scan_imports};
-use crate::koreader::ReadingState;
-use crate::output::AppResult;
-use crate::store::{ActiveFingerprint, LibraryStore};
+use crate::format::detect_format;
+use crate::import::scan::{ImportScan, scan_imports};
+use crate::library::store::{ActiveFingerprint, LibraryStore};
 
 const MAX_DEPTH: usize = 6;
 const MAX_ENTRIES: usize = 20_000;
@@ -404,7 +404,10 @@ pub fn scan(
             books.push(ShelfEntry {
                 reading: koreader
                     .then(|| {
-                        crate::koreader::reading_state(&destination.path, Path::new(&relative))
+                        crate::delivery::koreader::reading_state(
+                            &destination.path,
+                            Path::new(&relative),
+                        )
                     })
                     .flatten(),
                 path: relative,
@@ -480,8 +483,8 @@ pub fn import_unmatched(
     let scan = scan_imports(
         store,
         &sources,
-        crate::model::ImportMode::Copy,
-        crate::import_scan::ImportObservation::Untracked,
+        crate::library::model::ImportMode::Copy,
+        crate::import::scan::ImportObservation::Untracked,
         || false,
     )?;
     let mut managed: HashMap<String, Vec<Fingerprint>> = HashMap::new();
@@ -491,7 +494,7 @@ pub fn import_unmatched(
         }
     }
     for outcome in &scan.outcomes {
-        let crate::import_scan::ImportOutcome::Imported { source_path, item } = outcome else {
+        let crate::import::scan::ImportOutcome::Imported { source_path, item } = outcome else {
             continue;
         };
         // The verified copy's fingerprint is the source's, provided the source was not
@@ -531,8 +534,8 @@ fn is_book(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::paths::LibraryPaths;
-    use crate::store::LibraryStore;
+    use crate::library::paths::LibraryPaths;
+    use crate::library::store::LibraryStore;
     use std::path::PathBuf;
 
     struct Fixture {
@@ -565,7 +568,7 @@ mod tests {
         let source = f.kindle.parent().unwrap().parent().unwrap().join(name);
         fs::write(&source, bytes).unwrap();
         f.store
-            .import(&source, None, crate::model::ImportMode::Copy)
+            .import(&source, None, crate::library::model::ImportMode::Copy)
             .unwrap()
             .id
     }
@@ -766,7 +769,7 @@ mod tests {
 
     #[test]
     fn import_unmatched_copies_reader_only_books_and_leaves_the_reader_untouched() {
-        use crate::import_scan::ImportOutcome;
+        use crate::import::scan::ImportOutcome;
         use crate::metadata::pdf_fixture;
 
         let mut f = fixture();
@@ -1180,8 +1183,8 @@ mod tests {
 
     #[test]
     fn koreader_prefers_epub_and_stock_kindle_never_gets_it() {
-        use crate::conversion::FormatId;
-        use crate::model::{BookFormat, Provenance};
+        use crate::format::FormatId;
+        use crate::library::model::{BookFormat, Provenance};
 
         let f = fixture();
         let attached = |formats: &[FormatId]| -> Vec<BookFormat> {

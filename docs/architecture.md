@@ -30,50 +30,51 @@ removed in the November 3, 2026 native-only completion work.
 
 ## Rust executable
 
-The `takio-engine` package exports the `takio` library, preserving engine import
-paths without making the desktop depend on Clap, Ratatui, or the HTTP server.
-The `takio` binary package owns `cli`, `tui`, and `server`; all other modules below
-belong to the engine:
+The `takio-engine` package exports the `takio` library. The `takio` executable
+owns command-line parsing, terminal presentation, HTTP transport, and stdout
+protocol envelopes. Native desktop and CLI callers import engine types from their
+canonical domain paths, never through adapter re-exports or flat root aliases.
 
-Engine source is grouped into `library/` (catalogue, storage, recovery), `import/`
-(discovery and external-library ingestion), `delivery/` (reader transports and
-inventory), `metadata/` (recognition and candidate workflows), and `conversion/`
-(backends, maintenance, and jobs). Root re-exports preserve existing `takio::store`,
-`takio::destinations`, and other public module paths. Shared error, format,
-fingerprint, and output primitives remain at the engine root.
-
-Unit tests live under their subject's `#[cfg(test)] mod tests` namespace. Small
-tests may stay inline. Extracted suites use `<subject>/tests.rs` or named groups
-under `<subject>/tests/`, with normal module resolution rather than `#[path]`
-overrides or sibling `*_tests.rs` files. Shared fixture builders are the only
-feature-gated test-support API.
+Engine modules use `foo.rs` plus `foo/` for child modules, consistently with the
+native desktop. Unit tests live under their subject's `#[cfg(test)] mod tests`
+namespace, inline or in `<subject>/tests.rs` and `<subject>/tests/`. Shared fixture
+builders are the only feature-gated test-support API.
 
 | Module | Responsibility |
 | --- | --- |
-| `cli` | Clap commands and automation service, request mapping, metadata candidate review, bulk export, catalogue rendering, and query presentation |
-| `store` | Schema-v12 SQLite catalogue and owned-file transactions |
-| `fingerprint` | Shared streaming SHA-256 byte-count and digest helpers used by every owned-file operation |
-| `jobs` | Independent schema-v4 foreground conversion ledger |
-| `conversion` | Format detection, Calibre discovery, planning, execution, and artifact verification |
-| `destinations` | Mounted-volume authorization, verified copy, inventory, removal, and eject |
-| `kindle_ssh` | Explicit rooted Kindle SSH/SCP validation, upload, remote verification, and publication |
-| `metadata` | Native embedded metadata recognition, bounded Calibre extraction/fetching, OPF parsing, and cover publication |
-| `maintenance` | Ebook polishing and bounded text extraction for content search and validation |
-| `server` | Authenticated loopback-only read-only catalogue and format delivery |
-| `tui` | Ratatui application state, keyboard handling, responsive rendering, and terminal restoration |
-| `paths` | Default, named, and explicit library path resolution |
-| `model` | Library item, author, format, provenance, and metadata patch wire models |
-| `calibre_import` | Read-only Calibre catalogue import with per-book outcomes |
-| `candidate_cover` | Bounded staged cover artifacts, ownership checks, and lifecycle locking |
-| `catalog` | Shared catalogue record projection |
-| `diagnostics` | Bounded, redacted library diagnostics bundles |
-| `executable_discovery` | Shared external backend precedence and canonical executable resolution |
-| `import_scan` | Recursive import discovery, source validation, and per-file outcomes |
-| `koreader` | Read-only KOReader recognition and reading-progress parsing |
-| `metadata_reconcile` | Bounded multi-item candidate reconciliation and cancellation |
-| `output` | Stable application errors and JSON output envelopes |
-| `portable_library` | Portable OPF catalogue export and verified rebuild |
-| `reader_shelf` | Read-only reader inventory, fingerprint cache, library matching, and explicit import |
+| `cli` (executable) | Clap commands, automation service, request mapping and presentation |
+| `output` (executable) | Shared CLI/service/HTTP success and typed error envelopes, stdout record writing |
+| `server` (executable) | Authenticated loopback-only read-only catalogue and format delivery |
+| `tui` (executable) | Ratatui interaction, rendering, and terminal restoration |
+| `error` | Closed `ErrorCode` vocabulary and application results |
+| `format` | Ebook format vocabulary and extension detection |
+| `fingerprint` | Streaming SHA-256 byte counts and digests for owned-file operations |
+| `library` | Catalogue domain modules |
+| `library::store` | Schema-v12 SQLite catalogue and owned-file transactions |
+| `library::paths` | Default, named, and explicit library path resolution |
+| `library::model` | Items, authors, formats, provenance, and metadata patch wire models |
+| `library::query` | Typed query requests, facets, sorting, and shared query presentation |
+| `library::catalog` | Public catalogue projection and catalogue file publication |
+| `library::export` | Bounded multi-item export planning and outcomes |
+| `library::diagnostics` | Bounded, redacted diagnostic bundles |
+| `library::portable` | Portable OPF catalogue export and verified rebuild |
+| `import` | Discovery and external-library ingestion |
+| `import::scan` | Recursive discovery, source validation, and per-file import outcomes |
+| `import::calibre` | Read-only Calibre catalogue ingestion and per-book outcomes |
+| `delivery` | Shared compatible-copy planning and verified item delivery |
+| `delivery::destinations` | Mounted-volume authorization, copy, inventory, removal, and eject |
+| `delivery::kindle_ssh` | Explicit rooted Kindle SSH/SCP validation, upload, verification, and publication |
+| `delivery::koreader` | Read-only KOReader recognition and reading-progress parsing |
+| `delivery::reader_shelf` | Reader inventory, fingerprint cache, catalogue matching, and explicit import |
+| `metadata` | Embedded recognition, bounded external metadata extraction/fetching, OPF parsing, and cover publication |
+| `metadata::pdf` (internal) | Bounded embedded PDF metadata and page counts |
+| `metadata::candidate_cover` | Bounded staged cover artifacts, ownership checks, and lifecycle locking |
+| `metadata::candidates` | Typed metadata candidate preparation and reviewed application |
+| `metadata::reconcile` | Bounded multi-item candidate reconciliation and cancellation |
+| `conversion` | Calibre discovery, planning, execution, and artifact verification |
+| `conversion::executable_discovery` (internal) | Backend precedence and canonical executable resolution |
+| `conversion::maintenance` | Ebook polishing and bounded text extraction |
+| `conversion::jobs` | Independent schema-v4 foreground conversion ledger |
 
 The crate forbids unsafe Rust. SQLite is bundled through `rusqlite`, so the
 standalone executable does not depend on a system SQLite installation.

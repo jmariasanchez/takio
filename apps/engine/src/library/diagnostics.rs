@@ -9,9 +9,9 @@ use sha2::{Digest, Sha256};
 use tempfile::Builder;
 use walkdir::WalkDir;
 
-use crate::output::AppResult;
-use crate::paths::LibraryPaths;
-use crate::store::{LibraryStore, VerifyReport};
+use crate::error::AppResult;
+use crate::library::paths::LibraryPaths;
+use crate::library::store::{LibraryStore, VerifyReport};
 
 pub const MAX_DIAGNOSTIC_BUNDLE_BYTES: usize = 1024 * 1024;
 const MAX_SCANNED_ENTRIES: u64 = 1_000_000;
@@ -268,7 +268,7 @@ fn sync_parent(parent: &Path) -> AppResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::conversion::FormatId;
+    use crate::format::FormatId;
     use tempfile::tempdir;
 
     fn paths(root: &Path) -> LibraryPaths {
@@ -292,7 +292,7 @@ mod tests {
             .import(
                 &source,
                 Some("Secret title"),
-                crate::model::ImportMode::Copy,
+                crate::library::model::ImportMode::Copy,
             )
             .unwrap();
         assert_eq!(item.format, FormatId::Epub);

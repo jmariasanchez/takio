@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use rusqlite::{Connection, params_from_iter};
 
 use crate::error::AppResult;
-use crate::model::{BookAuthor, BookFormat, LibraryItem, Provenance};
+use crate::library::model::{BookAuthor, BookFormat, LibraryItem, Provenance};
 
 pub(super) fn read_item_from(connection: &Connection, id: &str) -> AppResult<Option<LibraryItem>> {
     let mut items = read_items_bulk(connection, std::slice::from_ref(&id.to_owned()))?;

@@ -9,7 +9,7 @@ use super::hydration::read_items_bulk;
 use super::query::query_item_ids;
 use super::{LibraryQueryFilters, LibraryQueryScope, LibraryQuerySyntax, LibraryStore};
 use crate::error::AppResult;
-use crate::model::{BookAuthor, BookFormat, LibraryItem};
+use crate::library::model::{BookAuthor, BookFormat, LibraryItem};
 
 const MAX_ITEMS: usize = 10_000;
 const MAX_PAYLOAD_BYTES: usize = 32 * 1024 * 1024;

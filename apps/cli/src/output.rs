@@ -1,17 +1,25 @@
 use std::io::{self, Write};
 
-pub use crate::error::{AppError, AppResult};
 use serde::Serialize;
 use serde_json::{Value, json};
+use takio::error::{AppError, AppResult, ErrorCode};
 
 #[must_use]
 pub fn success_line<T: Serialize>(value: T) -> String {
-    json!({ "ok": true, "value": value }).to_string()
+    success(value).to_string()
 }
 
 #[must_use]
-pub fn failure_line(code: &str) -> String {
-    json!({ "ok": false, "error": { "code": code } }).to_string()
+pub fn failure_line(code: ErrorCode) -> String {
+    failure(code).to_string()
+}
+
+pub fn success<T: Serialize>(value: T) -> Value {
+    json!({ "ok": true, "value": value })
+}
+
+pub fn failure(code: ErrorCode) -> Value {
+    json!({ "ok": false, "error": { "code": code } })
 }
 
 /// Write a success envelope as one newline-terminated JSON record.
@@ -23,18 +31,13 @@ pub fn print_success<T: Serialize>(value: T) -> AppResult<()> {
     write_line(&mut io::stdout().lock(), &line)
 }
 
-/// Write a JSON value as one newline-terminated record without an envelope.
-pub fn print_json(value: &Value) -> AppResult<()> {
-    write_line(&mut io::stdout().lock(), &value.to_string())
-}
-
 fn write_line(writer: &mut impl Write, line: &str) -> AppResult<()> {
     writeln!(writer, "{line}").map_err(AppError::from)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{AppError, failure_line, success_line, write_line};
+    use super::{AppError, ErrorCode, failure_line, success_line, write_line};
     use serde_json::{Value, json};
     use std::io::{self, Write};
 
@@ -56,24 +59,25 @@ mod tests {
     }
 
     #[test]
-    fn failure_envelope_contains_only_the_escaped_error_code() -> serde_json::Result<()> {
-        let code = "failure\nwith \"quotes\" and \\slashes";
-        let line = failure_line(code);
-        assert!(!line.contains(['\n', '\r']));
-        assert_eq!(
-            serde_json::from_str::<Value>(&line)?,
-            json!({"ok": false, "error": {"code": code}})
-        );
+    fn failure_envelope_preserves_every_typed_wire_code() -> serde_json::Result<()> {
+        for &code in ErrorCode::ALL {
+            let line = failure_line(code);
+            assert!(!line.contains(['\n', '\r']));
+            assert_eq!(
+                serde_json::from_str::<Value>(&line)?,
+                json!({"ok": false, "error": {"code": code.as_str()}})
+            );
+        }
         Ok(())
     }
 
     #[test]
     fn app_errors_preserve_codes_and_default_or_explicit_status() {
-        let default = crate::app_error!("invalid-arguments");
+        let default = takio::app_error!("invalid-arguments");
         assert_eq!(default.code(), "invalid-arguments");
         assert_eq!(default.to_string(), "invalid-arguments");
         assert_eq!(default.exit_code(), 1);
-        let explicit = AppError::with_exit_code(crate::error::ErrorCode::Interrupted, 130);
+        let explicit = AppError::with_exit_code(takio::error::ErrorCode::Interrupted, 130);
         assert_eq!(explicit.code(), "interrupted");
         assert_eq!(explicit.exit_code(), 130);
     }
@@ -97,7 +101,7 @@ mod tests {
 
     #[test]
     fn cloned_app_errors_preserve_status_and_redacted_details() {
-        let explicit = AppError::with_exit_code(crate::error::ErrorCode::Interrupted, 130).clone();
+        let explicit = AppError::with_exit_code(takio::error::ErrorCode::Interrupted, 130).clone();
         assert_eq!(explicit.code(), "interrupted");
         assert_eq!(explicit.exit_code(), 130);
         assert_eq!(explicit.to_string(), "interrupted");
@@ -116,8 +120,8 @@ mod tests {
             assert_eq!(cloned.to_string(), "storage-unavailable");
             assert!(!format!("{cloned:?}").contains("private"));
             assert_eq!(
-                failure_line(cloned.code()),
-                failure_line("storage-unavailable")
+                failure_line(cloned.kind()),
+                failure_line(ErrorCode::StorageUnavailable)
             );
         }
     }

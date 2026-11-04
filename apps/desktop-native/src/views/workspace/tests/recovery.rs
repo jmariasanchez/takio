@@ -195,7 +195,7 @@ fn recovery_make_backup(f: &Fixture, output: &std::path::Path, cx: &mut TestAppC
 
 pub(super) fn recovery_assert_copied_books(f: &Fixture, output: &std::path::Path, trashed: usize) {
     let paths = LibraryPaths::resolve(None, Some(&output.join("library.sqlite"))).unwrap();
-    let store = takio::store::LibraryStore::open_read_only(paths).unwrap();
+    let store = takio::library::store::LibraryStore::open_read_only(paths).unwrap();
     let copied = store.list(true).unwrap();
     assert_eq!(copied.len(), f.books.len());
     assert_eq!(store.list_trash().unwrap().len(), trashed);

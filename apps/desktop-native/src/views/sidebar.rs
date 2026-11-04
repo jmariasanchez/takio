@@ -41,7 +41,12 @@ impl Render for Sidebar {
             .map(|error| crate::state::humanize_error(error.kind()));
         let readers: Vec<_> = destinations
             .into_iter()
-            .filter(|device| !matches!(device.kind, takio::destinations::DestinationKind::Generic))
+            .filter(|device| {
+                !matches!(
+                    device.kind,
+                    takio::delivery::destinations::DestinationKind::Generic
+                )
+            })
             .collect();
         let mut sidebar = div()
             .id("sidebar")
@@ -61,8 +66,10 @@ impl Render for Sidebar {
             .text_sm()
             .text_color(theme.text);
         let has_stock_kindle = readers.iter().any(|reader| {
-            matches!(reader.kind, takio::destinations::DestinationKind::Kindle)
-                && !reader.has_koreader()
+            matches!(
+                reader.kind,
+                takio::delivery::destinations::DestinationKind::Kindle
+            ) && !reader.has_koreader()
         });
         for (label, target) in [("Library", Section::Library), ("Trash", Section::Trash)] {
             sidebar = sidebar.child(
@@ -431,7 +438,7 @@ impl Render for Sidebar {
 
 /// The text under a reader in the sidebar, from its last scan.
 pub(crate) fn shelf_summary(
-    shelf: Option<&takio::output::AppResult<takio::reader_shelf::ReaderShelf>>,
+    shelf: Option<&takio::error::AppResult<takio::delivery::reader_shelf::ReaderShelf>>,
 ) -> String {
     let shelf = match shelf {
         Some(Ok(shelf)) => shelf,
@@ -474,7 +481,7 @@ pub(crate) fn shelf_summary(
 #[cfg(test)]
 mod tests {
     use super::shelf_summary;
-    use takio::reader_shelf::ReaderShelf;
+    use takio::delivery::reader_shelf::ReaderShelf;
 
     fn shelf(koreader: bool, finished: usize, in_progress: usize) -> ReaderShelf {
         ReaderShelf {

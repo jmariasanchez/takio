@@ -8,11 +8,11 @@ use sha2::{Digest, Sha256};
 use unicode_normalization::UnicodeNormalization;
 
 use super::{DuplicateCandidate, DuplicateScanSummary, DuplicateSignal};
-use crate::conversion::FormatId;
 use crate::error::AppResult;
 use crate::fingerprint::Fingerprint;
-use crate::store::hash_file;
-use crate::store::hydration::read_item_from;
+use crate::format::FormatId;
+use crate::library::store::hash_file;
+use crate::library::store::hydration::read_item_from;
 
 pub(super) const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 

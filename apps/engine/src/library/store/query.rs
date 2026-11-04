@@ -12,7 +12,7 @@ use super::{
     as_i64, count,
 };
 use crate::error::AppResult;
-use crate::model::LibraryItem;
+use crate::library::model::LibraryItem;
 
 impl LibraryStore {
     pub fn list(&self, include_trashed: bool) -> AppResult<Vec<LibraryItem>> {

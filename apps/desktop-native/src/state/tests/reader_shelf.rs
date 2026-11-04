@@ -254,7 +254,7 @@ fn shelf_reader(f: &Fixture, cx: &mut TestAppContext) -> Destination {
     for directory in ["documents", "system", "koreader"] {
         fs::create_dir_all(mount.join(directory)).unwrap();
     }
-    let destination = takio::destinations::authorize(&mount, &volumes).unwrap();
+    let destination = takio::delivery::destinations::authorize(&mount, &volumes).unwrap();
     f.state.update(cx, |state, cx| {
         state.volumes_root = volumes;
         state.refresh_destinations(cx);
@@ -378,7 +378,7 @@ fn reader_shelf_empty_documents_and_generic_drives_are_not_errors(cx: &mut TestA
         assert_eq!((shelf.in_library, shelf.not_in_library), (0, 0));
     });
     let mut generic = reader;
-    generic.kind = takio::destinations::DestinationKind::Generic;
+    generic.kind = takio::delivery::destinations::DestinationKind::Generic;
     f.state.update(cx, |state, cx| {
         state.destinations = vec![generic.clone()];
         state.scan_readers(cx);
@@ -456,7 +456,7 @@ fn reader_marks_after_restart_reuse_saved_fingerprints(cx: &mut TestAppContext) 
     f.state.update(cx, |state, cx| state.scan_readers(cx));
     settle(&f.state, cx);
     let root = f._temp.path();
-    let cache = root.join(takio::reader_shelf::HASH_CACHE_FILE);
+    let cache = root.join(takio::delivery::reader_shelf::HASH_CACHE_FILE);
     let saved = fs::read(&cache).expect("the scan saved the reader's fingerprints");
 
     // Import updates the cache with what it read, so the next launch needs no reading.
@@ -586,7 +586,7 @@ fn unchanged_volumes_do_not_rescan_and_changes_wait_for_open_reviews(cx: &mut Te
     let f = fixture(cx);
     let volumes = f._temp.path().join("auto-volumes");
     let first = kindle_at(&volumes, "Kindle");
-    let first = takio::destinations::authorize(&first, &volumes).unwrap();
+    let first = takio::delivery::destinations::authorize(&first, &volumes).unwrap();
     f.state.update(cx, |state, cx| {
         state.volumes_root = volumes.clone();
         state.refresh_destinations(cx);

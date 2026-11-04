@@ -2,9 +2,9 @@
 
 use std::path::{Path, PathBuf};
 
-use takio::output::AppResult;
-use takio::paths::LibraryPaths;
-use takio::store::LibraryStore;
+use takio::error::AppResult;
+use takio::library::paths::LibraryPaths;
+use takio::library::store::LibraryStore;
 
 #[derive(Clone, Debug)]
 pub struct OpenedLibrary {
@@ -30,9 +30,10 @@ pub fn open(directory: &Path) -> AppResult<(LibraryStore, OpenedLibrary)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::{Engine, Filters, Request};
+    use crate::engine::{Engine, Request};
     use std::fs;
-    use takio::model::LibraryItem;
+    use takio::library::model::LibraryItem;
+    use takio::library::query::Filters;
 
     fn fixture() -> (tempfile::TempDir, PathBuf, String) {
         let temp = tempfile::tempdir().unwrap();
@@ -42,7 +43,11 @@ mod tests {
         let source = root.join("source.epub");
         fs::write(&source, b"fixture book").unwrap();
         let item = store
-            .import(&source, Some("Original"), takio::model::ImportMode::Copy)
+            .import(
+                &source,
+                Some("Original"),
+                takio::library::model::ImportMode::Copy,
+            )
             .unwrap();
         (temp, root, item.id)
     }
@@ -287,7 +292,7 @@ mod tests {
         engine
             .request(|reply| Request::Import {
                 roots: vec![source],
-                mode: crate::engine::ImportMode::Copy,
+                mode: takio::library::model::ImportMode::Copy,
                 reply,
             })
             .recv()
@@ -350,7 +355,7 @@ mod tests {
         let source = temp.path().join("second.epub");
         fs::write(&source, b"different book").unwrap();
         store
-            .import(&source, None, takio::model::ImportMode::Copy)
+            .import(&source, None, takio::library::model::ImportMode::Copy)
             .unwrap();
         drop(store);
         let before = fs::read(b.join("library.sqlite")).unwrap();

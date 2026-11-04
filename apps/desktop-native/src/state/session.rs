@@ -14,7 +14,7 @@ pub struct LibrarySession {
     pub status: Option<Status>,
     pub reader_shelves: crate::engine::ReaderShelves,
     pub on_reader: HashMap<String, Vec<String>>,
-    pub reading: HashMap<String, (String, takio::koreader::ReadingState)>,
+    pub reading: HashMap<String, (String, takio::delivery::koreader::ReadingState)>,
     pub scanning_readers: bool,
     pub device_error: Option<AppError>,
     pub delivery_exclusions: Vec<SendPreviewEntry>,

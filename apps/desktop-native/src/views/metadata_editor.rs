@@ -3,7 +3,7 @@ use gpui::{
     App, Context, Entity, EventEmitter, FocusHandle, KeyBinding, Render, Window, actions, div,
     prelude::*, px,
 };
-use takio::model::{BookAuthor, LibraryItem, LibraryPatch, Patch};
+use takio::library::model::{BookAuthor, LibraryItem, LibraryPatch, Patch};
 
 use super::search::Search;
 use crate::state::{LibraryEntity, humanize_error};
@@ -391,7 +391,7 @@ mod tests {
     use super::*;
     use crate::{engine::Engine, state::LibraryState};
     use gpui::{AppContext, EntityInputHandler, TestAppContext};
-    use takio::{conversion::FormatId, paths::LibraryPaths};
+    use takio::{format::FormatId, library::paths::LibraryPaths};
 
     fn item() -> LibraryItem {
         LibraryItem {

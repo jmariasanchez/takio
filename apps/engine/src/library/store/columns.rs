@@ -3,7 +3,7 @@ use rusqlite::{OptionalExtension, TransactionBehavior, params};
 
 use super::{LibraryStore, METADATA_AUDIT_KEY};
 use crate::error::AppResult;
-use crate::model::CustomColumnDefinition;
+use crate::library::model::CustomColumnDefinition;
 
 const MAX_CUSTOM_COLUMN_DEFINITIONS: usize = 64;
 
@@ -167,7 +167,7 @@ fn valid_custom_column_key(key: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::LibraryStore;
-    use crate::paths::LibraryPaths;
+    use crate::library::paths::LibraryPaths;
 
     #[test]
     fn column_storage_failures_are_not_invalid_arguments() {

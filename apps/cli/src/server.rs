@@ -6,10 +6,11 @@ use serde_json::json;
 use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 use uuid::Uuid;
 
-use crate::catalog::catalog_record;
-use crate::format::{FormatId, detect_format};
-use crate::output::{AppResult, print_success};
-use crate::store::LibraryStore;
+use crate::output::{failure, print_success, success};
+use takio::error::{AppResult, ErrorCode};
+use takio::format::{FormatId, detect_format};
+use takio::library::catalog::catalog_record;
+use takio::library::store::LibraryStore;
 
 const MAX_CATALOG_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
 
@@ -40,7 +41,7 @@ fn handle(request: Request, store: &LibraryStore, token: &str) {
         respond_json(
             request,
             StatusCode(401),
-            json!({"ok":false,"error":{"code":"unauthorized"}}),
+            failure(ErrorCode::Unauthorized),
             Some(("WWW-Authenticate", "Bearer")),
         );
         return;
@@ -49,14 +50,14 @@ fn handle(request: Request, store: &LibraryStore, token: &str) {
         respond_json(
             request,
             StatusCode(405),
-            json!({"ok":false,"error":{"code":"method-not-allowed"}}),
+            failure(ErrorCode::MethodNotAllowed),
             Some(("Allow", "GET")),
         );
         return;
     }
     let url = request.url().to_owned();
     if url.len() > 2048 {
-        respond_error(request, "invalid-request", 400);
+        respond_error(request, ErrorCode::InvalidRequest, 400);
         return;
     }
     let (path, query) = url
@@ -66,14 +67,14 @@ fn handle(request: Request, store: &LibraryStore, token: &str) {
         respond_json(
             request,
             StatusCode(200),
-            json!({"ok":true,"value":{"service":"takio","protocolVersion":1}}),
+            success(json!({"service":"takio","protocolVersion":1})),
             None,
         );
         return;
     }
     if matches!(path, "/v1/books" | "/v1/catalog") {
         let Some((limit, offset)) = page(query) else {
-            respond_error(request, "invalid-request", 400);
+            respond_error(request, ErrorCode::InvalidRequest, 400);
             return;
         };
         match store.catalog_page(limit, offset) {
@@ -84,10 +85,10 @@ fn handle(request: Request, store: &LibraryStore, token: &str) {
                     .collect::<Vec<_>>();
                 respond_catalog_json(
                     request,
-                    json!({"ok":true,"value":{"books":books,"offset":offset,"limit":limit,"total":total}}),
+                    success(json!({"books":books,"offset":offset,"limit":limit,"total":total})),
                 );
             }
-            Err(error) => respond_error(request, error.code(), 503),
+            Err(error) => respond_error(request, error.kind(), 503),
         }
         return;
     }
@@ -97,45 +98,44 @@ fn handle(request: Request, store: &LibraryStore, token: &str) {
         .map(percent_decode)
         .collect::<Option<Vec<_>>>();
     let Some(segments) = segments else {
-        respond_error(request, "invalid-request", 400);
+        respond_error(request, ErrorCode::InvalidRequest, 400);
         return;
     };
     match segments.as_slice() {
         [version, books, id] if version == "v1" && books == "books" && query.is_empty() => {
             match store.get(id) {
-                Ok(Some(item)) => respond_catalog_json(
-                    request,
-                    json!({"ok":true,"value":{"book":catalog_record(&item)}}),
-                ),
-                Ok(None) => respond_error(request, "not-found", 404),
-                Err(error) => respond_error(request, error.code(), 503),
+                Ok(Some(item)) => {
+                    respond_catalog_json(request, success(json!({"book":catalog_record(&item)})))
+                }
+                Ok(None) => respond_error(request, ErrorCode::NotFound, 404),
+                Err(error) => respond_error(request, error.kind(), 503),
             }
         }
         [version, books, id, formats, format]
             if version == "v1" && books == "books" && formats == "formats" && query.is_empty() =>
         {
             let Ok(format) = format.parse::<FormatId>() else {
-                respond_error(request, "invalid-request", 400);
+                respond_error(request, ErrorCode::InvalidRequest, 400);
                 return;
             };
             match store.get(id) {
                 Ok(Some(item)) => {
                     let Some(attachment) = item.formats.iter().find(|value| value.format == format)
                     else {
-                        respond_error(request, "format-not-found", 404);
+                        respond_error(request, ErrorCode::FormatNotFound, 404);
                         return;
                     };
                     if detect_format(&attachment.source_path) != Some(format) {
-                        respond_error(request, "format-mismatch", 409);
+                        respond_error(request, ErrorCode::FormatMismatch, 409);
                     } else {
                         respond_file(request, &attachment.source_path, format);
                     }
                 }
-                Ok(None) => respond_error(request, "not-found", 404),
-                Err(error) => respond_error(request, error.code(), 503),
+                Ok(None) => respond_error(request, ErrorCode::NotFound, 404),
+                Err(error) => respond_error(request, error.kind(), 503),
             }
         }
-        _ => respond_error(request, "not-found", 404),
+        _ => respond_error(request, ErrorCode::NotFound, 404),
     }
 }
 
@@ -180,19 +180,19 @@ fn page(query: &str) -> Option<(usize, usize)> {
 
 fn respond_file(request: Request, path: &Path, format: FormatId) {
     let Ok(path) = path.canonicalize() else {
-        respond_error(request, "missing-file", 404);
+        respond_error(request, ErrorCode::MissingFile, 404);
         return;
     };
     let Ok(file) = File::open(&path) else {
-        respond_error(request, "missing-file", 404);
+        respond_error(request, ErrorCode::MissingFile, 404);
         return;
     };
     let Ok(metadata) = file.metadata() else {
-        respond_error(request, "missing-file", 404);
+        respond_error(request, ErrorCode::MissingFile, 404);
         return;
     };
     if !metadata.is_file() || metadata.len() == 0 {
-        respond_error(request, "missing-file", 404);
+        respond_error(request, ErrorCode::MissingFile, 404);
         return;
     }
     let content_type = match format {
@@ -224,13 +224,8 @@ fn respond_file(request: Request, path: &Path, format: FormatId) {
     let _ = request.respond(response);
 }
 
-fn respond_error(request: Request, code: &str, status: u16) {
-    respond_json(
-        request,
-        StatusCode(status),
-        json!({"ok":false,"error":{"code":code}}),
-        None,
-    );
+fn respond_error(request: Request, code: ErrorCode, status: u16) {
+    respond_json(request, StatusCode(status), failure(code), None);
 }
 
 fn respond_json(
@@ -253,7 +248,7 @@ fn respond_json(
 fn respond_catalog_json(request: Request, value: serde_json::Value) {
     let body = value.to_string();
     if body.len() > MAX_CATALOG_RESPONSE_BYTES {
-        respond_error(request, "response-too-large", 503);
+        respond_error(request, ErrorCode::ResponseTooLarge, 503);
         return;
     }
     let response = Response::from_string(body)
@@ -318,7 +313,7 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
-    use crate::model::{BookAuthor, BookFormat, LibraryItem, Provenance};
+    use takio::library::model::{BookAuthor, BookFormat, LibraryItem, Provenance};
 
     #[test]
     fn catalog_http_boundary_authenticates_and_projects_rich_and_sparse_books() {
@@ -326,8 +321,8 @@ mod tests {
         use std::net::TcpStream;
         use std::time::Duration;
 
-        use crate::catalog::tests::{rich_record, sparse_record};
-        use crate::paths::LibraryPaths;
+        use takio::library::catalog::tests::{rich_record, sparse_record};
+        use takio::library::paths::LibraryPaths;
 
         let temp = tempfile::tempdir().unwrap();
         let paths = LibraryPaths::resolve(None, Some(&temp.path().join("library.sqlite"))).unwrap();
@@ -335,12 +330,20 @@ mod tests {
         let source = temp.path().join("sparse.txt");
         std::fs::write(&source, "sparse book").unwrap();
         let sparse = store
-            .import(&source, Some("Example"), takio::model::ImportMode::Copy)
+            .import(
+                &source,
+                Some("Example"),
+                takio::library::model::ImportMode::Copy,
+            )
             .unwrap();
         let source = temp.path().join("rich.txt");
         std::fs::write(&source, "rich book").unwrap();
         let rich = store
-            .import(&source, Some("Example"), takio::model::ImportMode::Copy)
+            .import(
+                &source,
+                Some("Example"),
+                takio::library::model::ImportMode::Copy,
+            )
             .unwrap();
         store
             .update(

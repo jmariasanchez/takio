@@ -1,6 +1,6 @@
 pub mod candidate_cover;
-pub mod metadata_candidates;
-pub mod metadata_reconcile;
+pub mod candidates;
+pub mod reconcile;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, OpenOptions};
@@ -19,10 +19,10 @@ use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 use tempfile::Builder;
 
-use crate::candidate_cover::CapturedCover;
+use crate::conversion::executable_discovery::discover_executable;
 use crate::error::AppResult;
-use crate::executable_discovery::discover_executable;
-use crate::model::BookAuthor;
+use crate::library::model::BookAuthor;
+use crate::metadata::candidate_cover::CapturedCover;
 
 mod pdf;
 pub use pdf::embedded_pdf;

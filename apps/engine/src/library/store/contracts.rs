@@ -4,9 +4,9 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use super::{LibraryQuerySyntax, parse_structured_query};
-use crate::conversion::FormatId;
 use crate::error::AppResult;
-use crate::model::Provenance;
+use crate::format::FormatId;
+use crate::library::model::Provenance;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -92,8 +92,8 @@ pub struct ExpectedFormatSnapshot {
     pub provenance: Provenance,
 }
 
-impl From<&crate::model::BookFormat> for ExpectedFormatSnapshot {
-    fn from(format: &crate::model::BookFormat) -> Self {
+impl From<&crate::library::model::BookFormat> for ExpectedFormatSnapshot {
+    fn from(format: &crate::library::model::BookFormat) -> Self {
         Self {
             source_path: format.source_path.clone(),
             added_at: format.added_at.clone(),

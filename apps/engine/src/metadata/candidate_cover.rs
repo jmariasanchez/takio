@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use crate::output::AppResult;
+use crate::error::AppResult;
 
 pub const MAX_COVER_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_ARTIFACTS: usize = 128;

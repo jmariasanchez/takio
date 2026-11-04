@@ -4,11 +4,15 @@ pub(super) fn switching_candidate(title: &str) -> (tempfile::TempDir, PathBuf) {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().canonicalize().unwrap().join("library");
     let paths = LibraryPaths::resolve(None, Some(&root.join("library.sqlite"))).unwrap();
-    let mut store = takio::store::LibraryStore::create_or_migrate(paths).unwrap();
+    let mut store = takio::library::store::LibraryStore::create_or_migrate(paths).unwrap();
     let source = temp.path().join("book.txt");
     fs::write(&source, title).unwrap();
     store
-        .import(&source, Some(title), takio::model::ImportMode::Copy)
+        .import(
+            &source,
+            Some(title),
+            takio::library::model::ImportMode::Copy,
+        )
         .unwrap();
     (temp, root)
 }
@@ -81,7 +85,7 @@ fn library_switch_resets_view_and_routes_mutation_to_new_catalogue(cx: &mut Test
     settle(&f.state, cx);
     assert_eq!(titles(&f.state, cx), ["Alpha", "Beta", "Gamma"]);
     assert_eq!(f.state.read_with(cx, |state, _| state.library_epoch), 2);
-    let b_store = takio::store::LibraryStore::open_read_only(
+    let b_store = takio::library::store::LibraryStore::open_read_only(
         LibraryPaths::resolve(None, Some(&b.join("library.sqlite"))).unwrap(),
     )
     .unwrap();
@@ -189,11 +193,11 @@ fn library_switch_guards_edits_operations_loading_and_reviews(cx: &mut TestAppCo
             state.refreshing_devices = guard == 3;
             if guard == 4 {
                 state.session.activity = Activity::ReviewingSend(SendPreview {
-                    destination: takio::destinations::Destination {
+                    destination: takio::delivery::destinations::Destination {
                         id: "test".into(),
                         name: "test".into(),
                         path: "/unused".into(),
-                        kind: takio::destinations::DestinationKind::Generic,
+                        kind: takio::delivery::destinations::DestinationKind::Generic,
                         features: Vec::new(),
                     },
                     entries: Vec::new(),

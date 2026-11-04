@@ -2,8 +2,8 @@
 use rusqlite::{Transaction, params};
 
 use crate::error::AppResult;
-use crate::model::{LibraryItem, LibraryPatch};
-use crate::store::{LibraryStore, metadata::replace_metadata};
+use crate::library::model::{LibraryItem, LibraryPatch};
+use crate::library::store::{LibraryStore, metadata::replace_metadata};
 
 pub(super) fn apply_duplicate_metadata(
     item: &mut LibraryItem,
@@ -42,14 +42,16 @@ mod tests {
     #[test]
     fn duplicate_metadata_uses_typed_patch_contract() {
         let temp = tempfile::tempdir().unwrap();
-        let paths =
-            crate::paths::LibraryPaths::resolve(None, Some(&temp.path().join("library.sqlite")))
-                .unwrap();
+        let paths = crate::library::paths::LibraryPaths::resolve(
+            None,
+            Some(&temp.path().join("library.sqlite")),
+        )
+        .unwrap();
         let mut store = LibraryStore::create_or_migrate(paths).unwrap();
         let source = temp.path().join("book.epub");
         std::fs::write(&source, b"book").unwrap();
         let mut item = store
-            .import(&source, None, crate::model::ImportMode::Copy)
+            .import(&source, None, crate::library::model::ImportMode::Copy)
             .unwrap();
         for metadata in [
             serde_json::json!({"unknown":true}),

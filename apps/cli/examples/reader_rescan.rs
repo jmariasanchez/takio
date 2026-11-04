@@ -3,10 +3,10 @@
 use std::path::Path;
 use std::time::Instant;
 
-use takio::destinations;
-use takio::paths::LibraryPaths;
-use takio::reader_shelf::{HashCache, scan_cached, scan_files};
-use takio::store::LibraryStore;
+use takio::delivery::destinations;
+use takio::delivery::reader_shelf::{HashCache, scan_cached, scan_files};
+use takio::library::paths::LibraryPaths;
+use takio::library::store::LibraryStore;
 
 fn main() {
     let mut args = std::env::args().skip(1);

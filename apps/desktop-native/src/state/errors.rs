@@ -1,6 +1,7 @@
 pub fn humanize_error(code: takio::error::ErrorCode) -> String {
     use takio::error::ErrorCode::*;
     match code {
+        InvalidRequest | MethodNotAllowed | MissingFile | ResponseTooLarge | Unauthorized => "The content server could not complete that request. Check access and request details.".into(),
         OperationInProgress => "Finish the current operation first".into(),
         ReaderScanUnavailable => "Reader scanning could not start. Restart Takio to retry. Your library is still available.".into(),
         StorageUnavailable => "The library could not be read".into(),
@@ -49,6 +50,7 @@ pub fn humanize_error(code: takio::error::ErrorCode) -> String {
 pub(super) fn humanize_recovery_error(code: takio::error::ErrorCode) -> String {
     use takio::error::ErrorCode::*;
     match code {
+        InvalidRequest | MethodNotAllowed | MissingFile | ResponseTooLarge | Unauthorized => "The server request failed. Your current library was not replaced.".into(),
         DestinationExists => "That location already exists. Choose a new folder name. Existing files were not replaced.".into(),
         InvalidArguments => "Choose a new folder outside the current library and backup. Do not place recovery copies inside either library.".into(),
         SourceInvalid | IncompatibleSchema | InvalidStoredData => "This is not a supported, safe Takio backup. Choose the complete backup folder created by a compatible Takio version. Your current library was not replaced.".into(),
@@ -77,6 +79,9 @@ pub(super) fn humanize_recovery_error(code: takio::error::ErrorCode) -> String {
 pub(super) fn open_library_error(code: takio::error::ErrorCode) -> String {
     use takio::error::ErrorCode::*;
     let reason = match code {
+        InvalidRequest | MethodNotAllowed | MissingFile | ResponseTooLarge | Unauthorized => {
+            "The content server request could not be completed."
+        }
         LibraryIsBackup => {
             "This folder is a backup snapshot. Use Restore Backup to New Folder, then open the restored copy."
         }

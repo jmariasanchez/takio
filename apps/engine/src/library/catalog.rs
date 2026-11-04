@@ -7,8 +7,8 @@ use serde::Serialize;
 use serde_json::{Value, json};
 
 use crate::format::FormatId;
-use crate::model::LibraryItem;
-use crate::store::user_custom_metadata;
+use crate::library::model::LibraryItem;
+use crate::library::store::user_custom_metadata;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -75,8 +75,8 @@ pub fn write_catalog(
     items: &[LibraryItem],
     format: &str,
     output: &std::path::Path,
-) -> crate::output::AppResult<CatalogReport> {
-    use crate::output::AppResult;
+) -> crate::error::AppResult<CatalogReport> {
+    use crate::error::AppResult;
     use sha2::{Digest, Sha256};
     use std::io::Write;
     if output.exists()
@@ -108,7 +108,7 @@ pub fn write_catalog(
     if body.len() > 64 * 1024 * 1024 {
         return Err(crate::app_error!("write-failed"));
     }
-    let absolute_output = crate::paths::absolute(output)?;
+    let absolute_output = crate::library::paths::absolute(output)?;
     let parent = output
         .parent()
         .ok_or_else(|| crate::app_error!("invalid-arguments"))?;
@@ -247,15 +247,15 @@ pub mod tests {
     pub fn rich_book() -> LibraryItem {
         let mut item = sparse_book();
         item.author = Some("Legacy author".into());
-        item.authors = vec![crate::model::BookAuthor {
+        item.authors = vec![crate::library::model::BookAuthor {
             name: "Public author".into(),
             sort_name: Some("Private sort name".into()),
         }];
-        item.formats = vec![crate::model::BookFormat {
+        item.formats = vec![crate::library::model::BookFormat {
             source_path: "/private/attachment.epub".into(),
             format: FormatId::Epub,
             added_at: "2026-01-02".into(),
-            provenance: crate::model::Provenance::Managed,
+            provenance: crate::library::model::Provenance::Managed,
         }];
         item.series = Some("Series".into());
         item.series_index = Some(0.0);

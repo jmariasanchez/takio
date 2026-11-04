@@ -1,12 +1,12 @@
 use serde_json::json;
 use takio::conversion::ConversionProfile;
-use takio::destinations::{DestinationFeature, InventoryStatus, OverwritePolicy};
-use takio::model::ImportMode;
-use takio::reader_shelf::{ShelfEntry, ShelfMatchSource};
+use takio::delivery::destinations::{DestinationFeature, InventoryStatus, OverwritePolicy};
+use takio::delivery::reader_shelf::{ShelfEntry, ShelfMatchSource};
+use takio::library::model::ImportMode;
 
 #[test]
 fn patch_value_borrows_without_changing_presence_or_wire_value() {
-    use takio::model::Patch;
+    use takio::library::model::Patch;
     let patch = Patch::Set(String::from("Reviewed title"));
     assert_eq!(patch.value().map(String::as_str), Some("Reviewed title"));
     assert_eq!(

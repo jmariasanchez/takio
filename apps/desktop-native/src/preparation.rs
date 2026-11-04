@@ -5,10 +5,10 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use takio::conversion::{self, BackendDiscovery};
+use takio::error::AppResult;
 use takio::format::FormatId;
-use takio::model::LibraryItem;
-use takio::output::AppResult;
-use takio::store::LibraryStore;
+use takio::library::model::LibraryItem;
+use takio::library::store::LibraryStore;
 
 const PREPARATION_TIMEOUT: Duration = Duration::from_secs(120);
 
@@ -162,7 +162,7 @@ mod tests {
     use super::*;
     use crate::engine::{Engine, Request};
     use std::os::unix::fs::PermissionsExt;
-    use takio::paths::LibraryPaths;
+    use takio::library::paths::LibraryPaths;
 
     struct Fixture {
         root: tempfile::TempDir,
@@ -185,7 +185,7 @@ mod tests {
                 .import(
                     &source,
                     Some("Preparation fixture"),
-                    takio::model::ImportMode::Copy,
+                    takio::library::model::ImportMode::Copy,
                 )
                 .unwrap();
             let path = root.path().join("ebook-convert");
@@ -349,7 +349,7 @@ mod tests {
         fs::write(&source, b"plain text").unwrap();
         let item = f
             .store
-            .import(&source, None, takio::model::ImportMode::Copy)
+            .import(&source, None, takio::library::model::ImportMode::Copy)
             .unwrap();
         assert_eq!(
             preview_with_backend(&f.store, &item.id, f.backend.clone())
@@ -408,7 +408,11 @@ mod tests {
         let existing = f.root.path().join("existing.azw3");
         fs::write(&existing, b"keep existing AZW3").unwrap();
         f.store
-            .attach_format(&f.item.id, &existing, takio::model::Provenance::Managed)
+            .attach_format(
+                &f.item.id,
+                &existing,
+                takio::library::model::Provenance::Managed,
+            )
             .unwrap();
         let before = snapshot(f.root.path());
         assert_eq!(f.prepare(&review).unwrap_err().code(), "format-exists");

@@ -14,23 +14,26 @@ use std::thread;
 pub use crate::library_location::OpenedLibrary;
 use crate::preparation::{self, PreparationPreview};
 use takio::conversion::BackendDiscovery;
-use takio::destinations::{self, DeliveryResult, Destination, DestinationKind};
+use takio::delivery::destinations::{self, DeliveryResult, Destination, DestinationKind};
+#[cfg(test)]
+use takio::error::AppError;
+use takio::error::AppResult;
 #[cfg(test)]
 use takio::format::FormatId;
-use takio::import_scan::{ImportScan, scan_imports};
-use takio::model::{LibraryItem, LibraryPatch};
-#[cfg(test)]
-use takio::output::AppError;
-use takio::output::AppResult;
-use takio::paths::LibraryPaths;
-use takio::store::{BackupReport, LibraryStore, RestoreReport};
+use takio::import::scan::{ImportScan, scan_imports};
+use takio::library::model::{LibraryItem, LibraryPatch};
+use takio::library::paths::LibraryPaths;
+use takio::library::store::{BackupReport, LibraryStore, RestoreReport};
 
-pub type ReaderShelves = Vec<(Destination, AppResult<takio::reader_shelf::ReaderShelf>)>;
+pub type ReaderShelves = Vec<(
+    Destination,
+    AppResult<takio::delivery::reader_shelf::ReaderShelf>,
+)>;
 
 struct ReaderScanJob {
     root: PathBuf,
     destinations: Vec<Destination>,
-    fingerprints: Vec<takio::store::ActiveFingerprint>,
+    fingerprints: Vec<takio::library::store::ActiveFingerprint>,
     current: Arc<AtomicBool>,
     reply: Sender<AppResult<ReaderShelves>>,
 }
@@ -53,13 +56,13 @@ impl ReaderScanWorker {
             // Bind cache reads/writes to the captured library, even after a switch.
             // A first scan still reads candidate bytes in full. This only removes
             // slow USB I/O from the serial catalogue request queue.
-            let mut hashes = takio::reader_shelf::HashCache::load(&job.root);
+            let mut hashes = takio::delivery::reader_shelf::HashCache::load(&job.root);
             let shelves = job
                 .destinations
                 .into_iter()
                 .take_while(|_| job.current.load(Ordering::Acquire))
                 .map(|destination| {
-                    let shelf = takio::reader_shelf::scan_cached(
+                    let shelf = takio::delivery::reader_shelf::scan_cached(
                         &destination,
                         &job.fingerprints,
                         &mut hashes,
@@ -146,9 +149,11 @@ impl Drop for ReaderScanWorker {
     }
 }
 
-pub use takio::library_query::{Facets, Filters};
+#[cfg(test)]
+use takio::library::query::Facets;
+use takio::library::query::Filters;
 
-pub use takio::model::ImportMode;
+use takio::library::model::ImportMode;
 
 /// Larger batches are rejected before any destination is modified.
 pub const MAX_SEND_ITEMS: usize = 256;
@@ -168,7 +173,7 @@ pub struct SendPreviewEntry {
     pub result: AppResult<ReadyFile>,
 }
 
-pub use takio::delivery::ReadyFile;
+use takio::delivery::ReadyFile;
 
 impl SendPreview {
     #[cfg(test)]
@@ -204,7 +209,7 @@ pub struct SendEntry {
 }
 
 /// Every requested mutation is attempted, with committed results retained in order.
-pub type MutationReport = Vec<(String, AppResult<takio::store::MutationResult>)>;
+pub type MutationReport = Vec<(String, AppResult<takio::library::store::MutationResult>)>;
 
 /// Everything the UI can ask the engine to do.
 pub enum Request {
@@ -470,7 +475,7 @@ fn worker_with_reader_scans(
                     &mut store,
                     &roots,
                     mode,
-                    takio::import_scan::ImportObservation::Untracked,
+                    takio::import::scan::ImportObservation::Untracked,
                     || false,
                 );
                 let _ = reply.send(result);
@@ -512,14 +517,14 @@ fn worker_with_reader_scans(
                 }
             },
             Request::ImportFromReader { destination, reply } => {
-                let mut reader_hashes = takio::reader_shelf::HashCache::default();
+                let mut reader_hashes = takio::delivery::reader_shelf::HashCache::default();
                 let result = destination
                     .path
                     .parent()
                     .ok_or_else(|| takio::app_error!("unknown-destination"))
                     .and_then(|root| destinations::authorize(&destination.path, root))
                     .and_then(|destination| {
-                        takio::reader_shelf::import_unmatched(
+                        takio::delivery::reader_shelf::import_unmatched(
                             &mut store,
                             &destination,
                             &mut reader_hashes,
@@ -559,7 +564,7 @@ fn worker_with_reader_scans(
 
 fn each(
     ids: &[String],
-    mut op: impl FnMut(&str) -> AppResult<takio::store::MutationResult>,
+    mut op: impl FnMut(&str) -> AppResult<takio::library::store::MutationResult>,
 ) -> MutationReport {
     ids.iter().map(|id| (id.clone(), op(id))).collect()
 }
@@ -1000,7 +1005,11 @@ mod tests {
             let source = temp.path().join(format!("attachment.{extension}"));
             fs::write(&source, extension).unwrap();
             store
-                .attach_format(&item.id, &source, takio::model::Provenance::Managed)
+                .attach_format(
+                    &item.id,
+                    &source,
+                    takio::library::model::Provenance::Managed,
+                )
                 .unwrap();
         }
         assert_eq!(
@@ -1179,7 +1188,11 @@ mod tests {
             let mobi = temp.path().join("reviewed.mobi");
             fs::write(&mobi, b"reviewed mobi").unwrap();
             store
-                .attach_format(&item.id, &mobi, takio::model::Provenance::Referenced)
+                .attach_format(
+                    &item.id,
+                    &mobi,
+                    takio::library::model::Provenance::Referenced,
+                )
                 .unwrap();
             let preview =
                 preview_send(&store, &destination, std::slice::from_ref(&item.id)).unwrap();
@@ -1195,7 +1208,7 @@ mod tests {
                     let azw3 = temp.path().join("preferred.azw3");
                     fs::write(&azw3, b"new preferred attachment").unwrap();
                     store
-                        .attach_format(&item.id, &azw3, takio::model::Provenance::Managed)
+                        .attach_format(&item.id, &azw3, takio::library::model::Provenance::Managed)
                         .unwrap();
                 }
                 "source-path" => {
@@ -1203,7 +1216,11 @@ mod tests {
                     let replacement = temp.path().join("replacement.mobi");
                     fs::write(&replacement, b"replacement attachment").unwrap();
                     store
-                        .attach_format(&item.id, &replacement, takio::model::Provenance::Referenced)
+                        .attach_format(
+                            &item.id,
+                            &replacement,
+                            takio::library::model::Provenance::Referenced,
+                        )
                         .unwrap();
                 }
                 _ => unreachable!(),
@@ -1284,7 +1301,11 @@ mod tests {
             let source = temp.path().join(format!("Preferred.{extension}"));
             fs::write(&source, extension).unwrap();
             store
-                .attach_format(&item.id, &source, takio::model::Provenance::Managed)
+                .attach_format(
+                    &item.id,
+                    &source,
+                    takio::library::model::Provenance::Managed,
+                )
                 .unwrap();
         }
         let result = preview_and_send_one(&store, &destination, &item.id).unwrap();
@@ -1437,7 +1458,7 @@ mod tests {
             .request(|reply| Request::Update {
                 id: item.id.clone(),
                 patch: LibraryPatch {
-                    title: takio::model::Patch::Set("After".into()),
+                    title: takio::library::model::Patch::Set("After".into()),
                     ..LibraryPatch::default()
                 },
                 reply,

@@ -13,15 +13,15 @@ use std::sync::mpsc::Receiver;
 use std::time::Duration;
 
 use gpui::{Context, Entity, Task};
-use takio::destinations::Destination;
-use takio::import_scan::ImportOutcome;
-use takio::model::{LibraryItem, LibraryPatch};
-use takio::output::{AppError, AppResult};
+use takio::delivery::destinations::Destination;
+use takio::error::{AppError, AppResult};
+use takio::import::scan::ImportOutcome;
+use takio::library::model::{LibraryItem, LibraryPatch};
 
-use crate::engine::{
-    Engine, Facets, Filters, ImportMode, Request, SendPreview, SendPreviewEntry, SendReport,
-};
+use crate::engine::{Engine, Request, SendPreview, SendPreviewEntry, SendReport};
 use crate::preparation::PreparationPreview;
+use takio::library::model::ImportMode;
+use takio::library::query::{Facets, Filters};
 
 mod library;
 
@@ -624,7 +624,7 @@ impl LibraryState {
 
     fn finish_import(
         &mut self,
-        receiver: Receiver<AppResult<takio::import_scan::ImportScan>>,
+        receiver: Receiver<AppResult<takio::import::scan::ImportScan>>,
         cx: &mut Context<Self>,
     ) {
         self.await_reply(receiver, cx, |this, result, cx| {
@@ -948,7 +948,7 @@ impl LibraryState {
             .filter(|destination| {
                 !matches!(
                     destination.kind,
-                    takio::destinations::DestinationKind::Generic
+                    takio::delivery::destinations::DestinationKind::Generic
                 )
             })
             .cloned()
@@ -1493,7 +1493,7 @@ fn build_snapshot(mut items: Vec<Arc<LibraryItem>>, sort: Sort) -> LibrarySnapsh
 }
 
 fn sort_items(items: &mut [Arc<LibraryItem>], sort: Sort) {
-    use takio::library_query::{SortField, sort_key};
+    use takio::library::query::{SortField, sort_key};
     let field = match sort.column {
         SortColumn::Title => SortField::Title,
         SortColumn::Author => SortField::Author,
@@ -1519,7 +1519,7 @@ mod tests {
     use gpui::{AppContext, TestAppContext};
     use std::fs;
     use std::path::Path;
-    use takio::paths::LibraryPaths;
+    use takio::library::paths::LibraryPaths;
 
     mod automatic_backup;
     mod library;
@@ -1626,7 +1626,7 @@ mod tests {
                 id: "unused".into(),
                 name: "unused".into(),
                 path: "/unused".into(),
-                kind: takio::destinations::DestinationKind::Generic,
+                kind: takio::delivery::destinations::DestinationKind::Generic,
                 features: Vec::new(),
             };
             let activities = [
@@ -1851,7 +1851,7 @@ mod tests {
             .request(|reply| Request::Update {
                 id: initial.id.clone(),
                 patch: LibraryPatch {
-                    title: takio::model::Patch::Set("Alpha revised".into()),
+                    title: takio::library::model::Patch::Set("Alpha revised".into()),
                     ..LibraryPatch::default()
                 },
                 reply,
@@ -1875,11 +1875,11 @@ mod tests {
         let mut first = f.state.read_with(cx, |s, _| (*s.items[0]).clone());
         first.author = Some("Legacy".into());
         first.authors = vec![
-            takio::model::BookAuthor {
+            takio::library::model::BookAuthor {
                 name: "Same".into(),
                 sort_name: None,
             },
-            takio::model::BookAuthor {
+            takio::library::model::BookAuthor {
                 name: "Zulu".into(),
                 sort_name: None,
             },
@@ -2364,7 +2364,7 @@ mod tests {
         let mount = volumes.join("Kindle");
         fs::create_dir_all(mount.join("documents")).unwrap();
         fs::create_dir_all(mount.join("system")).unwrap();
-        let destination = takio::destinations::authorize(&mount, &volumes).unwrap();
+        let destination = takio::delivery::destinations::authorize(&mount, &volumes).unwrap();
         fs::remove_dir_all(&mount).unwrap();
         f.state.update(cx, |s, cx| {
             s.select_only(0, cx);
@@ -2430,7 +2430,7 @@ mod tests {
             state.update_metadata(
                 state.session.items[0].id.clone(),
                 LibraryPatch {
-                    title: takio::model::Patch::Set("Never saved".into()),
+                    title: takio::library::model::Patch::Set("Never saved".into()),
                     ..LibraryPatch::default()
                 },
                 cx,
@@ -2468,7 +2468,7 @@ mod tests {
 
     #[gpui::test]
     fn metadata_persists_and_reconciles_selection_after_sort(cx: &mut TestAppContext) {
-        use takio::model::Patch;
+        use takio::library::model::Patch;
         let f = fixture(cx);
         f.state.update(cx, |s, cx| s.select_only(0, cx));
         let id = f.state.read_with(cx, |s, _| s.selected_ids()[0].clone());
@@ -2574,7 +2574,7 @@ mod tests {
             for directory in ["documents", "system", "koreader"] {
                 fs::create_dir_all(mount.join(directory)).unwrap();
             }
-            let destination = takio::destinations::authorize(&mount, &volumes).unwrap();
+            let destination = takio::delivery::destinations::authorize(&mount, &volumes).unwrap();
             f.state.update(cx, |s, cx| {
                 s.select_all(cx);
                 s.send_selected_to(destination, cx);
@@ -2614,7 +2614,7 @@ mod tests {
         for directory in ["documents", "system", "koreader"] {
             fs::create_dir_all(mount.join(directory)).unwrap();
         }
-        let destination = takio::destinations::authorize(&mount, &volumes).unwrap();
+        let destination = takio::delivery::destinations::authorize(&mount, &volumes).unwrap();
         f.state.update(cx, |s, cx| {
             s.select_all(cx);
             s.send_selected_to(destination.clone(), cx);
@@ -2650,7 +2650,7 @@ mod tests {
         let device = volumes.join("Kindle");
         fs::create_dir_all(device.join("documents")).unwrap();
         fs::create_dir_all(device.join("system")).unwrap();
-        let destination = takio::destinations::authorize(&device, &volumes).unwrap();
+        let destination = takio::delivery::destinations::authorize(&device, &volumes).unwrap();
         f.state.update(cx, |s, cx| {
             s.select_all(cx);
             s.send_selected_to(destination.clone(), cx);
@@ -2695,11 +2695,11 @@ mod tests {
                     .contains("1 to Kindle, 0 failed, 3 not sent")
             );
         });
-        let inventory = takio::destinations::inventory(&destination).unwrap();
+        let inventory = takio::delivery::destinations::inventory(&destination).unwrap();
         assert_eq!(inventory.len(), 1);
         assert_eq!(
             inventory[0].status,
-            takio::destinations::InventoryStatus::Present
+            takio::delivery::destinations::InventoryStatus::Present
         );
         assert!(pdf.exists());
     }

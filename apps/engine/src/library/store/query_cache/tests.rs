@@ -1,6 +1,6 @@
 use super::*;
-use crate::model::{LibraryPatch, Patch};
-use crate::paths::LibraryPaths;
+use crate::library::model::{LibraryPatch, Patch};
+use crate::library::paths::LibraryPaths;
 use rusqlite::Connection;
 use std::path::PathBuf;
 
@@ -18,7 +18,7 @@ fn fixture(count: usize) -> (tempfile::TempDir, LibraryStore) {
     let temp = tempfile::tempdir().unwrap();
     let paths = LibraryPaths::resolve(None, Some(&temp.path().join("library.sqlite"))).unwrap();
     let mut store = LibraryStore::create_or_migrate(paths).unwrap();
-    crate::store::tests::seed_hydration_books(&mut store, count);
+    crate::library::store::tests::seed_hydration_books(&mut store, count);
     (temp, store)
 }
 

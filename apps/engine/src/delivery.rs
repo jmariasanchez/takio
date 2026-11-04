@@ -7,10 +7,10 @@ pub mod reader_shelf;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-use crate::destinations::{DeliveryResult, Destination, DestinationKind};
+use crate::delivery::destinations::{DeliveryResult, Destination, DestinationKind};
+use crate::error::AppResult;
 use crate::format::FormatId;
-use crate::output::AppResult;
-use crate::store::LibraryStore;
+use crate::library::store::LibraryStore;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReadyFile {

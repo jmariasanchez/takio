@@ -10,9 +10,10 @@ use serde::Serialize;
 use tempfile::Builder;
 use uuid::Uuid;
 
-use crate::conversion::{FormatId, detect_format, discover_ebook_convert};
-use crate::executable_discovery::discover_executable;
-use crate::output::{AppError, AppResult};
+use crate::conversion::discover_ebook_convert;
+use crate::conversion::executable_discovery::discover_executable;
+use crate::error::{AppError, AppResult};
+use crate::format::{FormatId, detect_format};
 
 pub const POLISH_OPERATIONS: [&str; 8] = [
     "embed-fonts",

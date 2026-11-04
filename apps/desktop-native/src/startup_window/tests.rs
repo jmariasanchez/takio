@@ -1,7 +1,7 @@
 use super::*;
 use gpui::{TestAppContext, WindowHandle};
 use std::fs;
-use takio::store::LibraryStore;
+use takio::library::store::LibraryStore;
 
 struct Fixture {
     _temp: tempfile::TempDir,
@@ -75,7 +75,7 @@ fn backup(f: &Fixture) -> PathBuf {
         .import(
             &source,
             Some("Recovered title"),
-            takio::model::ImportMode::Copy,
+            takio::library::model::ImportMode::Copy,
         )
         .unwrap();
     let backup = f._temp.path().join("backup");

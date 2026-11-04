@@ -1,5 +1,5 @@
 use super::*;
-use takio::paths::LibraryPaths;
+use takio::library::paths::LibraryPaths;
 
 fn fixture() -> (tempfile::TempDir, LibraryStore, PathBuf, String) {
     let temp = tempfile::tempdir().unwrap();
@@ -12,7 +12,7 @@ fn fixture() -> (tempfile::TempDir, LibraryStore, PathBuf, String) {
         .import(
             &source,
             Some("Preserved book"),
-            takio::model::ImportMode::Copy,
+            takio::library::model::ImportMode::Copy,
         )
         .unwrap();
     let parent = temp.path().join("external-drive");

@@ -5,7 +5,7 @@ use gpui::{
     ScrollStrategy, SharedString, Styled, UniformListScrollHandle, Window, div, prelude::*, px,
     uniform_list,
 };
-use takio::model::LibraryItem;
+use takio::library::model::LibraryItem;
 
 use crate::state::{LibraryEntity, SortColumn, author_label};
 use crate::theme::{Theme, metrics};

@@ -2,15 +2,15 @@ use std::fs;
 
 use assert_cmd::cargo::cargo_bin_cmd;
 use serde_json::{Value, json};
-use takio::library_query::Facets;
-use takio::model::{BookAuthor, LibraryPatch, Patch};
-use takio::paths::LibraryPaths;
-use takio::store::LibraryStore;
+use takio::library::model::{BookAuthor, LibraryPatch, Patch};
+use takio::library::paths::LibraryPaths;
+use takio::library::query::Facets;
+use takio::library::store::LibraryStore;
 
 #[test]
 fn typed_metadata_candidate_applies_only_reviewed_fields() {
     use std::collections::BTreeSet;
-    use takio::metadata_candidates::{
+    use takio::metadata::candidates::{
         CandidateSelection, apply_prepared_metadata_candidate, filename_candidates,
         prepare_metadata_candidate,
     };
@@ -24,7 +24,7 @@ fn typed_metadata_candidate_applies_only_reviewed_fields() {
         .import(
             &source,
             Some("Original Title"),
-            takio::model::ImportMode::Copy,
+            takio::library::model::ImportMode::Copy,
         )
         .unwrap();
     let candidate = filename_candidates(&source, Some(&item.id), &[])
@@ -71,13 +71,17 @@ fn cli_send_rejects_trash_and_matches_shared_preview_choice() {
     let source = temp.path().join("book.azw3");
     fs::write(&source, b"compatible fixture").unwrap();
     let item = store
-        .import(&source, Some("Title"), takio::model::ImportMode::Copy)
+        .import(
+            &source,
+            Some("Title"),
+            takio::library::model::ImportMode::Copy,
+        )
         .unwrap();
     let volumes = temp.path().join("Volumes");
     let reader = volumes.join("Kindle");
     fs::create_dir_all(reader.join("documents")).unwrap();
     fs::create_dir_all(reader.join("system")).unwrap();
-    let destination = takio::destinations::resolve(&reader, &volumes).unwrap();
+    let destination = takio::delivery::destinations::resolve(&reader, &volumes).unwrap();
     let plan = takio::delivery::plan_send(&store, &destination, &item.id, None).unwrap();
     let send = || {
         cargo_bin_cmd!("takio")
@@ -121,12 +125,12 @@ fn cli_and_shared_plan_reject_automatic_unknown_reader_format() {
     let source = temp.path().join("book.epub");
     fs::write(&source, b"epub fixture").unwrap();
     let item = store
-        .import(&source, None, takio::model::ImportMode::Copy)
+        .import(&source, None, takio::library::model::ImportMode::Copy)
         .unwrap();
     let volumes = temp.path().join("Volumes");
     let reader = volumes.join("Unknown");
     fs::create_dir_all(&reader).unwrap();
-    let destination = takio::destinations::resolve(&reader, &volumes).unwrap();
+    let destination = takio::delivery::destinations::resolve(&reader, &volumes).unwrap();
     assert_eq!(
         takio::delivery::plan_send(&store, &destination, &item.id, None)
             .unwrap_err()
@@ -157,7 +161,7 @@ fn cli_query_and_native_facets_share_mixed_author_counts() {
         let source = temp.path().join(format!("source-{index}.txt"));
         fs::write(&source, format!("book {index}")).unwrap();
         let item = store
-            .import(&source, None, takio::model::ImportMode::Copy)
+            .import(&source, None, takio::library::model::ImportMode::Copy)
             .unwrap();
         let patch = if structured {
             LibraryPatch {
@@ -207,7 +211,7 @@ fn cli_query_does_not_rewrite_unicode_filter_values() {
     let source = temp.path().join("book.txt");
     fs::write(&source, b"book").unwrap();
     let item = store
-        .import(&source, None, takio::model::ImportMode::Copy)
+        .import(&source, None, takio::library::model::ImportMode::Copy)
         .unwrap();
     let author = "\u{00c5}uthor";
     store
@@ -219,7 +223,7 @@ fn cli_query_does_not_rewrite_unicode_filter_values() {
             },
         )
         .unwrap();
-    let filters = takio::library_query::Filters {
+    let filters = takio::library::query::Filters {
         authors: vec![author.into()],
         ..Default::default()
     };

@@ -1,7 +1,7 @@
 use super::scan::MAX_SAFE_INTEGER;
 use super::*;
-use crate::model::{BookAuthor, LibraryPatch, Patch, Provenance};
-use crate::paths::LibraryPaths;
+use crate::library::model::{BookAuthor, LibraryPatch, Patch, Provenance};
+use crate::library::paths::LibraryPaths;
 use std::collections::BTreeMap;
 
 #[test]
@@ -16,7 +16,7 @@ fn duplicate_scan_matches_legacy_author_names() {
             .import(
                 &source,
                 Some("Shared title"),
-                crate::model::ImportMode::Copy,
+                crate::library::model::ImportMode::Copy,
             )
             .unwrap();
     }
@@ -51,10 +51,18 @@ fn duplicate_reviews_are_stable_idempotent_and_reject_stale_evidence() {
     fs::write(&right_path, b"right duplicate bytes").unwrap();
     let mut store = LibraryStore::create_or_migrate(paths).unwrap();
     let left = store
-        .import(&left_path, Some("Dune"), crate::model::ImportMode::Copy)
+        .import(
+            &left_path,
+            Some("Dune"),
+            crate::library::model::ImportMode::Copy,
+        )
         .unwrap();
     let right = store
-        .import(&right_path, Some(" dune "), crate::model::ImportMode::Copy)
+        .import(
+            &right_path,
+            Some(" dune "),
+            crate::library::model::ImportMode::Copy,
+        )
         .unwrap();
     for id in [&left.id, &right.id] {
         store
@@ -132,10 +140,18 @@ fn duplicate_merge_rolls_back_and_purge_preserves_transferred_owned_files() {
     fs::write(&source_cover, b"source cover").unwrap();
     let mut store = LibraryStore::create_or_migrate(paths).unwrap();
     let target = store
-        .import(&target_path, Some("Target"), crate::model::ImportMode::Copy)
+        .import(
+            &target_path,
+            Some("Target"),
+            crate::library::model::ImportMode::Copy,
+        )
         .unwrap();
     let source = store
-        .import(&source_path, Some("Source"), crate::model::ImportMode::Copy)
+        .import(
+            &source_path,
+            Some("Source"),
+            crate::library::model::ImportMode::Copy,
+        )
         .unwrap();
     for id in [&target.id, &source.id] {
         store
@@ -219,10 +235,18 @@ fn duplicate_merge_rolls_back_when_result_hydration_fails() {
     fs::write(&source_path, b"source").unwrap();
     let mut store = LibraryStore::create_or_migrate(paths).unwrap();
     let target = store
-        .import(&target_path, Some("Target"), crate::model::ImportMode::Copy)
+        .import(
+            &target_path,
+            Some("Target"),
+            crate::library::model::ImportMode::Copy,
+        )
         .unwrap();
     let source = store
-        .import(&source_path, Some("Source"), crate::model::ImportMode::Copy)
+        .import(
+            &source_path,
+            Some("Source"),
+            crate::library::model::ImportMode::Copy,
+        )
         .unwrap();
     for id in [&target.id, &source.id] {
         store
@@ -286,10 +310,18 @@ fn shared_merged_formats_survive_target_remove_and_replace() {
     fs::write(&source_pdf, b"shared pdf").unwrap();
     let mut store = LibraryStore::create_or_migrate(paths).unwrap();
     let target = store
-        .import(&target_path, Some("Target"), crate::model::ImportMode::Copy)
+        .import(
+            &target_path,
+            Some("Target"),
+            crate::library::model::ImportMode::Copy,
+        )
         .unwrap();
     let source = store
-        .import(&source_path, Some("Source"), crate::model::ImportMode::Copy)
+        .import(
+            &source_path,
+            Some("Source"),
+            crate::library::model::ImportMode::Copy,
+        )
         .unwrap();
     for id in [&target.id, &source.id] {
         store
@@ -360,7 +392,7 @@ fn shared_merged_formats_survive_target_remove_and_replace() {
         .replace_format(
             &target.id,
             FormatId::Pdf,
-            &crate::store::ExpectedFormatSnapshot::from(&current),
+            &crate::library::store::ExpectedFormatSnapshot::from(&current),
             &replacement,
             Provenance::Managed,
         )
@@ -378,10 +410,18 @@ fn duplicate_signals_use_javascript_string_order_and_safe_numbers() {
     fs::write(&right_path, b"right").unwrap();
     let mut store = LibraryStore::create_or_migrate(paths).unwrap();
     let left = store
-        .import(&left_path, Some("Left"), crate::model::ImportMode::Copy)
+        .import(
+            &left_path,
+            Some("Left"),
+            crate::library::model::ImportMode::Copy,
+        )
         .unwrap();
     let right = store
-        .import(&right_path, Some("Right"), crate::model::ImportMode::Copy)
+        .import(
+            &right_path,
+            Some("Right"),
+            crate::library::model::ImportMode::Copy,
+        )
         .unwrap();
     let identifiers = BTreeMap::from([
         ("\u{1f600}".to_owned(), "shared-emoji".to_owned()),
@@ -443,10 +483,18 @@ fn duplicate_merge_rejects_empty_contract_arrays() {
     fs::write(&right_path, b"right").unwrap();
     let mut store = LibraryStore::create_or_migrate(paths).unwrap();
     let left = store
-        .import(&left_path, Some("Shared"), crate::model::ImportMode::Copy)
+        .import(
+            &left_path,
+            Some("Shared"),
+            crate::library::model::ImportMode::Copy,
+        )
         .unwrap();
     let right = store
-        .import(&right_path, Some("Shared"), crate::model::ImportMode::Copy)
+        .import(
+            &right_path,
+            Some("Shared"),
+            crate::library::model::ImportMode::Copy,
+        )
         .unwrap();
     for id in [&left.id, &right.id] {
         store

@@ -6,8 +6,9 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::conversion::{Artifact, ConversionProfile, FormatId, convert, detect_format};
+use crate::conversion::{Artifact, ConversionProfile, convert};
 use crate::error::{AppError, AppResult};
+use crate::format::{FormatId, detect_format};
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]

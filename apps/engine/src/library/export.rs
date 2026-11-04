@@ -6,10 +6,10 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use unicode_normalization::UnicodeNormalization;
 
+use crate::error::AppResult;
 use crate::format::FormatId;
-use crate::model::LibraryItem;
-use crate::output::AppResult;
-use crate::store::LibraryStore;
+use crate::library::model::LibraryItem;
+use crate::library::store::LibraryStore;
 
 #[derive(Clone, Copy, Default, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -46,7 +46,7 @@ pub struct ExportOutcome {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub format: Option<FormatId>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub provenance: Option<crate::model::Provenance>,
+    pub provenance: Option<crate::library::model::Provenance>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub destination_path: Option<PathBuf>,
     #[serde(flatten)]
@@ -209,7 +209,7 @@ fn path_segment(value: &str, fallback: &str) -> String {
 }
 
 fn file_name(title: &str, author: Option<&str>, item_id: &str, extension: &str) -> String {
-    let base = crate::destinations::destination_file_name(title, author, extension);
+    let base = crate::delivery::destinations::destination_file_name(title, author, extension);
     let stem = base.strip_suffix(&format!(".{extension}")).unwrap_or(&base);
     let identity = format!("{:x}", Sha256::digest(item_id.as_bytes()));
     let suffix = format!(" [{identity}].{extension}");

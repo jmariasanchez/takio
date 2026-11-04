@@ -56,7 +56,7 @@ fn automatic_backup_state_opt_in_roundtrip_disable_and_daily_clock(cx: &mut Test
         s.restore_backup_copy(backup, restored.clone(), cx)
     });
     settle(&f.state, cx);
-    let recovered = takio::store::LibraryStore::open_read_only(
+    let recovered = takio::library::store::LibraryStore::open_read_only(
         LibraryPaths::resolve(None, Some(&restored.join("library.sqlite"))).unwrap(),
     )
     .unwrap();

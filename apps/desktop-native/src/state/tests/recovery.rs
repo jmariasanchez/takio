@@ -17,7 +17,7 @@ fn recovery_round_trip_keeps_whole_catalogue_trash_and_originals(cx: &mut TestAp
         s.update_metadata(
             books[0].id.clone(),
             LibraryPatch {
-                tags: takio::model::Patch::Set(vec!["Keep this tag".into()]),
+                tags: takio::library::model::Patch::Set(vec!["Keep this tag".into()]),
                 ..Default::default()
             },
             cx,
@@ -54,7 +54,7 @@ fn recovery_round_trip_keeps_whole_catalogue_trash_and_originals(cx: &mut TestAp
         assert_eq!(outcome.path, restored.canonicalize().unwrap());
     });
     let paths = LibraryPaths::resolve(None, Some(&restored.join("library.sqlite"))).unwrap();
-    let store = takio::store::LibraryStore::open_read_only(paths).unwrap();
+    let store = takio::library::store::LibraryStore::open_read_only(paths).unwrap();
     let report = store.verify().unwrap();
     assert_eq!(
         (
@@ -130,7 +130,7 @@ fn recovery_blocks_overlap_and_close_until_reply(cx: &mut TestAppContext) {
         let reader = volumes.join("Kindle");
         fs::create_dir_all(reader.join("documents")).unwrap();
         fs::create_dir_all(reader.join("system")).unwrap();
-        let reader = takio::destinations::authorize(&reader, &volumes).unwrap();
+        let reader = takio::delivery::destinations::authorize(&reader, &volumes).unwrap();
         f.state.update(cx, |s, cx| {
             s.select_only(0, cx);
             if restore {
@@ -196,7 +196,7 @@ fn recovery_rejects_corrupt_managed_bytes_without_false_success(cx: &mut TestApp
         .update(cx, |s, cx| s.back_up_library(backup.clone(), cx));
     settle(&f.state, cx);
     let paths = LibraryPaths::resolve(None, Some(&backup.join("library.sqlite"))).unwrap();
-    let store = takio::store::LibraryStore::open_read_only(paths).unwrap();
+    let store = takio::library::store::LibraryStore::open_read_only(paths).unwrap();
     let path = store.list(false).unwrap()[0].source_path.clone();
     drop(store);
     fs::write(&path, b"corrupted").unwrap();

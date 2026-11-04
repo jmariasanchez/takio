@@ -5,7 +5,7 @@ use gpui::{
     AppContext, Context, Entity, FocusHandle, IntoElement, ParentElement, PathPromptOptions,
     PromptButton, PromptLevel, Render, Styled, Window, div, prelude::*, px,
 };
-use takio::{output::AppResult, paths::LibraryPaths};
+use takio::{error::AppResult, library::paths::LibraryPaths};
 
 use crate::{
     engine::Engine,

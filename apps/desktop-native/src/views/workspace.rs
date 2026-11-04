@@ -14,7 +14,6 @@ use gpui::{
     PathPromptOptions, PromptButton, PromptLevel, Render, Styled, Window, div, prelude::*, px,
 };
 
-use crate::engine::ImportMode;
 use crate::state::{LibraryEntity, Section, humanize_error};
 use crate::theme::{Theme, metrics};
 use crate::views::library_list::LibraryList;
@@ -23,6 +22,7 @@ use crate::{
     Import, ImportMove, OpenSelected, PurgeSelected, RefreshDevices, RestoreSelected, SelectAll,
     ShowLibrary, ShowTrash, TrashSelected,
 };
+use takio::library::model::ImportMode;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ReaderAction {
@@ -195,7 +195,12 @@ impl Workspace {
         let readers: Vec<_> = state
             .destinations()
             .iter()
-            .filter(|device| !matches!(device.kind, takio::destinations::DestinationKind::Generic))
+            .filter(|device| {
+                !matches!(
+                    device.kind,
+                    takio::delivery::destinations::DestinationKind::Generic
+                )
+            })
             .cloned()
             .collect();
         if readers.is_empty() {

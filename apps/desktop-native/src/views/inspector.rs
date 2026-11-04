@@ -2,7 +2,7 @@
 use std::sync::{Arc, Mutex};
 
 use gpui::{Context, Entity, IntoElement, ObjectFit, Render, Window, div, img, prelude::*, px};
-use takio::model::{LibraryItem, Provenance};
+use takio::library::model::{LibraryItem, Provenance};
 
 use super::metadata_editor::{Closed, MetadataEditor};
 use crate::covers::CoverCache;

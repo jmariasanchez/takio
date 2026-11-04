@@ -159,7 +159,7 @@ fn preparation_review_and_running_conversion_block_overlapping_actions(cx: &mut 
         let mount = volumes.join("Kindle");
         fs::create_dir_all(mount.join("documents")).unwrap();
         fs::create_dir_all(mount.join("system")).unwrap();
-        let destination = takio::destinations::authorize(&mount, &volumes).unwrap();
+        let destination = takio::delivery::destinations::authorize(&mount, &volumes).unwrap();
         f.state.update(cx, |s, cx| {
             s.select_only(0, cx);
             s.session.activity = Activity::ReviewingPreparation(preparation_review(&item, true));

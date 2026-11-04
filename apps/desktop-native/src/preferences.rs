@@ -9,7 +9,7 @@ use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
-use takio::output::{AppError, AppResult};
+use takio::error::{AppError, AppResult};
 
 const MAX_BYTES: usize = 64 * 1024;
 
@@ -20,7 +20,11 @@ pub fn location(
     data_override: bool,
     profile_override: Option<&Path>,
 ) -> Option<PathBuf> {
-    takio::paths::desktop_preference_location(default_root, data_override, profile_override)
+    takio::library::paths::desktop_preference_location(
+        default_root,
+        data_override,
+        profile_override,
+    )
 }
 
 fn validate_root(value: &str) -> AppResult<&Path> {

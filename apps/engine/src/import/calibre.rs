@@ -7,11 +7,11 @@ use rusqlite::{Connection, OpenFlags};
 use serde::Serialize;
 use serde_json::{Value, json};
 
-use crate::conversion::detect_format;
 use crate::error::AppResult;
-use crate::model::{BookAuthor, LibraryPatch, Patch};
-use crate::paths::LibraryPaths;
-use crate::store::LibraryStore;
+use crate::format::detect_format;
+use crate::library::model::{BookAuthor, LibraryPatch, Patch};
+use crate::library::paths::LibraryPaths;
+use crate::library::store::LibraryStore;
 
 const MAX_CUSTOM_FIELDS_PER_BOOK: usize = 64;
 const MAX_CUSTOM_VALUE_BYTES: usize = 16 * 1024;
@@ -128,21 +128,24 @@ pub fn import_calibre_library(paths: LibraryPaths, library_root: &Path) -> AppRe
             continue;
         }
 
-        let mut item = match store.import(&primary.path, None, crate::model::ImportMode::Copy) {
-            Ok(item) => item,
-            Err(error) => {
-                outcomes.push(json!({
-                    "status":"failed",
-                    "sourcePath":primary.path,
-                    "code":import_failure_code(error.code())
-                }));
-                continue;
-            }
-        };
+        let mut item =
+            match store.import(&primary.path, None, crate::library::model::ImportMode::Copy) {
+                Ok(item) => item,
+                Err(error) => {
+                    outcomes.push(json!({
+                        "status":"failed",
+                        "sourcePath":primary.path,
+                        "code":import_failure_code(error.code())
+                    }));
+                    continue;
+                }
+            };
         for extra in &book.formats[1..] {
-            if let Ok(attached) =
-                store.attach_format(&item.id, &extra.path, crate::model::Provenance::Managed)
-            {
+            if let Ok(attached) = store.attach_format(
+                &item.id,
+                &extra.path,
+                crate::library::model::Provenance::Managed,
+            ) {
                 item = attached;
             }
         }
@@ -769,10 +772,12 @@ mod tests {
     #[test]
     fn column_creation_failures_are_reported_and_later_columns_continue() {
         let temp = tempfile::tempdir().unwrap();
-        let paths =
-            crate::paths::LibraryPaths::resolve(None, Some(&temp.path().join("library.sqlite")))
-                .unwrap();
-        let mut store = crate::store::LibraryStore::create_or_migrate(paths).unwrap();
+        let paths = crate::library::paths::LibraryPaths::resolve(
+            None,
+            Some(&temp.path().join("library.sqlite")),
+        )
+        .unwrap();
+        let mut store = crate::library::store::LibraryStore::create_or_migrate(paths).unwrap();
         let warnings = super::import_column_definitions(
             &mut store,
             vec![

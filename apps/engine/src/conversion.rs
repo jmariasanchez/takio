@@ -12,10 +12,8 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::output::{AppError, AppResult};
-
-// Compatibility for embedders. New engine code imports the format module directly.
-pub use crate::format::{FormatId, detect_format};
+use crate::error::{AppError, AppResult};
+use crate::format::{FormatId, detect_format};
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -91,7 +89,7 @@ pub struct Artifact {
 #[must_use]
 pub fn discover_ebook_convert() -> BackendDiscovery {
     backend_discovery(
-        crate::executable_discovery::discover_executable_with_source(
+        crate::conversion::executable_discovery::discover_executable_with_source(
             "TAKIO_EBOOK_CONVERT",
             "ebook-convert",
             "/Applications/calibre.app/Contents/MacOS/ebook-convert",
@@ -106,13 +104,15 @@ fn discover_with_paths(
     bundle: Option<&Path>,
     cwd: Option<&Path>,
 ) -> BackendDiscovery {
-    backend_discovery(crate::executable_discovery::discover_with_paths(
-        override_path,
-        search_path,
-        "ebook-convert",
-        bundle,
-        cwd,
-    ))
+    backend_discovery(
+        crate::conversion::executable_discovery::discover_with_paths(
+            override_path,
+            search_path,
+            "ebook-convert",
+            bundle,
+            cwd,
+        ),
+    )
 }
 
 fn backend_discovery(found: Option<(PathBuf, &'static str)>) -> BackendDiscovery {

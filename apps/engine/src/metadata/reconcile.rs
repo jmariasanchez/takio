@@ -7,9 +7,9 @@ use serde_json::Value;
 use signal_hook::consts::signal::{SIGINT, SIGTERM};
 use signal_hook::iterator::{Handle, Signals};
 
-use crate::model::LibraryItem;
-use crate::output::AppResult;
-use crate::portable_library::valid_item_id;
+use crate::error::AppResult;
+use crate::library::model::LibraryItem;
+use crate::library::store::valid_item_id;
 
 const MAX_RECONCILE_ITEMS: usize = 64;
 
@@ -304,7 +304,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::conversion::FormatId;
+    use crate::format::FormatId;
 
     fn item(id: &str) -> LibraryItem {
         LibraryItem {

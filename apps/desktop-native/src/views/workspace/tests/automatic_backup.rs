@@ -95,8 +95,8 @@ fn native_automatic_backup_enable_reload_mutate_restore_and_disable(cx: &mut Tes
         .engine
         .request(|reply| Request::Update {
             id: f.books[0].id.clone(),
-            patch: takio::model::LibraryPatch {
-                title: takio::model::Patch::Set("Changed after automatic backup".into()),
+            patch: takio::library::model::LibraryPatch {
+                title: takio::library::model::Patch::Set("Changed after automatic backup".into()),
                 ..Default::default()
             },
             reply,

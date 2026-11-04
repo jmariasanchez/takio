@@ -1,7 +1,10 @@
 //! Resolve a remembered library without recreating a missing selected database.
 use crate::{activation::ActivationReport, engine::Engine, preferences};
 use std::path::{Path, PathBuf};
-use takio::{output::AppResult, paths::LibraryPaths, store::LibraryStore};
+use takio::{
+    error::AppResult,
+    library::{paths::LibraryPaths, store::LibraryStore},
+};
 
 pub fn open(
     default: LibraryPaths,
@@ -141,8 +144,9 @@ fn resolved_location(path: &Path) -> std::io::Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::{Filters, Request};
-    use takio::store::LibraryStore;
+    use crate::engine::Request;
+    use takio::library::query::Filters;
+    use takio::library::store::LibraryStore;
 
     #[test]
     fn failed_saved_default_is_never_recreated_or_migrated() {

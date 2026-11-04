@@ -4,12 +4,12 @@ use std::path::{Component, Path, PathBuf};
 
 use serde::Serialize;
 
+use crate::error::AppResult;
 use crate::format::{FormatId, detect_format};
+use crate::library::model::{ImportMode, LibraryItem};
+use crate::library::paths::LibraryPaths;
+use crate::library::store::{ImportWatchObservation, ImportWatchOutcome, LibraryStore};
 use crate::metadata::pdf_page_count;
-use crate::model::{ImportMode, LibraryItem};
-use crate::output::AppResult;
-use crate::paths::LibraryPaths;
-use crate::store::{ImportWatchObservation, ImportWatchOutcome, LibraryStore};
 
 // ponytail: one page threshold, so short papers found in folders are skipped too; choosing a
 // file directly always imports it. Make this a setting if real libraries need another cut.
@@ -424,7 +424,7 @@ fn import_failure_code(code: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::paths::LibraryPaths;
+    use crate::library::paths::LibraryPaths;
 
     fn open_store(root: &Path) -> LibraryStore {
         let paths = LibraryPaths::resolve(None, Some(&root.join("library.sqlite"))).unwrap();

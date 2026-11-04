@@ -7,30 +7,31 @@ use clap::{CommandFactory, Parser, Subcommand};
 use serde::{Deserialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 
-use crate::calibre_import::import_calibre_library;
-use crate::catalog::write_catalog;
-use crate::conversion::{CALIBRE_CAPABILITIES, convert, discover_ebook_convert};
-use crate::destinations::{self, DestinationKind};
-use crate::format::{FormatId, detect_format};
-use crate::import_scan::{ImportCounts, ImportOutcome, scan_imports, validate_import_sources};
-use crate::jobs::{JobStatus, JobStore};
-use crate::kindle_ssh::{self, KindleSshDestination};
-use crate::maintenance::{self, discover_ebook_polish};
-use crate::metadata::{self, discover_ebook_meta, discover_fetch_ebook_metadata};
-use crate::metadata_candidates::{
-    CandidateSelection, apply_prepared_metadata_candidate, filename_candidates,
-    metadata_candidates_for_item_at, metadata_candidates_for_reconcile, prepare_metadata_candidate,
-};
-use crate::metadata_reconcile::{CancellationSignals, ReconcileRequest, reconcile};
-use crate::model::LibraryPatch;
-use crate::output::{AppResult, print_success};
-use crate::paths::{LibraryPaths, absolute};
-use crate::portable_library;
-use crate::reader_shelf;
-use crate::store::{
+use crate::output::print_success;
+use takio::conversion::jobs::{JobStatus, JobStore};
+use takio::conversion::maintenance::{self, discover_ebook_polish};
+use takio::conversion::{CALIBRE_CAPABILITIES, convert, discover_ebook_convert};
+use takio::delivery::destinations::{self, DestinationKind};
+use takio::delivery::kindle_ssh::{self, KindleSshDestination};
+use takio::delivery::reader_shelf;
+use takio::error::AppResult;
+use takio::format::{FormatId, detect_format};
+use takio::import::calibre::import_calibre_library;
+use takio::import::scan::{ImportCounts, ImportOutcome, scan_imports, validate_import_sources};
+use takio::library::catalog::write_catalog;
+use takio::library::model::LibraryPatch;
+use takio::library::paths::{LibraryPaths, absolute};
+use takio::library::portable;
+use takio::library::store::{
     DuplicatePairReviewRequest, LIBRARY_SCHEMA_VERSION, LibraryStore,
     ListDuplicateCandidatesRequest, MergeDuplicatePairRequest, VerifyReport,
 };
+use takio::metadata::candidates::{
+    CandidateSelection, apply_prepared_metadata_candidate, filename_candidates,
+    metadata_candidates_for_item_at, metadata_candidates_for_reconcile, prepare_metadata_candidate,
+};
+use takio::metadata::reconcile::{CancellationSignals, ReconcileRequest, reconcile};
+use takio::metadata::{self, discover_ebook_meta, discover_fetch_ebook_metadata};
 
 #[derive(Parser)]
 #[command(
@@ -1187,7 +1188,7 @@ fn devices(as_json: bool) -> AppResult<()> {
 fn plan(
     input: &Path,
     to: FormatId,
-    profile: crate::conversion::ConversionProfile,
+    profile: takio::conversion::ConversionProfile,
     as_json: bool,
 ) -> AppResult<()> {
     let input = input
@@ -1234,7 +1235,7 @@ fn library(command: LibraryCommand, library: Option<&str>) -> AppResult<()> {
         }
         LibraryCommand::Diagnostics { db, dest } => {
             let paths = LibraryPaths::resolve(library, db.as_deref())?;
-            let report = crate::diagnostics::write_library_diagnostics(&paths, &dest)?;
+            let report = takio::library::diagnostics::write_library_diagnostics(&paths, &dest)?;
             print_success(json!({"diagnostics":report}))
         }
         LibraryCommand::Add {
@@ -1247,7 +1248,7 @@ fn library(command: LibraryCommand, library: Option<&str>) -> AppResult<()> {
             print_success(store.import_with_outcome(
                 &source_path,
                 title.as_deref(),
-                takio::model::ImportMode::Copy,
+                takio::library::model::ImportMode::Copy,
             )?)
         }
         LibraryCommand::Import {
@@ -1257,8 +1258,8 @@ fn library(command: LibraryCommand, library: Option<&str>) -> AppResult<()> {
             mode,
         } => {
             let mode = match mode.as_str() {
-                "copy" => takio::model::ImportMode::Copy,
-                "move" => takio::model::ImportMode::Move,
+                "copy" => takio::library::model::ImportMode::Copy,
+                "move" => takio::library::model::ImportMode::Move,
                 _ => return Err(takio::app_error!("invalid-arguments")),
             };
             let paths = LibraryPaths::resolve(library, db.as_deref())?;
@@ -1380,8 +1381,8 @@ fn library(command: LibraryCommand, library: Option<&str>) -> AppResult<()> {
                 return Err(takio::app_error!("invalid-arguments"));
             }
             let mode = match mode.as_str() {
-                "copy" => takio::model::ImportMode::Copy,
-                "move" => takio::model::ImportMode::Move,
+                "copy" => takio::library::model::ImportMode::Copy,
+                "move" => takio::library::model::ImportMode::Move,
                 _ => return Err(takio::app_error!("invalid-arguments")),
             };
             let paths = LibraryPaths::resolve(library, db.as_deref())?;
@@ -1392,7 +1393,7 @@ fn library(command: LibraryCommand, library: Option<&str>) -> AppResult<()> {
                 &mut store,
                 &source_paths,
                 mode,
-                takio::import_scan::ImportObservation::Untracked,
+                takio::import::scan::ImportObservation::Untracked,
                 || false,
             )?)
         }
@@ -1457,11 +1458,11 @@ fn library(command: LibraryCommand, library: Option<&str>) -> AppResult<()> {
         LibraryCommand::PortableExport { db, dest } => {
             let paths = LibraryPaths::resolve(library, db.as_deref())?;
             let store = LibraryStore::open_read_only(paths)?;
-            print_success(portable_library::export(&store, &dest)?)
+            print_success(portable::export(&store, &dest)?)
         }
         LibraryCommand::Rebuild { db, source } => {
             let paths = LibraryPaths::resolve(library, Some(&db))?;
-            print_success(portable_library::rebuild(&source, paths)?)
+            print_success(portable::rebuild(&source, paths)?)
         }
         LibraryCommand::RestoreBackup { db, source } => {
             let paths = LibraryPaths::resolve(library, db.as_deref())?;
@@ -1527,7 +1528,7 @@ fn library_saved_views(command: SavedViewsCommand, library: Option<&str>) -> App
             print_success(json!({"views":LibraryStore::open_read_only(paths)?.list_saved_views()?}))
         }
         SavedViewsCommand::Save { db, request_json } => {
-            let request: crate::store::SaveViewRequest =
+            let request: takio::library::store::SaveViewRequest =
                 decode_request(&read_json(&request_json)?)?;
             let paths = LibraryPaths::resolve(library, db.as_deref())?;
             print_success(
@@ -1605,7 +1606,7 @@ fn valid_selection(ids: &[String], limit: usize) -> bool {
         && ids.iter().collect::<std::collections::HashSet<_>>().len() == ids.len()
 }
 
-type SelectedLibraryItems = Vec<(String, Option<crate::model::LibraryItem>)>;
+type SelectedLibraryItems = Vec<(String, Option<takio::library::model::LibraryItem>)>;
 
 fn selected_items(
     store: &LibraryStore,
@@ -1766,10 +1767,10 @@ struct FormatSource {
 }
 
 impl FormatSource {
-    fn provenance(&self) -> takio::model::Provenance {
+    fn provenance(&self) -> takio::library::model::Provenance {
         match self.kind {
-            SourceKind::Copy => takio::model::Provenance::Managed,
-            SourceKind::Reference => takio::model::Provenance::Referenced,
+            SourceKind::Copy => takio::library::model::Provenance::Managed,
+            SourceKind::Reference => takio::library::model::Provenance::Referenced,
         }
     }
 }
@@ -1786,7 +1787,7 @@ struct AttachFormatRequest {
 struct ReplaceFormatRequest {
     id: String,
     format: FormatId,
-    expected_current: crate::store::ExpectedFormatSnapshot,
+    expected_current: takio::library::store::ExpectedFormatSnapshot,
     source: FormatSource,
 }
 
@@ -1821,7 +1822,7 @@ fn library_format(command: FormatCommand, library: Option<&str>) -> AppResult<()
             let paths = LibraryPaths::resolve(library, db.as_deref())?;
             let mut store = LibraryStore::create_or_migrate(paths)?;
             print_success(
-                json!({"item":store.attach_format(&id, &source_path, takio::model::Provenance::Managed)?}),
+                json!({"item":store.attach_format(&id, &source_path, takio::library::model::Provenance::Managed)?}),
             )
         }
         FormatCommand::Attach {
@@ -1832,7 +1833,7 @@ fn library_format(command: FormatCommand, library: Option<&str>) -> AppResult<()
             let paths = LibraryPaths::resolve(library, db.as_deref())?;
             let mut store = LibraryStore::create_or_migrate(paths)?;
             print_success(
-                json!({"item":store.attach_format(&id, &source_path, takio::model::Provenance::Referenced)?}),
+                json!({"item":store.attach_format(&id, &source_path, takio::library::model::Provenance::Referenced)?}),
             )
         }
         FormatCommand::Remove { db, id, format } => {
@@ -1949,10 +1950,11 @@ fn library_service(library: Option<&str>, database: Option<&Path>) -> AppResult<
             }
             Err(_) => (String::new(), Err(takio::app_error!("invalid-arguments"))),
         };
-        let response = match result {
-            Ok(value) => json!({"id":id,"ok":true,"value":value}),
-            Err(error) => json!({"id":id,"ok":false,"error":{"code":error.code()}}),
+        let mut response = match result {
+            Ok(value) => crate::output::success(value),
+            Err(error) => crate::output::failure(error.kind()),
         };
+        response["id"] = json!(id);
         writeln!(output, "{response}").map_err(|_| takio::app_error!("terminal-unavailable"))?;
         output
             .flush()
@@ -2126,8 +2128,8 @@ fn import_watch(
         let scan = scan_imports(
             &mut store,
             source_paths,
-            takio::model::ImportMode::Copy,
-            takio::import_scan::ImportObservation::Watch,
+            takio::library::model::ImportMode::Copy,
+            takio::import::scan::ImportObservation::Watch,
             || receiver.try_recv().is_ok(),
         )?;
         cycles += 1;
@@ -2155,12 +2157,15 @@ fn import_watch(
     print_success(json!({"cycles":cycles,"stopped":stopped,"counts":counts}))
 }
 
-fn export_many(store: &LibraryStore, request: &Value) -> AppResult<crate::export::ExportReport> {
-    crate::export::export_many(store, decode_request(request)?)
+fn export_many(
+    store: &LibraryStore,
+    request: &Value,
+) -> AppResult<takio::library::export::ExportReport> {
+    takio::library::export::export_many(store, decode_request(request)?)
 }
 
 fn library_query_value(store: &LibraryStore, request: &Value) -> AppResult<Value> {
-    let result = crate::library_query::query(store, decode_request(request)?)?;
+    let result = takio::library::query::query(store, decode_request(request)?)?;
     serde_json::to_value(result).map_err(|_| takio::app_error!("storage-unavailable"))
 }
 
@@ -2260,8 +2265,8 @@ fn jobs(command: JobsCommand, library: Option<&str>) -> AppResult<()> {
 fn reconcile_job_attachment(
     jobs: &JobStore,
     library: Option<&str>,
-    job: crate::jobs::ConversionJob,
-) -> AppResult<crate::jobs::ConversionJob> {
+    job: takio::conversion::jobs::ConversionJob,
+) -> AppResult<takio::conversion::jobs::ConversionJob> {
     if job.attachment.as_ref().map(|value| value.status.as_str()) != Some("pending") {
         return Ok(job);
     }
@@ -2340,7 +2345,7 @@ fn destination(command: DestinationCommand, library: Option<&str>) -> AppResult<
                 let state = entry
                     .reading
                     .as_ref()
-                    .and_then(crate::koreader::ReadingState::label)
+                    .and_then(takio::delivery::koreader::ReadingState::label)
                     .unwrap_or_default();
                 println!("  {:<40} {:<9} {}", truncate(label, 40), state, entry.path);
             }
@@ -2459,11 +2464,11 @@ fn send(
 ) -> AppResult<()> {
     let store = LibraryStore::open_read_only(paths)?;
     let device = destinations::resolve(dest, volumes_root)?;
-    print_success(crate::delivery::send_library_item(
+    print_success(takio::delivery::send_library_item(
         &store,
         &device,
         id,
-        crate::delivery::DeliveryOptions {
+        takio::delivery::DeliveryOptions {
             format,
             subdir,
             overwrite: if overwrite {
@@ -2518,7 +2523,9 @@ fn reader_relative(device: &destinations::Destination, path: &Path) -> String {
 /// Fingerprints from an existing library, opened read-only so a scan never creates one.
 /// A library that was never created has no books, so every reader file is listed as
 /// not in it rather than failing.
-fn catalogue_fingerprints(paths: LibraryPaths) -> AppResult<Vec<crate::store::ActiveFingerprint>> {
+fn catalogue_fingerprints(
+    paths: LibraryPaths,
+) -> AppResult<Vec<takio::library::store::ActiveFingerprint>> {
     match std::fs::symlink_metadata(&paths.database) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
         _ => LibraryStore::open_read_only(paths)?.active_fingerprints(),
@@ -2527,7 +2534,7 @@ fn catalogue_fingerprints(paths: LibraryPaths) -> AppResult<Vec<crate::store::Ac
 
 fn print_human_list(
     store: &LibraryStore,
-    items: &[crate::model::LibraryItem],
+    items: &[takio::library::model::LibraryItem],
     volumes_root: &Path,
 ) -> AppResult<()> {
     // Only recognizable readers are scanned; a generic USB drive is never walked implicitly.
@@ -2550,7 +2557,7 @@ fn print_human_list(
                 for id in shelf.item_ids() {
                     let state = shelf
                         .reading_for(id)
-                        .and_then(crate::koreader::ReadingState::label);
+                        .and_then(takio::delivery::koreader::ReadingState::label);
                     on_reader
                         .entry(id.to_owned())
                         .or_default()
@@ -2640,7 +2647,7 @@ fn print_human_list(
 /// and the app would silently list different books.
 fn desktop_library_note(paths: &LibraryPaths) -> Option<String> {
     let profile = std::env::var_os("TAKIO_DESKTOP_PROFILE_DIR");
-    let preference = crate::paths::desktop_preference_location(
+    let preference = takio::library::paths::desktop_preference_location(
         &LibraryPaths::resolve(None, None).ok()?.root,
         std::env::var_os("TAKIO_DATA_DIR").is_some(),
         profile.as_deref().map(Path::new),
@@ -2696,13 +2703,13 @@ fn open_path(path: &Path) -> AppResult<()> {
 mod tests {
     #[test]
     fn mixed_legacy_and_structured_authors_count_once() {
-        let mut legacy = crate::catalog::tests::sparse_book();
+        let mut legacy = takio::library::catalog::tests::sparse_book();
         legacy.author = Some("Public author".into());
-        let structured = crate::catalog::tests::rich_book();
+        let structured = takio::library::catalog::tests::rich_book();
         assert_eq!(structured.primary_author(), Some("Public author"));
         assert_eq!(legacy.primary_author(), Some("Public author"));
         assert_eq!(
-            json!(crate::library_query::Facets::from_items(&[
+            json!(takio::library::query::Facets::from_items(&[
                 legacy, structured
             ]))["authors"],
             serde_json::json!([{"value":"Public author","count":2}])
@@ -2820,7 +2827,7 @@ mod tests {
 
     #[test]
     fn catalog_exports_preserve_json_and_csv_schemas() {
-        use crate::catalog::tests::{rich_book, rich_record, sparse_book, sparse_record};
+        use takio::library::catalog::tests::{rich_book, rich_record, sparse_book, sparse_record};
 
         let temp = tempfile::tempdir().unwrap();
         let items = vec![rich_book(), sparse_book()];

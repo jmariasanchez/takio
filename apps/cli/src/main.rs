@@ -1,9 +1,8 @@
 use std::io::Write;
 use std::process::ExitCode;
 
-pub use takio::*;
-
 mod cli;
+mod output;
 mod server;
 mod tui;
 
@@ -15,7 +14,7 @@ fn main() -> ExitCode {
             let _ = writeln!(
                 std::io::stdout().lock(),
                 "{}",
-                takio::output::failure_line(error.code())
+                output::failure_line(error.kind())
             );
             ExitCode::from(u8::try_from(error.exit_code()).unwrap_or(1))
         }

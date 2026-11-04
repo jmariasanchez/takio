@@ -10,12 +10,14 @@ use sha2::{Digest, Sha256};
 use unicode_normalization::UnicodeNormalization;
 use uuid::Uuid;
 
-use crate::conversion::FormatId;
-use crate::model::{BookAuthor, CustomColumnDefinition, LibraryItem, Provenance};
-use crate::output::AppResult;
-use crate::paths::{LibraryPaths, absolute as absolute_nonempty};
-pub(crate) use crate::store::valid_item_id;
-use crate::store::{LibraryStore, METADATA_AUDIT_KEY, VerifyReport, normalize_custom_metadata};
+use crate::error::AppResult;
+use crate::format::FormatId;
+use crate::library::model::{BookAuthor, CustomColumnDefinition, LibraryItem, Provenance};
+use crate::library::paths::{LibraryPaths, absolute as absolute_nonempty};
+use crate::library::store::valid_item_id;
+use crate::library::store::{
+    LibraryStore, METADATA_AUDIT_KEY, VerifyReport, normalize_custom_metadata,
+};
 
 const PORTABLE_FORMAT: &str = "takio-portable-library";
 const PORTABLE_VERSION: u64 = 2;
@@ -265,7 +267,7 @@ fn validate_source(root: &Path) -> AppResult<ParsedSource> {
     if manifest.version == 1 && !manifest.definitions.is_empty() {
         return Err(crate::app_error!("source-invalid"));
     }
-    crate::store::validate_custom_column_definitions(&manifest.definitions)
+    crate::library::store::validate_custom_column_definitions(&manifest.definitions)
         .map_err(|_| crate::app_error!("source-invalid"))?;
     require_exact_entries(root, &["books", "manifest.json"])?;
     let books_root = root.join("books");
@@ -524,12 +526,14 @@ fn parse_book(book_root: &Path, artifacts: &HashSet<String>) -> AppResult<Parsed
         added_at: added_at.clone(),
         formats: formats
             .iter()
-            .map(|(format, path, format_added_at)| crate::model::BookFormat {
-                source_path: path.clone(),
-                format: *format,
-                added_at: format_added_at.clone(),
-                provenance: Provenance::Referenced,
-            })
+            .map(
+                |(format, path, format_added_at)| crate::library::model::BookFormat {
+                    source_path: path.clone(),
+                    format: *format,
+                    added_at: format_added_at.clone(),
+                    provenance: Provenance::Referenced,
+                },
+            )
             .collect(),
         author,
         authors,
@@ -991,7 +995,7 @@ mod tests {
                     source_path: book.join("book.epub"),
                     format: FormatId::Epub,
                     added_at: "2025-01-02T03:04:05Z".to_owned(),
-                    formats: vec![crate::model::BookFormat {
+                    formats: vec![crate::library::model::BookFormat {
                         source_path: book.join("book.epub"),
                         format: FormatId::Epub,
                         added_at: "2025-01-02T03:04:05Z".to_owned(),

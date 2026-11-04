@@ -12,11 +12,11 @@ use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, pa
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::candidate_cover::{self, CandidateCoverDescriptor};
-use crate::conversion::{FormatId, detect_format};
 use crate::error::{AppError, AppResult};
-use crate::model::{BookAuthor, ImportMode, LibraryItem, LibraryPatch, Patch, Provenance};
-use crate::paths::LibraryPaths;
+use crate::format::{FormatId, detect_format};
+use crate::library::model::{BookAuthor, ImportMode, LibraryItem, LibraryPatch, Patch, Provenance};
+use crate::library::paths::LibraryPaths;
+use crate::metadata::candidate_cover::{self, CandidateCoverDescriptor};
 
 mod columns;
 mod contracts;
@@ -436,7 +436,7 @@ impl LibraryStore {
     ) -> AppResult<ImportResult> {
         // Every import path (CLI, TUI, desktop, folder scans) funnels through here, so the
         // owned-path guard lives here rather than in each caller.
-        crate::import_scan::validate_import_sources(&self.paths, &[source.to_path_buf()])?;
+        crate::import::scan::validate_import_sources(&self.paths, &[source.to_path_buf()])?;
         let source = canonical_file(source)?;
         let format =
             detect_format(&source).ok_or_else(|| crate::app_error!("unsupported-format"))?;
@@ -2281,13 +2281,13 @@ mod tests {
         let item = store
             .import(&source, Some("Original title"), ImportMode::Copy)
             .unwrap();
-        let descriptor = crate::candidate_cover::stage(
+        let descriptor = crate::metadata::candidate_cover::stage(
             &store.paths.root,
             &item.id,
             "embedded:cover",
             "embedded",
             "proof",
-            &crate::candidate_cover::CapturedCover {
+            &crate::metadata::candidate_cover::CapturedCover {
                 bytes: vec![0xff, 0xd8, 0xff, 1, 2, 3],
                 media_type: "image/jpeg".to_owned(),
                 extension: ".jpg".to_owned(),
@@ -2323,7 +2323,7 @@ mod tests {
         assert!(unchanged.cover_path.is_none());
         assert_eq!(fs::read_dir(&store.paths.covers).unwrap().count(), 0);
         assert!(
-            crate::candidate_cover::validate(
+            crate::metadata::candidate_cover::validate(
                 &store.paths.root,
                 &item.id,
                 "embedded:cover",
@@ -2346,13 +2346,13 @@ mod tests {
         let item = store
             .import(&source, Some("Original title"), ImportMode::Copy)
             .unwrap();
-        let descriptor = crate::candidate_cover::stage(
+        let descriptor = crate::metadata::candidate_cover::stage(
             &store.paths.root,
             &item.id,
             "embedded:cover",
             "embedded",
             "proof",
-            &crate::candidate_cover::CapturedCover {
+            &crate::metadata::candidate_cover::CapturedCover {
                 bytes: vec![0xff, 0xd8, 0xff, 1, 2, 3],
                 media_type: "image/jpeg".to_owned(),
                 extension: ".jpg".to_owned(),
@@ -2390,7 +2390,7 @@ mod tests {
         assert_eq!(committed.title, "Changed title");
         assert!(committed.cover_path.unwrap().exists());
         assert_eq!(
-            crate::candidate_cover::validate(
+            crate::metadata::candidate_cover::validate(
                 &store.paths.root,
                 &item.id,
                 "embedded:cover",

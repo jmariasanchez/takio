@@ -7,7 +7,7 @@ use rusqlite::{Transaction, params};
 
 use super::as_i64;
 use crate::error::AppResult;
-use crate::model::{BookAuthor, LibraryItem, LibraryPatch, Patch};
+use crate::library::model::{BookAuthor, LibraryItem, LibraryPatch, Patch};
 
 pub const METADATA_AUDIT_KEY: &str = "takio_metadata_audit";
 const MAX_CUSTOM_METADATA_USER_ENTRIES: usize = 64;

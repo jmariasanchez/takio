@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use directories::ProjectDirs;
 
-use crate::output::{AppError, AppResult};
+use crate::error::{AppError, AppResult};
 
 #[derive(Clone, Debug)]
 pub struct LibraryPaths {

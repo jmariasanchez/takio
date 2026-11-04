@@ -1,11 +1,12 @@
 //! Native-window safety checks for confirmation and file-picker boundaries.
 use super::*;
-use crate::engine::{Engine, Filters, Request};
+use crate::engine::{Engine, Request};
 use crate::state::LibraryState;
 use crate::{CancelPreparation, ConfirmPreparation, PrepareSelected};
 use gpui::{AppContext, TestAppContext, WindowHandle};
 use std::{path::PathBuf, time::Duration};
-use takio::{model::LibraryItem, paths::LibraryPaths};
+use takio::library::query::Filters;
+use takio::library::{model::LibraryItem, paths::LibraryPaths};
 
 mod automatic_backup;
 mod library;
@@ -285,13 +286,13 @@ fn native_preparation_confirmation_keeps_captured_book_and_never_sends(cx: &mut 
         assert!(
             book.formats
                 .iter()
-                .any(|format| format.format == takio::conversion::FormatId::Epub)
+                .any(|format| format.format == takio::format::FormatId::Epub)
         );
         if book.id == chosen {
             let output = book
                 .formats
                 .iter()
-                .find(|format| format.format == takio::conversion::FormatId::Azw3)
+                .find(|format| format.format == takio::format::FormatId::Azw3)
                 .unwrap();
             assert_eq!(
                 std::fs::read(&output.source_path).unwrap(),
@@ -510,13 +511,13 @@ fn metadata_editor_saves_through_window_and_blocks_library_delete(cx: &mut TestA
     assert_files_unchanged(&f);
 }
 
-fn reader(f: &Fixture, cx: &mut TestAppContext) -> takio::destinations::Destination {
+fn reader(f: &Fixture, cx: &mut TestAppContext) -> takio::delivery::destinations::Destination {
     let volumes = f._temp.path().join("Volumes");
     let mount = volumes.join("Kindle");
     for directory in ["documents", "system", "koreader"] {
         std::fs::create_dir_all(mount.join(directory)).unwrap();
     }
-    let reader = takio::destinations::authorize(&mount, &volumes).unwrap();
+    let reader = takio::delivery::destinations::authorize(&mount, &volumes).unwrap();
     f.state.update(cx, |state, cx| {
         state.set_test_destinations(vec![reader.clone()]);
         cx.notify();
@@ -596,7 +597,7 @@ fn send_chooser_cancel_writes_nothing(cx: &mut TestAppContext) {
     assert_files_unchanged(&f);
 }
 
-fn assert_reader_untouched(reader: &takio::destinations::Destination) {
+fn assert_reader_untouched(reader: &takio::delivery::destinations::Destination) {
     assert_eq!(
         std::fs::read_dir(reader.path.join("documents"))
             .unwrap()
@@ -695,9 +696,9 @@ fn amazon_guidance_only_appears_for_connected_stock_kindle(cx: &mut TestAppConte
     for directory in ["documents", "system"] {
         std::fs::create_dir_all(stock_mount.join(directory)).unwrap();
     }
-    let stock = takio::destinations::authorize(&stock_mount, &volumes).unwrap();
+    let stock = takio::delivery::destinations::authorize(&stock_mount, &volumes).unwrap();
     let mut kobo = stock.clone();
-    kobo.kind = takio::destinations::DestinationKind::Kobo;
+    kobo.kind = takio::delivery::destinations::DestinationKind::Kobo;
     for (destinations, expected) in [
         (vec![], false),
         (vec![koreader.clone()], false),
@@ -838,12 +839,12 @@ fn sidebar_pointer_send_ready_uses_reviewed_selection(cx: &mut TestAppContext) {
         let delivered = report.entries[0].result.as_ref().unwrap();
         assert_eq!(std::fs::read(&delivered.path).unwrap(), managed_bytes);
     });
-    let inventory = takio::destinations::inventory(&reader).unwrap();
+    let inventory = takio::delivery::destinations::inventory(&reader).unwrap();
     assert_eq!(inventory.len(), 1);
     assert_eq!(inventory[0].record.item_id, chosen.id);
     assert_eq!(
         inventory[0].status,
-        takio::destinations::InventoryStatus::Present
+        takio::delivery::destinations::InventoryStatus::Present
     );
     assert_eq!(
         std::fs::read_dir(reader.path.join("documents"))
@@ -858,7 +859,7 @@ fn sidebar_pointer_send_ready_uses_reviewed_selection(cx: &mut TestAppContext) {
 
 fn preview_selected(
     f: &Fixture,
-    reader: &takio::destinations::Destination,
+    reader: &takio::delivery::destinations::Destination,
     cx: &mut TestAppContext,
 ) {
     f.window
@@ -966,7 +967,7 @@ fn mixed_send_review_confirms_only_ready_ids_and_retains_exclusions(cx: &mut Tes
             "source-unavailable"
         );
     });
-    let inventory = takio::destinations::inventory(&reader).unwrap();
+    let inventory = takio::delivery::destinations::inventory(&reader).unwrap();
     assert_eq!(inventory.len(), 1);
     assert_eq!(inventory[0].record.item_id, ready.id);
     assert!(f.originals.iter().all(|path| path.exists()));
@@ -1018,7 +1019,7 @@ fn send_confirmation_uses_preview_ids_and_ignores_repeated_confirmation(cx: &mut
         assert_eq!(report.entries[0].item_id, chosen.id);
         assert!(report.entries[0].result.is_ok());
     });
-    let inventory = takio::destinations::inventory(&reader).unwrap();
+    let inventory = takio::delivery::destinations::inventory(&reader).unwrap();
     assert_eq!(inventory.len(), 1);
     assert_eq!(inventory[0].record.item_id, chosen.id);
     assert_eq!(
@@ -1039,15 +1040,13 @@ fn confirm_send_rechecks_source_reader_capabilities_disconnect_and_collision(
         let reader = reader(&f, cx);
         let chosen = f.state.read_with(cx, |state, _| state.items[0].clone());
         preview_selected(&f, &reader, cx);
-        let target =
-            reader
-                .path
-                .join("documents")
-                .join(takio::destinations::destination_file_name(
-                    &chosen.title,
-                    chosen.author.as_deref(),
-                    "epub",
-                ));
+        let target = reader.path.join("documents").join(
+            takio::delivery::destinations::destination_file_name(
+                &chosen.title,
+                chosen.author.as_deref(),
+                "epub",
+            ),
+        );
         let expected = match change {
             "source" => {
                 std::fs::remove_file(&chosen.formats[0].source_path).unwrap();
@@ -1180,7 +1179,10 @@ fn copy_picker_import_preserves_original_and_supports_search_edit(cx: &mut TestA
             .clone()
     });
     let managed = &imported.formats[0];
-    assert_eq!(managed.provenance, takio::model::Provenance::Managed);
+    assert_eq!(
+        managed.provenance,
+        takio::library::model::Provenance::Managed
+    );
     assert_ne!(managed.source_path, original);
     assert!(
         managed

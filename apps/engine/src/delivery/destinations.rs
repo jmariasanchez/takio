@@ -7,10 +7,10 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::error::{AppError, AppResult};
 use crate::fingerprint::{CopyError, Fingerprint};
 use crate::format::FormatId;
-use crate::model::BookFormat;
-use crate::output::{AppError, AppResult};
+use crate::library::model::BookFormat;
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]

@@ -12,7 +12,7 @@ fn main() {
         std::fs::create_dir_all(&sdr).unwrap();
         std::fs::copy(path, sdr.join("metadata.epub.lua")).unwrap();
         let started = std::time::Instant::now();
-        let state = takio::koreader::reading_state(staged.path(), Path::new("book.epub"));
+        let state = takio::delivery::koreader::reading_state(staged.path(), Path::new("book.epub"));
         println!(
             "{stem}\t{:?}\t{:?}\t{:.2} ms",
             state.as_ref().and_then(|s| s.percent),

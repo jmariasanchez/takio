@@ -3,10 +3,10 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::model::LibraryItem;
-use crate::output::AppResult;
-pub use crate::store::SavedViewSortField as SortField;
-use crate::store::{
+use crate::error::AppResult;
+use crate::library::model::LibraryItem;
+pub use crate::library::store::SavedViewSortField as SortField;
+use crate::library::store::{
     LibraryQueryFilters, LibraryQueryScope, LibraryQuerySyntax, LibraryStore, SavedViewSort,
     SavedViewSortDirection,
 };
@@ -269,9 +269,9 @@ mod tests {
     use super::*;
     #[test]
     fn facets_use_legacy_authors_only_without_structured_names() {
-        let mut legacy = crate::catalog::tests::sparse_book();
+        let mut legacy = crate::library::catalog::tests::sparse_book();
         legacy.author = Some("Public author".into());
-        let mut structured = crate::catalog::tests::rich_book();
+        let mut structured = crate::library::catalog::tests::rich_book();
         structured.tags = vec!["fiction".into(), "fiction".into()];
         let facets = Facets::from_items(&[legacy, structured]);
         assert_eq!(

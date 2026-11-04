@@ -42,7 +42,7 @@ pub(super) fn switch_to(f: &Fixture, root: &std::path::Path, cx: &mut TestAppCon
 fn switch_old_catalogue(f: &Fixture) -> Vec<LibraryItem> {
     let paths =
         LibraryPaths::resolve(None, Some(&f._temp.path().join("library/library.sqlite"))).unwrap();
-    takio::store::LibraryStore::open_read_only(paths)
+    takio::library::store::LibraryStore::open_read_only(paths)
         .unwrap()
         .list(true)
         .unwrap()

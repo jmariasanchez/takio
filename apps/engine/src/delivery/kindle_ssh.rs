@@ -8,7 +8,7 @@ use regex::Regex;
 use serde::Serialize;
 use uuid::Uuid;
 
-use crate::output::AppResult;
+use crate::error::AppResult;
 
 #[derive(Clone, Debug)]
 pub struct KindleSshDestination {
