@@ -99,10 +99,9 @@ pub struct QueryResult {
 }
 
 pub fn query(store: &LibraryStore, request: QueryRequest) -> AppResult<QueryResult> {
-    if request.query.encode_utf16().count() > 1024 || !(1..=100).contains(&request.page.limit) {
+    if !(1..=100).contains(&request.page.limit) {
         return Err(crate::app_error!("invalid-arguments"));
     }
-    request.filters.validate()?;
     let virtual_scope = request
         .virtual_library_id
         .as_deref()
@@ -220,7 +219,7 @@ impl Serialize for Facets {
 mod tests {
     use super::*;
     #[test]
-    fn facets_use_legacy_authors_only_without_structured_names() {
+    fn facets_ignore_display_only_legacy_authors() {
         let mut legacy = crate::library::catalog::tests::sparse_book();
         legacy.author = Some("Public author".into());
         let mut structured = crate::library::catalog::tests::rich_book();
@@ -228,12 +227,12 @@ mod tests {
         let facets = Facets::from_items(&[legacy, structured]);
         assert_eq!(
             facets.authors,
-            BTreeMap::from([("Public author".into(), 2)])
+            BTreeMap::from([("Public author".into(), 1)])
         );
         assert_eq!(facets.tags, BTreeMap::from([("fiction".into(), 1)]));
         assert_eq!(
             serde_json::to_value(facets).unwrap()["authors"],
-            serde_json::json!([{"value":"Public author","count":2}])
+            serde_json::json!([{"value":"Public author","count":1}])
         );
     }
 }

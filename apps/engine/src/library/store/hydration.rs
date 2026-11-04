@@ -65,7 +65,6 @@ pub(super) fn read_items_bulk(
                 BaseRow {
                     title: row.get(1)?,
                     added_at: row.get(2)?,
-                    author: row.get(3)?,
                     series: row.get(4)?,
                     series_index: row.get(5)?,
                     publisher: row.get(6)?,
@@ -196,14 +195,22 @@ pub(super) fn read_items_bulk(
         let primary = formats
             .first()
             .ok_or_else(|| crate::app_error!("invalid-stored-data"))?;
+        let item_authors = authors.remove(id).unwrap_or_default();
+        let author = (!item_authors.is_empty()).then(|| {
+            item_authors
+                .iter()
+                .map(|author| author.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        });
         items.push(LibraryItem {
             id: id.clone(),
             title: base.title,
             source_path: primary.source_path.clone(),
             format: primary.format,
             added_at: base.added_at,
-            author: base.author,
-            authors: authors.remove(id).unwrap_or_default(),
+            author,
+            authors: item_authors,
             series: base.series,
             series_index: base.series_index,
             publisher: base.publisher,
@@ -225,7 +232,6 @@ pub(super) fn read_items_bulk(
 struct BaseRow {
     title: String,
     added_at: String,
-    author: Option<String>,
     series: Option<String>,
     series_index: Option<f64>,
     publisher: Option<String>,

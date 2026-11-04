@@ -294,7 +294,7 @@ pub mod tests {
     }
 
     #[test]
-    fn catalog_preserves_legacy_author_empty_strings_and_nonfinite_nulls() {
+    fn catalog_ignores_display_author_and_preserves_empty_strings_and_nonfinite_nulls() {
         let mut item = sparse_book();
         item.author = Some("Legacy author".into());
         item.series = Some(String::new());
@@ -302,7 +302,7 @@ pub mod tests {
         item.series_index = Some(f64::NAN);
         item.rating = Some(f64::INFINITY);
         let mut expected = sparse_record();
-        expected["authors"] = json!(["Legacy author"]);
+        expected["authors"] = json!([]);
         expected["series"] = json!("");
         expected["description"] = json!("");
         expected["seriesIndex"] = Value::Null;
@@ -311,13 +311,10 @@ pub mod tests {
     }
 
     #[test]
-    fn every_catalog_format_uses_shared_legacy_author_policy() {
+    fn every_catalog_format_ignores_display_only_author() {
         let mut item = sparse_book();
         item.author = Some("Legacy <author>".into());
-        assert!(render_catalog_csv(std::slice::from_ref(&item)).contains("\"Legacy <author>\""));
-        assert!(
-            render_catalog_html(std::slice::from_ref(&item))
-                .contains("<td>Legacy &lt;author&gt;</td>")
-        );
+        assert!(!render_catalog_csv(std::slice::from_ref(&item)).contains("Legacy"));
+        assert!(!render_catalog_html(std::slice::from_ref(&item)).contains("Legacy"));
     }
 }

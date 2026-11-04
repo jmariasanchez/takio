@@ -467,9 +467,7 @@ fn worker_with_reader_scans(
                 filters,
                 reply,
             } => {
-                let result = filters
-                    .validate()
-                    .and_then(|()| store.query_items_shared(&query, &filters));
+                let result = store.query_items_shared(&query, &filters);
                 let _ = reply.send(result);
             }
             Request::ListTrash { reply } => {

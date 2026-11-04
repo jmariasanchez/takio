@@ -70,34 +70,6 @@ impl LibraryStore {
         Ok(item)
     }
 
-    pub fn search(&self, query: &str) -> AppResult<Vec<LibraryItem>> {
-        validate_query(query, &Filters::default())?;
-        let needle = format!(
-            "%{}%",
-            query
-                .replace('\\', "\\\\")
-                .replace('%', "\\%")
-                .replace('_', "\\_")
-        );
-        let mut statement = self.connection.prepare(
-            "SELECT DISTINCT li.id FROM library_items li
-             LEFT JOIN library_item_authors a ON a.library_item_id = li.id
-             LEFT JOIN library_item_tags it ON it.library_item_id = li.id
-             LEFT JOIN tags t ON t.normalized_name = it.tag_normalized_name
-             WHERE li.trashed_at IS NULL AND (
-               li.title LIKE ?1 ESCAPE '\\' COLLATE NOCASE OR
-               li.author LIKE ?1 ESCAPE '\\' COLLATE NOCASE OR
-               a.name LIKE ?1 ESCAPE '\\' COLLATE NOCASE OR
-               li.series LIKE ?1 ESCAPE '\\' COLLATE NOCASE OR
-               t.name LIKE ?1 ESCAPE '\\' COLLATE NOCASE)
-             ORDER BY li.title COLLATE NOCASE, li.id",
-        )?;
-        let ids = statement
-            .query_map([needle], |row| row.get::<_, String>(0))?
-            .collect::<Result<Vec<_>, _>>()?;
-        read_items_required(&self.connection, &ids)
-    }
-
     pub fn query_items(&self, query: &str, filters: &Filters) -> AppResult<Vec<LibraryItem>> {
         self.query_items_scoped(&[LibraryQueryScope {
             query,
@@ -178,13 +150,11 @@ fn append_query_scope(
         }
     }
     if !scope.filters.authors.is_empty() {
-        let legacy = query_placeholders(&scope.filters.authors, values);
         let ordered = query_placeholders(&scope.filters.authors, values);
         sql.push_str(&format!(
-            " AND (li.author COLLATE NOCASE IN ({legacy})
-               OR EXISTS(SELECT 1 FROM library_item_authors fa
+            " AND EXISTS(SELECT 1 FROM library_item_authors fa
                          WHERE fa.library_item_id=li.id
-                           AND fa.name COLLATE NOCASE IN ({ordered})))"
+                           AND fa.name COLLATE NOCASE IN ({ordered}))"
         ));
     }
     if !scope.filters.tags.is_empty() {
@@ -386,7 +356,6 @@ fn append_structured_term(
         None => {
             sql.push_str(
                 "li.title LIKE ? ESCAPE '\\' COLLATE NOCASE
-                 OR COALESCE(li.author,'') LIKE ? ESCAPE '\\' COLLATE NOCASE
                  OR EXISTS(SELECT 1 FROM library_item_authors qa
                            WHERE qa.library_item_id=li.id
                              AND qa.name LIKE ? ESCAPE '\\' COLLATE NOCASE)
@@ -401,19 +370,18 @@ fn append_structured_term(
                              AND (qm.name LIKE ? ESCAPE '\\' COLLATE NOCASE
                                   OR qm.value LIKE ? ESCAPE '\\' COLLATE NOCASE))",
             );
-            values.extend(std::iter::repeat_n(SqlValue::Text(needle.clone()), 5));
+            values.extend(std::iter::repeat_n(SqlValue::Text(needle.clone()), 4));
             values.push(SqlValue::Text(METADATA_AUDIT_KEY.to_owned()));
             values.extend(std::iter::repeat_n(SqlValue::Text(needle), 2));
         }
         Some(QueryField::Title) => append_like(sql, values, "li.title", needle),
         Some(QueryField::Author) => {
             sql.push_str(
-                "COALESCE(li.author,'') LIKE ? ESCAPE '\\' COLLATE NOCASE
-                 OR EXISTS(SELECT 1 FROM library_item_authors qa
+                "EXISTS(SELECT 1 FROM library_item_authors qa
                            WHERE qa.library_item_id=li.id
                              AND qa.name LIKE ? ESCAPE '\\' COLLATE NOCASE)",
             );
-            values.extend(std::iter::repeat_n(SqlValue::Text(needle), 2));
+            values.push(SqlValue::Text(needle));
         }
         Some(QueryField::Tag) => {
             sql.push_str(

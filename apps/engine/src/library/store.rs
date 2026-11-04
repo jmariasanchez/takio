@@ -1924,7 +1924,13 @@ mod tests {
         let paths = LibraryPaths::resolve(None, Some(&temp.path().join("library.sqlite"))).unwrap();
         let store = LibraryStore::create_or_migrate(paths).unwrap();
         let long = "x".repeat(1025);
-        assert_eq!(store.search(&long).unwrap_err().code(), "invalid-arguments");
+        assert_eq!(
+            store
+                .query_items(&long, &Filters::default())
+                .unwrap_err()
+                .code(),
+            "invalid-arguments"
+        );
         for (query, filters) in [
             (long.as_str(), Filters::default()),
             (
@@ -1958,7 +1964,12 @@ mod tests {
                 "invalid-arguments"
             );
         }
-        assert!(store.search(&"x".repeat(1024)).unwrap().is_empty());
+        assert!(
+            store
+                .query_items(&"x".repeat(1024), &Filters::default())
+                .unwrap()
+                .is_empty()
+        );
     }
 
     pub(super) fn seed_hydration_books(store: &mut LibraryStore, count: usize) {
@@ -2026,7 +2037,8 @@ mod tests {
                 .map(|index| store.get(&format!("book-{index:05}")).unwrap().unwrap())
                 .collect();
             assert_eq!(
-                serde_json::to_value(store.search("SIGNAL").unwrap()).unwrap(),
+                serde_json::to_value(store.query_items("SIGNAL", &Filters::default()).unwrap())
+                    .unwrap(),
                 serde_json::to_value(&expected).unwrap()
             );
             assert!(store.list_trash().unwrap().is_empty());
@@ -2040,7 +2052,12 @@ mod tests {
                 serde_json::to_value(store.list_trash().unwrap()).unwrap(),
                 serde_json::to_value(expected_trash).unwrap()
             );
-            assert!(store.search("Signal").unwrap().is_empty());
+            assert!(
+                store
+                    .query_items("Signal", &Filters::default())
+                    .unwrap()
+                    .is_empty()
+            );
         }
     }
 
@@ -2058,12 +2075,23 @@ mod tests {
             )
             .unwrap();
         for query in ["%", "_", "\\", r"100%_\"] {
-            let items = store.search(query).unwrap();
+            let items = store.query_items(query, &Filters::default()).unwrap();
             assert_eq!(items.len(), 1);
             assert_eq!(items[0].id, "book-00000");
         }
-        assert_eq!(store.search("Signal").unwrap().len(), 2);
-        assert!(store.search("missing").unwrap().is_empty());
+        assert_eq!(
+            store
+                .query_items("Signal", &Filters::default())
+                .unwrap()
+                .len(),
+            2
+        );
+        assert!(
+            store
+                .query_items("missing", &Filters::default())
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]
@@ -2079,7 +2107,10 @@ mod tests {
             seed_hydration_books(&mut store, 501);
             store.connection.execute(invalid, []).unwrap();
             assert_eq!(
-                store.search("Signal").unwrap_err().code(),
+                store
+                    .query_items("Signal", &Filters::default())
+                    .unwrap_err()
+                    .code(),
                 "invalid-stored-data"
             );
             store
@@ -2131,7 +2162,7 @@ mod tests {
             for iteration in 0..23 {
                 let started = std::time::Instant::now();
                 let items = if operation == "search" {
-                    store.search("Signal")
+                    store.query_items("Signal", &Filters::default())
                 } else {
                     store.list_trash()
                 }

@@ -2343,17 +2343,17 @@ mod tests {
     }
 
     #[test]
-    fn mixed_legacy_and_structured_authors_count_once() {
+    fn display_only_legacy_authors_do_not_count_as_structured_authors() {
         let mut legacy = takio::library::catalog::tests::sparse_book();
         legacy.author = Some("Public author".into());
         let structured = takio::library::catalog::tests::rich_book();
         assert_eq!(structured.primary_author(), Some("Public author"));
-        assert_eq!(legacy.primary_author(), Some("Public author"));
+        assert_eq!(legacy.primary_author(), None);
         assert_eq!(
             json!(takio::library::query::Facets::from_items(&[
                 legacy, structured
             ]))["authors"],
-            serde_json::json!([{"value":"Public author","count":2}])
+            serde_json::json!([{"value":"Public author","count":1}])
         );
     }
     use super::*;

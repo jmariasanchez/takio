@@ -5,7 +5,7 @@ use crate::library::paths::LibraryPaths;
 use std::collections::BTreeMap;
 
 #[test]
-fn duplicate_scan_matches_legacy_author_names() {
+fn duplicate_scan_ignores_display_only_legacy_author_names() {
     let temp = tempfile::tempdir().unwrap();
     let paths = LibraryPaths::resolve(None, Some(&temp.path().join("library.sqlite"))).unwrap();
     let mut store = LibraryStore::create_or_migrate(paths).unwrap();
@@ -35,10 +35,8 @@ fn duplicate_scan_matches_legacy_author_names() {
             disposition: DuplicateDisposition::Unreviewed,
         })
         .unwrap();
-    assert_eq!(page.total, 1);
-    assert!(page.candidates[0].signals.iter().any(|signal| matches!(
-        signal, DuplicateSignal::SameTitleAuthor { author, .. } if author == "Legacy Writer"
-    )));
+    assert_eq!(page.total, 0);
+    assert!(page.candidates.is_empty());
 }
 
 #[test]

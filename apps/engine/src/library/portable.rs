@@ -1081,7 +1081,7 @@ mod tests {
             .item;
         item.author = Some("Legacy & Writer".into());
         let legacy = portable_opf(&item, None);
-        assert!(legacy.contains("<dc:creator opf:role=\"aut\">Legacy &amp; Writer</dc:creator>"));
+        assert!(!legacy.contains("Legacy &amp; Writer"));
         item.authors = vec![
             BookAuthor {
                 name: "First & Writer".into(),

@@ -1863,7 +1863,7 @@ mod tests {
             "secondary names must not override the shared primary-author key"
         );
         first.authors.clear();
-        assert_eq!(author_label(&first), "Legacy");
+        assert_eq!(author_label(&first), "");
         first.author = None;
         assert_eq!(author_label(&first), "");
     }

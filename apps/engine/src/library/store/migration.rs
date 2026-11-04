@@ -1294,6 +1294,47 @@ mod tests {
         );
         let minimal = store.get("book-v4-minimal").unwrap().unwrap();
         assert!(minimal.author.is_none() && minimal.authors.is_empty());
+        assert_eq!(
+            store
+                .query_items("Octavia", &super::super::Filters::default())
+                .unwrap()
+                .len(),
+            1
+        );
+        let filters = super::super::Filters {
+            authors: vec!["Octavia E. Butler".into()],
+            ..Default::default()
+        };
+        assert_eq!(store.query_items("", &filters).unwrap().len(), 1);
+        assert_eq!(
+            store
+                .query_items_scoped(&[super::super::LibraryQueryScope {
+                    query: "author:Octavia",
+                    syntax: super::super::LibraryQuerySyntax::StructuredV1,
+                    filters: &super::super::Filters::default(),
+                }])
+                .unwrap()
+                .len(),
+            1
+        );
+        // A stale display scalar must not add matches or hide structured names.
+        store
+            .connection
+            .execute("UPDATE library_items SET author='Display only'", [])
+            .unwrap();
+        assert!(
+            store
+                .query_items("Display only", &super::super::Filters::default())
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            store
+                .query_items("Octavia", &super::super::Filters::default())
+                .unwrap()
+                .len(),
+            1
+        );
         drop(store);
         // Reopening a current catalogue must not duplicate backfilled rows.
         let reopened = LibraryStore::create_or_migrate(paths).unwrap();

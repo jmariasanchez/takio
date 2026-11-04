@@ -139,6 +139,7 @@ pub struct LibraryItem {
     pub format: FormatId,
     pub added_at: String,
     pub formats: Vec<BookFormat>,
+    /// Derived display value retained for wire compatibility, never a matching source.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub author: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
@@ -170,12 +171,9 @@ pub struct LibraryItem {
 }
 
 impl LibraryItem {
-    /// Structured names take precedence over the legacy display scalar.
+    /// Structured names are authoritative for matching and facets.
     pub fn author_names(&self) -> impl Iterator<Item = &str> {
-        self.authors
-            .iter()
-            .map(|author| author.name.as_str())
-            .chain(self.author.as_deref().filter(|_| self.authors.is_empty()))
+        self.authors.iter().map(|author| author.name.as_str())
     }
 
     pub fn primary_author(&self) -> Option<&str> {
