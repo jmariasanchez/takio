@@ -215,7 +215,7 @@ pub(super) fn write_store(
     LibraryStore::create_or_migrate(LibraryPaths::resolve(library, database)?)
 }
 
-pub(super) fn run_operation(
+fn run_operation(
     library: Option<&str>,
     database: Option<&Path>,
     command: &str,
@@ -230,6 +230,45 @@ pub(super) fn run_operation(
         }
         operation => operation.execute(&mut write_store(library, database)?),
     }
+}
+
+/// The one-shot CLI's stable JSON envelopes for operations whose service
+/// response shape differs. All CLI-only wire adaptations are listed here so
+/// command handlers share one dispatch path through `run_cli_operation`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum CliEnvelope {
+    /// Service response printed unchanged.
+    Direct,
+    /// Service response wrapped under a named key, for example `definitions`.
+    Wrapped(&'static str),
+    /// `library remove` keeps its historical trash envelope: trash never leaves
+    /// cleanup pending, so these fields are always false and empty.
+    TrashWithoutCleanup,
+}
+
+impl CliEnvelope {
+    pub(super) fn apply(self, value: Value) -> Value {
+        match self {
+            Self::Direct => value,
+            Self::Wrapped(key) => json!({ key: value }),
+            Self::TrashWithoutCleanup => {
+                let mut value = value;
+                value["cleanupPending"] = json!(false);
+                value["cleanupPendingPaths"] = json!([]);
+                value
+            }
+        }
+    }
+}
+
+pub(super) fn run_cli_operation(
+    library: Option<&str>,
+    database: Option<&Path>,
+    command: &str,
+    args: &Value,
+    envelope: CliEnvelope,
+) -> AppResult<Value> {
+    run_operation(library, database, command, args).map(|value| envelope.apply(value))
 }
 
 fn custom_columns_list(store: &LibraryStore) -> AppResult<Value> {
@@ -285,4 +324,24 @@ pub(super) fn library_service(library: Option<&str>, database: Option<&Path>) ->
 
 pub(super) fn service_request(store: &mut LibraryStore, request: &Value) -> AppResult<Value> {
     decode_request::<Operation>(request)?.execute(store)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::CliEnvelope;
+    use serde_json::json;
+
+    #[test]
+    fn cli_envelopes_are_the_only_wire_adaptations() {
+        let value = json!({"item":{"id":"a"}});
+        assert_eq!(CliEnvelope::Direct.apply(value.clone()), value);
+        assert_eq!(
+            CliEnvelope::Wrapped("definitions").apply(json!([1])),
+            json!({"definitions":[1]})
+        );
+        assert_eq!(
+            CliEnvelope::TrashWithoutCleanup.apply(value),
+            json!({"item":{"id":"a"},"cleanupPending":false,"cleanupPendingPaths":[]})
+        );
+    }
 }

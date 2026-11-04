@@ -43,7 +43,7 @@ fault injection for adapter tests, without coupling adapters to engine tables.
 
 | Module | Responsibility |
 | --- | --- |
-| `cli` (executable) | Clap commands, automation service, request mapping and presentation |
+| `cli` (executable) | Clap commands, automation service, request mapping and presentation. Submodules: `args` (Clap model), `library_commands`, `metadata_commands`, `destination_commands`, `human` (readable output), `service` (single operation dispatch plus the `CliEnvelope` list of CLI-only wire adaptations), `jobs` |
 | `output` (executable) | Shared CLI/service/HTTP success and typed error envelopes, stdout record writing |
 | `server` (executable) | Authenticated loopback-only read-only catalogue and format delivery |
 | `tui` (executable) | Ratatui interaction, rendering, and terminal restoration |
