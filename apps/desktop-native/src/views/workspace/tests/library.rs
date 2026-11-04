@@ -102,8 +102,8 @@ fn library_switch_picker_cancel_duplicate_and_late_edit_are_safe(cx: &mut TestAp
     settle(&f.state, cx);
     f.state.read_with(cx, |state, _| {
         assert_eq!((state.library_root(), state.library_epoch()), before);
-        assert!(state.metadata_editing);
-        assert_eq!(state.items.len(), 2);
+        assert!(state.session().metadata_editing);
+        assert_eq!(state.session().items.len(), 2);
     });
     assert_eq!(switch_old_catalogue(&f).len(), 2);
     assert_files_unchanged(&f);
@@ -144,12 +144,13 @@ fn library_switch_restored_same_ids_resets_native_children_and_search(cx: &mut T
         })
         .unwrap();
     f.state.read_with(cx, |state, _| {
-        assert!(state.query.is_empty());
-        assert!(state.selected.is_empty());
-        assert_eq!(state.anchor, None);
-        assert_eq!(state.items.len(), 2);
+        assert!(state.session().query.is_empty());
+        assert!(state.session().selected.is_empty());
+        assert_eq!(state.session().anchor, None);
+        assert_eq!(state.session().items.len(), 2);
         assert!(
             state
+                .session()
                 .items
                 .iter()
                 .all(|item| f.books.iter().any(|old| old.id == item.id))
@@ -180,7 +181,7 @@ fn library_switch_old_purge_confirmation_cannot_delete_restored_same_ids(cx: &mu
     assert_files_unchanged(&f);
     assert!(
         f.state
-            .read_with(cx, |state, _| state.items.iter().all(|item| item
+            .read_with(cx, |state, _| state.session().items.iter().all(|item| item
                 .formats
                 .iter()
                 .all(|format| format.source_path.exists())))
@@ -243,7 +244,7 @@ fn library_switch_failed_folder_keeps_current_native_view(cx: &mut TestAppContex
         (
             state.library_root(),
             state.library_epoch(),
-            state.selected.clone(),
+            state.session().selected.clone(),
         )
     });
     let inspector = f
@@ -261,12 +262,12 @@ fn library_switch_failed_folder_keeps_current_native_view(cx: &mut TestAppContex
             (
                 state.library_root(),
                 state.library_epoch(),
-                state.selected.clone()
+                state.session().selected.clone()
             ),
             before
         );
-        assert_eq!(state.items.len(), 2);
-        assert!(state.status.as_ref().unwrap().is_error);
+        assert_eq!(state.session().items.len(), 2);
+        assert!(state.session().status.as_ref().unwrap().is_error);
     });
     assert_eq!(
         f.window
@@ -314,13 +315,15 @@ fn library_switch_stale_recovery_destination_never_writes(cx: &mut TestAppContex
         assert!(cx.did_prompt_for_new_path());
         switch_to(&f, &restored, cx);
         let destination = copy.path().join("late-recovery");
-        let status = f.state.read_with(cx, |state, _| state.status.clone());
+        let status = f
+            .state
+            .read_with(cx, |state, _| state.session().status.clone());
         cx.simulate_new_path_selection(|_| Some(destination.clone()));
         settle(&f.state, cx);
         assert!(!destination.exists());
         f.state.read_with(cx, |state, _| {
-            assert_eq!(state.status, status);
-            assert!(state.recovery_outcome.is_none());
+            assert_eq!(state.session().status, status);
+            assert!(state.session().recovery_outcome.is_none());
         });
         assert!(
             !f.window
@@ -351,13 +354,15 @@ fn library_switch_stale_reader_chooser_never_starts_send_or_eject(cx: &mut TestA
             .unwrap();
         cx.run_until_parked();
         switch_to(&f, &restored, cx);
-        let status = f.state.read_with(cx, |state, _| state.status.clone());
+        let status = f
+            .state
+            .read_with(cx, |state, _| state.session().status.clone());
         cx.simulate_prompt_answer(&device.name);
         settle(&f.state, cx);
         f.state.read_with(cx, |state, _| {
-            assert_eq!(state.status, status);
+            assert_eq!(state.session().status, status);
             assert!(state.send_preview().is_none());
-            assert!(state.delivery_report.is_none());
+            assert!(state.session().delivery_report.is_none());
         });
         assert!(f._temp.path().join("Volumes/Kindle").exists());
     }

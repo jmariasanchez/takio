@@ -62,15 +62,19 @@ fn library_switch_resets_view_and_routes_mutation_to_new_catalogue(cx: &mut Test
         );
         assert_eq!(state.session.sort, Sort::default());
         assert_ne!(
-            state.destination_error.as_ref().map(AppError::code),
+            state
+                .session()
+                .destination_error
+                .as_ref()
+                .map(AppError::code),
             Some("unknown-destination")
         );
-        assert!(state.metadata_save_result.is_none());
-        assert!(!state.on_reader.contains_key("old-library-book"));
+        assert!(state.session().metadata_save_result.is_none());
+        assert!(!state.session().on_reader.contains_key("old-library-book"));
         assert!(
             state.session.recovery_outcome.is_none() && state.session.delivery_report.is_none()
         );
-        assert_eq!(state.facets.formats.get("txt"), Some(&1));
+        assert_eq!(state.session().facets.formats.get("txt"), Some(&1));
     });
     assert_eq!(titles(&f.state, cx), ["Different library"]);
     f.state.update(cx, |state, cx| {
@@ -101,7 +105,7 @@ fn library_switch_invalid_folder_preserves_view_and_does_not_create(cx: &mut Tes
         format!(
             "{:?}|{:?}|{:?}|{:?}|{:?}",
             state.library_root,
-            state.items,
+            state.session().items,
             state.session.selected,
             state.session.query,
             state.session.filters
@@ -117,7 +121,7 @@ fn library_switch_invalid_folder_preserves_view_and_does_not_create(cx: &mut Tes
             format!(
                 "{:?}|{:?}|{:?}|{:?}|{:?}",
                 state.library_root,
-                state.items,
+                state.session().items,
                 state.session.selected,
                 state.session.query,
                 state.session.filters
@@ -127,6 +131,7 @@ fn library_switch_invalid_folder_preserves_view_and_does_not_create(cx: &mut Tes
         assert_eq!(state.library_epoch, 0);
         assert!(
             state
+                .session()
                 .status
                 .as_ref()
                 .unwrap()
@@ -218,7 +223,7 @@ fn library_switch_rejects_stale_snapshot_and_old_generic_reply(cx: &mut TestAppC
     let (_temp, b) = switching_candidate("New library");
     let (generation, old_items) = f.state.update(cx, |state, cx| {
         let _ = cx;
-        (state.generation, state.items.clone())
+        (state.generation, state.session().items.clone())
     });
     f.state.update(cx, |state, cx| state.open_library(b, cx));
     settle(&f.state, cx);
@@ -245,8 +250,13 @@ fn library_switch_rejects_stale_snapshot_and_old_generic_reply(cx: &mut TestAppC
     cx.run_until_parked();
     assert_eq!(titles(&f.state, cx), ["New library"]);
     assert_ne!(
-        f.state
-            .read_with(cx, |state, _| state.status.as_ref().unwrap().text.clone()),
+        f.state.read_with(cx, |state, _| state
+            .session()
+            .status
+            .as_ref()
+            .unwrap()
+            .text
+            .clone()),
         "obsolete"
     );
 }
@@ -273,7 +283,7 @@ fn library_switch_persists_selection_and_reports_preference_failure(cx: &mut Tes
     settle(&f.state, cx);
     f.state.read_with(cx, |state, _| {
         assert_eq!(state.library_root, b);
-        let status = state.status.as_ref().unwrap();
+        let status = state.session().status.as_ref().unwrap();
         assert!(status.is_error && status.text.contains("session only"));
     });
 }

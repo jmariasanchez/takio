@@ -4,7 +4,7 @@ use crate::state::LibraryEntity;
 use gpui::Context;
 
 pub fn new(state: LibraryEntity, cx: &mut Context<TextInput>) -> TextInput {
-    let mut input = TextInput::new(state.read(cx).query.clone(), cx);
+    let mut input = TextInput::new(state.read(cx).session().query.clone(), cx);
     input.set_label("Search library");
     input.set_placeholder("Search");
     input.key_context = "TextInput Search";

@@ -36,7 +36,7 @@ fn preparation_cancel_pending_and_ready_never_converts(cx: &mut TestAppContext) 
     for ready in [false, true] {
         let f = fixture(cx);
         let requests = preparation_channel(&f, cx);
-        let item = f.state.read_with(cx, |s, _| s.items[0].clone());
+        let item = f.state.read_with(cx, |s, _| s.session().items[0].clone());
         f.state.update(cx, |s, cx| {
             s.select_only(0, cx);
             s.prepare_selected(cx);
@@ -56,7 +56,14 @@ fn preparation_cancel_pending_and_ready_never_converts(cx: &mut TestAppContext) 
         f.state.read_with(cx, |s, _| {
             assert!(s.preparation_preview().is_none());
             assert!(s.can_mutate());
-            assert!(s.status.as_ref().unwrap().text.contains("cancelled"));
+            assert!(
+                s.session()
+                    .status
+                    .as_ref()
+                    .unwrap()
+                    .text
+                    .contains("cancelled")
+            );
         });
         assert!(requests.try_recv().is_err());
         assert_eq!(fs::read(&item.source_path).unwrap(), b"book Alpha");
@@ -67,7 +74,7 @@ fn preparation_cancel_pending_and_ready_never_converts(cx: &mut TestAppContext) 
 fn preparation_section_round_trip_invalidates_pending_preview(cx: &mut TestAppContext) {
     let f = fixture(cx);
     let requests = preparation_channel(&f, cx);
-    let item = f.state.read_with(cx, |s, _| s.items[0].clone());
+    let item = f.state.read_with(cx, |s, _| s.session().items[0].clone());
     f.state.update(cx, |s, cx| {
         s.prepare_item(item.id.clone(), cx);
         s.set_section(Section::Trash, cx);
@@ -96,7 +103,7 @@ fn preparation_confirmation_captures_id_and_success_reloads_without_sending(
 ) {
     let f = fixture(cx);
     let requests = preparation_channel(&f, cx);
-    let item = f.state.read_with(cx, |s, _| s.items[0].clone());
+    let item = f.state.read_with(cx, |s, _| s.session().items[0].clone());
     f.state.update(cx, |s, cx| {
         s.session.delivery_report = Some(SendReport::default());
         s.session.delivery_exclusions.push(SendPreviewEntry {
@@ -107,7 +114,7 @@ fn preparation_confirmation_captures_id_and_success_reloads_without_sending(
         s.select_only(0, cx);
         s.prepare_selected(cx);
         assert!(s.session.delivery_report.is_none());
-        assert!(s.delivery_exclusions.is_empty());
+        assert!(s.session().delivery_exclusions.is_empty());
         s.select_only(1, cx);
     });
     reply_preparation_preview(&requests, &item, true);
@@ -138,12 +145,12 @@ fn preparation_confirmation_captures_id_and_success_reloads_without_sending(
     settle(&f.state, cx);
     let requests = query_reply.join().unwrap();
     f.state.read_with(cx, |s, _| {
-        assert_eq!(s.items.len(), 1);
+        assert_eq!(s.session().items.len(), 1);
         assert_eq!(
-            s.status.as_ref().unwrap().text,
+            s.session().status.as_ref().unwrap().text,
             "AZW3 prepared. EPUB kept. Review send when ready."
         );
-        assert!(!s.status.as_ref().unwrap().is_error);
+        assert!(!s.session().status.as_ref().unwrap().is_error);
         assert!(s.session.delivery_report.is_none());
     });
     assert!(requests.try_recv().is_err());
@@ -154,7 +161,7 @@ fn preparation_review_and_running_conversion_block_overlapping_actions(cx: &mut 
     for running in [false, true] {
         let f = fixture(cx);
         let requests = preparation_channel(&f, cx);
-        let item = f.state.read_with(cx, |s, _| s.items[0].clone());
+        let item = f.state.read_with(cx, |s, _| s.session().items[0].clone());
         let volumes = f._temp.path().join("volumes");
         let mount = volumes.join("Kindle");
         fs::create_dir_all(mount.join("documents")).unwrap();
@@ -206,7 +213,7 @@ fn preparation_unavailable_backend_and_invalid_selection_never_execute(cx: &mut 
         s.prepare_selected(cx);
     });
     assert!(requests.try_recv().is_err());
-    let item = f.state.read_with(cx, |s, _| s.items[0].clone());
+    let item = f.state.read_with(cx, |s, _| s.session().items[0].clone());
     f.state
         .update(cx, |s, cx| s.prepare_item(item.id.clone(), cx));
     reply_preparation_preview(&requests, &item, false);
@@ -216,7 +223,14 @@ fn preparation_unavailable_backend_and_invalid_selection_never_execute(cx: &mut 
         s.confirm_preparation(cx);
         assert!(!s.busy());
         assert!(s.preparation_preview().is_some());
-        assert!(s.status.as_ref().unwrap().text.contains("Install Calibre"));
+        assert!(
+            s.session()
+                .status
+                .as_ref()
+                .unwrap()
+                .text
+                .contains("Install Calibre")
+        );
     });
     assert!(requests.try_recv().is_err());
 }
@@ -239,7 +253,7 @@ fn preparation_failure_preserves_sources_and_never_claims_success(cx: &mut TestA
     ] {
         let f = fixture(cx);
         let requests = preparation_channel(&f, cx);
-        let item = f.state.read_with(cx, |s, _| s.items[0].clone());
+        let item = f.state.read_with(cx, |s, _| s.session().items[0].clone());
         f.state.update(cx, |s, cx| {
             s.session.activity = Activity::ReviewingPreparation(preparation_review(&item, true));
             s.confirm_preparation(cx);
@@ -252,7 +266,7 @@ fn preparation_failure_preserves_sources_and_never_claims_success(cx: &mut TestA
         }
         settle(&f.state, cx);
         f.state.read_with(cx, |s, _| {
-            let status = s.status.as_ref().unwrap();
+            let status = s.session().status.as_ref().unwrap();
             assert!(status.is_error);
             assert!(!status.text.contains("AZW3 prepared."));
             assert!(!status.text.contains(code.as_str()));
@@ -274,7 +288,7 @@ fn preparation_failure_preserves_sources_and_never_claims_success(cx: &mut TestA
                 );
             }
             assert!(s.can_mutate());
-            assert_eq!(s.items.len(), 3);
+            assert_eq!(s.session().items.len(), 3);
             assert!(s.session.delivery_report.is_none());
         });
         assert_eq!(fs::read(&item.source_path).unwrap(), b"book Alpha");

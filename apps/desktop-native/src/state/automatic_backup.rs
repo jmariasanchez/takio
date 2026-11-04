@@ -107,7 +107,7 @@ impl LibraryState {
             || !self.can_mutate()
             || self.refreshing_destinations
             || self.preparation_pending()
-            || self.automatic_backup_prompt_open
+            || self.session.automatic_backup_prompt_open
         {
             return;
         }

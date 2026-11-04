@@ -7,7 +7,7 @@ fn recovery_round_trip_keeps_whole_catalogue_trash_and_originals(cx: &mut TestAp
     let output = tempfile::tempdir().unwrap();
     let backup = output.path().join("backup");
     let restored = output.path().join("restored");
-    let books = f.state.read_with(cx, |s, _| s.items.clone());
+    let books = f.state.read_with(cx, |s, _| s.session().items.clone());
     let bytes: Vec<_> = books
         .iter()
         .map(|book| fs::read(&book.source_path).unwrap())
@@ -34,8 +34,8 @@ fn recovery_round_trip_keeps_whole_catalogue_trash_and_originals(cx: &mut TestAp
         .update(cx, |s, cx| s.back_up_library(backup.clone(), cx));
     settle(&f.state, cx);
     f.state.read_with(cx, |s, _| {
-        assert!(!s.status.as_ref().unwrap().is_error);
-        let result = s.recovery_outcome.as_ref().unwrap();
+        assert!(!s.session().status.as_ref().unwrap().is_error);
+        let result = s.session().recovery_outcome.as_ref().unwrap();
         assert!(result.summary.contains("3 managed"));
         assert!(result.detail.contains("External referenced files"));
     });
@@ -47,8 +47,8 @@ fn recovery_round_trip_keeps_whole_catalogue_trash_and_originals(cx: &mut TestAp
     settle(&f.state, cx);
     assert_eq!(titles(&f.state, cx), ["Beta"]);
     f.state.read_with(cx, |s, _| {
-        assert_eq!(s.query, "Beta");
-        let outcome = s.recovery_outcome.as_ref().unwrap();
+        assert_eq!(s.session().query, "Beta");
+        let outcome = s.session().recovery_outcome.as_ref().unwrap();
         assert!(outcome.summary.contains("2 book(s), 1 in Trash, 3 managed"));
         assert!(outcome.detail.contains("unchanged and still open"));
         assert_eq!(outcome.path, restored.canonicalize().unwrap());
@@ -93,9 +93,16 @@ fn recovery_collision_and_invalid_backup_leave_current_library_unchanged(cx: &mu
         .update(cx, |s, cx| s.back_up_library(existing.clone(), cx));
     settle(&f.state, cx);
     f.state.read_with(cx, |s, _| {
-        assert!(s.status.as_ref().unwrap().is_error);
-        assert!(s.status.as_ref().unwrap().text.contains("already exists"));
-        assert!(s.recovery_outcome.is_none());
+        assert!(s.session().status.as_ref().unwrap().is_error);
+        assert!(
+            s.session()
+                .status
+                .as_ref()
+                .unwrap()
+                .text
+                .contains("already exists")
+        );
+        assert!(s.session().recovery_outcome.is_none());
     });
     let invalid = output.path().join("invalid");
     fs::create_dir(&invalid).unwrap();
@@ -113,8 +120,8 @@ fn recovery_collision_and_invalid_backup_leave_current_library_unchanged(cx: &mu
     );
     assert_eq!(titles(&f.state, cx), before);
     f.state.read_with(cx, |s, _| {
-        assert!(s.status.as_ref().unwrap().is_error);
-        assert!(s.recovery_outcome.is_none());
+        assert!(s.session().status.as_ref().unwrap().is_error);
+        assert!(s.session().recovery_outcome.is_none());
         assert!(s.can_mutate());
     });
 }
@@ -162,8 +169,8 @@ fn recovery_blocks_overlap_and_close_until_reply(cx: &mut TestAppContext) {
         f.state.update(cx, |s, cx| {
             assert!(s.request_close(cx));
             assert!(s.can_mutate());
-            assert!(s.recovery_outcome.is_none());
-            assert!(s.status.as_ref().unwrap().is_error);
+            assert!(s.session().recovery_outcome.is_none());
+            assert!(s.session().status.as_ref().unwrap().is_error);
         });
     }
 }
@@ -179,10 +186,10 @@ fn recovery_completion_survives_section_changes(cx: &mut TestAppContext) {
     });
     settle(&f.state, cx);
     f.state.read_with(cx, |s, _| {
-        assert_eq!(s.section, Section::Trash);
-        assert!(s.items.is_empty());
-        assert!(s.recovery_outcome.is_some());
-        assert!(!s.status.as_ref().unwrap().is_error);
+        assert_eq!(s.session().section, Section::Trash);
+        assert!(s.session().items.is_empty());
+        assert!(s.session().recovery_outcome.is_some());
+        assert!(!s.session().status.as_ref().unwrap().is_error);
     });
     assert!(backup.join("manifest.json").is_file());
 }
@@ -206,9 +213,9 @@ fn recovery_rejects_corrupt_managed_bytes_without_false_success(cx: &mut TestApp
     });
     settle(&f.state, cx);
     f.state.read_with(cx, |s, _| {
-        assert!(s.recovery_outcome.is_none());
-        assert!(s.status.as_ref().unwrap().is_error);
-        assert_eq!(s.items.len(), 3);
+        assert!(s.session().recovery_outcome.is_none());
+        assert!(s.session().status.as_ref().unwrap().is_error);
+        assert_eq!(s.session().items.len(), 3);
     });
     assert!(!destination.join("library.sqlite").exists());
     assert_eq!(fs::read(path).unwrap(), b"corrupted");

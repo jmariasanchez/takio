@@ -15,7 +15,7 @@ fn native_backup_result_pointer_dismiss_preserves_recovery_copy(cx: &mut TestApp
 
     assert!(
         f.state
-            .read_with(cx, |state, _| state.recovery_outcome.is_none())
+            .read_with(cx, |state, _| state.session().recovery_outcome.is_none())
     );
     assert_eq!(recovery_snapshot(&f), before);
     assert_eq!(
@@ -73,9 +73,9 @@ fn native_recovery_accepted_destination_after_editing_starts_writes_nothing(
         );
         recovery_no_dialogs(cx);
         f.state.read_with(cx, |state, _| {
-            assert!(state.metadata_editing);
+            assert!(state.session().metadata_editing);
             assert!(!state.busy());
-            let status = state.status.as_ref().unwrap();
+            let status = state.session().status.as_ref().unwrap();
             assert!(status.is_error);
             assert!(status.text.contains("save/cancel your edits"));
             assert!(status.text.contains(if restore {
@@ -84,7 +84,7 @@ fn native_recovery_accepted_destination_after_editing_starts_writes_nothing(
                 "No new backup was started."
             }));
             assert_eq!(
-                state.recovery_outcome.as_ref().unwrap().path,
+                state.session().recovery_outcome.as_ref().unwrap().path,
                 backup.canonicalize().unwrap()
             );
         });
@@ -166,7 +166,11 @@ fn recovery_view(f: &Fixture, cx: &mut TestAppContext) -> String {
     f.state.read_with(cx, |state, _| {
         format!(
             "{:?}|{:?}|{:?}|{:?}|{:?}",
-            state.section, state.query, state.items, state.selected, state.anchor
+            state.session().section,
+            state.session().query,
+            state.session().items,
+            state.session().selected,
+            state.session().anchor
         )
     })
 }
@@ -184,9 +188,9 @@ fn recovery_make_backup(f: &Fixture, output: &std::path::Path, cx: &mut TestAppC
     settle(&f.state, cx);
     assert!(output.join("manifest.json").is_file());
     f.state.read_with(cx, |state, _| {
-        assert!(!state.status.as_ref().unwrap().is_error);
+        assert!(!state.session().status.as_ref().unwrap().is_error);
         assert_eq!(
-            state.recovery_outcome.as_ref().unwrap().path,
+            state.session().recovery_outcome.as_ref().unwrap().path,
             output.canonicalize().unwrap()
         );
     });
@@ -245,7 +249,7 @@ fn native_backup_confirmation_cancel_is_read_only(cx: &mut TestAppContext) {
     assert_eq!(std::fs::read_dir(output.path()).unwrap().count(), 0);
     assert!(
         f.state
-            .read_with(cx, |state, _| state.recovery_outcome.is_none())
+            .read_with(cx, |state, _| state.session().recovery_outcome.is_none())
     );
 }
 
@@ -339,13 +343,20 @@ fn native_backup_ignores_filtered_selection_and_includes_trash(cx: &mut TestAppC
     f.state
         .update(cx, |state, cx| state.set_section(Section::Library, cx));
     settle(&f.state, cx);
-    assert_eq!(f.state.read_with(cx, |state, _| state.items.len()), 1);
+    assert_eq!(
+        f.state
+            .read_with(cx, |state, _| state.session().items.len()),
+        1
+    );
     f.state.update(cx, |state, cx| {
         state.set_query("no-matching-recovery-book".into(), cx)
     });
     cx.executor().advance_clock(Duration::from_millis(100));
     settle(&f.state, cx);
-    assert!(f.state.read_with(cx, |state, _| state.items.is_empty()));
+    assert!(
+        f.state
+            .read_with(cx, |state, _| state.session().items.is_empty())
+    );
     f.state.update(cx, |state, _| {
         state.clear_selection();
     });
@@ -382,8 +393,8 @@ fn native_restore_copies_verified_bytes_without_switching_current_library(cx: &m
         backup_database
     );
     f.state.read_with(cx, |state, _| {
-        assert!(!state.status.as_ref().unwrap().is_error);
-        let outcome = state.recovery_outcome.as_ref().unwrap();
+        assert!(!state.session().status.as_ref().unwrap().is_error);
+        let outcome = state.session().recovery_outcome.as_ref().unwrap();
         assert_eq!(outcome.path, restored.canonicalize().unwrap());
         assert!(outcome.detail.contains("current library is unchanged"));
     });
@@ -403,8 +414,8 @@ fn native_backup_existing_destination_preserves_marker(cx: &mut TestAppContext) 
     assert_eq!(std::fs::read_dir(output.path()).unwrap().count(), 1);
     assert_eq!(recovery_snapshot(&f), before);
     f.state.read_with(cx, |state, _| {
-        assert!(state.status.as_ref().unwrap().is_error);
-        assert!(state.recovery_outcome.is_none());
+        assert!(state.session().status.as_ref().unwrap().is_error);
+        assert!(state.session().recovery_outcome.is_none());
     });
     recovery_no_dialogs(cx);
 }
@@ -429,8 +440,8 @@ fn native_restore_existing_destination_preserves_marker(cx: &mut TestAppContext)
     assert_eq!(recovery_snapshot(&f), before);
     recovery_assert_copied_books(&f, &backup, 0);
     f.state.read_with(cx, |state, _| {
-        assert!(state.status.as_ref().unwrap().is_error);
-        assert!(state.recovery_outcome.is_none());
+        assert!(state.session().status.as_ref().unwrap().is_error);
+        assert!(state.session().recovery_outcome.is_none());
     });
     recovery_no_dialogs(cx);
 }

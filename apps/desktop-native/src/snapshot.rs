@@ -44,9 +44,10 @@ pub fn run() {
             std::thread::sleep(Duration::from_millis(100));
             let found = cx.read(|cx| {
                 let state = state.read(cx);
-                !state.scanning_readers
+                !state.session().scanning_readers
                     && !state.refreshing_destinations()
                     && state
+                        .session()
                         .reader_shelves
                         .iter()
                         .any(|(reader, _)| reader.name == name)
@@ -68,13 +69,17 @@ pub fn run() {
     if std::env::var_os("TAKIO_SNAPSHOT_IMPORT_FROM_READER").is_some() {
         cx.update(|cx| {
             state.update(cx, |state, cx| {
-                let reader = state.reader_shelves.iter().find_map(|(reader, shelf)| {
-                    shelf
-                        .as_ref()
-                        .ok()
-                        .filter(|shelf| shelf.importable > 0)
-                        .map(|_| reader.clone())
-                });
+                let reader = state
+                    .session()
+                    .reader_shelves
+                    .iter()
+                    .find_map(|(reader, shelf)| {
+                        shelf
+                            .as_ref()
+                            .ok()
+                            .filter(|shelf| shelf.importable > 0)
+                            .map(|_| reader.clone())
+                    });
                 match reader {
                     Some(reader) => {
                         // Real race: the reader disappears after it was listed and
@@ -105,7 +110,7 @@ pub fn run() {
                 let (title, format) = title
                     .split_once('|')
                     .map_or((title.as_str(), None), |(t, f)| (t, Some(f)));
-                if let Some(index) = state.items.iter().position(|item| {
+                if let Some(index) = state.session().items.iter().position(|item| {
                     item.title == title
                         && format.is_none_or(|format| {
                             item.formats
@@ -139,6 +144,7 @@ pub fn run() {
     let summary = cx.read(|cx| {
         let state = state.read(cx);
         let shelves: Vec<String> = state
+            .session()
             .reader_shelves
             .iter()
             .map(|(reader, shelf)| match shelf {
@@ -155,10 +161,14 @@ pub fn run() {
             .collect();
         format!(
             "{{\"items\":{},\"onReader\":{},\"shelves\":{:?},\"status\":{:?}}}",
-            state.items.len(),
-            state.on_reader.len(),
+            state.session().items.len(),
+            state.session().on_reader.len(),
             shelves,
-            state.status.as_ref().map(|status| status.text.clone())
+            state
+                .session()
+                .status
+                .as_ref()
+                .map(|status| status.text.clone())
         )
     });
     println!("{summary}");

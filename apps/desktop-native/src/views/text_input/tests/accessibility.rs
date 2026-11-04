@@ -122,14 +122,20 @@ fn tab_and_shift_tab_traverse_real_sidebar_and_activate_only_on_release(cx: &mut
     cx.simulate_keystrokes("tab");
     cx.run_until_parked();
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    state.read_with(cx, |state, _| assert_eq!(state.section, Section::Library));
+    state.read_with(cx, |state, _| {
+        assert_eq!(state.session().section, Section::Library)
+    });
     cx.simulate_keystrokes("space");
-    state.read_with(cx, |state, _| assert_eq!(state.section, Section::Library));
+    state.read_with(cx, |state, _| {
+        assert_eq!(state.session().section, Section::Library)
+    });
     cx.simulate_event(gpui::KeyUpEvent {
         keystroke: gpui::Keystroke::parse("space").unwrap(),
     });
     settle(&state, cx);
-    state.read_with(cx, |state, _| assert_eq!(state.section, Section::Trash));
+    state.read_with(cx, |state, _| {
+        assert_eq!(state.session().section, Section::Trash)
+    });
     cx.simulate_keystrokes("shift-tab");
     cx.run_until_parked();
     cx.update(|window, cx| window.draw(cx).clear(cx));
@@ -138,9 +144,11 @@ fn tab_and_shift_tab_traverse_real_sidebar_and_activate_only_on_release(cx: &mut
         keystroke: gpui::Keystroke::parse("enter").unwrap(),
     });
     settle(&state, cx);
-    state.read_with(cx, |state, _| assert_eq!(state.section, Section::Library));
+    state.read_with(cx, |state, _| {
+        assert_eq!(state.session().section, Section::Library)
+    });
     // Navigation and plain activation never move the source files or trash books.
-    assert!(state.read_with(cx, |state, _| state.items.len() == 2));
+    assert!(state.read_with(cx, |state, _| state.session().items.len() == 2));
 }
 
 #[gpui::test]
@@ -163,7 +171,9 @@ fn disabled_sidebar_and_cross_focus_key_release_never_activate(cx: &mut TestAppC
     cx.simulate_event(gpui::KeyUpEvent {
         keystroke: gpui::Keystroke::parse("enter").unwrap(),
     });
-    state.read_with(cx, |state, _| assert_eq!(state.section, Section::Library));
+    state.read_with(cx, |state, _| {
+        assert_eq!(state.session().section, Section::Library)
+    });
 
     state.update(cx, |state, cx| {
         state.simulate_busy(true);
@@ -176,8 +186,8 @@ fn disabled_sidebar_and_cross_focus_key_release_never_activate(cx: &mut TestAppC
         keystroke: gpui::Keystroke::parse("enter").unwrap(),
     });
     state.read_with(cx, |state, _| {
-        assert_eq!(state.section, Section::Library);
-        assert_eq!(state.items.len(), 2);
+        assert_eq!(state.session().section, Section::Library);
+        assert_eq!(state.session().items.len(), 2);
     });
 }
 
@@ -193,21 +203,21 @@ fn search_and_palette_consume_library_deletion_actions(cx: &mut TestAppContext) 
     cx.update(|window, cx| window.draw(cx).clear(cx));
     cx.dispatch_action(crate::TrashSelected);
     settle(&state, cx);
-    state.read_with(cx, |state, _| assert_eq!(state.items.len(), 2));
+    state.read_with(cx, |state, _| assert_eq!(state.session().items.len(), 2));
     cx.dispatch_action(crate::TogglePalette);
     cx.run_until_parked();
     cx.update(|window, cx| window.draw(cx).clear(cx));
     cx.dispatch_action(crate::TrashSelected);
     settle(&state, cx);
-    state.read_with(cx, |state, _| assert_eq!(state.items.len(), 2));
+    state.read_with(cx, |state, _| assert_eq!(state.session().items.len(), 2));
     cx.simulate_input("Show Trash");
     cx.run_until_parked();
     cx.update(|window, cx| window.draw(cx).clear(cx));
     cx.simulate_keystrokes("enter");
     settle(&state, cx);
     state.read_with(cx, |state, _| {
-        assert_eq!(state.section, Section::Trash);
-        assert!(state.items.is_empty());
+        assert_eq!(state.session().section, Section::Trash);
+        assert!(state.session().items.is_empty());
     });
 }
 
@@ -232,9 +242,9 @@ fn focused_sort_header_uses_real_click_handler_without_opening_books(cx: &mut Te
     });
     settle(&state, cx);
     let ascending = state.read_with(cx, |state, _| {
-        assert_eq!(state.sort.column, crate::state::SortColumn::Title);
-        assert_eq!(state.items.len(), 2);
-        state.sort.ascending
+        assert_eq!(state.session().sort.column, crate::state::SortColumn::Title);
+        assert_eq!(state.session().items.len(), 2);
+        state.session().sort.ascending
     });
     cx.update(|window, cx| window.draw(cx).clear(cx));
     cx.simulate_keystrokes("space");
@@ -242,5 +252,7 @@ fn focused_sort_header_uses_real_click_handler_without_opening_books(cx: &mut Te
         keystroke: gpui::Keystroke::parse("space").unwrap(),
     });
     settle(&state, cx);
-    state.read_with(cx, |state, _| assert_ne!(state.sort.ascending, ascending));
+    state.read_with(cx, |state, _| {
+        assert_ne!(state.session().sort.ascending, ascending)
+    });
 }

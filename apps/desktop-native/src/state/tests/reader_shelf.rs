@@ -19,14 +19,15 @@ fn reader_scan_failures_retain_typed_error_status(cx: &mut TestAppContext) {
         });
         settle(&f.state, cx);
         f.state.read_with(cx, |state, _| {
-            assert_eq!(state.reader_shelves.len(), 1);
-            let error = state.reader_shelves[0].1.as_ref().unwrap_err();
+            assert_eq!(state.session().reader_shelves.len(), 1);
+            let error = state.session().reader_shelves[0].1.as_ref().unwrap_err();
             assert_eq!(error.code(), "destination-unavailable");
             assert_eq!(error.exit_code(), 74);
             assert!(!state.session.scanning_readers);
-            assert!(state.on_reader.is_empty());
-            assert!(state.reading.is_empty());
-            let summary = crate::views::sidebar::shelf_summary(Some(&state.reader_shelves[0].1));
+            assert!(state.session().on_reader.is_empty());
+            assert!(state.session().reading.is_empty());
+            let summary =
+                crate::views::sidebar::shelf_summary(Some(&state.session().reader_shelves[0].1));
             assert!(summary.contains("Reconnect"));
             assert!(!summary.contains("destination-unavailable"));
         });
@@ -39,7 +40,9 @@ fn check_reader_progress(cx: &mut TestAppContext, koreader: bool, status: &str) 
     if !koreader {
         fs::remove_dir(reader.path.join("koreader")).unwrap();
     }
-    let book = f.state.read_with(cx, |state, _| state.items[0].clone());
+    let book = f
+        .state
+        .read_with(cx, |state, _| state.session().items[0].clone());
     fs::copy(&book.source_path, reader.path.join("documents/book.epub")).unwrap();
     fs::create_dir(reader.path.join("documents/book.sdr")).unwrap();
     fs::write(
@@ -52,12 +55,15 @@ fn check_reader_progress(cx: &mut TestAppContext, koreader: bool, status: &str) 
         .update(cx, |state, cx| state.refresh_destinations(cx));
     settle(&f.state, cx);
     f.state.read_with(cx, |state, _| {
-        let shelf = state.reader_shelves[0].1.as_ref().unwrap();
+        let shelf = state.session().reader_shelves[0].1.as_ref().unwrap();
         assert_eq!(shelf.koreader, koreader);
         if koreader {
-            let (label, reading) = &state.reading[&book.id];
+            let (label, reading) = &state.session().reading[&book.id];
             assert_eq!(label, "Kindle (KOReader)");
-            assert_eq!(state.on_reader[&book.id], vec!["Kindle (KOReader)"]);
+            assert_eq!(
+                state.session().on_reader[&book.id],
+                vec!["Kindle (KOReader)"]
+            );
             assert_eq!(
                 reading.label().as_deref(),
                 Some(if status == "complete" {
@@ -71,8 +77,8 @@ fn check_reader_progress(cx: &mut TestAppContext, koreader: bool, status: &str) 
                 if status == "complete" { (1, 0) } else { (0, 1) }
             );
         } else {
-            assert!(state.reading.is_empty());
-            assert_eq!(state.on_reader[&book.id], vec!["Kindle"]);
+            assert!(state.session().reading.is_empty());
+            assert_eq!(state.session().on_reader[&book.id], vec!["Kindle"]);
             assert_eq!((shelf.finished, shelf.in_progress), (0, 0));
             assert!(shelf.reading_for(&book.id).is_none());
         }
@@ -81,8 +87,8 @@ fn check_reader_progress(cx: &mut TestAppContext, koreader: bool, status: &str) 
     f.state.update(cx, |state, cx| {
         state.destinations.clear();
         state.scan_readers(cx);
-        assert!(state.reading.is_empty());
-        assert!(state.on_reader.is_empty());
+        assert!(state.session().reading.is_empty());
+        assert!(state.session().on_reader.is_empty());
     });
 }
 
@@ -133,8 +139,12 @@ fn reader_tree_snapshot(root: &std::path::Path) -> Vec<(PathBuf, Option<Vec<u8>>
 fn reader_import_copies_unmatched_and_rescans_without_reader_writes(cx: &mut TestAppContext) {
     let f = fixture(cx);
     let reader = shelf_reader(&f, cx);
-    let existing = f.state.read_with(cx, |state, _| state.items[0].clone());
-    let before_count = f.state.read_with(cx, |state, _| state.items.len());
+    let existing = f
+        .state
+        .read_with(cx, |state, _| state.session().items[0].clone());
+    let before_count = f
+        .state
+        .read_with(cx, |state, _| state.session().items.len());
     fs::copy(
         &existing.source_path,
         reader.path.join("documents/existing.epub"),
@@ -161,24 +171,25 @@ fn reader_import_copies_unmatched_and_rescans_without_reader_writes(cx: &mut Tes
         state.import_from_reader(reader.clone(), cx);
         assert!(state.busy());
         assert_eq!(
-            state.status.as_ref().unwrap().text,
+            state.session().status.as_ref().unwrap().text,
             "Adding books from Kindle..."
         );
     });
     settle(&f.state, cx);
     f.state.read_with(cx, |state, _| {
-        assert_eq!(state.items.len(), before_count + 1);
-        let status = &state.status.as_ref().unwrap().text;
+        assert_eq!(state.session().items.len(), before_count + 1);
+        let status = &state.session().status.as_ref().unwrap().text;
         assert!(status.contains("Imported 1, skipped 1"), "{status}");
         assert!(status.contains("1 in a format Takio cannot store"));
         assert!(status.contains("failed 0"));
         let imported = state
+            .session()
             .items
             .iter()
             .find(|book| book.title == "ReaderOnly")
             .unwrap();
-        assert!(state.on_reader.contains_key(&imported.id));
-        let shelf = state.reader_shelves[0].1.as_ref().unwrap();
+        assert!(state.session().on_reader.contains_key(&imported.id));
+        let shelf = state.session().reader_shelves[0].1.as_ref().unwrap();
         assert_eq!((shelf.in_library, shelf.not_in_library), (2, 1));
     });
     assert_eq!(reader_tree_snapshot(&reader.path), before);
@@ -193,7 +204,9 @@ fn reader_import_respects_mutation_and_section_guards(cx: &mut TestAppContext) {
         b"unmatched reader book",
     )
     .unwrap();
-    let count = f.state.read_with(cx, |state, _| state.items.len());
+    let count = f
+        .state
+        .read_with(cx, |state, _| state.session().items.len());
     f.state.update(cx, |state, cx| {
         state.select_only(0, cx);
         state.send_selected_to(reader.clone(), cx);
@@ -201,9 +214,9 @@ fn reader_import_respects_mutation_and_section_guards(cx: &mut TestAppContext) {
     settle(&f.state, cx);
     f.state.update(cx, |state, cx| {
         assert!(state.send_preview().is_some());
-        let status = state.status.clone();
+        let status = state.session().status.clone();
         state.import_from_reader(reader.clone(), cx);
-        assert_eq!(state.status, status);
+        assert_eq!(state.session().status, status);
         assert!(!state.busy());
         state.session.activity = Activity::Idle;
         for guard in 0..3 {
@@ -219,7 +232,7 @@ fn reader_import_respects_mutation_and_section_guards(cx: &mut TestAppContext) {
                 Section::Library
             };
             state.import_from_reader(reader.clone(), cx);
-            assert_eq!(state.status, status);
+            assert_eq!(state.session().status, status);
         }
         state.session.activity = Activity::Idle;
         state.session.metadata_editing = false;
@@ -227,21 +240,27 @@ fn reader_import_respects_mutation_and_section_guards(cx: &mut TestAppContext) {
         state.reload(cx);
     });
     settle(&f.state, cx);
-    assert_eq!(f.state.read_with(cx, |state, _| state.items.len()), count);
+    assert_eq!(
+        f.state
+            .read_with(cx, |state, _| state.session().items.len()),
+        count
+    );
 }
 
 #[gpui::test]
 fn reader_import_unplugged_reader_reports_reconnect_without_import(cx: &mut TestAppContext) {
     let f = fixture(cx);
     let reader = shelf_reader(&f, cx);
-    let count = f.state.read_with(cx, |state, _| state.items.len());
+    let count = f
+        .state
+        .read_with(cx, |state, _| state.session().items.len());
     fs::remove_dir_all(&reader.path).unwrap();
     f.state
         .update(cx, |state, cx| state.import_from_reader(reader, cx));
     settle(&f.state, cx);
     f.state.read_with(cx, |state, _| {
-        assert_eq!(state.items.len(), count);
-        let status = state.status.as_ref().unwrap();
+        assert_eq!(state.session().items.len(), count);
+        let status = state.session().status.as_ref().unwrap();
         assert!(status.text.contains("Reconnect"));
         assert!(status.text.contains("Refresh readers"));
         assert!(!state.busy());
@@ -267,7 +286,9 @@ fn shelf_reader(f: &Fixture, cx: &mut TestAppContext) -> Destination {
 fn reader_shelf_matches_bytes_counts_unknown_and_trash_removes_mark(cx: &mut TestAppContext) {
     let f = fixture(cx);
     let reader = shelf_reader(&f, cx);
-    let book = f.state.read_with(cx, |state, _| state.items[0].clone());
+    let book = f
+        .state
+        .read_with(cx, |state, _| state.session().items[0].clone());
     fs::copy(
         &book.source_path,
         reader.path.join("documents/renamed.epub"),
@@ -280,8 +301,8 @@ fn reader_shelf_matches_bytes_counts_unknown_and_trash_removes_mark(cx: &mut Tes
     });
     settle(&f.state, cx);
     f.state.read_with(cx, |state, _| {
-        assert_eq!(state.on_reader[&book.id], vec![reader.label()]);
-        let shelf = state.reader_shelves[0].1.as_ref().unwrap();
+        assert_eq!(state.session().on_reader[&book.id], vec![reader.label()]);
+        let shelf = state.session().reader_shelves[0].1.as_ref().unwrap();
         assert_eq!((shelf.in_library, shelf.not_in_library), (1, 1));
     });
     f.state.update(cx, |state, cx| {
@@ -290,8 +311,8 @@ fn reader_shelf_matches_bytes_counts_unknown_and_trash_removes_mark(cx: &mut Tes
     });
     settle(&f.state, cx);
     f.state.read_with(cx, |state, _| {
-        assert!(state.on_reader.is_empty());
-        let shelf = state.reader_shelves[0].1.as_ref().unwrap();
+        assert!(state.session().on_reader.is_empty());
+        let shelf = state.session().reader_shelves[0].1.as_ref().unwrap();
         assert_eq!((shelf.in_library, shelf.not_in_library), (0, 2));
     });
     f.state
@@ -302,10 +323,9 @@ fn reader_shelf_matches_bytes_counts_unknown_and_trash_removes_mark(cx: &mut Tes
         state.restore_selected(cx);
     });
     settle(&f.state, cx);
-    assert!(
-        f.state
-            .read_with(cx, |state, _| state.on_reader.contains_key(&book.id))
-    );
+    assert!(f.state.read_with(cx, |state, _| {
+        state.session().on_reader.contains_key(&book.id)
+    }));
 }
 
 #[gpui::test]
@@ -323,13 +343,13 @@ fn delivered_book_with_broken_history_is_reported_as_delivered(cx: &mut TestAppC
         .update(cx, |state, cx| state.confirm_send_preview(cx));
     settle(&f.state, cx);
     f.state.read_with(cx, |state, _| {
-        let delivery = state.delivery_report.as_ref().unwrap().entries[0]
+        let delivery = state.session().delivery_report.as_ref().unwrap().entries[0]
             .result
             .as_ref()
             .unwrap();
         assert!(delivery.path.is_file());
         assert!(delivery.record_error.is_some());
-        let status = state.status.as_ref().unwrap();
+        let status = state.session().status.as_ref().unwrap();
         assert!(status.is_error);
         assert!(status.text.contains("Sent 1"));
         assert!(status.text.contains("0 failed"));
@@ -352,17 +372,20 @@ fn reader_shelf_send_review_rescans_sent_book(cx: &mut TestAppContext) {
         id
     });
     settle(&f.state, cx);
-    assert!(f.state.read_with(cx, |state, _| state.on_reader.is_empty()));
+    assert!(
+        f.state
+            .read_with(cx, |state, _| state.session().on_reader.is_empty())
+    );
     f.state
         .update(cx, |state, cx| state.confirm_send_preview(cx));
     settle(&f.state, cx);
     f.state.read_with(cx, |state, _| {
         assert!(
-            state.delivery_report.as_ref().unwrap().entries[0]
+            state.session().delivery_report.as_ref().unwrap().entries[0]
                 .result
                 .is_ok()
         );
-        assert!(state.on_reader.contains_key(&id));
+        assert!(state.session().on_reader.contains_key(&id));
     });
 }
 
@@ -374,7 +397,7 @@ fn reader_shelf_empty_documents_and_generic_drives_are_not_errors(cx: &mut TestA
     f.state.update(cx, |state, cx| state.scan_readers(cx));
     settle(&f.state, cx);
     f.state.read_with(cx, |state, _| {
-        let shelf = state.reader_shelves[0].1.as_ref().unwrap();
+        let shelf = state.session().reader_shelves[0].1.as_ref().unwrap();
         assert_eq!((shelf.in_library, shelf.not_in_library), (0, 0));
     });
     let mut generic = reader;
@@ -383,7 +406,7 @@ fn reader_shelf_empty_documents_and_generic_drives_are_not_errors(cx: &mut TestA
         state.destinations = vec![generic.clone()];
         state.scan_readers(cx);
         assert!(!state.session.scanning_readers);
-        assert!(state.reader_shelves.is_empty());
+        assert!(state.session().reader_shelves.is_empty());
     });
     let shelves = f
         .state
@@ -404,18 +427,27 @@ fn reader_shelf_stale_reply_cannot_replace_newer_scan_or_library(cx: &mut TestAp
     for switched in [false, true] {
         let f = fixture(cx);
         let reader = shelf_reader(&f, cx);
-        let book = f.state.read_with(cx, |state, _| state.items[0].clone());
+        let book = f
+            .state
+            .read_with(cx, |state, _| state.session().items[0].clone());
         fs::copy(&book.source_path, reader.path.join("documents/book.epub")).unwrap();
         f.state.update(cx, |state, cx| state.scan_readers(cx));
         settle(&f.state, cx);
         let old_shelf = f.state.read_with(cx, |state, _| {
-            state.reader_shelves[0].1.as_ref().unwrap().clone()
+            state.session().reader_shelves[0]
+                .1
+                .as_ref()
+                .unwrap()
+                .clone()
         });
         let (_other, root) = switching_candidate("Other catalogue");
         if switched {
             f.state.update(cx, |state, cx| state.open_library(root, cx));
             settle(&f.state, cx);
-            assert!(f.state.read_with(cx, |state, _| state.on_reader.is_empty()));
+            assert!(
+                f.state
+                    .read_with(cx, |state, _| state.session().on_reader.is_empty())
+            );
         }
         let (sender, receiver) = std::sync::mpsc::channel();
         sender.send(Ok(vec![(reader, Ok(old_shelf))])).unwrap();
@@ -431,11 +463,18 @@ fn reader_shelf_stale_reply_cannot_replace_newer_scan_or_library(cx: &mut TestAp
         });
         cx.run_until_parked();
         f.state.read_with(cx, |state, _| {
-            assert!(state.on_reader.is_empty());
+            assert!(state.session().on_reader.is_empty());
             if switched {
-                assert_eq!(state.reader_shelves[0].1.as_ref().unwrap().in_library, 0);
+                assert_eq!(
+                    state.session().reader_shelves[0]
+                        .1
+                        .as_ref()
+                        .unwrap()
+                        .in_library,
+                    0
+                );
             } else {
-                assert!(state.reader_shelves.is_empty());
+                assert!(state.session().reader_shelves.is_empty());
             }
             assert!(!state.session.scanning_readers);
         });
@@ -446,7 +485,9 @@ fn reader_shelf_stale_reply_cannot_replace_newer_scan_or_library(cx: &mut TestAp
 fn reader_marks_after_restart_reuse_saved_fingerprints(cx: &mut TestAppContext) {
     let f = fixture(cx);
     let reader = shelf_reader(&f, cx);
-    let book = f.state.read_with(cx, |state, _| state.items[0].clone());
+    let book = f
+        .state
+        .read_with(cx, |state, _| state.session().items[0].clone());
     fs::copy(&book.source_path, reader.path.join("documents/book.epub")).unwrap();
     fs::write(
         reader.path.join("documents/reader only.epub"),
@@ -488,9 +529,9 @@ fn reader_marks_after_restart_reuse_saved_fingerprints(cx: &mut TestAppContext) 
     });
     settle(&state, cx);
     state.read_with(cx, |state, _| {
-        let shelf = state.reader_shelves[0].1.as_ref().unwrap();
+        let shelf = state.session().reader_shelves[0].1.as_ref().unwrap();
         assert_eq!((shelf.in_library, shelf.not_in_library), (2, 0));
-        assert!(state.on_reader.contains_key(&book.id));
+        assert!(state.session().on_reader.contains_key(&book.id));
     });
     assert_eq!(
         fs::read(&cache).unwrap(),
@@ -521,11 +562,12 @@ fn reader_shelf_import_matches_preexisting_reader_file(cx: &mut TestAppContext) 
     settle(&f.state, cx);
     f.state.read_with(cx, |state, _| {
         let book = state
+            .session()
             .items
             .iter()
             .find(|book| book.title == "Delta")
             .unwrap();
-        assert!(state.on_reader.contains_key(&book.id));
+        assert!(state.session().on_reader.contains_key(&book.id));
     });
 }
 
@@ -559,7 +601,9 @@ fn plugging_in_a_reader_is_noticed_without_refresh(cx: &mut TestAppContext) {
             .read_with(cx, |state, _| state.destinations.is_empty())
     );
 
-    let book = f.state.read_with(cx, |state, _| state.items[0].clone());
+    let book = f
+        .state
+        .read_with(cx, |state, _| state.session().items[0].clone());
     let mount = kindle_at(&volumes, "Kindle");
     fs::copy(&book.source_path, mount.join("documents/book.epub")).unwrap();
     poll_volumes(&f, cx);
@@ -569,15 +613,21 @@ fn plugging_in_a_reader_is_noticed_without_refresh(cx: &mut TestAppContext) {
             1,
             "reader noticed without Refresh"
         );
-        assert_eq!(state.on_reader[&book.id], vec!["Kindle".to_owned()]);
+        assert_eq!(
+            state.session().on_reader[&book.id],
+            vec!["Kindle".to_owned()]
+        );
     });
 
     fs::remove_dir_all(&mount).unwrap();
     poll_volumes(&f, cx);
     f.state.read_with(cx, |state, _| {
         assert!(state.destinations.is_empty(), "unplugged reader removed");
-        assert!(state.on_reader.is_empty(), "stale markers cleared");
-        assert!(state.reader_shelves.is_empty());
+        assert!(
+            state.session().on_reader.is_empty(),
+            "stale markers cleared"
+        );
+        assert!(state.session().reader_shelves.is_empty());
     });
 }
 
@@ -637,15 +687,16 @@ fn unchanged_volumes_do_not_rescan_and_changes_wait_for_open_reviews(cx: &mut Te
 fn failed_volume_listing_clears_stale_reader_marks(cx: &mut TestAppContext) {
     let f = fixture(cx);
     let reader = shelf_reader(&f, cx);
-    let book = f.state.read_with(cx, |state, _| state.items[0].clone());
+    let book = f
+        .state
+        .read_with(cx, |state, _| state.session().items[0].clone());
     fs::copy(&book.source_path, reader.path.join("documents/book.epub")).unwrap();
     f.state
         .update(cx, |state, cx| state.refresh_destinations(cx));
     settle(&f.state, cx);
-    assert!(
-        f.state
-            .read_with(cx, |state, _| state.on_reader.contains_key(&book.id))
-    );
+    assert!(f.state.read_with(cx, |state, _| {
+        state.session().on_reader.contains_key(&book.id)
+    }));
 
     // The volumes root itself becomes unreadable: listing fails, so nothing can be
     // claimed about which books are on a reader any more.
@@ -655,12 +706,12 @@ fn failed_volume_listing_clears_stale_reader_marks(cx: &mut TestAppContext) {
     });
     settle(&f.state, cx);
     f.state.read_with(cx, |state, _| {
-        assert!(state.destination_error.is_some());
+        assert!(state.session().destination_error.is_some());
         assert!(state.destinations.is_empty());
         assert!(
-            state.on_reader.is_empty(),
+            state.session().on_reader.is_empty(),
             "no stale markers after a failed listing"
         );
-        assert!(state.reader_shelves.is_empty());
+        assert!(state.session().reader_shelves.is_empty());
     });
 }

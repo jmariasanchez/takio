@@ -103,7 +103,7 @@ impl InteractionProbe {
             let Some(started) = current_probe.started else {
                 return;
             };
-            if current_probe.settled_ms.is_some() || state.read(cx).loading {
+            if current_probe.settled_ms.is_some() || state.read(cx).session().loading {
                 return;
             }
             current_probe.validate(cx);
@@ -123,6 +123,7 @@ impl InteractionProbe {
     fn validate(&self, cx: &App) {
         let current = self.state.read(cx);
         if current
+            .session()
             .status
             .as_ref()
             .is_some_and(|status| status.is_error)
@@ -131,11 +132,12 @@ impl InteractionProbe {
         }
         let phase = self.phase();
         let expected = if phase == 0 { 5000 } else { 10000 };
-        if current.items.len() != expected {
+        if current.session().items.len() != expected {
             crate::fatal("interaction returned unexpected item count");
         }
         if phase == 0
             && current
+                .session()
                 .items
                 .iter()
                 .any(|item| !item.title.starts_with("Signal "))
@@ -143,8 +145,8 @@ impl InteractionProbe {
             crate::fatal("interaction returned unexpected search results");
         }
         if phase == 2
-            && current.items.windows(2).any(|pair| {
-                if current.sort.ascending {
+            && current.session().items.windows(2).any(|pair| {
+                if current.session().sort.ascending {
                     pair[0].title > pair[1].title
                 } else {
                     pair[0].title < pair[1].title
@@ -153,7 +155,7 @@ impl InteractionProbe {
         {
             crate::fatal("interaction returned incorrectly sorted results");
         }
-        if phase >= 3 && current.selected.len() != expected {
+        if phase >= 3 && current.session().selected.len() != expected {
             crate::fatal("interaction did not retain every selected item");
         }
     }
@@ -185,8 +187,8 @@ impl InteractionProbe {
             current.settled_ms.expect("settled"),
             current.dispatch_ms,
             if phase == 0 { 5000 } else { 10000 },
-            state.items.len(),
-            state.selected.len()
+            state.session().items.len(),
+            state.session().selected.len()
         );
         current.started = None;
         current.settled_ms = None;
@@ -322,15 +324,20 @@ pub fn run(started: Instant) {
         let query_measurements = measurements.clone();
         cx.observe(&state, move |state, cx| {
             let state = state.read(cx);
-            if state.loading || query_measurements.borrow().query.is_some() {
+            if state.session().loading || query_measurements.borrow().query.is_some() {
                 return;
             }
-            if state.status.as_ref().is_some_and(|status| status.is_error) {
+            if state
+                .session()
+                .status
+                .as_ref()
+                .is_some_and(|status| status.is_error)
+            {
                 crate::fatal("startup query failed");
             }
             let mut measurement = query_measurements.borrow_mut();
             measurement.query = Some(started.elapsed().as_secs_f64() * 1000.);
-            measurement.items = state.items.len();
+            measurement.items = state.session().items.len();
             measurement.finish(cx);
         })
         .detach();

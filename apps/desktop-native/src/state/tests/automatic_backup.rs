@@ -47,7 +47,7 @@ fn automatic_backup_state_opt_in_roundtrip_disable_and_daily_clock(cx: &mut Test
     settle(&f.state, cx);
     let (backup, last) = f.state.read_with(cx, |s, _| {
         (
-            s.recovery_outcome.as_ref().unwrap().path.clone(),
+            s.session().recovery_outcome.as_ref().unwrap().path.clone(),
             s.automatic_backup.config.last_success.unwrap(),
         )
     });
@@ -110,7 +110,9 @@ fn automatic_backup_state_defers_for_edits_reviews_busy_loading_and_switch(
                 0 => Activity::Running(Operation::Mutation),
                 3 => Activity::SwitchingLibrary,
                 5 => Activity::Running(Operation::PreviewingPreparation),
-                7 => Activity::ReviewingPreparation(preparation_review(&s.items[0], true)),
+                7 => {
+                    Activity::ReviewingPreparation(preparation_review(&s.session().items[0], true))
+                }
                 _ => Activity::Idle,
             };
             s.session.metadata_editing = blocked == 1;
@@ -137,8 +139,15 @@ fn automatic_backup_state_defers_for_edits_reviews_busy_loading_and_switch(
     assert!(requests.try_recv().is_err());
     settle(&f.state, cx);
     f.state.update(cx, |s, cx| {
-        assert!(s.status.as_ref().unwrap().is_error);
-        assert!(s.status.as_ref().unwrap().text.contains("one hour"));
+        assert!(s.session().status.as_ref().unwrap().is_error);
+        assert!(
+            s.session()
+                .status
+                .as_ref()
+                .unwrap()
+                .text
+                .contains("one hour")
+        );
         s.check_automatic_backup(10 + crate::automatic_backup::FAILURE_RETRY_SECONDS - 1, cx);
         assert!(!s.busy());
         s.check_automatic_backup(10 + crate::automatic_backup::FAILURE_RETRY_SECONDS, cx);
@@ -166,9 +175,9 @@ fn automatic_backup_state_switch_cancels_old_config_and_restored_library_default
         s.configure_automatic_backup(Some(output.path().into()), cx)
     });
     settle(&f.state, cx);
-    let backup = f
-        .state
-        .read_with(cx, |s, _| s.recovery_outcome.as_ref().unwrap().path.clone());
+    let backup = f.state.read_with(cx, |s, _| {
+        s.session().recovery_outcome.as_ref().unwrap().path.clone()
+    });
     let restored = output.path().join("restored");
     f.state.update(cx, |s, cx| {
         s.restore_backup_copy(backup, restored.clone(), cx)
@@ -212,7 +221,8 @@ fn automatic_backup_state_disable_save_failure_still_stops_session(cx: &mut Test
     settle(&f.state, cx);
     f.state.update(cx, |s, cx| {
         assert!(
-            s.status
+            s.session()
+                .status
                 .as_ref()
                 .unwrap()
                 .text
@@ -243,12 +253,19 @@ fn automatic_backup_state_keeps_success_and_daily_throttle_when_timestamp_save_f
     });
     settle(&f.state, cx);
     let backup = f.state.update(cx, |s, cx| {
-        assert!(s.status.as_ref().unwrap().is_error);
-        assert!(s.status.as_ref().unwrap().text.contains("Copy kept"));
+        assert!(s.session().status.as_ref().unwrap().is_error);
+        assert!(
+            s.session()
+                .status
+                .as_ref()
+                .unwrap()
+                .text
+                .contains("Copy kept")
+        );
         assert_eq!(s.automatic_backup.config.last_success, Some(100));
         s.check_automatic_backup(100 + crate::automatic_backup::FAILURE_RETRY_SECONDS, cx);
         assert!(!s.busy());
-        s.recovery_outcome.as_ref().unwrap().path.clone()
+        s.session().recovery_outcome.as_ref().unwrap().path.clone()
     });
     assert!(backup.join("manifest.json").is_file());
     let restored = output.path().join("restored");
@@ -305,9 +322,10 @@ fn automatic_backup_state_bad_settings_remain_disabled_and_visible_without_rewri
     automatic_ready(&f, cx);
     f.state.update(cx, |s, cx| {
         assert!(!s.automatic_backup.config.enabled);
-        assert!(s.status.as_ref().unwrap().is_error);
+        assert!(s.session().status.as_ref().unwrap().is_error);
         assert!(
-            s.status
+            s.session()
+                .status
                 .as_ref()
                 .unwrap()
                 .text

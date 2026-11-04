@@ -142,7 +142,7 @@ impl Workspace {
 
     fn confirm_purge(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let state = self.state.read(cx);
-        if state.section != Section::Trash || !state.can_mutate() {
+        if state.session().section != Section::Trash || !state.can_mutate() {
             return;
         }
         let ids = state.selected_ids();
@@ -181,7 +181,7 @@ impl Workspace {
         }
         let epoch = state.library_epoch();
         let ids = state.selected_ids();
-        if send && (state.section != Section::Library || ids.is_empty()) {
+        if send && (state.session().section != Section::Library || ids.is_empty()) {
             self.state.update(cx, |state, cx| {
                 state.set_status("Select books in your Library first".into(), false, cx)
             });
@@ -252,7 +252,7 @@ impl Workspace {
         theme: Theme,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
-        let enabled = preview.backend.available && !self.state.read(cx).loading;
+        let enabled = preview.backend.available && !self.state.read(cx).session().loading;
         let backend_message = if preview.backend.available {
             "Calibre is available. Conversion runs locally and can take up to two minutes."
         } else {
@@ -297,7 +297,7 @@ impl Workspace {
     ) -> gpui::Stateful<gpui::Div> {
         let ready = preview.ready_count();
         let blocked = preview.entries.len() - ready;
-        let enabled = ready > 0 && !self.state.read(cx).loading;
+        let enabled = ready > 0 && !self.state.read(cx).session().loading;
         div()
             .id("send-review")
             .role(gpui::Role::Group)
@@ -345,17 +345,17 @@ impl Render for Workspace {
         self.reset_library_views(window, cx);
         let theme = *cx.global::<Theme>();
         let read = self.state.read(cx);
-        let count = read.items.len();
-        let selected = read.selected.len();
-        let status = read.status.clone();
-        let loading = read.loading;
-        let section = read.section;
+        let count = read.session().items.len();
+        let selected = read.session().selected.len();
+        let status = read.session().status.clone();
+        let loading = read.session().loading;
+        let section = read.session().section;
         let can_mutate = read.can_mutate();
-        let report = read.delivery_report.clone();
+        let report = read.session().delivery_report.clone();
         let preview = read.send_preview().cloned();
         let preparation = read.preparation_preview().cloned();
-        let recovery = read.recovery_outcome.clone();
-        let exclusions = read.delivery_exclusions.clone();
+        let recovery = read.session().recovery_outcome.clone();
+        let exclusions = read.session().delivery_exclusions.clone();
         let library_path = read.library_root();
         let library_root = library_path.display().to_string();
         let library_name = library_path

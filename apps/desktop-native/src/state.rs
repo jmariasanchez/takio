@@ -109,17 +109,11 @@ pub struct LibraryState {
     generation: Generation,
 }
 
-// Views can read session data directly, but only state methods can mutate it.
-// Deliberately no DerefMut implementation.
-impl std::ops::Deref for LibraryState {
-    type Target = LibrarySession;
-
-    fn deref(&self) -> &Self::Target {
+impl LibraryState {
+    /// Read-only library-scoped view data. Mutations go through state methods.
+    pub fn session(&self) -> &LibrarySession {
         &self.session
     }
-}
-
-impl LibraryState {
     pub fn automatic_backup(&self) -> &crate::automatic_backup::Schedule {
         &self.automatic_backup
     }
@@ -469,6 +463,7 @@ impl LibraryState {
 
     fn reconcile_selection(&mut self, new_items: &[Arc<LibraryItem>]) {
         let ids: HashSet<&str> = self
+            .session
             .selected
             .iter()
             .filter_map(|index| self.session.items.get(*index))
@@ -627,7 +622,7 @@ impl LibraryState {
     }
 
     pub fn can_mutate(&self) -> bool {
-        self.session.activity.is_idle() && !self.metadata_editing && !self.session.loading
+        self.session.activity.is_idle() && !self.session.metadata_editing && !self.session.loading
     }
 
     pub fn busy(&self) -> bool {
@@ -1594,6 +1589,7 @@ mod tests {
                 state.update_metadata(item.id.clone(), LibraryPatch::default(), cx);
                 assert_eq!(
                     state
+                        .session
                         .metadata_save_result
                         .as_ref()
                         .unwrap()
@@ -1818,7 +1814,9 @@ mod tests {
     #[gpui::test]
     fn author_display_and_sort_use_shared_structured_author_policy(cx: &mut TestAppContext) {
         let f = fixture(cx);
-        let mut first = f.state.read_with(cx, |s, _| (*s.items[0]).clone());
+        let mut first = f
+            .state
+            .read_with(cx, |s, _| (*s.session().items[0]).clone());
         first.author = Some("Legacy".into());
         first.authors = vec![
             takio::library::model::BookAuthor {
@@ -2382,6 +2380,7 @@ mod tests {
                 cx,
             );
             let error = state
+                .session()
                 .metadata_save_result
                 .as_ref()
                 .unwrap()

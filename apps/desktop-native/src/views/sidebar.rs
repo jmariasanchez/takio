@@ -54,7 +54,7 @@ impl Sidebar {
     fn render_sections(&self, mut sidebar: Stateful<Div>, cx: &Context<Self>) -> Stateful<Div> {
         let theme = *cx.global::<Theme>();
         let state = self.state.read(cx);
-        let section = state.section;
+        let section = state.session().section;
         let available = state.can_mutate();
         for (label, target) in [("Library", Section::Library), ("Trash", Section::Trash)] {
             sidebar = sidebar.child(
@@ -88,6 +88,7 @@ impl Sidebar {
         let state = self.state.read(cx);
         let refreshing = state.refreshing_destinations();
         let destination_error = state
+            .session()
             .destination_error
             .as_ref()
             .map(|error| humanize_error(error.kind()));
@@ -151,26 +152,27 @@ impl Sidebar {
     fn render_reader(&self, index: usize, destination: Destination, cx: &Context<Self>) -> Div {
         let theme = *cx.global::<Theme>();
         let state = self.state.read(cx);
-        let section = state.section;
-        let selected = state.selected.len();
+        let section = state.session().section;
+        let selected = state.session().selected.len();
         let available = state.can_mutate();
         let can_send = available && section == Section::Library && selected > 0;
         let send = destination.clone();
         let import = destination.clone();
         let can_import = available && section == Section::Library;
         let shelf = state
+            .session()
             .reader_shelves
             .iter()
             .find(|(reader, _)| reader.id == destination.id)
             .map(|(_, shelf)| shelf);
-        let unmatched = if state.scanning_readers {
+        let unmatched = if state.session().scanning_readers {
             0
         } else {
             shelf
                 .and_then(|shelf| shelf.as_ref().ok())
                 .map_or(0, |shelf| shelf.importable)
         };
-        let shelf_text = if state.scanning_readers {
+        let shelf_text = if state.session().scanning_readers {
             "Checking books...".to_owned()
         } else {
             shelf_summary(shelf)
@@ -283,8 +285,8 @@ impl Sidebar {
     fn render_facets(&self, cx: &Context<Self>) -> Stateful<Div> {
         let theme = *cx.global::<Theme>();
         let state = self.state.read(cx);
-        let facets = &state.facets;
-        let filters = &state.filters;
+        let facets = &state.session().facets;
+        let filters = &state.session().filters;
         let available = state.can_mutate();
         let mut groups = div()
             .id("facets")

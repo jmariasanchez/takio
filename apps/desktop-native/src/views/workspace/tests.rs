@@ -161,10 +161,10 @@ fn native_preparation_toolbar_review_and_pointer_cancel_are_read_only(cx: &mut T
     settle(&f.state, cx);
     f.state.read_with(cx, |state, _| {
         let preview = state.preparation_preview().expect("toolbar opens review");
-        assert_eq!(preview.item_id, state.items[0].id);
+        assert_eq!(preview.item_id, state.session().items[0].id);
         assert!(preview.backend.available);
         assert!(!state.can_mutate());
-        assert!(state.delivery_report.is_none());
+        assert!(state.session().delivery_report.is_none());
     });
     assert_eq!(format!("{:?}", preparation_catalogue(&f)), before_catalogue);
     assert_eq!(preparation_files(&f), before_files);
@@ -240,6 +240,7 @@ fn native_preparation_missing_backend_blocks_pointer_and_action_confirmation(
         assert!(!state.preparation_preview().unwrap().backend.available);
         assert!(
             state
+                .session()
                 .status
                 .as_ref()
                 .unwrap()
@@ -257,7 +258,7 @@ fn native_preparation_missing_backend_blocks_pointer_and_action_confirmation(
     f.state.read_with(cx, |state, _| {
         assert!(state.preparation_preview().is_some());
         assert!(!state.busy());
-        assert!(state.delivery_report.is_none());
+        assert!(state.session().delivery_report.is_none());
     });
     assert_eq!(preparation_files(&f), before_files);
     assert_eq!(format!("{:?}", preparation_catalogue(&f)), before_catalogue);
@@ -268,7 +269,9 @@ fn native_preparation_confirmation_keeps_captured_book_and_never_sends(cx: &mut 
     let f = fixture_with_preparation_backend(false, Some(true), cx);
     let reader = reader(&f, cx);
     let before_files = preparation_files(&f);
-    let chosen = f.state.read_with(cx, |state, _| state.items[0].id.clone());
+    let chosen = f
+        .state
+        .read_with(cx, |state, _| state.session().items[0].id.clone());
     click_control(&f, "prepare-book", cx);
     settle(&f.state, cx);
     f.state.update(cx, |state, cx| state.select_only(1, cx));
@@ -323,9 +326,10 @@ fn native_preparation_confirmation_keeps_captured_book_and_never_sends(cx: &mut 
     f.state.read_with(cx, |state, _| {
         assert!(state.preparation_preview().is_none());
         assert!(state.send_preview().is_none());
-        assert!(state.delivery_report.is_none());
+        assert!(state.session().delivery_report.is_none());
         assert!(
             state
+                .session()
                 .status
                 .as_ref()
                 .unwrap()
@@ -379,7 +383,10 @@ fn purge_action_cancel_keeps_managed_files_and_trash(cx: &mut TestAppContext) {
 fn purge_approval_uses_captured_ids_not_changed_selection(cx: &mut TestAppContext) {
     let f = fixture(true, cx);
     let (chosen, other) = f.state.read_with(cx, |state, _| {
-        (state.items[0].clone(), state.items[1].clone())
+        (
+            state.session().items[0].clone(),
+            state.session().items[1].clone(),
+        )
     });
     f.window
         .update(cx, |_, window, cx| {
@@ -423,7 +430,11 @@ fn move_warning_cancel_never_opens_picker_or_imports(cx: &mut TestAppContext) {
     settle(&f.state, cx);
     assert!(!cx.did_prompt_for_paths());
     assert!(!cx.has_pending_prompt());
-    assert_eq!(f.state.read_with(cx, |state, _| state.items.len()), 2);
+    assert_eq!(
+        f.state
+            .read_with(cx, |state, _| state.session().items.len()),
+        2
+    );
     assert_files_unchanged(&f);
 }
 
@@ -444,7 +455,11 @@ fn copy_picker_cancel_keeps_library_and_originals(cx: &mut TestAppContext) {
     });
     settle(&f.state, cx);
     assert!(!cx.did_prompt_for_paths());
-    assert_eq!(f.state.read_with(cx, |state, _| state.items.len()), 2);
+    assert_eq!(
+        f.state
+            .read_with(cx, |state, _| state.session().items.len()),
+        2
+    );
     assert_files_unchanged(&f);
 }
 
@@ -463,21 +478,30 @@ fn approved_move_still_allows_picker_cancel(cx: &mut TestAppContext) {
     cx.simulate_path_prompt_response(|_| None);
     settle(&f.state, cx);
     assert!(!cx.did_prompt_for_paths());
-    assert_eq!(f.state.read_with(cx, |state, _| state.items.len()), 2);
+    assert_eq!(
+        f.state
+            .read_with(cx, |state, _| state.session().items.len()),
+        2
+    );
     assert_files_unchanged(&f);
 }
 
 #[gpui::test]
 fn metadata_editor_saves_through_window_and_blocks_library_delete(cx: &mut TestAppContext) {
     let f = fixture(false, cx);
-    let original = f.state.read_with(cx, |state, _| state.items[0].clone());
+    let original = f
+        .state
+        .read_with(cx, |state, _| state.session().items[0].clone());
     f.window
         .update(cx, |_, window, cx| {
             window.dispatch_action(Box::new(crate::EditSelected), cx);
         })
         .unwrap();
     cx.run_until_parked();
-    assert!(f.state.read_with(cx, |state, _| state.metadata_editing));
+    assert!(
+        f.state
+            .read_with(cx, |state, _| state.session().metadata_editing)
+    );
     cx.update_window(f.window.into(), |_, window, cx| window.draw(cx).clear(cx))
         .unwrap();
     f.window
@@ -491,7 +515,10 @@ fn metadata_editor_saves_through_window_and_blocks_library_delete(cx: &mut TestA
     cx.simulate_input(f.window.into(), "Edited title");
     cx.simulate_keystrokes(f.window.into(), "cmd-s");
     settle(&f.state, cx);
-    assert!(!f.state.read_with(cx, |state, _| state.metadata_editing));
+    assert!(
+        !f.state
+            .read_with(cx, |state, _| state.session().metadata_editing)
+    );
     let books = f
         .engine
         .request(|reply| Request::Query {
@@ -529,7 +556,9 @@ fn reader(f: &Fixture, cx: &mut TestAppContext) -> takio::delivery::destinations
 fn send_chooser_uses_ids_captured_before_selection_changes(cx: &mut TestAppContext) {
     let f = fixture(false, cx);
     let reader = reader(&f, cx);
-    let chosen = f.state.read_with(cx, |state, _| state.items[0].clone());
+    let chosen = f
+        .state
+        .read_with(cx, |state, _| state.session().items[0].clone());
     f.window
         .update(cx, |_, window, cx| {
             window.dispatch_action(Box::new(crate::SendSelected), cx);
@@ -548,12 +577,12 @@ fn send_chooser_uses_ids_captured_before_selection_changes(cx: &mut TestAppConte
     f.state.read_with(cx, |state, _| {
         let preview = state.send_preview().unwrap();
         assert_eq!(preview.ready_ids(), vec![chosen.id.clone()]);
-        assert!(state.delivery_report.is_none());
+        assert!(state.session().delivery_report.is_none());
     });
     assert_reader_untouched(&reader);
     confirm_send(&f, cx);
     f.state.read_with(cx, |state, _| {
-        let report = state.delivery_report.as_ref().unwrap();
+        let report = state.session().delivery_report.as_ref().unwrap();
         assert_eq!(report.entries.len(), 1);
         assert_eq!(report.entries[0].item_id, chosen.id);
         let delivery = report.entries[0].result.as_ref().unwrap();
@@ -586,7 +615,7 @@ fn send_chooser_cancel_writes_nothing(cx: &mut TestAppContext) {
     settle(&f.state, cx);
     assert!(
         f.state
-            .read_with(cx, |state, _| state.delivery_report.is_none())
+            .read_with(cx, |state, _| state.session().delivery_report.is_none())
     );
     assert_eq!(
         std::fs::read_dir(reader.path.join("documents"))
@@ -628,7 +657,9 @@ fn rendered_koreader_reader_shows_label_progress_summary_and_inspector_row(
 ) {
     let f = fixture(false, cx);
     let reader = reader(&f, cx);
-    let book = f.state.read_with(cx, |state, _| state.items[0].clone());
+    let book = f
+        .state
+        .read_with(cx, |state, _| state.session().items[0].clone());
     std::fs::copy(&book.source_path, reader.path.join("documents/book.epub")).unwrap();
     std::fs::create_dir(reader.path.join("documents/book.sdr")).unwrap();
     std::fs::write(
@@ -643,6 +674,7 @@ fn rendered_koreader_reader_shows_label_progress_summary_and_inspector_row(
     settle(&f.state, cx);
     let index = f.state.read_with(cx, |state, _| {
         state
+            .session()
             .items
             .iter()
             .position(|item| item.id == book.id)
@@ -737,25 +769,35 @@ fn sidebar_pointer_imports_reader_only_book(cx: &mut TestAppContext) {
     });
     settle(&f.state, cx);
     assert_eq!(
-        f.state.read_with(cx, |state, _| state.reader_shelves[0]
-            .1
-            .as_ref()
-            .unwrap()
-            .importable),
+        f.state
+            .read_with(cx, |state, _| state.session().reader_shelves[0]
+                .1
+                .as_ref()
+                .unwrap()
+                .importable),
         1
     );
     click_control(&f, "import-reader", cx);
     f.state.read_with(cx, |state, _| {
-        assert_eq!(state.items.len(), 3);
+        assert_eq!(state.session().items.len(), 3);
         let imported = state
+            .session()
             .items
             .iter()
             .find(|book| book.title == "ReaderOnly")
             .unwrap();
-        assert!(state.on_reader.contains_key(&imported.id));
-        assert_eq!(state.reader_shelves[0].1.as_ref().unwrap().importable, 0);
+        assert!(state.session().on_reader.contains_key(&imported.id));
+        assert_eq!(
+            state.session().reader_shelves[0]
+                .1
+                .as_ref()
+                .unwrap()
+                .importable,
+            0
+        );
         assert!(
             state
+                .session()
                 .status
                 .as_ref()
                 .unwrap()
@@ -763,7 +805,11 @@ fn sidebar_pointer_imports_reader_only_book(cx: &mut TestAppContext) {
                 .contains("Imported 1, skipped 1")
         );
         assert_eq!(
-            state.reader_shelves[0].1.as_ref().unwrap().not_in_library,
+            state.session().reader_shelves[0]
+                .1
+                .as_ref()
+                .unwrap()
+                .not_in_library,
             1
         );
     });
@@ -792,15 +838,15 @@ fn sidebar_pointer_review_cancel_writes_nothing(cx: &mut TestAppContext) {
     assert!(!cx.has_pending_prompt());
     f.state.read_with(cx, |state, _| {
         assert_eq!(state.send_preview().unwrap().ready_ids(), chosen);
-        assert!(state.delivery_report.is_none());
+        assert!(state.session().delivery_report.is_none());
     });
     assert_reader_untouched(&reader);
 
     click_control(&f, "cancel-send-review", cx);
     f.state.read_with(cx, |state, _| {
         assert!(state.send_preview().is_none());
-        assert!(state.delivery_report.is_none());
-        assert!(state.delivery_exclusions.is_empty());
+        assert!(state.session().delivery_report.is_none());
+        assert!(state.session().delivery_exclusions.is_empty());
         assert!(state.can_mutate());
     });
     assert_reader_untouched(&reader);
@@ -814,7 +860,9 @@ fn sidebar_pointer_review_cancel_writes_nothing(cx: &mut TestAppContext) {
 fn sidebar_pointer_send_ready_uses_reviewed_selection(cx: &mut TestAppContext) {
     let f = fixture(false, cx);
     let reader = reader(&f, cx);
-    let chosen = f.state.read_with(cx, |state, _| state.items[0].clone());
+    let chosen = f
+        .state
+        .read_with(cx, |state, _| state.session().items[0].clone());
     let original_bytes = std::fs::read(&f.originals[0]).unwrap();
     let managed_bytes = std::fs::read(&chosen.source_path).unwrap();
 
@@ -825,7 +873,7 @@ fn sidebar_pointer_send_ready_uses_reviewed_selection(cx: &mut TestAppContext) {
             state.send_preview().unwrap().ready_ids(),
             vec![chosen.id.clone()]
         );
-        assert!(state.delivery_report.is_none());
+        assert!(state.session().delivery_report.is_none());
     });
     assert_reader_untouched(&reader);
     f.state.update(cx, |state, cx| state.select_only(1, cx));
@@ -833,7 +881,7 @@ fn sidebar_pointer_send_ready_uses_reviewed_selection(cx: &mut TestAppContext) {
     click_control(&f, "confirm-send-review", cx);
     f.state.read_with(cx, |state, _| {
         assert!(state.send_preview().is_none());
-        let report = state.delivery_report.as_ref().unwrap();
+        let report = state.session().delivery_report.as_ref().unwrap();
         assert_eq!(report.entries.len(), 1);
         assert_eq!(report.entries[0].item_id, chosen.id);
         let delivered = report.entries[0].result.as_ref().unwrap();
@@ -901,8 +949,8 @@ fn cancel_send_review_and_later_confirm_write_nothing(cx: &mut TestAppContext) {
     confirm_send(&f, cx);
     f.state.read_with(cx, |state, _| {
         assert!(state.send_preview().is_none());
-        assert!(state.delivery_report.is_none());
-        assert!(state.delivery_exclusions.is_empty());
+        assert!(state.session().delivery_report.is_none());
+        assert!(state.session().delivery_exclusions.is_empty());
     });
     assert_reader_untouched(&reader);
     assert_files_unchanged(&f);
@@ -924,7 +972,7 @@ fn cancel_send_while_preview_is_pending_discards_reply(cx: &mut TestAppContext) 
     confirm_send(&f, cx);
     f.state.read_with(cx, |state, _| {
         assert!(state.send_preview().is_none());
-        assert!(state.delivery_report.is_none());
+        assert!(state.session().delivery_report.is_none());
     });
     assert_reader_untouched(&reader);
     assert_files_unchanged(&f);
@@ -935,7 +983,10 @@ fn mixed_send_review_confirms_only_ready_ids_and_retains_exclusions(cx: &mut Tes
     let f = fixture(false, cx);
     let reader = reader(&f, cx);
     let (ready, blocked) = f.state.read_with(cx, |state, _| {
-        (state.items[0].clone(), state.items[1].clone())
+        (
+            state.session().items[0].clone(),
+            state.session().items[1].clone(),
+        )
     });
     std::fs::remove_file(&blocked.formats[0].source_path).unwrap();
     f.state.update(cx, |state, cx| state.toggle_select(1, cx));
@@ -952,14 +1003,14 @@ fn mixed_send_review_confirms_only_ready_ids_and_retains_exclusions(cx: &mut Tes
     confirm_send(&f, cx);
     f.state.read_with(cx, |state, _| {
         assert!(state.send_preview().is_none());
-        let report = state.delivery_report.as_ref().unwrap();
+        let report = state.session().delivery_report.as_ref().unwrap();
         assert_eq!(report.entries.len(), 1);
         assert_eq!(report.entries[0].item_id, ready.id);
         assert!(report.entries[0].result.is_ok());
-        assert_eq!(state.delivery_exclusions.len(), 1);
-        assert_eq!(state.delivery_exclusions[0].item_id, blocked.id);
+        assert_eq!(state.session().delivery_exclusions.len(), 1);
+        assert_eq!(state.session().delivery_exclusions[0].item_id, blocked.id);
         assert_eq!(
-            state.delivery_exclusions[0]
+            state.session().delivery_exclusions[0]
                 .result
                 .as_ref()
                 .unwrap_err()
@@ -991,7 +1042,7 @@ fn all_blocked_send_review_cannot_confirm(cx: &mut TestAppContext) {
                 .iter()
                 .all(|entry| entry.result.as_ref().unwrap_err().code() == "no-compatible-format")
         );
-        assert!(state.delivery_report.is_none());
+        assert!(state.session().delivery_report.is_none());
     });
     assert_reader_untouched(&reader);
     assert_files_unchanged(&f);
@@ -1001,7 +1052,9 @@ fn all_blocked_send_review_cannot_confirm(cx: &mut TestAppContext) {
 fn send_confirmation_uses_preview_ids_and_ignores_repeated_confirmation(cx: &mut TestAppContext) {
     let f = fixture(false, cx);
     let reader = reader(&f, cx);
-    let chosen = f.state.read_with(cx, |state, _| state.items[0].clone());
+    let chosen = f
+        .state
+        .read_with(cx, |state, _| state.session().items[0].clone());
     preview_selected(&f, &reader, cx);
     f.state.update(cx, |state, cx| state.select_only(1, cx));
     f.window
@@ -1014,7 +1067,7 @@ fn send_confirmation_uses_preview_ids_and_ignores_repeated_confirmation(cx: &mut
     confirm_send(&f, cx);
     f.state.read_with(cx, |state, _| {
         assert!(state.send_preview().is_none());
-        let report = state.delivery_report.as_ref().unwrap();
+        let report = state.session().delivery_report.as_ref().unwrap();
         assert_eq!(report.entries.len(), 1);
         assert_eq!(report.entries[0].item_id, chosen.id);
         assert!(report.entries[0].result.is_ok());
@@ -1038,7 +1091,9 @@ fn confirm_send_rechecks_source_reader_capabilities_disconnect_and_collision(
     for change in ["source", "capabilities", "disconnect", "collision"] {
         let f = fixture(false, cx);
         let reader = reader(&f, cx);
-        let chosen = f.state.read_with(cx, |state, _| state.items[0].clone());
+        let chosen = f
+            .state
+            .read_with(cx, |state, _| state.session().items[0].clone());
         preview_selected(&f, &reader, cx);
         let target = reader.path.join("documents").join(
             takio::delivery::destinations::destination_file_name(
@@ -1068,7 +1123,7 @@ fn confirm_send_rechecks_source_reader_capabilities_disconnect_and_collision(
         };
         confirm_send(&f, cx);
         f.state.read_with(cx, |state, _| {
-            let report = state.delivery_report.as_ref().unwrap();
+            let report = state.session().delivery_report.as_ref().unwrap();
             assert_eq!(report.entries.len(), 1);
             assert_eq!(report.entries[0].item_id, chosen.id);
             assert_eq!(
@@ -1107,10 +1162,10 @@ fn send_without_devices_explains_how_to_connect(cx: &mut TestAppContext) {
     cx.run_until_parked();
     assert!(!cx.has_pending_prompt());
     f.state.read_with(cx, |state, _| {
-        let status = &state.status.as_ref().unwrap().text;
+        let status = &state.session().status.as_ref().unwrap().text;
         assert!(status.contains("Connect a USB reader"));
         assert!(status.contains("Refresh readers"));
-        assert!(state.delivery_report.is_none());
+        assert!(state.session().delivery_report.is_none());
     });
 }
 
@@ -1124,7 +1179,10 @@ fn send_action_while_metadata_editing_never_prompts(cx: &mut TestAppContext) {
         })
         .unwrap();
     cx.run_until_parked();
-    assert!(f.state.read_with(cx, |state, _| state.metadata_editing));
+    assert!(
+        f.state
+            .read_with(cx, |state, _| state.session().metadata_editing)
+    );
     cx.update_window(f.window.into(), |_, window, cx| window.draw(cx).clear(cx))
         .unwrap();
     f.window
@@ -1136,7 +1194,7 @@ fn send_action_while_metadata_editing_never_prompts(cx: &mut TestAppContext) {
     assert!(!cx.has_pending_prompt());
     assert!(
         f.state
-            .read_with(cx, |state, _| state.delivery_report.is_none())
+            .read_with(cx, |state, _| state.session().delivery_report.is_none())
     );
     assert_eq!(
         std::fs::read_dir(reader.path.join("documents"))
@@ -1208,8 +1266,9 @@ fn copy_picker_import_preserves_original_and_supports_search_edit(cx: &mut TestA
     settle(&f.state, cx);
     assert!(!cx.did_prompt_for_paths());
     let imported = f.state.read_with(cx, |state, _| {
-        assert_eq!(state.items.len(), 3);
+        assert_eq!(state.session().items.len(), 3);
         state
+            .session()
             .items
             .iter()
             .find(|item| item.title == "PickerImported")
@@ -1250,9 +1309,9 @@ fn copy_picker_import_preserves_original_and_supports_search_edit(cx: &mut TestA
     cx.executor().advance_clock(Duration::from_millis(100));
     settle(&f.state, cx);
     f.state.read_with(cx, |state, _| {
-        assert_eq!(state.query, "PickerImported");
-        assert_eq!(state.items.len(), 1);
-        assert_eq!(state.items[0].id, imported.id);
+        assert_eq!(state.session().query, "PickerImported");
+        assert_eq!(state.session().items.len(), 1);
+        assert_eq!(state.session().items[0].id, imported.id);
     });
     f.window
         .update(cx, |workspace, window, cx| {
@@ -1278,10 +1337,10 @@ fn copy_picker_import_preserves_original_and_supports_search_edit(cx: &mut TestA
     cx.simulate_keystrokes(f.window.into(), "cmd-s");
     settle(&f.state, cx);
     f.state.read_with(cx, |state, _| {
-        assert!(!state.metadata_editing);
-        assert_eq!(state.items.len(), 1);
-        assert_eq!(state.items[0].id, imported.id);
-        assert_eq!(state.items[0].title, "PickerImported edited");
+        assert!(!state.session().metadata_editing);
+        assert_eq!(state.session().items.len(), 1);
+        assert_eq!(state.session().items[0].id, imported.id);
+        assert_eq!(state.session().items[0].title, "PickerImported edited");
     });
     assert_eq!(
         takio::fingerprint::hash_file(&original).unwrap(),

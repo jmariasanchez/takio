@@ -31,8 +31,8 @@ impl Inspector {
         let state = self.state.read(cx);
         if self.editor.is_some()
             || !state.can_mutate()
-            || state.selected.len() != 1
-            || state.section != crate::state::Section::Library
+            || state.session().selected.len() != 1
+            || state.session().section != crate::state::Section::Library
         {
             return;
         }
@@ -103,7 +103,7 @@ impl Inspector {
                     .child(authors)
             }))
             .when(
-                self.state.read(cx).section == crate::state::Section::Library,
+                self.state.read(cx).session().section == crate::state::Section::Library,
                 |details| {
                     details.child(
                         div()
@@ -146,6 +146,7 @@ impl Inspector {
                 "On reader",
                 self.state
                     .read(cx)
+                    .session()
                     .on_reader
                     .get(&item.id)
                     .map(|names| names.join(", ")),
@@ -154,6 +155,7 @@ impl Inspector {
                 "Progress",
                 self.state
                     .read(cx)
+                    .session()
                     .reading
                     .get(&item.id)
                     .and_then(|(_, reading)| reading.label()),
@@ -347,7 +349,7 @@ impl Render for Inspector {
         }
         let theme = *cx.global::<Theme>();
         let state = self.state.read(cx);
-        let selected = state.selected.len();
+        let selected = state.session().selected.len();
         let item = state.primary_selected().cloned();
         let content = if let Some(editor) = &self.editor {
             editor.clone().into_any_element()

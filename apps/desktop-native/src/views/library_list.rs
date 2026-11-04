@@ -61,7 +61,7 @@ impl LibraryList {
 
     pub fn new(state: LibraryEntity, cx: &mut Context<Self>) -> Self {
         cx.observe(&state, |this, _, cx| {
-            if let Some(anchor) = this.state.read(cx).anchor {
+            if let Some(anchor) = this.state.read(cx).session().anchor {
                 this.scroll.scroll_to_item(anchor, ScrollStrategy::Nearest);
             }
             cx.notify();
@@ -95,7 +95,7 @@ impl LibraryList {
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<Div> {
-        let sort = self.state.read(cx).sort;
+        let sort = self.state.read(cx).session().sort;
         let enabled = !self.state.read(cx).switching_library();
         let active = sort.column == column;
         let indicator = if active {
@@ -157,7 +157,7 @@ impl Render for LibraryList {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = *cx.global::<Theme>();
         let state = self.state.clone();
-        let count = state.read(cx).items.len();
+        let count = state.read(cx).session().items.len();
         let focused = self.focus.contains_focused(window, cx);
         let columns = ColumnLayout::for_viewport(f32::from(window.viewport_size().width));
 
@@ -196,8 +196,8 @@ impl Render for LibraryList {
             count,
             cx.processor(move |_this, range: std::ops::Range<usize>, _window, cx| {
                 let read = list_state.read(cx);
-                let selected = &read.selected;
-                let items = &read.items;
+                let selected = &read.session().selected;
+                let items = &read.session().items;
                 range
                     .filter_map(|index| items.get(index).map(|item| (index, item)))
                     .map(|(index, item)| {
@@ -208,9 +208,9 @@ impl Render for LibraryList {
                             focused,
                             &theme,
                             columns,
-                            read.on_reader.contains_key(&item.id),
+                            read.session().on_reader.contains_key(&item.id),
                         )
-                        .when(focused && read.anchor == Some(index), |row| {
+                        .when(focused && read.session().anchor == Some(index), |row| {
                             row.aria_active_descendant()
                         })
                         .on_click(cx.listener(
@@ -361,12 +361,12 @@ fn cell(width: f32, text: impl Into<SharedString>, color: gpui::Rgba) -> Div {
 
 fn empty_label(state: &LibraryEntity, cx: &App) -> &'static str {
     let read = state.read(cx);
-    if read.loading {
+    if read.session().loading {
         "Loading..."
-    } else if !read.query.is_empty() || !read.filters.is_empty() {
+    } else if !read.session().query.is_empty() || !read.session().filters.is_empty() {
         "No books match"
     } else {
-        match read.section {
+        match read.session().section {
             crate::state::Section::Library => {
                 "Add books or drop files here. Your originals stay where they are."
             }
@@ -383,7 +383,7 @@ mod tests {
     #[gpui::test]
     fn row_accessibility_uses_stable_book_identity_and_selection(cx: &mut TestAppContext) {
         let (_temp, state) = crate::views::text_input::tests::accessibility::fixture(cx);
-        let item = state.read_with(cx, |state, _| state.items[0].clone());
+        let item = state.read_with(cx, |state, _| state.session().items[0].clone());
         let first = row(
             0,
             &item,

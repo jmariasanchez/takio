@@ -50,9 +50,9 @@ fn native_automatic_backup_enable_reload_mutate_restore_and_disable(cx: &mut Tes
     settle(&f.state, cx);
     recovery_no_dialogs(cx);
     let (backup, config) = f.state.read_with(cx, |state, _| {
-        assert!(!state.status.as_ref().unwrap().is_error);
+        assert!(!state.session().status.as_ref().unwrap().is_error);
         assert!(state.automatic_backup().config.enabled);
-        let outcome = state.recovery_outcome.as_ref().unwrap();
+        let outcome = state.session().recovery_outcome.as_ref().unwrap();
         assert!(outcome.summary.contains("verified"));
         (
             outcome.path.clone(),
@@ -119,10 +119,10 @@ fn native_automatic_backup_enable_reload_mutate_restore_and_disable(cx: &mut Tes
     settle(&f.state, cx);
     recovery_no_dialogs(cx);
     f.state.read_with(cx, |state, _| {
-        assert!(!state.status.as_ref().unwrap().is_error);
+        assert!(!state.session().status.as_ref().unwrap().is_error);
         assert_eq!(state.library_root(), original_root);
         assert_eq!(
-            state.recovery_outcome.as_ref().unwrap().path,
+            state.session().recovery_outcome.as_ref().unwrap().path,
             restored.canonicalize().unwrap()
         );
     });
@@ -135,9 +135,10 @@ fn native_automatic_backup_enable_reload_mutate_restore_and_disable(cx: &mut Tes
     automatic_backup_settings_ready(&f.state, cx);
     f.state.update(cx, |state, cx| {
         assert_eq!(state.library_root(), restored.canonicalize().unwrap());
-        assert_eq!(state.items.len(), f.books.len());
+        assert_eq!(state.session().items.len(), f.books.len());
         for original in &f.books {
             let book = state
+                .session()
                 .items
                 .iter()
                 .find(|book| book.id == original.id)
@@ -170,7 +171,7 @@ fn native_automatic_backup_enable_reload_mutate_restore_and_disable(cx: &mut Tes
         .unwrap();
     settle(&f.state, cx);
     f.state.update(cx, |state, cx| {
-        assert!(!state.status.as_ref().unwrap().is_error);
+        assert!(!state.session().status.as_ref().unwrap().is_error);
         assert!(!state.automatic_backup().config.enabled);
         state.check_automatic_backup(u64::MAX, cx);
         assert!(!state.busy());
@@ -303,7 +304,8 @@ fn native_automatic_backup_consent_and_destination_cancel_write_nothing(cx: &mut
         }
         assert!(
             f.state
-                .read_with(cx, |s, _| s.automatic_backup_prompt_open && !s.busy())
+                .read_with(cx, |s, _| s.session().automatic_backup_prompt_open
+                    && !s.busy())
         );
         cx.simulate_prompt_answer(if accept_explanation {
             "Choose existing folder"
@@ -322,7 +324,7 @@ fn native_automatic_backup_consent_and_destination_cancel_write_nothing(cx: &mut
         assert!(
             !f.state
                 .read_with(cx, |s, _| s.automatic_backup().config.enabled
-                    || s.automatic_backup_prompt_open)
+                    || s.session().automatic_backup_prompt_open)
         );
         assert_eq!(recovery_snapshot(&f), before);
         assert!(
@@ -345,7 +347,7 @@ fn native_automatic_backup_enable_and_disable_keep_verified_copy(cx: &mut TestAp
     settle(&f.state, cx);
     let copy = f.state.read_with(cx, |s, _| {
         assert!(s.automatic_backup().config.enabled);
-        s.recovery_outcome.as_ref().unwrap().path.clone()
+        s.session().recovery_outcome.as_ref().unwrap().path.clone()
     });
     recovery_assert_copied_books(&f, &copy, 2);
     f.window
