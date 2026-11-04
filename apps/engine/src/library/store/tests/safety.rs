@@ -66,7 +66,7 @@ fn merge_request_deserializes_typed_metadata_and_rejects_unknown_fields() {
     });
     let parsed: MergeDuplicatePairRequest = serde_json::from_value(base.clone()).unwrap();
     assert_eq!(
-        parsed.metadata.title.as_set().map(String::as_str),
+        parsed.metadata.title.value().map(String::as_str),
         Some("Merged")
     );
     for metadata in [

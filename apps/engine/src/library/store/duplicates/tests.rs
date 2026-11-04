@@ -5,6 +5,43 @@ use crate::paths::LibraryPaths;
 use std::collections::BTreeMap;
 
 #[test]
+fn duplicate_scan_matches_legacy_author_names() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = LibraryPaths::resolve(None, Some(&temp.path().join("library.sqlite"))).unwrap();
+    let mut store = LibraryStore::create_or_migrate(paths).unwrap();
+    for name in ["left.epub", "right.epub"] {
+        let source = temp.path().join(name);
+        fs::write(&source, name).unwrap();
+        store
+            .import(
+                &source,
+                Some("Shared title"),
+                crate::model::ImportMode::Copy,
+            )
+            .unwrap();
+    }
+    store
+        .connection
+        .execute_batch(
+            "DELETE FROM library_item_authors; UPDATE library_items SET author='Legacy Writer';",
+        )
+        .unwrap();
+    let page = store
+        .list_duplicate_candidates(&ListDuplicateCandidatesRequest {
+            page: DuplicatePageRequest {
+                limit: 10,
+                offset: 0,
+            },
+            disposition: DuplicateDisposition::Unreviewed,
+        })
+        .unwrap();
+    assert_eq!(page.total, 1);
+    assert!(page.candidates[0].signals.iter().any(|signal| matches!(
+        signal, DuplicateSignal::SameTitleAuthor { author, .. } if author == "Legacy Writer"
+    )));
+}
+
+#[test]
 fn duplicate_reviews_are_stable_idempotent_and_reject_stale_evidence() {
     let temp = tempfile::tempdir().unwrap();
     let paths = LibraryPaths::resolve(None, Some(&temp.path().join("library.sqlite"))).unwrap();

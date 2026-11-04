@@ -554,29 +554,17 @@ fn parse_book(book_root: &Path, artifacts: &HashSet<String>) -> AppResult<Parsed
 }
 
 fn portable_opf(item: &LibraryItem, cover_name: Option<&str>) -> String {
-    let authors = if item.authors.is_empty() {
-        item.author
-            .as_ref()
-            .map(|name| {
-                vec![BookAuthor {
-                    name: name.clone(),
-                    sort_name: None,
-                }]
-            })
-            .unwrap_or_default()
-    } else {
-        item.authors.clone()
-    };
     let mut metadata = vec![format!("    <dc:title>{}</dc:title>", xml(&item.title))];
-    for author in authors {
-        let file_as = author
-            .sort_name
-            .as_ref()
+    for (position, name) in item.author_names().enumerate() {
+        let file_as = item
+            .authors
+            .get(position)
+            .and_then(|author| author.sort_name.as_deref())
             .map(|value| format!(" opf:file-as=\"{}\"", xml(value)))
             .unwrap_or_default();
         metadata.push(format!(
             "    <dc:creator opf:role=\"aut\"{file_as}>{}</dc:creator>",
-            xml(&author.name)
+            xml(name)
         ));
     }
     push_text(&mut metadata, "publisher", item.publisher.as_deref());
@@ -1050,6 +1038,36 @@ mod tests {
         )
         .expect("write manifest");
         temp
+    }
+
+    #[test]
+    fn portable_opf_uses_author_helpers_and_preserves_sort_names() {
+        let portable = fixture();
+        let mut item = validate_source(portable.path())
+            .unwrap()
+            .books
+            .remove(0)
+            .item;
+        item.author = Some("Legacy & Writer".into());
+        let legacy = portable_opf(&item, None);
+        assert!(legacy.contains("<dc:creator opf:role=\"aut\">Legacy &amp; Writer</dc:creator>"));
+        item.authors = vec![
+            BookAuthor {
+                name: "First & Writer".into(),
+                sort_name: Some("Writer, First".into()),
+            },
+            BookAuthor {
+                name: "Second Writer".into(),
+                sort_name: None,
+            },
+        ];
+        let structured = portable_opf(&item, None);
+        assert!(!structured.contains("Legacy"));
+        assert!(
+            structured.contains("opf:file-as=\"Writer, First\">First &amp; Writer</dc:creator>")
+        );
+        assert!(structured.contains("<dc:creator opf:role=\"aut\">Second Writer</dc:creator>"));
+        assert_eq!(structured.matches("<dc:creator").count(), 2);
     }
 
     #[test]

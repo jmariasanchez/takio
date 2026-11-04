@@ -34,7 +34,7 @@ impl<T> Patch<T> {
 
     /// Returns the explicit value when the field is present and non-null.
     #[must_use]
-    pub const fn as_set(&self) -> Option<&T> {
+    pub const fn value(&self) -> Option<&T> {
         match self {
             Self::Set(value) => Some(value),
             _ => None,

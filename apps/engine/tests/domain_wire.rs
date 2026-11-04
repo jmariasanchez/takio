@@ -5,6 +5,20 @@ use takio::model::ImportMode;
 use takio::reader_shelf::{ShelfEntry, ShelfMatchSource};
 
 #[test]
+fn patch_value_borrows_without_changing_presence_or_wire_value() {
+    use takio::model::Patch;
+    let patch = Patch::Set(String::from("Reviewed title"));
+    assert_eq!(patch.value().map(String::as_str), Some("Reviewed title"));
+    assert_eq!(
+        serde_json::to_value(&patch).unwrap(),
+        json!("Reviewed title")
+    );
+    assert_eq!(patch.into_set(), Some(String::from("Reviewed title")));
+    assert!(Patch::<String>::Missing.value().is_none());
+    assert!(Patch::<String>::Null.value().is_none());
+}
+
+#[test]
 fn conversion_profiles_keep_wire_names_and_reject_unknown_values() {
     for (profile, name) in [
         (ConversionProfile::Default, "default"),

@@ -219,17 +219,9 @@ pub(super) fn scan_duplicate_candidates_in(
             }
         }
         let title = normalize_duplicate_text(&item.title);
-        let authors = if item.authors.is_empty() {
-            item.author.iter().cloned().collect::<Vec<_>>()
-        } else {
-            item.authors
-                .iter()
-                .map(|author| author.name.clone())
-                .collect()
-        };
         let mut unique_authors = BTreeMap::new();
-        for author in authors {
-            let normalized = normalize_duplicate_text(&author);
+        for author in item.author_names() {
+            let normalized = normalize_duplicate_text(author);
             if !normalized.is_empty() {
                 unique_authors
                     .entry(normalized)

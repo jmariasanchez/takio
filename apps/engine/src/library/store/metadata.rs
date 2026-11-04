@@ -57,11 +57,11 @@ pub(super) fn validate_library_patch(
         return Err(AppError::new("invalid-arguments"));
     }
     for value in [
-        patch.title.as_set(),
-        patch.author.as_set(),
-        patch.series.as_set(),
-        patch.publisher.as_set(),
-        patch.description.as_set(),
+        patch.title.value(),
+        patch.author.value(),
+        patch.series.value(),
+        patch.publisher.value(),
+        patch.description.value(),
     ]
     .into_iter()
     .flatten()
@@ -76,11 +76,11 @@ pub(super) fn validate_library_patch(
     }
     if patch
         .series_index
-        .as_set()
+        .value()
         .is_some_and(|value| !value.is_finite())
         || patch
             .rating
-            .as_set()
+            .value()
             .is_some_and(|value| !value.is_finite() || !(0.0..=10.0).contains(value))
     {
         return Err(AppError::new("invalid-arguments"));
@@ -100,7 +100,7 @@ pub(super) fn validate_library_patch(
         }
         normalize_custom_metadata(values.clone())?;
     }
-    if let Some(value) = patch.published_date.as_set() {
+    if let Some(value) = patch.published_date.value() {
         normalize_published_date(value.clone())?;
     }
     if let Patch::Set(values) = &patch.tags {
