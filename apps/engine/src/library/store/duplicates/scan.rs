@@ -114,7 +114,7 @@ pub(super) fn scan_duplicate_candidates_in(
     }
 
     let mut signals = BTreeMap::<(String, String), BTreeMap<String, DuplicateSignal>>::new();
-    let mut fingerprints = HashMap::<(u64, String), Vec<(String, FormatId)>>::new();
+    let mut fingerprints = HashMap::<Fingerprint, Vec<(String, FormatId)>>::new();
     let mut files_hashed = 0;
     let mut fingerprints_reused = 0;
     let mut unreadable_formats = 0;
@@ -169,13 +169,13 @@ pub(super) fn scan_duplicate_candidates_in(
             && bytes > 0
         {
             fingerprints
-                .entry((bytes, sha))
+                .entry(Fingerprint { bytes, sha256: sha })
                 .or_default()
                 .push((item_id, format));
         }
     }
     drop(statement);
-    for ((bytes, sha256), entries) in fingerprints {
+    for (Fingerprint { bytes, sha256 }, entries) in fingerprints {
         for left_index in 0..entries.len() {
             for right_index in (left_index + 1)..entries.len() {
                 let (left, right) = (&entries[left_index], &entries[right_index]);

@@ -7,7 +7,7 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::fingerprint::CopyError;
+use crate::fingerprint::{CopyError, Fingerprint};
 use crate::format::FormatId;
 use crate::model::BookFormat;
 use crate::output::{AppError, AppResult};
@@ -287,8 +287,8 @@ pub fn send(
     let record = DeliveryRecord {
         item_id: item_id.to_owned(),
         relative_path,
-        bytes: expected.0,
-        sha256: expected.1.clone(),
+        bytes: expected.bytes,
+        sha256: expected.sha256.clone(),
         format: format.to_owned(),
         timestamp: Utc::now().to_rfc3339(),
     };
@@ -297,8 +297,8 @@ pub fn send(
         item_id: item_id.to_owned(),
         destination_id: destination.id.clone(),
         path: target,
-        bytes: expected.0,
-        sha256: expected.1,
+        bytes: expected.bytes,
+        sha256: expected.sha256,
         record_error,
     })
 }
@@ -315,7 +315,12 @@ pub fn inventory(destination: &Destination) -> AppResult<Vec<InventoryEntry>> {
             ensure_contained(&destination.path, &path)?;
             let status = if !path.exists() {
                 "missing"
-            } else if hash_file(&path)? == (record.bytes, record.sha256.clone()) {
+            } else if hash_file(&path)?
+                == (Fingerprint {
+                    bytes: record.bytes,
+                    sha256: record.sha256.clone(),
+                })
+            {
                 "present"
             } else {
                 "changed"
@@ -338,7 +343,12 @@ pub fn remove(destination: &Destination, item_id: &str) -> AppResult<DeliveryRec
     let path = destination.path.join(relative);
     ensure_contained(&destination.path, &path)?;
     if path.exists() {
-        if hash_file(&path)? != (record.bytes, record.sha256.clone()) {
+        if hash_file(&path)?
+            != (Fingerprint {
+                bytes: record.bytes,
+                sha256: record.sha256.clone(),
+            })
+        {
             return Err(AppError::new("verification-failed"));
         }
         fs::remove_file(path).map_err(|_| AppError::new("copy-failed"))?;
@@ -422,7 +432,7 @@ fn ensure_contained(parent: &Path, child: &Path) -> AppResult<()> {
     }
 }
 
-fn copy_and_hash(source: &Path, target: &Path) -> AppResult<(u64, String)> {
+fn copy_and_hash(source: &Path, target: &Path) -> AppResult<Fingerprint> {
     let mut input = File::open(source).map_err(|_| AppError::new("source-unavailable"))?;
     let mut output = OpenOptions::new()
         .create_new(true)
@@ -439,7 +449,7 @@ fn copy_and_hash(source: &Path, target: &Path) -> AppResult<(u64, String)> {
         output
             .sync_all()
             .map_err(|_| AppError::new("copy-failed"))?;
-        Ok(fingerprint.into())
+        Ok(fingerprint)
     })();
     drop(output);
     if result.is_err() {
@@ -456,7 +466,7 @@ fn publication_error(error: std::io::Error) -> AppError {
     }
 }
 
-fn publish_noclobber(partial: &Path, target: &Path, expected: &(u64, String)) -> AppResult<()> {
+fn publish_noclobber(partial: &Path, target: &Path, expected: &Fingerprint) -> AppResult<()> {
     match fs::hard_link(partial, target) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
@@ -469,11 +479,7 @@ fn publish_noclobber(partial: &Path, target: &Path, expected: &(u64, String)) ->
 /// FAT readers may not support hard links. Exclusive creation still prevents clobbering,
 /// but a crash during this non-atomic fallback can leave an untracked partial target.
 /// Only a fully synced and verified copy is reported as a successful delivery.
-fn publish_exclusive_copy(
-    partial: &Path,
-    target: &Path,
-    expected: &(u64, String),
-) -> AppResult<()> {
+fn publish_exclusive_copy(partial: &Path, target: &Path, expected: &Fingerprint) -> AppResult<()> {
     let copied = copy_and_hash(partial, target)?;
     let verification = hash_file(target).and_then(|actual| {
         if copied == *expected && actual == *expected {
@@ -488,10 +494,8 @@ fn publish_exclusive_copy(
     verification
 }
 
-fn hash_file(path: &Path) -> AppResult<(u64, String)> {
-    crate::fingerprint::hash_file(path)
-        .map(Into::into)
-        .map_err(|_| AppError::new("source-unavailable"))
+fn hash_file(path: &Path) -> AppResult<Fingerprint> {
+    crate::fingerprint::hash_file(path).map_err(|_| AppError::new("source-unavailable"))
 }
 
 fn manifest_path(destination: &Destination) -> PathBuf {
@@ -585,7 +589,10 @@ mod tests {
         assert_eq!(fs::read(&delivered.path).unwrap(), b"delivered bytes");
         assert_eq!(
             hash_file(&delivered.path).unwrap(),
-            (delivered.bytes, delivered.sha256.clone())
+            Fingerprint {
+                bytes: delivered.bytes,
+                sha256: delivered.sha256.clone()
+            }
         );
         assert_eq!(
             delivered.record_error.as_ref().unwrap().code(),
@@ -781,7 +788,10 @@ mod tests {
         assert_eq!(fs::read(&partial).unwrap(), b"verified book");
 
         let failed_target = temporary.path().join("failed.azw3");
-        let incorrect = (expected.0 + 1, expected.1.clone());
+        let incorrect = Fingerprint {
+            bytes: expected.bytes + 1,
+            sha256: expected.sha256.clone(),
+        };
         assert_eq!(
             publish_exclusive_copy(&partial, &failed_target, &incorrect)
                 .unwrap_err()

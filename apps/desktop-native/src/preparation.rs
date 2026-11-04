@@ -33,7 +33,10 @@ pub(crate) fn preview_with_backend(
 ) -> AppResult<PreparationPreview> {
     let item = eligible_item(store, item_id)?;
     let source_path = epub_path(&item)?;
-    let (source_bytes, source_sha256) = source_fingerprint(&source_path)?;
+    let takio::fingerprint::Fingerprint {
+        bytes: source_bytes,
+        sha256: source_sha256,
+    } = source_fingerprint(&source_path)?;
     Ok(PreparationPreview {
         item_id: item.id,
         title: item.title,
@@ -80,7 +83,12 @@ pub(crate) fn prepare_with_backend(
     let input = stage.path().join("source.epub");
     fs::copy(&reviewed.source_path, &input)
         .map_err(|_| AppError::new("prepare-source-unavailable"))?;
-    if source_fingerprint(&input)? != (reviewed.source_bytes, reviewed.source_sha256.clone()) {
+    if source_fingerprint(&input)?
+        != (takio::fingerprint::Fingerprint {
+            bytes: reviewed.source_bytes,
+            sha256: reviewed.source_sha256.clone(),
+        })
+    {
         return Err(AppError::new("prepare-source-changed"));
     }
     let output = stage.path().join("prepared.azw3");
@@ -110,7 +118,11 @@ fn validate_review(store: &LibraryStore, reviewed: &PreparationPreview) -> AppRe
     let item = eligible_item(store, &reviewed.item_id)?;
     let path = epub_path(&item)?;
     if path != reviewed.source_path
-        || source_fingerprint(&path)? != (reviewed.source_bytes, reviewed.source_sha256.clone())
+        || source_fingerprint(&path)?
+            != (takio::fingerprint::Fingerprint {
+                bytes: reviewed.source_bytes,
+                sha256: reviewed.source_sha256.clone(),
+            })
     {
         return Err(AppError::new("prepare-source-changed"));
     }
@@ -137,13 +149,11 @@ fn epub_path(item: &LibraryItem) -> AppResult<PathBuf> {
         .ok_or_else(|| AppError::new("no-epub-source"))
 }
 
-fn source_fingerprint(path: &Path) -> AppResult<(u64, String)> {
+fn source_fingerprint(path: &Path) -> AppResult<takio::fingerprint::Fingerprint> {
     if !path.is_file() {
         return Err(AppError::new("prepare-source-unavailable"));
     }
-    takio::fingerprint::hash_file(path)
-        .map(Into::into)
-        .map_err(|_| AppError::new("prepare-source-unavailable"))
+    takio::fingerprint::hash_file(path).map_err(|_| AppError::new("prepare-source-unavailable"))
 }
 
 #[cfg(all(test, unix))]
