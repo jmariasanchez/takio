@@ -8,7 +8,7 @@ use unicode_normalization::UnicodeNormalization;
 
 use crate::format::FormatId;
 use crate::model::LibraryItem;
-use crate::output::{AppError, AppResult};
+use crate::output::AppResult;
 use crate::store::LibraryStore;
 
 #[derive(Clone, Copy, Default, Deserialize)]
@@ -91,16 +91,16 @@ pub fn export_many(store: &LibraryStore, request: ExportRequest) -> AppResult<Ex
         || request.destination_path.as_os_str().is_empty()
         || request.destination_path.to_string_lossy().trim().is_empty()
     {
-        return Err(AppError::new("invalid-arguments"));
+        return Err(crate::app_error!("invalid-arguments"));
     }
     std::fs::create_dir_all(&request.destination_path)
-        .map_err(|_| AppError::new("destination-unavailable"))?;
+        .map_err(|_| crate::app_error!("destination-unavailable"))?;
     let destination = request
         .destination_path
         .canonicalize()
-        .map_err(|_| AppError::new("destination-unavailable"))?;
+        .map_err(|_| crate::app_error!("destination-unavailable"))?;
     if !destination.is_dir() {
-        return Err(AppError::new("destination-unavailable"));
+        return Err(crate::app_error!("destination-unavailable"));
     }
     let mut outcomes = Vec::new();
     for id in request.ids {
@@ -237,19 +237,20 @@ fn prepare_directory(destination: &Path, segment: Option<&str>) -> AppResult<Pat
     let directory = destination.join(segment);
     match std::fs::symlink_metadata(&directory) {
         Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
-            return Err(AppError::new("destination-unavailable"));
+            return Err(crate::app_error!("destination-unavailable"));
         }
         Ok(_) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            std::fs::create_dir(&directory).map_err(|_| AppError::new("destination-unavailable"))?
+            std::fs::create_dir(&directory)
+                .map_err(|_| crate::app_error!("destination-unavailable"))?
         }
-        Err(_) => return Err(AppError::new("destination-unavailable")),
+        Err(_) => return Err(crate::app_error!("destination-unavailable")),
     }
     let canonical = directory
         .canonicalize()
-        .map_err(|_| AppError::new("destination-unavailable"))?;
+        .map_err(|_| crate::app_error!("destination-unavailable"))?;
     if canonical == destination || !canonical.starts_with(destination) {
-        return Err(AppError::new("destination-unavailable"));
+        return Err(crate::app_error!("destination-unavailable"));
     }
     Ok(canonical)
 }

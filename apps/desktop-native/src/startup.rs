@@ -1,11 +1,7 @@
 //! Resolve a remembered library without recreating a missing selected database.
 use crate::{activation::ActivationReport, engine::Engine, preferences};
 use std::path::{Path, PathBuf};
-use takio::{
-    output::{AppError, AppResult},
-    paths::LibraryPaths,
-    store::LibraryStore,
-};
+use takio::{output::AppResult, paths::LibraryPaths, store::LibraryStore};
 
 pub fn open(
     default: LibraryPaths,
@@ -86,14 +82,14 @@ pub fn restore_recovery(
     for root in protected {
         let root = resolved_location(&root)?;
         if destination.starts_with(&root) || root.starts_with(&destination) {
-            return Err(AppError::new("invalid-arguments"));
+            return Err(takio::app_error!("invalid-arguments"));
         }
     }
     // Reserve a new root exclusively. CLI restore may use an existing parent,
     // but the recovery UI must never merge into one, including an empty folder.
     std::fs::create_dir(&destination).map_err(|error| {
         if error.kind() == std::io::ErrorKind::AlreadyExists {
-            AppError::new("destination-exists")
+            takio::app_error!("destination-exists")
         } else {
             error.into()
         }

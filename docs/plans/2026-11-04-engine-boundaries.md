@@ -67,3 +67,21 @@ or removals. Engine recovery/safety moves were coordinated into commit `675a469`
 with the concurrent worker's policy-signature updates so each commit compiles.
 The final namespace nesting also preserves all 597 discovered tests. Formatting,
 workspace tests (594 passed, three existing ignored), and strict Clippy pass.
+
+## Typed error vocabulary
+
+After the concurrent store/API worker's final commit, the error migration owns
+all remaining producer changes. `AppError` now holds one of 82 `ErrorCode`
+variants. Its constructors require the enum, while `code()` preserves the wire
+API and `kind()` supports exhaustive matching. A compile-checked literal macro
+keeps the mechanical producer migration reviewable without accepting arbitrary
+runtime strings. Dynamic helper arguments and branches use enum variants.
+
+The three native humanizers live together in `state/errors.rs` and explicitly
+enumerate all variants, including the groups retaining existing generic wording.
+There is no wildcard arm, so a new variant requires a deliberate UI decision.
+The unproduced destination-format alias is removed; the concurrent worker had
+already normalized the old item-not-found alias. Artificial test-only errors
+now use real domain codes. Serialization tests cover all 82 old wire spellings,
+round trips, uniqueness, and rejected aliases. A compile-fail doctest rejects an
+unknown literal, and a native test exercises all three humanizers for every code.

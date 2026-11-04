@@ -91,7 +91,7 @@ impl StartupWindow {
                         this.message = format!(
                             "Operation failed: {}\n{}\nChoose another existing library, or restore a backup into a separate new folder. No original library is replaced.",
                             this.operation,
-                            humanize_error(error.code()),
+                            humanize_error(error.kind()),
                         );
                         window.focus(&this.focus, cx);
                     }

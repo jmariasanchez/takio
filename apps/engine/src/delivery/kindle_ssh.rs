@@ -8,7 +8,7 @@ use regex::Regex;
 use serde::Serialize;
 use uuid::Uuid;
 
-use crate::output::{AppError, AppResult};
+use crate::output::AppResult;
 
 #[derive(Clone, Debug)]
 pub struct KindleSshDestination {
@@ -48,19 +48,19 @@ fn send_with_programs(
 ) -> AppResult<KindleSshResult> {
     validate_destination(destination)?;
     if item_id.trim().is_empty() {
-        return Err(AppError::new("invalid-arguments"));
+        return Err(crate::app_error!("invalid-arguments"));
     }
     let source = source
         .canonicalize()
-        .map_err(|_| AppError::new("source-unavailable"))?;
+        .map_err(|_| crate::app_error!("source-unavailable"))?;
     if !source.is_file() {
-        return Err(AppError::new("source-unavailable"));
+        return Err(crate::app_error!("source-unavailable"));
     }
     let source_name = source
         .file_name()
         .and_then(|value| value.to_str())
         .and_then(sanitize_file_name)
-        .ok_or_else(|| AppError::new("invalid-arguments"))?;
+        .ok_or_else(|| crate::app_error!("invalid-arguments"))?;
     let remote_final = format!("{}/{}", destination.remote_root, source_name);
     let remote_partial = format!(
         "{}/.takio-partial-{}",
@@ -79,40 +79,52 @@ fn send_with_programs(
     let outcome = (|| -> AppResult<&'static str> {
         let mut root = command_from(&ssh);
         root.args([&target, "test", "-d", &destination.remote_root]);
-        checked(&mut root, destination.timeout, "copy-failed")?;
+        checked(
+            &mut root,
+            destination.timeout,
+            crate::error::ErrorCode::CopyFailed,
+        )?;
 
         let mut absent = command_from(&ssh);
         absent.args([&target, "test", "!", "-e", &remote_final]);
         let output = run(&mut absent, destination.timeout)?;
         match output.status {
             0 => {}
-            1 => return Err(AppError::new("destination-file-exists")),
-            _ => return Err(AppError::new("copy-failed")),
+            1 => return Err(crate::app_error!("destination-file-exists")),
+            _ => return Err(crate::app_error!("copy-failed")),
         }
 
         let scp = scp_base(destination, scp_program);
         let mut copy = command_from(&scp);
         copy.arg(&source).arg(format!("{target}:{remote_partial}"));
-        checked(&mut copy, destination.timeout, "copy-failed")?;
+        checked(
+            &mut copy,
+            destination.timeout,
+            crate::error::ErrorCode::CopyFailed,
+        )?;
 
         let mut hash = command_from(&ssh);
         hash.args([&target, "sha256sum", &remote_partial]);
         let hash_output = run(&mut hash, destination.timeout)?;
         let verification = if hash_output.status == 0 {
             if hash_output.stdout.split_whitespace().next() != Some(expected.sha256.as_str()) {
-                return Err(AppError::new("verification-failed"));
+                return Err(crate::app_error!("verification-failed"));
             }
             "sha256"
         } else {
             if hash_output.status == 255 {
-                return Err(AppError::new("copy-failed"));
+                return Err(crate::app_error!("copy-failed"));
             }
             let mut size = command_from(&ssh);
             size.args([&target, "wc", "-c", &remote_partial]);
-            let output = checked(&mut size, destination.timeout, "verification-failed")?;
+            let output = checked(
+                &mut size,
+                destination.timeout,
+                crate::error::ErrorCode::VerificationFailed,
+            )?;
             let actual = output.stdout.split_whitespace().next().unwrap_or_default();
             if actual != expected.bytes.to_string() {
-                return Err(AppError::new("verification-failed"));
+                return Err(crate::app_error!("verification-failed"));
             }
             "size"
         };
@@ -122,15 +134,15 @@ fn send_with_programs(
         let output = run(&mut publish, destination.timeout)?;
         if output.status != 0 {
             if output.status == 255 {
-                return Err(AppError::new("copy-failed"));
+                return Err(crate::app_error!("copy-failed"));
             }
             let mut exists = command_from(&ssh);
             exists.args([&target, "test", "-e", &remote_final]);
             let output = run(&mut exists, destination.timeout)?;
-            return Err(AppError::new(if output.status == 0 {
-                "destination-file-exists"
+            return Err(crate::app_error!(if output.status == 0 {
+                crate::error::ErrorCode::DestinationFileExists
             } else {
-                "copy-failed"
+                crate::error::ErrorCode::CopyFailed
             }));
         }
         cleanup();
@@ -154,11 +166,11 @@ fn validate_destination(destination: &KindleSshDestination) -> AppResult<()> {
     let host = Regex::new(
         r"^(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)*[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$|^\[(?:[0-9A-Fa-f:.]+)\]$",
     )
-    .map_err(|_| AppError::new("invalid-arguments"))?;
-    let user =
-        Regex::new(r"^[A-Za-z0-9._-]{1,64}$").map_err(|_| AppError::new("invalid-arguments"))?;
-    let segment =
-        Regex::new(r"^[A-Za-z0-9._-]{1,120}$").map_err(|_| AppError::new("invalid-arguments"))?;
+    .map_err(|_| crate::app_error!("invalid-arguments"))?;
+    let user = Regex::new(r"^[A-Za-z0-9._-]{1,64}$")
+        .map_err(|_| crate::app_error!("invalid-arguments"))?;
+    let segment = Regex::new(r"^[A-Za-z0-9._-]{1,120}$")
+        .map_err(|_| crate::app_error!("invalid-arguments"))?;
     let root = &destination.remote_root;
     let root_segments = root
         .split('/')
@@ -188,7 +200,7 @@ fn validate_destination(destination: &KindleSshDestination) -> AppResult<()> {
         || destination.timeout < Duration::from_secs(1)
         || destination.timeout > Duration::from_secs(300)
     {
-        return Err(AppError::new("invalid-arguments"));
+        return Err(crate::app_error!("invalid-arguments"));
     }
     Ok(())
 }
@@ -233,36 +245,39 @@ struct CommandOutput {
 fn checked(
     command: &mut Command,
     timeout: Duration,
-    code: &'static str,
+    code: crate::error::ErrorCode,
 ) -> AppResult<CommandOutput> {
     let output = run(command, timeout)?;
     if output.status == 0 {
         Ok(output)
     } else {
-        Err(AppError::new(code))
+        Err(crate::app_error!(code))
     }
 }
 
 fn run(command: &mut Command, timeout: Duration) -> AppResult<CommandOutput> {
     let mut child = command
         .spawn()
-        .map_err(|_| AppError::new("backend-unavailable"))?;
+        .map_err(|_| crate::app_error!("backend-unavailable"))?;
     let started = Instant::now();
     let status = loop {
-        if let Some(status) = child.try_wait().map_err(|_| AppError::new("copy-failed"))? {
+        if let Some(status) = child
+            .try_wait()
+            .map_err(|_| crate::app_error!("copy-failed"))?
+        {
             break status;
         }
         if started.elapsed() >= timeout {
             let _ = child.kill();
             let _ = child.wait();
-            return Err(AppError::new("copy-failed"));
+            return Err(crate::app_error!("copy-failed"));
         }
         thread::sleep(Duration::from_millis(25));
     };
     let mut stdout = String::new();
     if let Some(mut pipe) = child.stdout.take() {
         pipe.read_to_string(&mut stdout)
-            .map_err(|_| AppError::new("copy-failed"))?;
+            .map_err(|_| crate::app_error!("copy-failed"))?;
     }
     Ok(CommandOutput {
         status: status.code().unwrap_or(1),
@@ -271,7 +286,7 @@ fn run(command: &mut Command, timeout: Duration) -> AppResult<CommandOutput> {
 }
 
 fn fingerprint(path: &Path) -> AppResult<crate::fingerprint::Fingerprint> {
-    crate::fingerprint::hash_file(path).map_err(|_| AppError::new("source-unavailable"))
+    crate::fingerprint::hash_file(path).map_err(|_| crate::app_error!("source-unavailable"))
 }
 
 fn sanitize_file_name(value: &str) -> Option<String> {

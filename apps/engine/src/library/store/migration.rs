@@ -6,7 +6,7 @@ use std::time::Duration;
 use rusqlite::{Connection, Transaction, TransactionBehavior, backup::Backup, params};
 use sha2::{Digest, Sha256};
 
-use crate::error::{AppError, AppResult};
+use crate::error::AppResult;
 use crate::paths::LibraryPaths;
 
 use super::LIBRARY_SCHEMA_VERSION;
@@ -79,7 +79,7 @@ pub(super) fn migrate(
 ) -> AppResult<()> {
     let transaction = connection
         .transaction_with_behavior(TransactionBehavior::Immediate)
-        .map_err(|_| AppError::new("migration-failed"))?;
+        .map_err(|_| crate::app_error!("migration-failed"))?;
     #[cfg(test)]
     AFTER_WRITER_LOCK.with(|hook| {
         if let Some(hook) = hook.borrow_mut().take() {
@@ -87,17 +87,17 @@ pub(super) fn migrate(
         }
     });
     let snapshot =
-        Connection::open(&paths.database).map_err(|_| AppError::new("migration-failed"))?;
+        Connection::open(&paths.database).map_err(|_| crate::app_error!("migration-failed"))?;
     snapshot
         .pragma_update(None, "foreign_keys", "ON")
-        .map_err(|_| AppError::new("migration-failed"))?;
-    verify_sqlite(&snapshot).map_err(|_| AppError::new("integrity-failed"))?;
+        .map_err(|_| crate::app_error!("migration-failed"))?;
+    verify_sqlite(&snapshot).map_err(|_| crate::app_error!("integrity-failed"))?;
     if !schema_matches_version(&snapshot, version) {
-        return Err(AppError::new("incompatible-schema"));
+        return Err(crate::app_error!("incompatible-schema"));
     }
     let before = snapshot
         .serialize("main")
-        .map_err(|_| AppError::new("migration-failed"))?
+        .map_err(|_| crate::app_error!("migration-failed"))?
         .to_vec();
     create_or_verify_backup(&snapshot, paths, version)?;
     drop(snapshot);
@@ -143,10 +143,10 @@ pub(super) fn migrate(
         Ok(matches)
     })()
     .unwrap_or(false);
-    Err(AppError::new(if rollback_proved {
-        "migration-failed"
+    Err(crate::app_error!(if rollback_proved {
+        crate::error::ErrorCode::MigrationFailed
     } else {
-        "rollback-failed"
+        crate::error::ErrorCode::RollbackFailed
     }))
 }
 
@@ -165,7 +165,7 @@ fn create_or_verify_backup(
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
             return verify_existing_backup(source, &backup_path, version);
         }
-        Err(_) => return Err(AppError::new("backup-failed")),
+        Err(_) => return Err(crate::app_error!("backup-failed")),
     };
     drop(reservation);
     let result = (|| -> Result<(), rusqlite::Error> {
@@ -183,7 +183,7 @@ fn create_or_verify_backup(
     })();
     if result.is_err() {
         let _ = fs::remove_file(&backup_path);
-        return Err(AppError::new("backup-failed"));
+        return Err(crate::app_error!("backup-failed"));
     }
     Ok(())
 }
@@ -191,22 +191,22 @@ fn create_or_verify_backup(
 fn verify_existing_backup(source: &Connection, backup_path: &Path, version: i64) -> AppResult<()> {
     let backup =
         Connection::open_with_flags(backup_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
-            .map_err(|_| AppError::new("backup-failed"))?;
+            .map_err(|_| crate::app_error!("backup-failed"))?;
     let backup_version: i64 = backup
         .pragma_query_value(None, "user_version", |row| row.get(0))
-        .map_err(|_| AppError::new("backup-failed"))?;
+        .map_err(|_| crate::app_error!("backup-failed"))?;
     if backup_version != version
         || verify_sqlite(&backup).is_err()
         || !schema_matches_version(&backup, version)
     {
-        return Err(AppError::new("backup-failed"));
+        return Err(crate::app_error!("backup-failed"));
     }
     let source_digest =
-        logical_database_digest(source).map_err(|_| AppError::new("backup-failed"))?;
+        logical_database_digest(source).map_err(|_| crate::app_error!("backup-failed"))?;
     let backup_digest =
-        logical_database_digest(&backup).map_err(|_| AppError::new("backup-failed"))?;
+        logical_database_digest(&backup).map_err(|_| crate::app_error!("backup-failed"))?;
     if source_digest != backup_digest {
-        return Err(AppError::new("backup-failed"));
+        return Err(crate::app_error!("backup-failed"));
     }
     Ok(())
 }
@@ -293,7 +293,7 @@ pub(super) fn verify_schema_version(connection: &Connection, version: i64) -> Ap
     if schema_matches_version(connection, version) {
         Ok(())
     } else {
-        Err(AppError::new("incompatible-schema"))
+        Err(crate::app_error!("incompatible-schema"))
     }
 }
 
@@ -1084,7 +1084,7 @@ pub(super) fn verify_current(connection: &Connection, paths: &LibraryPaths) -> A
     let transaction = connection.unchecked_transaction()?;
     let result = verify_v11_domain(&transaction, paths);
     transaction.rollback()?;
-    result.map_err(|_| AppError::new("integrity-failed"))
+    result.map_err(|_| crate::app_error!("integrity-failed"))
 }
 
 fn file_fingerprint(path: &Path) -> std::io::Result<(i64, String)> {

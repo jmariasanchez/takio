@@ -128,7 +128,7 @@ fn automatic_backup_state_defers_for_edits_reviews_busy_loading_and_switch(
     });
     match requests.try_recv().unwrap() {
         Request::AutomaticBackupRun { now: 10, reply, .. } => reply
-            .send(Err(AppError::new(
+            .send(Err(takio::app_error!(
                 "automatic-backup-destination-unavailable",
             )))
             .unwrap(),
@@ -145,9 +145,11 @@ fn automatic_backup_state_defers_for_edits_reviews_busy_loading_and_switch(
         assert!(s.busy());
     });
     match requests.try_recv().unwrap() {
-        Request::AutomaticBackupRun { reply, .. } => {
-            reply.send(Err(AppError::new("still-offline"))).unwrap()
-        }
+        Request::AutomaticBackupRun { reply, .. } => reply
+            .send(Err(takio::app_error!(
+                "automatic-backup-destination-unavailable"
+            )))
+            .unwrap(),
         _ => panic!("expected throttled retry"),
     }
     settle(&f.state, cx);
@@ -202,7 +204,9 @@ fn automatic_backup_state_disable_save_failure_still_stops_session(cx: &mut Test
         Request::AutomaticBackupConfigure {
             destination: None,
             reply,
-        } => reply.send(Err(AppError::new("permission-denied"))).unwrap(),
+        } => reply
+            .send(Err(takio::app_error!("storage-unavailable")))
+            .unwrap(),
         _ => panic!("expected disable settings request"),
     }
     settle(&f.state, cx);

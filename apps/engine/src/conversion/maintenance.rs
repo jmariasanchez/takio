@@ -59,41 +59,42 @@ pub fn polish(
 ) -> AppResult<PolishResult> {
     validate_operations(operations)?;
     if timeout.is_zero() {
-        return Err(AppError::new("invalid-arguments"));
+        return Err(crate::app_error!("invalid-arguments"));
     }
     let input = input
         .canonicalize()
-        .map_err(|_| AppError::new("source-unavailable"))?;
+        .map_err(|_| crate::app_error!("source-unavailable"))?;
     if !input.is_file() {
-        return Err(AppError::new("source-unavailable"));
+        return Err(crate::app_error!("source-unavailable"));
     }
-    let format = detect_format(&input).ok_or_else(|| AppError::new("unsupported-format"))?;
+    let format = detect_format(&input).ok_or_else(|| crate::app_error!("unsupported-format"))?;
     if !matches!(format, FormatId::Kepub | FormatId::Epub | FormatId::Azw3) {
-        return Err(AppError::new("unsupported-format"));
+        return Err(crate::app_error!("unsupported-format"));
     }
     if detect_format(output) != Some(format) || output.exists() {
-        return Err(AppError::new(if output.exists() {
-            "output-file-exists"
+        return Err(crate::app_error!(if output.exists() {
+            crate::error::ErrorCode::OutputFileExists
         } else {
-            "invalid-arguments"
+            crate::error::ErrorCode::InvalidArguments
         }));
     }
     let parent = output
         .parent()
         .filter(|path| path.is_dir())
-        .ok_or_else(|| AppError::new("invalid-arguments"))?;
-    let backend = discover_ebook_polish().ok_or_else(|| AppError::new("backend-unavailable"))?;
+        .ok_or_else(|| crate::app_error!("invalid-arguments"))?;
+    let backend =
+        discover_ebook_polish().ok_or_else(|| crate::app_error!("backend-unavailable"))?;
     let workspace = Builder::new()
         .prefix("takio-polish-")
         .tempdir()
-        .map_err(|_| AppError::new("copy-failed"))?;
+        .map_err(|_| crate::app_error!("copy-failed"))?;
     let staged_input = workspace
         .path()
         .join(format!("source.{}", format.extension()));
     let staged_output = workspace
         .path()
         .join(format!("polished.{}", format.extension()));
-    fs::copy(&input, &staged_input).map_err(|_| AppError::new("copy-failed"))?;
+    fs::copy(&input, &staged_input).map_err(|_| crate::app_error!("copy-failed"))?;
 
     let mut command = Command::new(backend);
     for operation in operations {
@@ -106,26 +107,28 @@ pub fn polish(
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
-    run_bounded(&mut command, timeout, "polish-failed")?;
+    run_bounded(&mut command, timeout, crate::error::ErrorCode::PolishFailed)?;
     let crate::fingerprint::Fingerprint { bytes, sha256 } = fingerprint(&staged_output)?;
     if bytes == 0 {
-        return Err(AppError::new("artifact-invalid"));
+        return Err(crate::app_error!("artifact-invalid"));
     }
 
     let partial = parent.join(format!(".takio-polish-{}", Uuid::new_v4()));
     let publication = (|| -> AppResult<()> {
         let mut source =
-            fs::File::open(&staged_output).map_err(|_| AppError::new("artifact-invalid"))?;
+            fs::File::open(&staged_output).map_err(|_| crate::app_error!("artifact-invalid"))?;
         let mut target = OpenOptions::new()
             .write(true)
             .create_new(true)
             .open(&partial)
-            .map_err(|_| AppError::new("copy-failed"))?;
-        std::io::copy(&mut source, &mut target).map_err(|_| AppError::new("copy-failed"))?;
-        target.flush().map_err(|_| AppError::new("copy-failed"))?;
+            .map_err(|_| crate::app_error!("copy-failed"))?;
+        std::io::copy(&mut source, &mut target).map_err(|_| crate::app_error!("copy-failed"))?;
+        target
+            .flush()
+            .map_err(|_| crate::app_error!("copy-failed"))?;
         fs::hard_link(&partial, output).map_err(|error| {
             if output.exists() {
-                AppError::new("output-file-exists")
+                crate::app_error!("output-file-exists")
             } else {
                 AppError::from(error)
             }
@@ -149,12 +152,12 @@ pub fn polish(
 
 pub fn extract_text(source: &Path, timeout: Duration) -> AppResult<(FormatId, String)> {
     if timeout.is_zero() {
-        return Err(AppError::new("invalid-arguments"));
+        return Err(crate::app_error!("invalid-arguments"));
     }
     let source = source
         .canonicalize()
-        .map_err(|_| AppError::new("source-unavailable"))?;
-    let format = detect_format(&source).ok_or_else(|| AppError::new("unsupported-format"))?;
+        .map_err(|_| crate::app_error!("source-unavailable"))?;
+    let format = detect_format(&source).ok_or_else(|| crate::app_error!("unsupported-format"))?;
     if !matches!(
         format,
         FormatId::Kepub
@@ -166,26 +169,26 @@ pub fn extract_text(source: &Path, timeout: Duration) -> AppResult<(FormatId, St
             | FormatId::Html
             | FormatId::Txt
     ) {
-        return Err(AppError::new("unsupported-format"));
+        return Err(crate::app_error!("unsupported-format"));
     }
     if format == FormatId::Txt {
         let metadata = source
             .metadata()
-            .map_err(|_| AppError::new("source-unavailable"))?;
+            .map_err(|_| crate::app_error!("source-unavailable"))?;
         if metadata.len() > 64 * 1024 * 1024 {
-            return Err(AppError::new("artifact-invalid"));
+            return Err(crate::app_error!("artifact-invalid"));
         }
         return fs::read_to_string(source)
             .map(|text| (format, text))
-            .map_err(|_| AppError::new("artifact-invalid"));
+            .map_err(|_| crate::app_error!("artifact-invalid"));
     }
     let backend = discover_ebook_convert()
         .path
-        .ok_or_else(|| AppError::new("backend-unavailable"))?;
+        .ok_or_else(|| crate::app_error!("backend-unavailable"))?;
     let workspace = Builder::new()
         .prefix("takio-text-")
         .tempdir()
-        .map_err(|_| AppError::new("extraction-failed"))?;
+        .map_err(|_| crate::app_error!("extraction-failed"))?;
     let output = workspace.path().join("content.txt");
     let mut command = Command::new(backend);
     command
@@ -196,16 +199,20 @@ pub fn extract_text(source: &Path, timeout: Duration) -> AppResult<(FormatId, St
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
-    run_bounded(&mut command, timeout, "extraction-failed")?;
+    run_bounded(
+        &mut command,
+        timeout,
+        crate::error::ErrorCode::ExtractionFailed,
+    )?;
     let metadata = output
         .metadata()
-        .map_err(|_| AppError::new("artifact-invalid"))?;
+        .map_err(|_| crate::app_error!("artifact-invalid"))?;
     if metadata.len() > 64 * 1024 * 1024 {
-        return Err(AppError::new("artifact-invalid"));
+        return Err(crate::app_error!("artifact-invalid"));
     }
     fs::read_to_string(output)
         .map(|text| (format, text))
-        .map_err(|_| AppError::new("artifact-invalid"))
+        .map_err(|_| crate::app_error!("artifact-invalid"))
 }
 
 #[must_use]
@@ -259,7 +266,7 @@ fn validate_operations(operations: &[String]) -> AppResult<()> {
                 .iter()
                 .any(|value| value == "remove-soft-hyphens"))
     {
-        return Err(AppError::new("invalid-arguments"));
+        return Err(crate::app_error!("invalid-arguments"));
     }
     Ok(())
 }
@@ -274,34 +281,38 @@ fn operation_flag(operation: &str) -> AppResult<&'static str> {
         "add-soft-hyphens" => Ok("--add-soft-hyphens"),
         "remove-soft-hyphens" => Ok("--remove-soft-hyphens"),
         "upgrade-book" => Ok("--upgrade-book"),
-        _ => Err(AppError::new("invalid-arguments")),
+        _ => Err(crate::app_error!("invalid-arguments")),
     }
 }
 
-fn run_bounded(command: &mut Command, timeout: Duration, failure: &'static str) -> AppResult<()> {
+fn run_bounded(
+    command: &mut Command,
+    timeout: Duration,
+    failure: crate::error::ErrorCode,
+) -> AppResult<()> {
     let mut child = command
         .spawn()
-        .map_err(|_| AppError::new("backend-unavailable"))?;
+        .map_err(|_| crate::app_error!("backend-unavailable"))?;
     let started = Instant::now();
     loop {
-        if let Some(status) = child.try_wait().map_err(|_| AppError::new(failure))? {
+        if let Some(status) = child.try_wait().map_err(|_| crate::app_error!(failure))? {
             return if status.success() {
                 Ok(())
             } else {
-                Err(AppError::new(failure))
+                Err(crate::app_error!(failure))
             };
         }
         if started.elapsed() >= timeout {
             let _ = child.kill();
             let _ = child.wait();
-            return Err(AppError::new("maintenance-timeout"));
+            return Err(crate::app_error!("maintenance-timeout"));
         }
         thread::sleep(Duration::from_millis(25));
     }
 }
 
 fn fingerprint(path: &Path) -> AppResult<crate::fingerprint::Fingerprint> {
-    crate::fingerprint::hash_file(path).map_err(|_| AppError::new("artifact-invalid"))
+    crate::fingerprint::hash_file(path).map_err(|_| crate::app_error!("artifact-invalid"))
 }
 
 #[cfg(test)]

@@ -7,7 +7,7 @@ use serde::Serialize;
 use crate::format::{FormatId, detect_format};
 use crate::metadata::pdf_page_count;
 use crate::model::{ImportMode, LibraryItem};
-use crate::output::{AppError, AppResult};
+use crate::output::AppResult;
 use crate::paths::LibraryPaths;
 use crate::store::{ImportWatchObservation, ImportWatchOutcome, LibraryStore};
 
@@ -27,7 +27,7 @@ pub fn validate_import_sources(paths: &LibraryPaths, sources: &[PathBuf]) -> App
             .iter()
             .any(|path| import_paths_overlap(&source, path))
         {
-            return Err(AppError::new("invalid-arguments"));
+            return Err(crate::app_error!("invalid-arguments"));
         }
     }
     Ok(())
@@ -52,7 +52,7 @@ fn path_for_overlap(path: &Path) -> AppResult<PathBuf> {
             Component::CurDir => {}
             Component::ParentDir => {
                 if !normalized.pop() {
-                    return Err(AppError::new("invalid-arguments"));
+                    return Err(crate::app_error!("invalid-arguments"));
                 }
             }
         }
@@ -62,15 +62,15 @@ fn path_for_overlap(path: &Path) -> AppResult<PathBuf> {
     while std::fs::symlink_metadata(ancestor).is_err() {
         let leaf = ancestor
             .file_name()
-            .ok_or_else(|| AppError::new("invalid-arguments"))?;
+            .ok_or_else(|| crate::app_error!("invalid-arguments"))?;
         missing.push(leaf.to_os_string());
         ancestor = ancestor
             .parent()
-            .ok_or_else(|| AppError::new("invalid-arguments"))?;
+            .ok_or_else(|| crate::app_error!("invalid-arguments"))?;
     }
     let mut resolved = ancestor
         .canonicalize()
-        .map_err(|_| AppError::new("invalid-arguments"))?;
+        .map_err(|_| crate::app_error!("invalid-arguments"))?;
     for component in missing.into_iter().rev() {
         resolved.push(component);
     }

@@ -5,7 +5,7 @@ fn reader_scan_failures_retain_typed_error_status(cx: &mut TestAppContext) {
     for whole_request in [false, true] {
         let f = fixture(cx);
         let reader = shelf_reader(&f, cx);
-        let error = AppError::with_exit_code("destination-unavailable", 74);
+        let error = AppError::with_exit_code(takio::error::ErrorCode::DestinationUnavailable, 74);
         let result: AppResult<crate::engine::ReaderShelves> = if whole_request {
             Err(error)
         } else {

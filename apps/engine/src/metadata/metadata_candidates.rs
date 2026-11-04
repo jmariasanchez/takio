@@ -42,7 +42,7 @@ pub struct MetadataCandidate {
 
 impl MetadataCandidate {
     fn validated_fields(&self, item_id: &str) -> AppResult<Vec<String>> {
-        let invalid = || AppError::new("invalid-arguments");
+        let invalid = || crate::app_error!("invalid-arguments");
         if self.schema_version != 1
             || self.id.trim().is_empty()
             || self.id.len() > 120
@@ -101,14 +101,14 @@ pub fn prepare_metadata_candidate(
     provenance: &str,
 ) -> AppResult<PreparedMetadataCandidate> {
     if item_id.trim().is_empty() || provenance.trim().is_empty() {
-        return Err(AppError::new("invalid-arguments"));
+        return Err(crate::app_error!("invalid-arguments"));
     }
     let all_fields = candidate.validated_fields(item_id)?;
     let fields = if let Some(selected) = selection.fields {
         if (selected.is_empty() && !(selection.include_cover && candidate.cover.is_some()))
             || selected.iter().any(|field| !all_fields.contains(field))
         {
-            return Err(AppError::new("invalid-arguments"));
+            return Err(crate::app_error!("invalid-arguments"));
         }
         all_fields
             .into_iter()
@@ -128,9 +128,9 @@ pub fn prepare_metadata_candidate(
         })
         .collect();
     let patch: LibraryPatch = serde_json::from_value(Value::Object(selected_patch))
-        .map_err(|_| AppError::new("invalid-arguments"))?;
+        .map_err(|_| crate::app_error!("invalid-arguments"))?;
     if patch.is_empty() && !(selection.include_cover && candidate.cover.is_some()) {
-        return Err(AppError::new("invalid-arguments"));
+        return Err(crate::app_error!("invalid-arguments"));
     }
     if !patch.is_empty() {
         validate_candidate_patch(&patch)?;
@@ -144,7 +144,7 @@ pub fn prepare_metadata_candidate(
         }))).flatten()
     });
     let candidate_provenance = serde_json::to_string(&candidate.provenance)
-        .map_err(|_| AppError::new("invalid-arguments"))?;
+        .map_err(|_| crate::app_error!("invalid-arguments"))?;
     Ok(PreparedMetadataCandidate {
         candidate_id: candidate.id,
         source: candidate.source,
@@ -163,7 +163,7 @@ pub fn apply_prepared_metadata_candidate(
 ) -> AppResult<LibraryItem> {
     let current = store
         .get(item_id)?
-        .ok_or_else(|| AppError::new("not-found"))?;
+        .ok_or_else(|| crate::app_error!("not-found"))?;
     let mut patch = prepared.patch.clone();
     patch.custom_metadata = Patch::Set(merge_metadata_audit(
         &current.custom_metadata,
@@ -190,7 +190,8 @@ fn merge_metadata_audit(
         Patch::Null => BTreeMap::new(),
         Patch::Set(value) => value.clone(),
     };
-    let encoded = serde_json::to_string(audit).map_err(|_| AppError::new("storage-unavailable"))?;
+    let encoded =
+        serde_json::to_string(audit).map_err(|_| crate::app_error!("storage-unavailable"))?;
     if encoded.len() > 16 * 1024
         || merged
             .keys()
@@ -198,7 +199,7 @@ fn merge_metadata_audit(
             .count()
             > 64
     {
-        return Err(AppError::new("invalid-arguments"));
+        return Err(crate::app_error!("invalid-arguments"));
     }
     merged.insert(METADATA_AUDIT_KEY.to_owned(), encoded);
     Ok(merged)
@@ -228,7 +229,7 @@ impl CandidateCoverStages<'_> {
         canceled: &AtomicBool,
     ) -> AppResult<Option<MetadataCandidate>> {
         if canceled.load(Ordering::Acquire) {
-            return Err(AppError::new("operation-canceled"));
+            return Err(crate::app_error!("operation-canceled"));
         }
         let (id, source, confidence) = origin;
         let (metadata, cover_data) = data;
@@ -236,7 +237,7 @@ impl CandidateCoverStages<'_> {
             .as_ref()
             .map(|cover| {
                 let encoded = serde_json::to_string(&provenance)
-                    .map_err(|_| AppError::new("metadata-invalid"))?;
+                    .map_err(|_| crate::app_error!("metadata-invalid"))?;
                 let descriptor = crate::candidate_cover::stage(
                     self.library_root,
                     item_id,
@@ -250,7 +251,7 @@ impl CandidateCoverStages<'_> {
             })
             .transpose()?;
         let patch: BTreeMap<String, Value> =
-            serde_json::from_value(metadata).map_err(|_| AppError::new("metadata-invalid"))?;
+            serde_json::from_value(metadata).map_err(|_| crate::app_error!("metadata-invalid"))?;
         Ok(
             (!patch.is_empty() || cover.is_some()).then(|| MetadataCandidate {
                 schema_version: 1,
@@ -332,7 +333,7 @@ fn discover_candidates(
     library_root: &Path,
 ) -> AppResult<Vec<MetadataCandidate>> {
     if timeout_seconds == 0 {
-        return Err(AppError::new("invalid-arguments"));
+        return Err(crate::app_error!("invalid-arguments"));
     }
     let mut candidates =
         filename_candidates_for_stem(&item.title, &item.source_path, Some(&item.id), &[])?;
@@ -342,7 +343,7 @@ fn discover_candidates(
         retain: false,
     };
     if canceled.load(Ordering::Acquire) {
-        return Err(AppError::new("operation-canceled"));
+        return Err(crate::app_error!("operation-canceled"));
     }
     if discover_ebook_meta().is_some() {
         match metadata::extract_cancellable(
@@ -373,7 +374,7 @@ fn discover_candidates(
         }
     }
     if canceled.load(Ordering::Acquire) {
-        return Err(AppError::new("operation-canceled"));
+        return Err(crate::app_error!("operation-canceled"));
     }
     if include_online && discover_fetch_ebook_metadata().is_some() {
         let authors = item.author_names().map(str::to_owned).collect::<Vec<_>>();
@@ -407,11 +408,11 @@ fn discover_candidates(
         }
     }
     if canceled.load(Ordering::Acquire) {
-        return Err(AppError::new("operation-canceled"));
+        return Err(crate::app_error!("operation-canceled"));
     }
     candidates.truncate(8);
     if canceled.load(Ordering::Acquire) {
-        return Err(AppError::new("operation-canceled"));
+        return Err(crate::app_error!("operation-canceled"));
     }
     stages.retain = true;
     Ok(candidates)
@@ -425,7 +426,7 @@ pub fn filename_candidates(
     let stem = source
         .file_stem()
         .and_then(|value| value.to_str())
-        .ok_or_else(|| AppError::new("invalid-arguments"))?;
+        .ok_or_else(|| crate::app_error!("invalid-arguments"))?;
     filename_candidates_for_stem(stem, source, item_id, custom_patterns)
 }
 
@@ -445,12 +446,12 @@ fn filename_candidates_for_stem(
         .iter()
         .any(|pattern| pattern.is_empty() || pattern.len() > 240)
     {
-        return Err(AppError::new("invalid-arguments"));
+        return Err(crate::app_error!("invalid-arguments"));
     }
     let mut candidates = Vec::new();
     for pattern in custom_patterns.iter().map(String::as_str).chain(BUILTINS) {
         let expression =
-            regex::Regex::new(pattern).map_err(|_| AppError::new("invalid-arguments"))?;
+            regex::Regex::new(pattern).map_err(|_| crate::app_error!("invalid-arguments"))?;
         let Some(captures) = expression.captures(stem) else {
             continue;
         };

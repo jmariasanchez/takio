@@ -95,7 +95,7 @@ struct Manifest {
 
 pub fn list(root: &Path) -> AppResult<Vec<Destination>> {
     let mut destinations = Vec::new();
-    let entries = fs::read_dir(root).map_err(|_| AppError::new("destination-unavailable"))?;
+    let entries = fs::read_dir(root).map_err(|_| crate::app_error!("destination-unavailable"))?;
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();
         let Ok(path) = entry.path().canonicalize() else {
@@ -140,11 +140,11 @@ pub fn list(root: &Path) -> AppResult<Vec<Destination>> {
 pub fn authorize(path: &Path, root: &Path) -> AppResult<Destination> {
     let canonical = path
         .canonicalize()
-        .map_err(|_| AppError::new("unknown-destination"))?;
+        .map_err(|_| crate::app_error!("unknown-destination"))?;
     list(root)?
         .into_iter()
         .find(|destination| destination.path == canonical)
-        .ok_or_else(|| AppError::new("unknown-destination"))
+        .ok_or_else(|| crate::app_error!("unknown-destination"))
 }
 
 /// Resolve `--dest` as the `id` shown by `destination list` (a bare name such as
@@ -247,36 +247,36 @@ pub fn send(
 ) -> AppResult<DeliveryResult> {
     let source = source
         .canonicalize()
-        .map_err(|_| AppError::new("source-unavailable"))?;
+        .map_err(|_| crate::app_error!("source-unavailable"))?;
     if !source.is_file() || item_id.trim().is_empty() {
-        return Err(AppError::new("invalid-arguments"));
+        return Err(crate::app_error!("invalid-arguments"));
     }
     let relative_dir = subdir.map_or_else(|| default_subdir(destination.kind), Path::to_path_buf);
     validate_relative(&relative_dir)?;
     let directory = destination.path.join(relative_dir);
-    fs::create_dir_all(&directory).map_err(|_| AppError::new("copy-failed"))?;
+    fs::create_dir_all(&directory).map_err(|_| crate::app_error!("copy-failed"))?;
     let canonical_directory = directory
         .canonicalize()
-        .map_err(|_| AppError::new("copy-failed"))?;
+        .map_err(|_| crate::app_error!("copy-failed"))?;
     if canonical_directory != destination.path {
         ensure_contained(&destination.path, &canonical_directory)?;
     }
 
     let safe_name =
-        sanitize_file_name(file_name).ok_or_else(|| AppError::new("invalid-arguments"))?;
+        sanitize_file_name(file_name).ok_or_else(|| crate::app_error!("invalid-arguments"))?;
     let target = canonical_directory.join(safe_name);
     if target.exists() && overwrite == OverwritePolicy::Refuse {
-        return Err(AppError::new("destination-file-exists"));
+        return Err(crate::app_error!("destination-file-exists"));
     }
     let partial = canonical_directory.join(format!(".takio-partial-{}", Uuid::new_v4()));
     let expected = copy_and_hash(&source, &partial)?;
     let actual = hash_file(&partial)?;
     if actual != expected {
         let _ = fs::remove_file(&partial);
-        return Err(AppError::new("verification-failed"));
+        return Err(crate::app_error!("verification-failed"));
     }
     if overwrite == OverwritePolicy::Replace && target.exists() {
-        fs::remove_file(&target).map_err(|_| AppError::new("copy-failed"))?;
+        fs::remove_file(&target).map_err(|_| crate::app_error!("copy-failed"))?;
     }
     let publication = if overwrite == OverwritePolicy::Replace {
         fs::rename(&partial, &target).map_err(publication_error)
@@ -290,12 +290,12 @@ pub fn send(
     let _ = fs::remove_file(&partial);
     if hash_file(&target)? != expected {
         let _ = fs::remove_file(&target);
-        return Err(AppError::new("verification-failed"));
+        return Err(crate::app_error!("verification-failed"));
     }
 
     let relative_path = target
         .strip_prefix(&destination.path)
-        .map_err(|_| AppError::new("invalid-arguments"))?
+        .map_err(|_| crate::app_error!("invalid-arguments"))?
         .to_string_lossy()
         .replace(std::path::MAIN_SEPARATOR, "/");
     let record = DeliveryRecord {
@@ -350,7 +350,7 @@ pub fn remove(destination: &Destination, item_id: &str) -> AppResult<DeliveryRec
         .deliveries
         .iter()
         .position(|record| record.item_id == item_id)
-        .ok_or_else(|| AppError::new("invalid-arguments"))?;
+        .ok_or_else(|| crate::app_error!("invalid-arguments"))?;
     let record = manifest.deliveries.remove(index);
     let relative = Path::new(&record.relative_path);
     validate_relative(relative)?;
@@ -363,9 +363,9 @@ pub fn remove(destination: &Destination, item_id: &str) -> AppResult<DeliveryRec
                 sha256: record.sha256.clone(),
             })
         {
-            return Err(AppError::new("verification-failed"));
+            return Err(crate::app_error!("verification-failed"));
         }
-        fs::remove_file(path).map_err(|_| AppError::new("copy-failed"))?;
+        fs::remove_file(path).map_err(|_| crate::app_error!("copy-failed"))?;
     }
     write_manifest(destination, &manifest)?;
     Ok(record)
@@ -373,17 +373,17 @@ pub fn remove(destination: &Destination, item_id: &str) -> AppResult<DeliveryRec
 
 pub fn eject(destination: &Destination) -> AppResult<()> {
     if !cfg!(target_os = "macos") {
-        return Err(AppError::new("unsupported-platform"));
+        return Err(crate::app_error!("unsupported-platform"));
     }
     let status = Command::new("diskutil")
         .args(["eject"])
         .arg(&destination.path)
         .status()
-        .map_err(|_| AppError::new("eject-failed"))?;
+        .map_err(|_| crate::app_error!("eject-failed"))?;
     if status.success() {
         Ok(())
     } else {
-        Err(AppError::new("eject-failed"))
+        Err(crate::app_error!("eject-failed"))
     }
 }
 
@@ -432,7 +432,7 @@ fn validate_relative(path: &Path) -> AppResult<()> {
             )
         })
     {
-        Err(AppError::new("invalid-arguments"))
+        Err(crate::app_error!("invalid-arguments"))
     } else {
         Ok(())
     }
@@ -442,12 +442,12 @@ fn ensure_contained(parent: &Path, child: &Path) -> AppResult<()> {
     if child.starts_with(parent) && child != parent {
         Ok(())
     } else {
-        Err(AppError::new("invalid-arguments"))
+        Err(crate::app_error!("invalid-arguments"))
     }
 }
 
 fn copy_and_hash(source: &Path, target: &Path) -> AppResult<Fingerprint> {
-    let mut input = File::open(source).map_err(|_| AppError::new("source-unavailable"))?;
+    let mut input = File::open(source).map_err(|_| crate::app_error!("source-unavailable"))?;
     let mut output = OpenOptions::new()
         .create_new(true)
         .write(true)
@@ -456,13 +456,13 @@ fn copy_and_hash(source: &Path, target: &Path) -> AppResult<Fingerprint> {
     let result = (|| {
         let fingerprint = crate::fingerprint::copy_and_hash(&mut input, &mut output).map_err(
             |error| match error {
-                CopyError::Read(_) => AppError::new("source-unavailable"),
-                CopyError::Write(_) => AppError::new("copy-failed"),
+                CopyError::Read(_) => crate::app_error!("source-unavailable"),
+                CopyError::Write(_) => crate::app_error!("copy-failed"),
             },
         )?;
         output
             .sync_all()
-            .map_err(|_| AppError::new("copy-failed"))?;
+            .map_err(|_| crate::app_error!("copy-failed"))?;
         Ok(fingerprint)
     })();
     drop(output);
@@ -474,9 +474,9 @@ fn copy_and_hash(source: &Path, target: &Path) -> AppResult<Fingerprint> {
 
 fn publication_error(error: std::io::Error) -> AppError {
     if error.kind() == std::io::ErrorKind::AlreadyExists {
-        AppError::new("destination-file-exists")
+        crate::app_error!("destination-file-exists")
     } else {
-        AppError::new("copy-failed")
+        crate::app_error!("copy-failed")
     }
 }
 
@@ -499,7 +499,7 @@ fn publish_exclusive_copy(partial: &Path, target: &Path, expected: &Fingerprint)
         if copied == *expected && actual == *expected {
             Ok(())
         } else {
-            Err(AppError::new("verification-failed"))
+            Err(crate::app_error!("verification-failed"))
         }
     });
     if verification.is_err() {
@@ -509,7 +509,7 @@ fn publish_exclusive_copy(partial: &Path, target: &Path, expected: &Fingerprint)
 }
 
 fn hash_file(path: &Path) -> AppResult<Fingerprint> {
-    crate::fingerprint::hash_file(path).map_err(|_| AppError::new("source-unavailable"))
+    crate::fingerprint::hash_file(path).map_err(|_| crate::app_error!("source-unavailable"))
 }
 
 fn manifest_path(destination: &Destination) -> PathBuf {
@@ -524,13 +524,13 @@ fn read_manifest(destination: &Destination) -> AppResult<Manifest> {
             deliveries: Vec::new(),
         });
     }
-    let bytes = fs::read(path).map_err(|_| AppError::new("copy-failed"))?;
+    let bytes = fs::read(path).map_err(|_| crate::app_error!("copy-failed"))?;
     let manifest: Manifest =
-        serde_json::from_slice(&bytes).map_err(|_| AppError::new("copy-failed"))?;
+        serde_json::from_slice(&bytes).map_err(|_| crate::app_error!("copy-failed"))?;
     if manifest.version == 1 {
         Ok(manifest)
     } else {
-        Err(AppError::new("copy-failed"))
+        Err(crate::app_error!("copy-failed"))
     }
 }
 
@@ -558,15 +558,17 @@ fn write_manifest_with_publisher(
     publish: impl FnOnce(&Path, &Path) -> std::io::Result<()>,
 ) -> AppResult<()> {
     let path = manifest_path(destination);
-    let directory = path.parent().ok_or_else(|| AppError::new("copy-failed"))?;
-    fs::create_dir_all(directory).map_err(|_| AppError::new("copy-failed"))?;
+    let directory = path
+        .parent()
+        .ok_or_else(|| crate::app_error!("copy-failed"))?;
+    fs::create_dir_all(directory).map_err(|_| crate::app_error!("copy-failed"))?;
     let temporary = directory.join(format!(".deliveries-{}.tmp", Uuid::new_v4()));
-    let body = serde_json::to_vec_pretty(manifest).map_err(|_| AppError::new("copy-failed"))?;
+    let body = serde_json::to_vec_pretty(manifest).map_err(|_| crate::app_error!("copy-failed"))?;
     let mut file = OpenOptions::new()
         .create_new(true)
         .write(true)
         .open(&temporary)
-        .map_err(|_| AppError::new("copy-failed"))?;
+        .map_err(|_| crate::app_error!("copy-failed"))?;
     let staged = file.write_all(&body).and_then(|()| file.sync_all());
     drop(file);
     // Replace without unlinking the prior manifest. Rename guarantees depend on the filesystem.
@@ -574,7 +576,7 @@ fn write_manifest_with_publisher(
     if result.is_err() {
         let _ = fs::remove_file(&temporary);
     }
-    result.map_err(|_| AppError::new("copy-failed"))
+    result.map_err(|_| crate::app_error!("copy-failed"))
 }
 
 #[cfg(test)]

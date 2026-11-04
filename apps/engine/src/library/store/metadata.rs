@@ -6,7 +6,7 @@ use chrono::NaiveDate;
 use rusqlite::{Transaction, params};
 
 use super::as_i64;
-use crate::error::{AppError, AppResult};
+use crate::error::AppResult;
 use crate::model::{BookAuthor, LibraryItem, LibraryPatch, Patch};
 
 pub const METADATA_AUDIT_KEY: &str = "takio_metadata_audit";
@@ -24,7 +24,7 @@ pub(super) fn normalize_texts(values: Vec<String>) -> AppResult<Vec<String>> {
     for value in values {
         let value = value.split_whitespace().collect::<Vec<_>>().join(" ");
         if value.is_empty() || !seen.insert(value.to_lowercase()) {
-            return Err(AppError::new("invalid-arguments"));
+            return Err(crate::app_error!("invalid-arguments"));
         }
         normalized.push(value);
     }
@@ -35,7 +35,7 @@ pub(super) fn normalize_authors(values: Vec<BookAuthor>) -> AppResult<Vec<BookAu
     for value in values {
         let name = value.name.trim();
         if name.is_empty() {
-            return Err(AppError::new("invalid-arguments"));
+            return Err(crate::app_error!("invalid-arguments"));
         }
         let sort_name = match value.sort_name {
             Some(value) => Some(required_text(value)?),
@@ -54,7 +54,7 @@ pub(super) fn validate_library_patch(
     allow_reserved_metadata: bool,
 ) -> AppResult<()> {
     if patch.is_empty() || matches!(patch.title, Patch::Null) || matches!(patch.tags, Patch::Null) {
-        return Err(AppError::new("invalid-arguments"));
+        return Err(crate::app_error!("invalid-arguments"));
     }
     for value in [
         patch.title.value(),
@@ -70,7 +70,7 @@ pub(super) fn validate_library_patch(
     }
     if let Patch::Set(values) = &patch.authors {
         if values.is_empty() {
-            return Err(AppError::new("invalid-arguments"));
+            return Err(crate::app_error!("invalid-arguments"));
         }
         normalize_authors(values.clone())?;
     }
@@ -83,11 +83,11 @@ pub(super) fn validate_library_patch(
             .value()
             .is_some_and(|value| !value.is_finite() || !(0.0..=10.0).contains(value))
     {
-        return Err(AppError::new("invalid-arguments"));
+        return Err(crate::app_error!("invalid-arguments"));
     }
     if let Patch::Set(values) = &patch.languages {
         if values.is_empty() {
-            return Err(AppError::new("invalid-arguments"));
+            return Err(crate::app_error!("invalid-arguments"));
         }
         normalize_languages(values.clone())?;
     }
@@ -96,7 +96,7 @@ pub(super) fn validate_library_patch(
     }
     if let Patch::Set(values) = &patch.custom_metadata {
         if !allow_reserved_metadata && values.contains_key(METADATA_AUDIT_KEY) {
-            return Err(AppError::new("invalid-arguments"));
+            return Err(crate::app_error!("invalid-arguments"));
         }
         normalize_custom_metadata(values.clone())?;
     }
@@ -112,7 +112,7 @@ pub(super) fn validate_library_patch(
 pub(super) fn required_text(value: String) -> AppResult<String> {
     let value = value.trim();
     if value.is_empty() {
-        Err(AppError::new("invalid-arguments"))
+        Err(crate::app_error!("invalid-arguments"))
     } else {
         Ok(value.to_owned())
     }
@@ -123,7 +123,7 @@ pub(super) fn normalize_languages(values: Vec<String>) -> AppResult<Vec<String>>
     if values.iter().all(|value| valid_language_tag(value)) {
         Ok(values)
     } else {
-        Err(AppError::new("invalid-arguments"))
+        Err(crate::app_error!("invalid-arguments"))
     }
 }
 
@@ -162,7 +162,7 @@ pub(crate) fn normalize_custom_metadata(
                 || value.encode_utf16().count() > MAX_CUSTOM_METADATA_VALUE_CHARS
         })
     {
-        return Err(AppError::new("invalid-arguments"));
+        return Err(crate::app_error!("invalid-arguments"));
     }
     Ok(values)
 }
@@ -202,7 +202,7 @@ pub(super) fn normalize_published_date(value: String) -> AppResult<String> {
     if valid {
         Ok(value.to_owned())
     } else {
-        Err(AppError::new("invalid-arguments"))
+        Err(crate::app_error!("invalid-arguments"))
     }
 }
 

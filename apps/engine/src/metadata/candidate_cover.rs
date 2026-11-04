@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use crate::output::{AppError, AppResult};
+use crate::output::AppResult;
 
 pub const MAX_COVER_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_ARTIFACTS: usize = 128;
@@ -81,17 +81,17 @@ pub fn stage(
     cover: &CapturedCover,
 ) -> AppResult<CandidateCoverDescriptor> {
     if cover.bytes.is_empty() || cover.bytes.len() as u64 > MAX_COVER_BYTES {
-        return Err(AppError::new("candidate-cover-invalid"));
+        return Err(crate::app_error!("candidate-cover-invalid"));
     }
     validate_cover_type(&cover.media_type, &cover.extension)?;
     let root = root(library_root);
-    fs::create_dir_all(&root).map_err(|_| AppError::new("storage-unavailable"))?;
+    fs::create_dir_all(&root).map_err(|_| crate::app_error!("storage-unavailable"))?;
     reject_symlink(&root)?;
     let _guard = StageGuard::acquire(&root)?;
     gc(&root)?;
     let (count, total) = usage(&root)?;
     if count >= MAX_ARTIFACTS || total.saturating_add(cover.bytes.len() as u64) > MAX_TOTAL_BYTES {
-        return Err(AppError::new("candidate-cover-unavailable"));
+        return Err(crate::app_error!("candidate-cover-unavailable"));
     }
     let artifact_id = Uuid::new_v4().simple().to_string();
     let digest = hex::encode(Sha256::digest(&cover.bytes));
@@ -121,7 +121,7 @@ pub fn stage(
     let manifest_path = manifest_path(&root, &artifact_id);
     write_new(&data, &cover.bytes)?;
     let encoded =
-        serde_json::to_vec(&manifest).map_err(|_| AppError::new("storage-unavailable"))?;
+        serde_json::to_vec(&manifest).map_err(|_| crate::app_error!("storage-unavailable"))?;
     if let Err(error) = write_new(&manifest_path, &encoded) {
         let _ = fs::remove_file(data);
         return Err(error);
@@ -139,12 +139,12 @@ pub fn validate(
 ) -> AppResult<ValidatedCover> {
     validate_descriptor(descriptor)?;
     let root = root(library_root);
-    reject_symlink(&root).map_err(|_| AppError::new("candidate-cover-unavailable"))?;
+    reject_symlink(&root).map_err(|_| crate::app_error!("candidate-cover-unavailable"))?;
     let manifest_path = manifest_path(&root, &descriptor.artifact_id);
     let data = data_path(&root, &descriptor.artifact_id);
     let manifest_bytes = read_regular(&manifest_path, 64 * 1024)?;
     let manifest: Manifest = serde_json::from_slice(&manifest_bytes)
-        .map_err(|_| AppError::new("candidate-cover-invalid"))?;
+        .map_err(|_| crate::app_error!("candidate-cover-invalid"))?;
     if manifest.schema_version != 1
         || manifest.artifact_id != descriptor.artifact_id
         || manifest.item_id != item_id
@@ -156,17 +156,17 @@ pub fn validate(
         || manifest.media_type != descriptor.media_type
         || manifest.extension != descriptor.extension
     {
-        return Err(AppError::new("candidate-cover-invalid"));
+        return Err(crate::app_error!("candidate-cover-invalid"));
     }
     let expires = DateTime::parse_from_rfc3339(&manifest.expires_at)
-        .map_err(|_| AppError::new("candidate-cover-invalid"))?;
+        .map_err(|_| crate::app_error!("candidate-cover-invalid"))?;
     if expires <= Utc::now() {
-        return Err(AppError::new("candidate-cover-unavailable"));
+        return Err(crate::app_error!("candidate-cover-unavailable"));
     }
     let bytes = read_regular(&data, MAX_COVER_BYTES)?;
     let digest = hex::encode(Sha256::digest(&bytes));
     if bytes.len() as u64 != descriptor.bytes || digest != descriptor.sha256 {
-        return Err(AppError::new("candidate-cover-changed"));
+        return Err(crate::app_error!("candidate-cover-changed"));
     }
     Ok(ValidatedCover {
         descriptor: descriptor.clone(),
@@ -196,7 +196,7 @@ pub fn claim(
         manifest_path(&root, &descriptor.artifact_id),
         claimed_manifest_path(&root, &descriptor.artifact_id),
     )
-    .map_err(|_| AppError::new("candidate-cover-unavailable"))?;
+    .map_err(|_| crate::app_error!("candidate-cover-unavailable"))?;
     Ok(ClaimedCover {
         descriptor: validated.descriptor,
         source: validated.source,
@@ -213,7 +213,7 @@ impl ClaimedCover {
             claimed_manifest_path(&root, &self.descriptor.artifact_id),
             manifest_path(&root, &self.descriptor.artifact_id),
         )
-        .map_err(|_| AppError::new("candidate-cover-unavailable"))?;
+        .map_err(|_| crate::app_error!("candidate-cover-unavailable"))?;
         self.finished = true;
         Ok(())
     }
@@ -252,7 +252,7 @@ pub fn validate_descriptor(descriptor: &CandidateCoverDescriptor) -> AppResult<(
             .bytes()
             .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
     {
-        return Err(AppError::new("candidate-cover-invalid"));
+        return Err(crate::app_error!("candidate-cover-invalid"));
     }
     Ok(())
 }
@@ -280,12 +280,12 @@ fn gc(root: &Path) -> AppResult<()> {
     reject_symlink(root)?;
     let mut data_files = HashMap::new();
     let mut manifests = Vec::new();
-    for entry in fs::read_dir(root).map_err(|_| AppError::new("storage-unavailable"))? {
-        let entry = entry.map_err(|_| AppError::new("storage-unavailable"))?;
+    for entry in fs::read_dir(root).map_err(|_| crate::app_error!("storage-unavailable"))? {
+        let entry = entry.map_err(|_| crate::app_error!("storage-unavailable"))?;
         let path = entry.path();
         let file_type = entry
             .file_type()
-            .map_err(|_| AppError::new("storage-unavailable"))?;
+            .map_err(|_| crate::app_error!("storage-unavailable"))?;
         if file_type.is_symlink() || !file_type.is_file() {
             let _ = fs::remove_file(path);
             continue;
@@ -305,7 +305,7 @@ fn gc(root: &Path) -> AppResult<()> {
             Some("bin") => {
                 let bytes = entry
                     .metadata()
-                    .map_err(|_| AppError::new("storage-unavailable"))?
+                    .map_err(|_| crate::app_error!("storage-unavailable"))?
                     .len();
                 data_files.insert(id.to_owned(), bytes);
             }
@@ -351,12 +351,12 @@ fn gc(root: &Path) -> AppResult<()> {
 fn usage(root: &Path) -> AppResult<(usize, u64)> {
     let mut count = 0;
     let mut total = 0u64;
-    for entry in fs::read_dir(root).map_err(|_| AppError::new("storage-unavailable"))? {
-        let entry = entry.map_err(|_| AppError::new("storage-unavailable"))?;
+    for entry in fs::read_dir(root).map_err(|_| crate::app_error!("storage-unavailable"))? {
+        let entry = entry.map_err(|_| crate::app_error!("storage-unavailable"))?;
         if entry.path().extension().and_then(|value| value.to_str()) == Some("bin") {
             let metadata = entry
                 .metadata()
-                .map_err(|_| AppError::new("storage-unavailable"))?;
+                .map_err(|_| crate::app_error!("storage-unavailable"))?;
             if metadata.is_file() {
                 count += 1;
                 total = total.saturating_add(metadata.len());
@@ -374,7 +374,7 @@ fn validate_artifact_id(value: &str) -> AppResult<()> {
     {
         Ok(())
     } else {
-        Err(AppError::new("candidate-cover-invalid"))
+        Err(crate::app_error!("candidate-cover-invalid"))
     }
 }
 
@@ -388,7 +388,7 @@ fn validate_cover_type(media_type: &str, extension: &str) -> AppResult<()> {
     ) {
         Ok(())
     } else {
-        Err(AppError::new("candidate-cover-invalid"))
+        Err(crate::app_error!("candidate-cover-invalid"))
     }
 }
 
@@ -397,7 +397,7 @@ fn reject_symlink(path: &Path) -> AppResult<()> {
         .symlink_metadata()
         .is_ok_and(|metadata| metadata.file_type().is_symlink())
     {
-        Err(AppError::new("candidate-cover-invalid"))
+        Err(crate::app_error!("candidate-cover-invalid"))
     } else {
         Ok(())
     }
@@ -406,20 +406,20 @@ fn reject_symlink(path: &Path) -> AppResult<()> {
 fn read_regular(path: &Path, max: u64) -> AppResult<Vec<u8>> {
     let metadata = path
         .symlink_metadata()
-        .map_err(|_| AppError::new("candidate-cover-unavailable"))?;
+        .map_err(|_| crate::app_error!("candidate-cover-unavailable"))?;
     if !metadata.is_file() || metadata.file_type().is_symlink() || metadata.len() > max {
-        return Err(AppError::new("candidate-cover-unavailable"));
+        return Err(crate::app_error!("candidate-cover-unavailable"));
     }
     let file = OpenOptions::new()
         .read(true)
         .open(path)
-        .map_err(|_| AppError::new("candidate-cover-unavailable"))?;
+        .map_err(|_| crate::app_error!("candidate-cover-unavailable"))?;
     let mut bytes = Vec::with_capacity(metadata.len() as usize);
     file.take(max + 1)
         .read_to_end(&mut bytes)
-        .map_err(|_| AppError::new("candidate-cover-unavailable"))?;
+        .map_err(|_| crate::app_error!("candidate-cover-unavailable"))?;
     if bytes.len() as u64 > max {
-        return Err(AppError::new("candidate-cover-unavailable"));
+        return Err(crate::app_error!("candidate-cover-unavailable"));
     }
     Ok(bytes)
 }
@@ -429,11 +429,11 @@ fn write_new(path: &Path, bytes: &[u8]) -> AppResult<()> {
         .write(true)
         .create_new(true)
         .open(path)
-        .map_err(|_| AppError::new("storage-unavailable"))?;
+        .map_err(|_| crate::app_error!("storage-unavailable"))?;
     file.write_all(bytes)
-        .map_err(|_| AppError::new("storage-unavailable"))?;
+        .map_err(|_| crate::app_error!("storage-unavailable"))?;
     file.sync_all()
-        .map_err(|_| AppError::new("storage-unavailable"))
+        .map_err(|_| crate::app_error!("storage-unavailable"))
 }
 
 fn data_path(root: &Path, id: &str) -> PathBuf {
@@ -452,7 +452,7 @@ struct StageGuard {
 
 impl StageGuard {
     fn acquire(root: &Path) -> AppResult<Self> {
-        fs::create_dir_all(root).map_err(|_| AppError::new("storage-unavailable"))?;
+        fs::create_dir_all(root).map_err(|_| crate::app_error!("storage-unavailable"))?;
         reject_symlink(root)?;
         let lock_path = root.join(LOCK_FILE);
         reject_symlink(&lock_path)?;
@@ -462,18 +462,18 @@ impl StageGuard {
             .create(true)
             .truncate(false)
             .open(lock_path)
-            .map_err(|_| AppError::new("storage-unavailable"))?;
+            .map_err(|_| crate::app_error!("storage-unavailable"))?;
         let deadline = Instant::now() + LOCK_TIMEOUT;
         loop {
             match file.try_lock() {
                 Ok(()) => return Ok(Self { file }),
                 Err(std::fs::TryLockError::WouldBlock) => {
                     if Instant::now() >= deadline {
-                        return Err(AppError::new("candidate-cover-unavailable"));
+                        return Err(crate::app_error!("candidate-cover-unavailable"));
                     }
                     thread::sleep(LOCK_RETRY);
                 }
-                Err(_) => return Err(AppError::new("storage-unavailable")),
+                Err(_) => return Err(crate::app_error!("storage-unavailable")),
             }
         }
     }

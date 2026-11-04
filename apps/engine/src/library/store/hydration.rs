@@ -7,7 +7,7 @@ use std::path::PathBuf;
 
 use rusqlite::{Connection, params_from_iter};
 
-use crate::error::{AppError, AppResult};
+use crate::error::AppResult;
 use crate::model::{BookAuthor, BookFormat, LibraryItem, Provenance};
 
 pub(super) fn read_item_from(connection: &Connection, id: &str) -> AppResult<Option<LibraryItem>> {
@@ -21,7 +21,7 @@ pub(super) fn read_items_required(
 ) -> AppResult<Vec<LibraryItem>> {
     let items = read_items_bulk(connection, ids)?;
     if items.len() != ids.len() {
-        return Err(AppError::new("invalid-stored-data"));
+        return Err(crate::app_error!("invalid-stored-data"));
     }
     Ok(items)
 }
@@ -100,13 +100,13 @@ pub(super) fn read_items_bulk(
             let provenance = match provenance.as_str() {
                 "managed" => Provenance::Managed,
                 "referenced" => Provenance::Referenced,
-                _ => return Err(AppError::new("invalid-stored-data")),
+                _ => return Err(crate::app_error!("invalid-stored-data")),
             };
             formats.entry(id).or_default().push(BookFormat {
                 source_path: PathBuf::from(path),
                 format: format
                     .parse()
-                    .map_err(|_| AppError::new("invalid-stored-data"))?,
+                    .map_err(|_| crate::app_error!("invalid-stored-data"))?,
                 added_at,
                 provenance,
             });
@@ -196,7 +196,7 @@ pub(super) fn read_items_bulk(
         let formats = formats.remove(id).unwrap_or_default();
         let primary = formats
             .first()
-            .ok_or_else(|| AppError::new("invalid-stored-data"))?;
+            .ok_or_else(|| crate::app_error!("invalid-stored-data"))?;
         items.push(LibraryItem {
             id: id.clone(),
             title: base.title,

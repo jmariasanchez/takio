@@ -12,7 +12,7 @@ use uuid::Uuid;
 
 use crate::conversion::FormatId;
 use crate::model::{BookAuthor, CustomColumnDefinition, LibraryItem, Provenance};
-use crate::output::{AppError, AppResult};
+use crate::output::AppResult;
 use crate::paths::{LibraryPaths, absolute as absolute_nonempty};
 pub(crate) use crate::store::valid_item_id;
 use crate::store::{LibraryStore, METADATA_AUDIT_KEY, VerifyReport, normalize_custom_metadata};
@@ -71,7 +71,7 @@ impl std::ops::Deref for ParsedSource {
 pub fn export(store: &LibraryStore, destination: &Path) -> AppResult<serde_json::Value> {
     let destination = absolute_nonempty(destination)?;
     if destination.exists() {
-        return Err(AppError::new("destination-exists"));
+        return Err(crate::app_error!("destination-exists"));
     }
     let temporary = owned_staging_path(&destination)?;
     let result = export_into(store, &destination, &temporary);
@@ -90,7 +90,7 @@ fn export_into(
     create_private_dir(&temporary.join("books"))?;
     let items = store
         .list(false)
-        .map_err(|_| AppError::new("storage-unavailable"))?;
+        .map_err(|_| crate::app_error!("storage-unavailable"))?;
     let mut books = Vec::with_capacity(items.len());
     let mut directories = HashSet::new();
     let mut format_count = 0usize;
@@ -98,11 +98,11 @@ fn export_into(
 
     for item in &items {
         if item.formats.is_empty() {
-            return Err(AppError::new("storage-unavailable"));
+            return Err(crate::app_error!("storage-unavailable"));
         }
         let directory = safe_book_directory(item);
         if !directories.insert(directory.clone()) {
-            return Err(AppError::new("storage-unavailable"));
+            return Err(crate::app_error!("storage-unavailable"));
         }
         let book_root = temporary.join("books").join(&directory);
         create_private_dir(&book_root)?;
@@ -128,7 +128,7 @@ fn export_into(
                 if matches!(extension.as_str(), "jpg" | "jpeg" | "png") {
                     Ok(format!("cover.{extension}"))
                 } else {
-                    Err(AppError::new("storage-unavailable"))
+                    Err(crate::app_error!("storage-unavailable"))
                 }
             })
             .transpose()?;
@@ -138,7 +138,7 @@ fn export_into(
         }
         let opf = portable_opf(item, cover_name.as_deref());
         if opf.len() as u64 > MAX_DOCUMENT_BYTES {
-            return Err(AppError::new("storage-unavailable"));
+            return Err(crate::app_error!("storage-unavailable"));
         }
         let opf_path = book_root.join("metadata.opf");
         write_new_file(&opf_path, opf.as_bytes())?;
@@ -156,22 +156,22 @@ fn export_into(
         definitions: store.list_custom_column_definitions()?,
         books,
     };
-    let mut bytes =
-        serde_json::to_vec_pretty(&manifest).map_err(|_| AppError::new("storage-unavailable"))?;
+    let mut bytes = serde_json::to_vec_pretty(&manifest)
+        .map_err(|_| crate::app_error!("storage-unavailable"))?;
     bytes.push(b'\n');
     if bytes.len() as u64 > MAX_DOCUMENT_BYTES {
-        return Err(AppError::new("storage-unavailable"));
+        return Err(crate::app_error!("storage-unavailable"));
     }
     write_new_file(&temporary.join("manifest.json"), &bytes)?;
-    validate_source(temporary).map_err(|_| AppError::new("storage-unavailable"))?;
+    validate_source(temporary).map_err(|_| crate::app_error!("storage-unavailable"))?;
     if destination.exists() {
-        return Err(AppError::new("destination-exists"));
+        return Err(crate::app_error!("destination-exists"));
     }
     fs::rename(temporary, destination).map_err(|error| {
         if destination.exists() || error.kind() == std::io::ErrorKind::AlreadyExists {
-            AppError::new("destination-exists")
+            crate::app_error!("destination-exists")
         } else {
-            AppError::new("storage-unavailable")
+            crate::app_error!("storage-unavailable")
         }
     })?;
     Ok(
@@ -183,10 +183,10 @@ pub fn rebuild(source: &Path, paths: LibraryPaths) -> AppResult<serde_json::Valu
     let source = absolute_nonempty(source)?;
     let destination = paths.root.clone();
     if source == destination || destination.starts_with(&source) {
-        return Err(AppError::new("invalid-arguments"));
+        return Err(crate::app_error!("invalid-arguments"));
     }
     if destination.exists() {
-        return Err(AppError::new("destination-exists"));
+        return Err(crate::app_error!("destination-exists"));
     }
     let parsed = validate_source(&source)?;
     let temporary = owned_staging_path(&destination)?;
@@ -194,7 +194,7 @@ pub fn rebuild(source: &Path, paths: LibraryPaths) -> AppResult<serde_json::Valu
         paths
             .database
             .file_name()
-            .ok_or_else(|| AppError::new("invalid-arguments"))?,
+            .ok_or_else(|| crate::app_error!("invalid-arguments"))?,
     );
     let temporary_paths = LibraryPaths::resolve(None, Some(&temporary_database))?;
     let result = rebuild_into(&parsed, &destination, &temporary, temporary_paths);
@@ -212,72 +212,73 @@ fn rebuild_into(
 ) -> AppResult<serde_json::Value> {
     create_private_dir(temporary)?;
     let mut store = LibraryStore::create_or_migrate(temporary_paths.clone())
-        .map_err(|_| AppError::new("storage-unavailable"))?;
+        .map_err(|_| crate::app_error!("storage-unavailable"))?;
     store
         .replace_custom_column_definitions(&source.definitions)
-        .map_err(|_| AppError::new("source-invalid"))?;
+        .map_err(|_| crate::app_error!("source-invalid"))?;
     for book in &source.books {
         store
             .restore_portable_item(&book.item, &book.formats, book.cover.as_deref())
-            .map_err(|_| AppError::new("storage-unavailable"))?;
+            .map_err(|_| crate::app_error!("storage-unavailable"))?;
     }
     let report = store
         .verify()
-        .map_err(|_| AppError::new("storage-unavailable"))?;
+        .map_err(|_| crate::app_error!("storage-unavailable"))?;
     let final_database = destination.join(
         temporary_paths
             .database
             .file_name()
-            .ok_or_else(|| AppError::new("storage-unavailable"))?,
+            .ok_or_else(|| crate::app_error!("storage-unavailable"))?,
     );
     let final_paths = LibraryPaths::resolve(None, Some(&final_database))?;
     store
         .rebase_portable_paths(&final_paths)
-        .map_err(|_| AppError::new("storage-unavailable"))?;
+        .map_err(|_| crate::app_error!("storage-unavailable"))?;
     drop(store);
     if destination.exists() {
-        return Err(AppError::new("destination-exists"));
+        return Err(crate::app_error!("destination-exists"));
     }
     fs::rename(temporary, destination).map_err(|error| {
         if destination.exists() || error.kind() == std::io::ErrorKind::AlreadyExists {
-            AppError::new("destination-exists")
+            crate::app_error!("destination-exists")
         } else {
-            AppError::new("storage-unavailable")
+            crate::app_error!("storage-unavailable")
         }
     })?;
     Ok(json!({"rebuild":{"path":final_database,"report":integrity_value(&report)}}))
 }
 
 fn validate_source(root: &Path) -> AppResult<ParsedSource> {
-    let root_metadata = fs::symlink_metadata(root).map_err(|_| AppError::new("source-invalid"))?;
+    let root_metadata =
+        fs::symlink_metadata(root).map_err(|_| crate::app_error!("source-invalid"))?;
     if !root_metadata.is_dir() || root_metadata.file_type().is_symlink() {
-        return Err(AppError::new("source-invalid"));
+        return Err(crate::app_error!("source-invalid"));
     }
     let manifest: PortableManifest = serde_json::from_slice(&read_bounded_regular(
         &root.join("manifest.json"),
         MAX_DOCUMENT_BYTES,
     )?)
-    .map_err(|_| AppError::new("source-invalid"))?;
+    .map_err(|_| crate::app_error!("source-invalid"))?;
     if manifest.format != PORTABLE_FORMAT || !matches!(manifest.version, 1 | PORTABLE_VERSION) {
-        return Err(AppError::new("source-invalid"));
+        return Err(crate::app_error!("source-invalid"));
     }
     if manifest.version == 1 && !manifest.definitions.is_empty() {
-        return Err(AppError::new("source-invalid"));
+        return Err(crate::app_error!("source-invalid"));
     }
     crate::store::validate_custom_column_definitions(&manifest.definitions)
-        .map_err(|_| AppError::new("source-invalid"))?;
+        .map_err(|_| crate::app_error!("source-invalid"))?;
     require_exact_entries(root, &["books", "manifest.json"])?;
     let books_root = root.join("books");
     let books_metadata =
-        fs::symlink_metadata(&books_root).map_err(|_| AppError::new("source-invalid"))?;
+        fs::symlink_metadata(&books_root).map_err(|_| crate::app_error!("source-invalid"))?;
     if !books_metadata.is_dir() || books_metadata.file_type().is_symlink() {
-        return Err(AppError::new("source-invalid"));
+        return Err(crate::app_error!("source-invalid"));
     }
 
     let mut directories = HashSet::new();
     for book in &manifest.books {
         if !valid_component(&book.directory) || !directories.insert(book.directory.clone()) {
-            return Err(AppError::new("source-invalid"));
+            return Err(crate::app_error!("source-invalid"));
         }
     }
     let expected_directories = manifest
@@ -292,9 +293,9 @@ fn validate_source(root: &Path) -> AppResult<ParsedSource> {
     for book in &manifest.books {
         let book_root = books_root.join(&book.directory);
         let metadata =
-            fs::symlink_metadata(&book_root).map_err(|_| AppError::new("source-invalid"))?;
+            fs::symlink_metadata(&book_root).map_err(|_| crate::app_error!("source-invalid"))?;
         if !metadata.is_dir() || metadata.file_type().is_symlink() || book.artifacts.len() < 2 {
-            return Err(AppError::new("source-invalid"));
+            return Err(crate::app_error!("source-invalid"));
         }
         let mut leaves = HashSet::new();
         for artifact in &book.artifacts {
@@ -304,17 +305,17 @@ fn validate_source(root: &Path) -> AppResult<ParsedSource> {
                 || !valid_sha256(&artifact.sha256)
                 || !leaves.insert(artifact.path.clone())
             {
-                return Err(AppError::new("source-invalid"));
+                return Err(crate::app_error!("source-invalid"));
             }
             let actual = fingerprint(&book_root.join(&artifact.path), &artifact.path)
-                .map_err(|_| AppError::new("source-invalid"))?;
+                .map_err(|_| crate::app_error!("source-invalid"))?;
             if actual.bytes != artifact.bytes || actual.sha256 != artifact.sha256 {
-                return Err(AppError::new("source-invalid"));
+                return Err(crate::app_error!("source-invalid"));
             }
         }
         if !leaves.contains("metadata.opf") || !leaves.iter().any(|leaf| leaf.starts_with("book."))
         {
-            return Err(AppError::new("source-invalid"));
+            return Err(crate::app_error!("source-invalid"));
         }
         let expected = book
             .artifacts
@@ -324,7 +325,7 @@ fn validate_source(root: &Path) -> AppResult<ParsedSource> {
         require_exact_entries(&book_root, &expected)?;
         let parsed_book = parse_book(&book_root, &leaves)?;
         if !ids.insert(parsed_book.item.id.clone()) {
-            return Err(AppError::new("source-invalid"));
+            return Err(crate::app_error!("source-invalid"));
         }
         parsed.push(parsed_book);
     }
@@ -336,11 +337,11 @@ fn validate_source(root: &Path) -> AppResult<ParsedSource> {
 
 fn parse_book(book_root: &Path, artifacts: &HashSet<String>) -> AppResult<ParsedBook> {
     let opf_bytes = read_bounded_regular(&book_root.join("metadata.opf"), MAX_DOCUMENT_BYTES)?;
-    let opf = std::str::from_utf8(&opf_bytes).map_err(|_| AppError::new("source-invalid"))?;
-    let document = Document::parse(opf).map_err(|_| AppError::new("source-invalid"))?;
+    let opf = std::str::from_utf8(&opf_bytes).map_err(|_| crate::app_error!("source-invalid"))?;
+    let document = Document::parse(opf).map_err(|_| crate::app_error!("source-invalid"))?;
     let package = document.root_element();
     if package.tag_name().name() != "package" {
-        return Err(AppError::new("source-invalid"));
+        return Err(crate::app_error!("source-invalid"));
     }
     let metadata = unique_child(package, "metadata")?;
     let manifest = unique_child(package, "manifest")?;
@@ -352,7 +353,7 @@ fn parse_book(book_root: &Path, artifacts: &HashSet<String>) -> AppResult<Parsed
     for item in &manifest_items {
         let id = required_attr(item, "id")?;
         if !manifest_ids.insert(id) {
-            return Err(AppError::new("source-invalid"));
+            return Err(crate::app_error!("source-invalid"));
         }
     }
     let identifiers = metadata
@@ -365,11 +366,11 @@ fn parse_book(book_root: &Path, artifacts: &HashSet<String>) -> AppResult<Parsed
         .filter_map(|node| text(node))
         .collect::<Vec<_>>();
     if takio_ids.len() != 1 {
-        return Err(AppError::new("source-invalid"));
+        return Err(crate::app_error!("source-invalid"));
     }
     let id = takio_ids[0].clone();
     if !valid_item_id(&id) {
-        return Err(AppError::new("source-invalid"));
+        return Err(crate::app_error!("source-invalid"));
     }
     let metas = metadata
         .children()
@@ -383,12 +384,14 @@ fn parse_book(book_root: &Path, artifacts: &HashSet<String>) -> AppResult<Parsed
         || format_names.iter().any(|value| value.is_empty())
         || format_names.iter().collect::<HashSet<_>>().len() != format_names.len()
     {
-        return Err(AppError::new("source-invalid"));
+        return Err(crate::app_error!("source-invalid"));
     }
     let mut formats = Vec::with_capacity(format_names.len());
     let mut expected_artifacts = HashSet::from(["metadata.opf".to_owned()]);
     for name in format_names {
-        let format: FormatId = name.parse().map_err(|_| AppError::new("source-invalid"))?;
+        let format: FormatId = name
+            .parse()
+            .map_err(|_| crate::app_error!("source-invalid"))?;
         let leaf = format!("book.{name}");
         let expected_id = format!("format-{name}");
         let entries = manifest_items
@@ -400,13 +403,13 @@ fn parse_book(book_root: &Path, artifacts: &HashSet<String>) -> AppResult<Parsed
             || attr(entries[0], "media-type").as_deref() != Some(media_type(format))
             || !artifacts.contains(&leaf)
         {
-            return Err(AppError::new("source-invalid"));
+            return Err(crate::app_error!("source-invalid"));
         }
         let format_added_at =
             optional_unique_meta(&metas, &format!("takio:format_added_at:{name}"))?
                 .unwrap_or_else(|| added_at.clone());
         if !valid_timestamp(&format_added_at) {
-            return Err(AppError::new("source-invalid"));
+            return Err(crate::app_error!("source-invalid"));
         }
         expected_artifacts.insert(leaf.clone());
         formats.push((format, book_root.join(leaf), format_added_at));
@@ -417,7 +420,7 @@ fn parse_book(book_root: &Path, artifacts: &HashSet<String>) -> AppResult<Parsed
         .filter(|item| attr(item, "id").as_deref() == Some("cover-image"))
         .collect::<Vec<_>>();
     if cover_items.len() > 1 {
-        return Err(AppError::new("source-invalid"));
+        return Err(crate::app_error!("source-invalid"));
     }
     let cover = cover_items
         .first()
@@ -432,17 +435,17 @@ fn parse_book(book_root: &Path, artifacts: &HashSet<String>) -> AppResult<Parsed
                         "image/jpeg"
                     })
             {
-                return Err(AppError::new("source-invalid"));
+                return Err(crate::app_error!("source-invalid"));
             }
             expected_artifacts.insert(leaf.clone());
             Ok(book_root.join(leaf))
         })
         .transpose()?;
     if manifest_items.len() != formats.len() + usize::from(cover.is_some()) {
-        return Err(AppError::new("source-invalid"));
+        return Err(crate::app_error!("source-invalid"));
     }
     if &expected_artifacts != artifacts {
-        return Err(AppError::new("source-invalid"));
+        return Err(crate::app_error!("source-invalid"));
     }
 
     let title = unique_text_child(metadata, "title")?;
@@ -452,7 +455,7 @@ fn parse_book(book_root: &Path, artifacts: &HashSet<String>) -> AppResult<Parsed
         .filter(|node| attr(node, "role").is_none_or(|role| role.eq_ignore_ascii_case("aut")))
         .map(|node| {
             Ok(BookAuthor {
-                name: text(&node).ok_or_else(|| AppError::new("source-invalid"))?,
+                name: text(&node).ok_or_else(|| crate::app_error!("source-invalid"))?,
                 sort_name: attr(&node, "file-as"),
             })
         })
@@ -471,10 +474,10 @@ fn parse_book(book_root: &Path, artifacts: &HashSet<String>) -> AppResult<Parsed
         if scheme == "takio" {
             continue;
         }
-        let value = text(&node).ok_or_else(|| AppError::new("source-invalid"))?;
+        let value = text(&node).ok_or_else(|| crate::app_error!("source-invalid"))?;
         let key = scheme.to_ascii_lowercase();
         if identifiers_map.insert(key, value).is_some() {
-            return Err(AppError::new("source-invalid"));
+            return Err(crate::app_error!("source-invalid"));
         }
     }
     let series = optional_unique_meta(&metas, "calibre:series")?;
@@ -482,7 +485,7 @@ fn parse_book(book_root: &Path, artifacts: &HashSet<String>) -> AppResult<Parsed
         parse_optional_finite(optional_unique_meta(&metas, "calibre:series_index")?)?;
     let rating = parse_optional_finite(optional_unique_meta(&metas, "calibre:rating")?)?;
     if rating.is_some_and(|value| !(0.0..=10.0).contains(&value)) {
-        return Err(AppError::new("source-invalid"));
+        return Err(crate::app_error!("source-invalid"));
     }
     let mut custom_metadata = BTreeMap::new();
     for node in &metas {
@@ -492,27 +495,27 @@ fn parse_book(book_root: &Path, artifacts: &HashSet<String>) -> AppResult<Parsed
         let Some(key) = name.strip_prefix("takio:custom:") else {
             continue;
         };
-        let value = attr(node, "content").ok_or_else(|| AppError::new("source-invalid"))?;
+        let value = attr(node, "content").ok_or_else(|| crate::app_error!("source-invalid"))?;
         if key.is_empty()
             || key == METADATA_AUDIT_KEY
             || custom_metadata.insert(key.to_owned(), value).is_some()
         {
-            return Err(AppError::new("source-invalid"));
+            return Err(crate::app_error!("source-invalid"));
         }
     }
-    let custom_metadata =
-        normalize_custom_metadata(custom_metadata).map_err(|_| AppError::new("source-invalid"))?;
+    let custom_metadata = normalize_custom_metadata(custom_metadata)
+        .map_err(|_| crate::app_error!("source-invalid"))?;
     if title.trim().is_empty()
         || !valid_timestamp(&added_at)
         || updated_at
             .as_deref()
             .is_some_and(|value| !valid_timestamp(value))
     {
-        return Err(AppError::new("source-invalid"));
+        return Err(crate::app_error!("source-invalid"));
     }
     let primary = formats
         .first()
-        .ok_or_else(|| AppError::new("source-invalid"))?;
+        .ok_or_else(|| crate::app_error!("source-invalid"))?;
     let item = LibraryItem {
         id,
         title,
@@ -691,27 +694,27 @@ fn safe_book_directory(item: &LibraryItem) -> String {
 
 fn copy_artifact(source: &Path, destination: &Path, relative: &str) -> AppResult<PortableArtifact> {
     let source_metadata =
-        fs::symlink_metadata(source).map_err(|_| AppError::new("storage-unavailable"))?;
+        fs::symlink_metadata(source).map_err(|_| crate::app_error!("storage-unavailable"))?;
     if !source_metadata.is_file()
         || source_metadata.file_type().is_symlink()
         || source_metadata.len() == 0
     {
-        return Err(AppError::new("storage-unavailable"));
+        return Err(crate::app_error!("storage-unavailable"));
     }
-    let mut input = File::open(source).map_err(|_| AppError::new("storage-unavailable"))?;
+    let mut input = File::open(source).map_err(|_| crate::app_error!("storage-unavailable"))?;
     let mut output = OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(destination)
-        .map_err(|_| AppError::new("storage-unavailable"))?;
+        .map_err(|_| crate::app_error!("storage-unavailable"))?;
     let crate::fingerprint::Fingerprint { bytes, sha256 } =
         crate::fingerprint::copy_and_hash(&mut input, &mut output)
-            .map_err(|_| AppError::new("storage-unavailable"))?;
+            .map_err(|_| crate::app_error!("storage-unavailable"))?;
     output
         .sync_all()
-        .map_err(|_| AppError::new("storage-unavailable"))?;
+        .map_err(|_| crate::app_error!("storage-unavailable"))?;
     if bytes == 0 || bytes > MAX_SAFE_INTEGER {
-        return Err(AppError::new("storage-unavailable"));
+        return Err(crate::app_error!("storage-unavailable"));
     }
     Ok(PortableArtifact {
         path: relative.to_owned(),
@@ -721,22 +724,22 @@ fn copy_artifact(source: &Path, destination: &Path, relative: &str) -> AppResult
 }
 
 fn fingerprint(path: &Path, relative: &str) -> AppResult<PortableArtifact> {
-    let metadata = fs::symlink_metadata(path).map_err(|_| AppError::new("source-invalid"))?;
+    let metadata = fs::symlink_metadata(path).map_err(|_| crate::app_error!("source-invalid"))?;
     if !metadata.is_file()
         || metadata.file_type().is_symlink()
         || metadata.len() == 0
         || metadata.len() > MAX_SAFE_INTEGER
     {
-        return Err(AppError::new("source-invalid"));
+        return Err(crate::app_error!("source-invalid"));
     }
     let crate::fingerprint::Fingerprint { bytes, sha256 } =
-        crate::fingerprint::hash_file(path).map_err(|_| AppError::new("source-invalid"))?;
+        crate::fingerprint::hash_file(path).map_err(|_| crate::app_error!("source-invalid"))?;
     if bytes > MAX_SAFE_INTEGER {
-        return Err(AppError::new("source-invalid"));
+        return Err(crate::app_error!("source-invalid"));
     }
-    let after = fs::symlink_metadata(path).map_err(|_| AppError::new("source-invalid"))?;
+    let after = fs::symlink_metadata(path).map_err(|_| crate::app_error!("source-invalid"))?;
     if !after.is_file() || after.file_type().is_symlink() || after.len() != bytes {
-        return Err(AppError::new("source-invalid"));
+        return Err(crate::app_error!("source-invalid"));
     }
     Ok(PortableArtifact {
         path: relative.to_owned(),
@@ -746,13 +749,13 @@ fn fingerprint(path: &Path, relative: &str) -> AppResult<PortableArtifact> {
 }
 
 fn read_bounded_regular(path: &Path, max: u64) -> AppResult<Vec<u8>> {
-    let metadata = fs::symlink_metadata(path).map_err(|_| AppError::new("source-invalid"))?;
+    let metadata = fs::symlink_metadata(path).map_err(|_| crate::app_error!("source-invalid"))?;
     if !metadata.is_file() || metadata.file_type().is_symlink() || metadata.len() > max {
-        return Err(AppError::new("source-invalid"));
+        return Err(crate::app_error!("source-invalid"));
     }
-    let bytes = fs::read(path).map_err(|_| AppError::new("source-invalid"))?;
+    let bytes = fs::read(path).map_err(|_| crate::app_error!("source-invalid"))?;
     if bytes.len() as u64 != metadata.len() {
-        return Err(AppError::new("source-invalid"));
+        return Err(crate::app_error!("source-invalid"));
     }
     Ok(bytes)
 }
@@ -760,20 +763,20 @@ fn read_bounded_regular(path: &Path, max: u64) -> AppResult<Vec<u8>> {
 fn require_exact_entries(root: &Path, expected: &[&str]) -> AppResult<()> {
     let expected = expected.iter().copied().collect::<HashSet<_>>();
     let mut actual = HashSet::new();
-    for entry in fs::read_dir(root).map_err(|_| AppError::new("source-invalid"))? {
-        let entry = entry.map_err(|_| AppError::new("source-invalid"))?;
+    for entry in fs::read_dir(root).map_err(|_| crate::app_error!("source-invalid"))? {
+        let entry = entry.map_err(|_| crate::app_error!("source-invalid"))?;
         let name = entry
             .file_name()
             .into_string()
-            .map_err(|_| AppError::new("source-invalid"))?;
+            .map_err(|_| crate::app_error!("source-invalid"))?;
         if !actual.insert(name) {
-            return Err(AppError::new("source-invalid"));
+            return Err(crate::app_error!("source-invalid"));
         }
     }
     if actual.iter().map(String::as_str).collect::<HashSet<_>>() == expected {
         Ok(())
     } else {
-        Err(AppError::new("source-invalid"))
+        Err(crate::app_error!("source-invalid"))
     }
 }
 
@@ -817,20 +820,20 @@ fn valid_sha256(value: &str) -> bool {
 fn owned_staging_path(destination: &Path) -> AppResult<PathBuf> {
     let parent = destination
         .parent()
-        .ok_or_else(|| AppError::new("invalid-arguments"))?;
+        .ok_or_else(|| crate::app_error!("invalid-arguments"))?;
     let name = destination
         .file_name()
         .and_then(|name| name.to_str())
-        .ok_or_else(|| AppError::new("invalid-arguments"))?;
+        .ok_or_else(|| crate::app_error!("invalid-arguments"))?;
     Ok(parent.join(format!(".{name}.{}.tmp", Uuid::new_v4())))
 }
 fn create_private_dir(path: &Path) -> AppResult<()> {
-    fs::create_dir(path).map_err(|_| AppError::new("storage-unavailable"))?;
+    fs::create_dir(path).map_err(|_| crate::app_error!("storage-unavailable"))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(path, fs::Permissions::from_mode(0o700))
-            .map_err(|_| AppError::new("storage-unavailable"))?;
+            .map_err(|_| crate::app_error!("storage-unavailable"))?;
     }
     Ok(())
 }
@@ -839,11 +842,11 @@ fn write_new_file(path: &Path, bytes: &[u8]) -> AppResult<()> {
         .write(true)
         .create_new(true)
         .open(path)
-        .map_err(|_| AppError::new("storage-unavailable"))?;
+        .map_err(|_| crate::app_error!("storage-unavailable"))?;
     file.write_all(bytes)
-        .map_err(|_| AppError::new("storage-unavailable"))?;
+        .map_err(|_| crate::app_error!("storage-unavailable"))?;
     file.sync_all()
-        .map_err(|_| AppError::new("storage-unavailable"))
+        .map_err(|_| crate::app_error!("storage-unavailable"))
 }
 fn xml(value: &str) -> String {
     value
@@ -886,11 +889,11 @@ fn unique_child<'a>(parent: Node<'a, 'a>, name: &str) -> AppResult<Node<'a, 'a>>
     if matches.len() == 1 {
         Ok(matches[0])
     } else {
-        Err(AppError::new("source-invalid"))
+        Err(crate::app_error!("source-invalid"))
     }
 }
 fn required_attr(node: &Node<'_, '_>, name: &str) -> AppResult<String> {
-    attr(node, name).ok_or_else(|| AppError::new("source-invalid"))
+    attr(node, name).ok_or_else(|| crate::app_error!("source-invalid"))
 }
 fn attr(node: &Node<'_, '_>, name: &str) -> Option<String> {
     node.attributes()
@@ -902,7 +905,7 @@ fn text(node: &Node<'_, '_>) -> Option<String> {
     (!value.is_empty()).then(|| value.to_owned())
 }
 fn unique_text_child(parent: Node<'_, '_>, name: &str) -> AppResult<String> {
-    optional_unique_text_child(parent, name)?.ok_or_else(|| AppError::new("source-invalid"))
+    optional_unique_text_child(parent, name)?.ok_or_else(|| crate::app_error!("source-invalid"))
 }
 fn optional_unique_text_child(parent: Node<'_, '_>, name: &str) -> AppResult<Option<String>> {
     let values = parent
@@ -913,7 +916,7 @@ fn optional_unique_text_child(parent: Node<'_, '_>, name: &str) -> AppResult<Opt
     if values.len() <= 1 {
         Ok(values.into_iter().next())
     } else {
-        Err(AppError::new("source-invalid"))
+        Err(crate::app_error!("source-invalid"))
     }
 }
 fn text_children(parent: Node<'_, '_>, name: &str) -> Vec<String> {
@@ -924,7 +927,7 @@ fn text_children(parent: Node<'_, '_>, name: &str) -> Vec<String> {
         .collect()
 }
 fn unique_meta(nodes: &[Node<'_, '_>], name: &str) -> AppResult<String> {
-    optional_unique_meta(nodes, name)?.ok_or_else(|| AppError::new("source-invalid"))
+    optional_unique_meta(nodes, name)?.ok_or_else(|| crate::app_error!("source-invalid"))
 }
 fn optional_unique_meta(nodes: &[Node<'_, '_>], name: &str) -> AppResult<Option<String>> {
     let values = nodes
@@ -935,7 +938,7 @@ fn optional_unique_meta(nodes: &[Node<'_, '_>], name: &str) -> AppResult<Option<
     if values.len() <= 1 {
         Ok(values.into_iter().next())
     } else {
-        Err(AppError::new("source-invalid"))
+        Err(crate::app_error!("source-invalid"))
     }
 }
 fn parse_optional_finite(value: Option<String>) -> AppResult<Option<f64>> {
@@ -945,7 +948,7 @@ fn parse_optional_finite(value: Option<String>) -> AppResult<Option<f64>> {
                 .parse::<f64>()
                 .ok()
                 .filter(|number| number.is_finite())
-                .ok_or_else(|| AppError::new("source-invalid"))
+                .ok_or_else(|| crate::app_error!("source-invalid"))
         })
         .transpose()
 }

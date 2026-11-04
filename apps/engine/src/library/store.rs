@@ -220,7 +220,7 @@ pub use duplicates::{
 impl LibraryStore {
     pub fn open_read_only(paths: LibraryPaths) -> AppResult<Self> {
         if !paths.database.is_file() {
-            return Err(AppError::new("storage-unavailable"));
+            return Err(crate::app_error!("storage-unavailable"));
         }
         let connection =
             Connection::open_with_flags(&paths.database, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
@@ -228,7 +228,7 @@ impl LibraryStore {
         connection.pragma_update(None, "foreign_keys", "ON")?;
         let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
         if version != LIBRARY_SCHEMA_VERSION {
-            return Err(AppError::new("incompatible-schema"));
+            return Err(crate::app_error!("incompatible-schema"));
         }
         migration::verify_schema_version(&connection, version)?;
         Ok(Self {
@@ -242,20 +242,20 @@ impl LibraryStore {
     /// only for a supported legacy catalogue requiring the verified migration.
     pub fn preflight_startup(paths: LibraryPaths) -> AppResult<bool> {
         if !fs::symlink_metadata(&paths.database)?.file_type().is_file() {
-            return Err(AppError::new("storage-unavailable"));
+            return Err(crate::app_error!("storage-unavailable"));
         }
         // SQLite NOFOLLOW rejects aliased ancestors too. Resolve the parent only,
         // retaining the final-entry symlink rejection and NOFOLLOW protection.
         let database = paths
             .database
             .parent()
-            .ok_or_else(|| AppError::new("invalid-arguments"))?
+            .ok_or_else(|| crate::app_error!("invalid-arguments"))?
             .canonicalize()?
             .join(
                 paths
                     .database
                     .file_name()
-                    .ok_or_else(|| AppError::new("invalid-arguments"))?,
+                    .ok_or_else(|| crate::app_error!("invalid-arguments"))?,
             );
         let connection = Connection::open_with_flags(
             database,
@@ -264,7 +264,7 @@ impl LibraryStore {
         connection.busy_timeout(std::time::Duration::from_secs(5))?;
         let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
         if !(1..=LIBRARY_SCHEMA_VERSION).contains(&version) {
-            return Err(AppError::new("incompatible-schema"));
+            return Err(crate::app_error!("incompatible-schema"));
         }
         let mut store = Self {
             connection,
@@ -281,7 +281,7 @@ impl LibraryStore {
                 .connection
                 .query_row("PRAGMA integrity_check", [], |row| row.get(0))?;
         if integrity != "ok" {
-            return Err(AppError::new("integrity-failed"));
+            return Err(crate::app_error!("integrity-failed"));
         }
         Ok(true)
     }
@@ -291,7 +291,7 @@ impl LibraryStore {
     pub fn open_existing(paths: LibraryPaths) -> AppResult<Self> {
         fn regular_database(paths: &LibraryPaths) -> AppResult<()> {
             if !fs::symlink_metadata(&paths.database)?.file_type().is_file() {
-                return Err(AppError::new("storage-unavailable"));
+                return Err(crate::app_error!("storage-unavailable"));
             }
             Ok(())
         }
@@ -333,7 +333,7 @@ impl LibraryStore {
             .connection
             .pragma_query_value(None, "user_version", |row| row.get(0))?;
         if version != LIBRARY_SCHEMA_VERSION {
-            return Err(AppError::new("incompatible-schema"));
+            return Err(crate::app_error!("incompatible-schema"));
         }
         migration::verify_schema_version(&self.connection, version)?;
         // Keep the recorded ownership spelling for existing purge/backup operations.
@@ -357,13 +357,13 @@ impl LibraryStore {
         let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
         if version == 0 {
             if has_schema(&connection)? {
-                return Err(AppError::new("incompatible-schema"));
+                return Err(crate::app_error!("incompatible-schema"));
             }
             create_schema(&connection)?;
         } else if (1..LIBRARY_SCHEMA_VERSION).contains(&version) {
             migration::migrate(&mut connection, &paths, version)?;
         } else if version != LIBRARY_SCHEMA_VERSION {
-            return Err(AppError::new("incompatible-schema"));
+            return Err(crate::app_error!("incompatible-schema"));
         } else {
             migration::verify_schema_version(&connection, version)?;
         }
@@ -397,9 +397,9 @@ impl LibraryStore {
             .optional()?
             .map(|(id, name, definition, created_at, updated_at)| {
                 let definition = serde_json::from_str(&definition)
-                    .map_err(|_| AppError::new("invalid-stored-data"))?;
+                    .map_err(|_| crate::app_error!("invalid-stored-data"))?;
                 validate_saved_view_definition(&definition)
-                    .map_err(|_| AppError::new("invalid-stored-data"))?;
+                    .map_err(|_| crate::app_error!("invalid-stored-data"))?;
                 Ok(SavedView {
                     id,
                     name,
@@ -422,7 +422,7 @@ impl LibraryStore {
         let result = self.import_with_outcome(source, title, mode)?;
         match result.status {
             ImportStatus::Imported => Ok(result.item),
-            ImportStatus::Duplicate => Err(AppError::new("duplicate-source-preserved")),
+            ImportStatus::Duplicate => Err(crate::app_error!("duplicate-source-preserved")),
         }
     }
 
@@ -438,7 +438,8 @@ impl LibraryStore {
         // owned-path guard lives here rather than in each caller.
         crate::import_scan::validate_import_sources(&self.paths, &[source.to_path_buf()])?;
         let source = canonical_file(source)?;
-        let format = detect_format(&source).ok_or_else(|| AppError::new("unsupported-format"))?;
+        let format =
+            detect_format(&source).ok_or_else(|| crate::app_error!("unsupported-format"))?;
         let (filename_title, filename_authors) = metadata_from_filename(&source);
         let (embedded_title, embedded_authors) = match format {
             FormatId::Epub | FormatId::Kepub => crate::metadata::embedded_epub(&source),
@@ -453,7 +454,7 @@ impl LibraryStore {
             .or(embedded_title)
             .unwrap_or(filename_title);
         if title.is_empty() {
-            return Err(AppError::new("invalid-title"));
+            return Err(crate::app_error!("invalid-title"));
         }
         let authors = if embedded_authors.is_empty() {
             filename_authors
@@ -481,7 +482,7 @@ impl LibraryStore {
             return Ok(ImportResult {
                 item: self
                     .read_item(&id)?
-                    .ok_or_else(|| AppError::new("invalid-stored-data"))?,
+                    .ok_or_else(|| crate::app_error!("invalid-stored-data"))?,
                 status: ImportStatus::Duplicate,
                 source_preserved: true,
             });
@@ -516,7 +517,7 @@ impl LibraryStore {
         Ok(ImportResult {
             item: self
                 .read_item(&id)?
-                .ok_or_else(|| AppError::new("storage-unavailable"))?,
+                .ok_or_else(|| crate::app_error!("storage-unavailable"))?,
             status: ImportStatus::Imported,
             source_preserved: source.exists(),
         })
@@ -545,7 +546,7 @@ impl LibraryStore {
             let fingerprint = match (bytes, sha256) {
                 (Some(bytes), Some(sha256)) => Some(Fingerprint {
                     bytes: u64::try_from(bytes)
-                        .map_err(|_| AppError::new("invalid-stored-data"))?,
+                        .map_err(|_| crate::app_error!("invalid-stored-data"))?,
                     sha256,
                 }),
                 _ => None,
@@ -580,10 +581,10 @@ impl LibraryStore {
             .map(|(id, format)| {
                 let item = self
                     .read_item(&id)?
-                    .ok_or_else(|| AppError::new("invalid-stored-data"))?;
+                    .ok_or_else(|| crate::app_error!("invalid-stored-data"))?;
                 let format = format
                     .parse::<FormatId>()
-                    .map_err(|_| AppError::new("invalid-stored-data"))?;
+                    .map_err(|_| crate::app_error!("invalid-stored-data"))?;
                 Ok((item, format))
             })
             .transpose()
@@ -646,9 +647,10 @@ impl LibraryStore {
         provenance: Provenance,
     ) -> AppResult<LibraryItem> {
         let source = canonical_file(source)?;
-        let format = detect_format(&source).ok_or_else(|| AppError::new("unsupported-format"))?;
+        let format =
+            detect_format(&source).ok_or_else(|| crate::app_error!("unsupported-format"))?;
         if self.read_item(id)?.is_none() {
-            return Err(AppError::new("not-found"));
+            return Err(crate::app_error!("not-found"));
         }
         let exists: bool = self.connection.query_row(
             "SELECT EXISTS(SELECT 1 FROM library_item_formats WHERE library_item_id = ?1 AND format = ?2)",
@@ -656,7 +658,7 @@ impl LibraryStore {
             |row| row.get(0),
         )?;
         if exists {
-            return Err(AppError::new("format-exists"));
+            return Err(crate::app_error!("format-exists"));
         }
         let now = Utc::now().to_rfc3339();
         let position: i64 = self.connection.query_row(
@@ -683,7 +685,7 @@ impl LibraryStore {
             )?;
         }
         self.read_item(id)?
-            .ok_or_else(|| AppError::new("storage-unavailable"))
+            .ok_or_else(|| crate::app_error!("storage-unavailable"))
     }
 
     pub fn attach_verified_artifact(
@@ -696,7 +698,7 @@ impl LibraryStore {
     ) -> AppResult<LibraryItem> {
         let item = self
             .read_item(id)?
-            .ok_or_else(|| AppError::new("not-found"))?;
+            .ok_or_else(|| crate::app_error!("not-found"))?;
         let expected = Fingerprint {
             bytes: expected_bytes,
             sha256: expected_sha256.to_owned(),
@@ -708,11 +710,11 @@ impl LibraryStore {
             {
                 return Ok(item);
             }
-            return Err(AppError::new("format-exists"));
+            return Err(crate::app_error!("format-exists"));
         }
         let source = canonical_file(source)?;
         if detect_format(&source) != Some(format) || hash_file(&source)? != expected {
-            return Err(AppError::new("artifact-invalid"));
+            return Err(crate::app_error!("artifact-invalid"));
         }
         let now = Utc::now().to_rfc3339();
         let content_bytes = as_i64(expected_bytes)?;
@@ -727,7 +729,7 @@ impl LibraryStore {
             {
                 return Ok(item);
             }
-            return Err(AppError::new("format-exists"));
+            return Err(crate::app_error!("format-exists"));
         }
         let position: i64 = transaction.query_row(
             "SELECT COALESCE(MAX(position), -1) + 1 FROM library_item_formats WHERE library_item_id = ?1",
@@ -747,7 +749,7 @@ impl LibraryStore {
         }
         transaction.commit()?;
         self.read_item(id)?
-            .ok_or_else(|| AppError::new("storage-unavailable"))
+            .ok_or_else(|| crate::app_error!("storage-unavailable"))
     }
 
     pub(crate) fn restore_portable_item(
@@ -757,7 +759,7 @@ impl LibraryStore {
         cover: Option<&Path>,
     ) -> AppResult<LibraryItem> {
         if !valid_item_id(&item.id) || formats.is_empty() || formats.len() != item.formats.len() {
-            return Err(AppError::new("invalid-arguments"));
+            return Err(crate::app_error!("invalid-arguments"));
         }
         let mut published = Vec::new();
         let result = (|| -> AppResult<()> {
@@ -774,7 +776,7 @@ impl LibraryStore {
                     let extension = source
                         .extension()
                         .and_then(|value| value.to_str())
-                        .ok_or_else(|| AppError::new("invalid-arguments"))?;
+                        .ok_or_else(|| crate::app_error!("invalid-arguments"))?;
                     let target = self.paths.covers.join(format!("{}.{}", item.id, extension));
                     publish_copy(source, &target, &hash_file(source)?)?;
                     published.push(target.clone());
@@ -797,7 +799,7 @@ impl LibraryStore {
                 .enumerate()
             {
                 if *format != original.format {
-                    return Err(AppError::new("invalid-arguments"));
+                    return Err(crate::app_error!("invalid-arguments"));
                 }
                 let fingerprint = hash_file(target)?;
                 transaction.execute(
@@ -816,10 +818,10 @@ impl LibraryStore {
             for path in published {
                 let _ = fs::remove_file(path);
             }
-            return Err(AppError::new("storage-unavailable"));
+            return Err(crate::app_error!("storage-unavailable"));
         }
         self.read_item(&item.id)?
-            .ok_or_else(|| AppError::new("storage-unavailable"))
+            .ok_or_else(|| crate::app_error!("storage-unavailable"))
     }
 
     pub(crate) fn rebase_portable_paths(&mut self, destination: &LibraryPaths) -> AppResult<()> {
@@ -878,13 +880,13 @@ impl LibraryStore {
     pub fn remove_format(&mut self, id: &str, format: FormatId) -> AppResult<MutationResult> {
         let item = self
             .read_item(id)?
-            .ok_or_else(|| AppError::new("not-found"))?;
+            .ok_or_else(|| crate::app_error!("not-found"))?;
         if item.formats.len() <= 1 {
-            return Err(AppError::new("last-format"));
+            return Err(crate::app_error!("last-format"));
         }
         let stored = self
             .stored_format(id, format)?
-            .ok_or_else(|| AppError::new("format-not-found"))?;
+            .ok_or_else(|| crate::app_error!("format-not-found"))?;
         let transaction = self.connection.transaction()?;
         transaction.execute(
             "DELETE FROM library_item_formats WHERE library_item_id = ?1 AND format = ?2",
@@ -896,7 +898,7 @@ impl LibraryStore {
             params![id, stored.position],
         )?;
         let updated = hydration::read_item_from(&transaction, id)?
-            .ok_or_else(|| AppError::new("storage-unavailable"))?;
+            .ok_or_else(|| crate::app_error!("storage-unavailable"))?;
         transaction.commit()?;
         let mut updated = MutationResult::new(updated);
         self.cleanup_format_after_commit(&stored, &mut updated);
@@ -919,24 +921,24 @@ impl LibraryStore {
     ) -> AppResult<MutationResult> {
         let current = self
             .read_item(id)?
-            .ok_or_else(|| AppError::new("not-found"))?
+            .ok_or_else(|| crate::app_error!("not-found"))?
             .formats
             .into_iter()
             .find(|candidate| candidate.format == format)
-            .ok_or_else(|| AppError::new("format-changed"))?;
+            .ok_or_else(|| crate::app_error!("format-changed"))?;
         if expected.source_path != current.source_path
             || expected.added_at != current.added_at
             || expected.provenance != current.provenance
         {
-            return Err(AppError::new("format-changed"));
+            return Err(crate::app_error!("format-changed"));
         }
         let source = canonical_file(source)?;
         if detect_format(&source) != Some(format) {
-            return Err(AppError::new("invalid-arguments"));
+            return Err(crate::app_error!("invalid-arguments"));
         }
         let old = self
             .stored_format(id, format)?
-            .ok_or_else(|| AppError::new("format-changed"))?;
+            .ok_or_else(|| crate::app_error!("format-changed"))?;
         let now = Utc::now().to_rfc3339();
         let (stored_path, fingerprint) = if provenance == Provenance::Managed {
             let fingerprint = hash_file(&source)?;
@@ -970,7 +972,7 @@ impl LibraryStore {
                 ],
             )?;
             let updated = hydration::read_item_from(&transaction, id)?
-                .ok_or_else(|| AppError::new("storage-unavailable"))?;
+                .ok_or_else(|| crate::app_error!("storage-unavailable"))?;
             transaction.commit()?;
             Ok(updated)
         })();
@@ -1023,7 +1025,7 @@ impl LibraryStore {
             .transpose()?;
         let old_cover = self
             .read_item(id)?
-            .ok_or_else(|| AppError::new("not-found"))?
+            .ok_or_else(|| crate::app_error!("not-found"))?
             .cover_path;
         let published = if let Some(claimed) = &claimed {
             let target = self.paths.covers.join(format!(
@@ -1073,16 +1075,16 @@ impl LibraryStore {
         // allows: `Missing` leaves the stored value untouched, `Null` clears it
         // to the documented empty value, `Set` replaces it.
         if patch.is_empty() {
-            return Err(AppError::new("invalid-arguments"));
+            return Err(crate::app_error!("invalid-arguments"));
         }
         // `title` is non-nullable: an explicit null is a client error.
         if matches!(patch.title, Patch::Null) {
-            return Err(AppError::new("invalid-arguments"));
+            return Err(crate::app_error!("invalid-arguments"));
         }
         if let Some(title) = patch.title.into_set() {
             let title = title.trim();
             if title.is_empty() {
-                return Err(AppError::new("invalid-arguments"));
+                return Err(crate::app_error!("invalid-arguments"));
             }
             item.title = title.to_owned();
         }
@@ -1099,7 +1101,7 @@ impl LibraryStore {
                 // The contract requires at least one author when present;
                 // clearing is expressed only as an explicit null.
                 if value.is_empty() {
-                    return Err(AppError::new("invalid-arguments"));
+                    return Err(crate::app_error!("invalid-arguments"));
                 }
                 item.authors = normalize_authors(value)?;
             }
@@ -1123,7 +1125,7 @@ impl LibraryStore {
             Patch::Null => item.series_index = None,
             Patch::Set(value) => {
                 if !value.is_finite() {
-                    return Err(AppError::new("invalid-arguments"));
+                    return Err(crate::app_error!("invalid-arguments"));
                 }
                 item.series_index = Some(value);
             }
@@ -1140,7 +1142,7 @@ impl LibraryStore {
                 // The contract requires at least one language when present;
                 // clearing is expressed only as an explicit null.
                 if value.is_empty() {
-                    return Err(AppError::new("invalid-arguments"));
+                    return Err(crate::app_error!("invalid-arguments"));
                 }
                 item.languages = normalize_languages(value)?;
             }
@@ -1162,7 +1164,7 @@ impl LibraryStore {
             }
             Patch::Set(value) => {
                 if !allow_reserved_metadata && value.contains_key(METADATA_AUDIT_KEY) {
-                    return Err(AppError::new("invalid-arguments"));
+                    return Err(crate::app_error!("invalid-arguments"));
                 }
                 let existing_audit = item.custom_metadata.get(METADATA_AUDIT_KEY).cloned();
                 item.custom_metadata = normalize_custom_metadata(value)?;
@@ -1182,7 +1184,7 @@ impl LibraryStore {
             Patch::Null => item.rating = None,
             Patch::Set(value) => {
                 if !value.is_finite() || !(0.0..=10.0).contains(&value) {
-                    return Err(AppError::new("invalid-arguments"));
+                    return Err(crate::app_error!("invalid-arguments"));
                 }
                 item.rating = Some(value);
             }
@@ -1195,7 +1197,7 @@ impl LibraryStore {
         match patch.tags {
             Patch::Missing => {}
             // `tags` is not nullable in the contract; an empty array clears it.
-            Patch::Null => return Err(AppError::new("invalid-arguments")),
+            Patch::Null => return Err(crate::app_error!("invalid-arguments")),
             Patch::Set(value) => item.tags = normalize_texts(value)?,
         }
         Ok(())
@@ -1210,7 +1212,7 @@ impl LibraryStore {
     ) -> AppResult<LibraryItem> {
         let mut item = self
             .read_item(id)?
-            .ok_or_else(|| AppError::new("not-found"))?;
+            .ok_or_else(|| crate::app_error!("not-found"))?;
         Self::apply_patch_to_item(&mut item, patch, allow_reserved_metadata)?;
         item.updated_at = Some(Utc::now().to_rfc3339());
 
@@ -1244,7 +1246,7 @@ impl LibraryStore {
     pub fn set_cover(&mut self, id: &str, source: &Path) -> AppResult<LibraryItem> {
         let mut item = self
             .read_item(id)?
-            .ok_or_else(|| AppError::new("not-found"))?;
+            .ok_or_else(|| crate::app_error!("not-found"))?;
         let source = canonical_file(source)?;
         let extension = source
             .extension()
@@ -1282,7 +1284,7 @@ impl LibraryStore {
     pub fn remove_cover(&mut self, id: &str) -> AppResult<LibraryItem> {
         let mut item = self
             .read_item(id)?
-            .ok_or_else(|| AppError::new("not-found"))?;
+            .ok_or_else(|| crate::app_error!("not-found"))?;
         let updated_at = Utc::now().to_rfc3339();
         self.connection.execute(
             "UPDATE library_items SET cover_path=NULL, updated_at=?2 WHERE id=?1",
@@ -1317,14 +1319,14 @@ impl LibraryStore {
     fn purge_trashed(&mut self, id: &str) -> AppResult<MutationResult> {
         let item = self
             .read_item(id)?
-            .ok_or_else(|| AppError::new("not-found"))?;
+            .ok_or_else(|| crate::app_error!("not-found"))?;
         let trashed: bool = self.connection.query_row(
             "SELECT trashed_at IS NOT NULL FROM library_items WHERE id=?1",
             [id],
             |row| row.get(0),
         )?;
         if !trashed {
-            return Err(AppError::new("not-trashed"));
+            return Err(crate::app_error!("not-trashed"));
         }
         let stored = item
             .formats
@@ -1336,7 +1338,7 @@ impl LibraryStore {
             [id],
         )?;
         if changed == 0 {
-            return Err(AppError::new("not-trashed"));
+            return Err(crate::app_error!("not-trashed"));
         }
         let mut result = MutationResult::new(item);
         for format in stored.into_iter().flatten() {
@@ -1353,13 +1355,13 @@ impl LibraryStore {
             .connection
             .pragma_query_value(None, "user_version", |row| row.get(0))?;
         if version != LIBRARY_SCHEMA_VERSION {
-            return Err(AppError::new("incompatible-schema"));
+            return Err(crate::app_error!("incompatible-schema"));
         }
         let integrity: String = self
             .connection
             .query_row("PRAGMA integrity_check", [], |row| row.get(0))?;
         if integrity != "ok" {
-            return Err(AppError::new("integrity-failed"));
+            return Err(crate::app_error!("integrity-failed"));
         }
         let foreign_keys: i64 = self.connection.query_row(
             "SELECT COUNT(*) FROM pragma_foreign_key_check",
@@ -1367,7 +1369,7 @@ impl LibraryStore {
             |row| row.get(0),
         )?;
         if foreign_keys != 0 {
-            return Err(AppError::new("integrity-failed"));
+            return Err(crate::app_error!("integrity-failed"));
         }
         let ownership = recovery::ownership_paths(&self.connection, &self.paths)?;
         migration::verify_current(&self.connection, &ownership)?;
@@ -1401,12 +1403,12 @@ impl LibraryStore {
         for row in rows {
             let (path, bytes, sha256) = row?;
             let actual =
-                hash_file(Path::new(&path)).map_err(|_| AppError::new("integrity-failed"))?;
+                hash_file(Path::new(&path)).map_err(|_| crate::app_error!("integrity-failed"))?;
             if actual.bytes
-                != u64::try_from(bytes).map_err(|_| AppError::new("integrity-failed"))?
+                != u64::try_from(bytes).map_err(|_| crate::app_error!("integrity-failed"))?
                 || actual.sha256 != sha256
             {
-                return Err(AppError::new("integrity-failed"));
+                return Err(crate::app_error!("integrity-failed"));
             }
             verified += 1;
         }
@@ -1458,9 +1460,9 @@ impl LibraryStore {
         rows.into_iter()
             .map(|(id, name, definition, created_at, updated_at)| {
                 let definition: SavedViewDefinition = serde_json::from_str(&definition)
-                    .map_err(|_| AppError::new("invalid-stored-data"))?;
+                    .map_err(|_| crate::app_error!("invalid-stored-data"))?;
                 validate_saved_view_definition(&definition)
-                    .map_err(|_| AppError::new("invalid-stored-data"))?;
+                    .map_err(|_| crate::app_error!("invalid-stored-data"))?;
                 Ok(SavedView {
                     id,
                     name,
@@ -1476,13 +1478,13 @@ impl LibraryStore {
         let id = request.id.trim();
         let name = request.name.trim();
         if id.is_empty() || id.encode_utf16().count() > 256 || name.is_empty() || name.len() > 120 {
-            return Err(AppError::new("invalid-arguments"));
+            return Err(crate::app_error!("invalid-arguments"));
         }
         let definition = &request.definition;
         validate_saved_view_definition(definition)?;
         let now = Utc::now().to_rfc3339();
-        let definition_json =
-            serde_json::to_string(definition).map_err(|_| AppError::new("invalid-arguments"))?;
+        let definition_json = serde_json::to_string(definition)
+            .map_err(|_| crate::app_error!("invalid-arguments"))?;
         self.connection.execute(
             "INSERT INTO saved_library_views(id,name,definition_json,created_at,updated_at) VALUES(?1,?2,?3,?4,?4)
              ON CONFLICT(id) DO UPDATE SET name=excluded.name,definition_json=excluded.definition_json,updated_at=excluded.updated_at",
@@ -1508,7 +1510,7 @@ impl LibraryStore {
                 id,
                 name,
                 definition: serde_json::from_str(&definition)
-                    .map_err(|_| AppError::new("invalid-stored-data"))?,
+                    .map_err(|_| crate::app_error!("invalid-stored-data"))?,
                 created_at,
                 updated_at,
             })
@@ -1520,7 +1522,7 @@ impl LibraryStore {
     pub fn remove_view(&self, id: &str) -> AppResult<Option<SavedView>> {
         let view = self
             .saved_view(id)?
-            .ok_or_else(|| AppError::new("not-found"))?;
+            .ok_or_else(|| crate::app_error!("not-found"))?;
         self.connection
             .execute("DELETE FROM saved_library_views WHERE id=?1", [&view.id])?;
         Ok(Some(view))
@@ -1529,7 +1531,7 @@ impl LibraryStore {
     fn set_trash(&mut self, id: &str, timestamp: Option<String>) -> AppResult<LibraryItem> {
         let item = self
             .read_item(id)?
-            .ok_or_else(|| AppError::new("not-found"))?;
+            .ok_or_else(|| crate::app_error!("not-found"))?;
         self.connection.execute(
             "UPDATE library_items SET trashed_at=?2 WHERE id=?1",
             params![id, timestamp],
@@ -1551,7 +1553,7 @@ impl LibraryStore {
     fn read_item(&self, id: &str) -> AppResult<Option<LibraryItem>> {
         #[cfg(test)]
         if POST_COMMIT_READ_FAULT.with(|fault| fault.replace(false)) {
-            return Err(AppError::new("storage-unavailable"));
+            return Err(crate::app_error!("storage-unavailable"));
         }
         read_item_from(&self.connection, id)
     }
@@ -1608,7 +1610,7 @@ fn existing_owned_root(path: &Path, canonical_root: &Path, directory: &str) -> A
             .components()
             .any(|part| matches!(part, Component::ParentDir))
     {
-        return Err(AppError::new("integrity-failed"));
+        return Err(crate::app_error!("integrity-failed"));
     }
     for owned in path.ancestors().skip(1) {
         let Some(recorded_root) = owned.parent() else {
@@ -1632,17 +1634,17 @@ fn existing_owned_root(path: &Path, canonical_root: &Path, directory: &str) -> A
             return Ok(recorded_root.to_path_buf());
         }
     }
-    Err(AppError::new("integrity-failed"))
+    Err(crate::app_error!("integrity-failed"))
 }
 
 fn canonical_file(path: &Path) -> AppResult<PathBuf> {
     let path = path
         .canonicalize()
-        .map_err(|_| AppError::new("not-found"))?;
+        .map_err(|_| crate::app_error!("not-found"))?;
     if path.is_file() {
         Ok(path)
     } else {
-        Err(AppError::new("invalid-arguments"))
+        Err(crate::app_error!("invalid-arguments"))
     }
 }
 
@@ -1689,19 +1691,19 @@ fn metadata_from_filename(path: &Path) -> (String, Vec<BookAuthor>) {
 }
 
 fn hash_file(path: &Path) -> AppResult<Fingerprint> {
-    crate::fingerprint::hash_file(path).map_err(|_| AppError::new("source-unavailable"))
+    crate::fingerprint::hash_file(path).map_err(|_| crate::app_error!("source-unavailable"))
 }
 
 fn publish_copy(source: &Path, target: &Path, expected: &Fingerprint) -> AppResult<()> {
     let parent = target
         .parent()
-        .ok_or_else(|| AppError::new("storage-unavailable"))?;
+        .ok_or_else(|| crate::app_error!("storage-unavailable"))?;
     fs::create_dir_all(parent)?;
     if target.exists() {
-        return Err(AppError::new("destination-exists"));
+        return Err(crate::app_error!("destination-exists"));
     }
     let temporary = parent.join(format!(".takio-{}.tmp", Uuid::new_v4()));
-    let mut input = File::open(source).map_err(|_| AppError::new("source-unavailable"))?;
+    let mut input = File::open(source).map_err(|_| crate::app_error!("source-unavailable"))?;
     let mut output = OpenOptions::new()
         .create_new(true)
         .write(true)
@@ -1710,7 +1712,7 @@ fn publish_copy(source: &Path, target: &Path, expected: &Fingerprint) -> AppResu
     output.sync_all()?;
     if hash_file(&temporary)? != *expected {
         let _ = fs::remove_file(&temporary);
-        return Err(AppError::new("source-changed"));
+        return Err(crate::app_error!("source-changed"));
     }
     fs::rename(&temporary, target)?;
     Ok(())
@@ -1718,12 +1720,12 @@ fn publish_copy(source: &Path, target: &Path, expected: &Fingerprint) -> AppResu
 
 fn cleanup_managed(root: &Path, path: &Path, expected: Option<&Fingerprint>) -> AppResult<()> {
     if !path.starts_with(root) {
-        return Err(AppError::new("invalid-stored-data"));
+        return Err(crate::app_error!("invalid-stored-data"));
     }
     if path.exists()
         && expected.is_some_and(|expected| hash_file(path).ok().as_ref() != Some(expected))
     {
-        return Err(AppError::new("source-changed"));
+        return Err(crate::app_error!("source-changed"));
     }
     if path.exists() {
         fs::remove_file(path)?;
@@ -1733,17 +1735,19 @@ fn cleanup_managed(root: &Path, path: &Path, expected: Option<&Fingerprint>) -> 
 
 fn count(connection: &Connection, sql: &str) -> AppResult<u64> {
     let value: i64 = connection.query_row(sql, [], |row| row.get(0))?;
-    u64::try_from(value).map_err(|_| AppError::new("invalid-stored-data"))
+    u64::try_from(value).map_err(|_| crate::app_error!("invalid-stored-data"))
 }
 
 fn count_with_param(connection: &Connection, sql: &str, value: &str) -> AppResult<u64> {
     connection
         .query_row(sql, [value], |row| row.get::<_, i64>(0))
         .map_err(Into::into)
-        .and_then(|value| u64::try_from(value).map_err(|_| AppError::new("invalid-stored-data")))
+        .and_then(|value| {
+            u64::try_from(value).map_err(|_| crate::app_error!("invalid-stored-data"))
+        })
 }
 fn as_i64(value: u64) -> AppResult<i64> {
-    i64::try_from(value).map_err(|_| AppError::new("storage-unavailable"))
+    i64::try_from(value).map_err(|_| crate::app_error!("storage-unavailable"))
 }
 fn rebase_owned_paths(
     connection: &mut Connection,
@@ -1777,7 +1781,7 @@ fn rebase_owned_paths(
     for (id, format, stored) in formats {
         let relative = Path::new(&stored)
             .strip_prefix(&source.items)
-            .map_err(|_| AppError::new("invalid-stored-data"))?;
+            .map_err(|_| crate::app_error!("invalid-stored-data"))?;
         let rebased = destination.items.join(relative);
         transaction.execute(
             "UPDATE library_item_formats SET source_path=?3 WHERE library_item_id=?1 AND format=?2 AND provenance='managed'",
@@ -1787,7 +1791,7 @@ fn rebase_owned_paths(
     for (id, stored) in covers {
         let relative = Path::new(&stored)
             .strip_prefix(&source.covers)
-            .map_err(|_| AppError::new("invalid-stored-data"))?;
+            .map_err(|_| crate::app_error!("invalid-stored-data"))?;
         let rebased = destination.covers.join(relative);
         transaction.execute(
             "UPDATE library_items SET cover_path=?2 WHERE id=?1",

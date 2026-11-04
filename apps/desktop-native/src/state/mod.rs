@@ -255,7 +255,7 @@ impl LibraryState {
                 cx.background_executor().spawn(async move {
                     let items = receiver
                         .recv()
-                        .unwrap_or_else(|_| Err(AppError::new("storage-unavailable")))?;
+                        .unwrap_or_else(|_| Err(takio::app_error!("storage-unavailable")))?;
                     Ok(build_snapshot(items, sort))
                 })
             }
@@ -264,7 +264,7 @@ impl LibraryState {
                 cx.background_executor().spawn(async move {
                     let items = receiver
                         .recv()
-                        .unwrap_or_else(|_| Err(AppError::new("storage-unavailable")))?;
+                        .unwrap_or_else(|_| Err(takio::app_error!("storage-unavailable")))?;
                     Ok(build_snapshot(
                         items.into_iter().map(Arc::new).collect(),
                         sort,
@@ -301,7 +301,7 @@ impl LibraryState {
         let task = cx.background_executor().spawn(async move {
             timer.await;
             if cancelled.load(Ordering::Acquire) {
-                return Err(AppError::new("query-cancelled"));
+                return Err(takio::app_error!("query-cancelled"));
             }
             let items = match section {
                 Section::Library => engine
@@ -311,11 +311,11 @@ impl LibraryState {
                         reply,
                     })
                     .recv()
-                    .unwrap_or_else(|_| Err(AppError::new("storage-unavailable")))?,
+                    .unwrap_or_else(|_| Err(takio::app_error!("storage-unavailable")))?,
                 Section::Trash => engine
                     .request(|reply| Request::ListTrash { reply })
                     .recv()
-                    .unwrap_or_else(|_| Err(AppError::new("storage-unavailable")))?
+                    .unwrap_or_else(|_| Err(takio::app_error!("storage-unavailable")))?
                     .into_iter()
                     .map(Arc::new)
                     .collect(),
@@ -548,7 +548,7 @@ impl LibraryState {
                     });
                     this.set_status(summary, false, cx);
                 }
-                Err(error) => this.set_status(humanize_recovery_error(error.code()), true, cx),
+                Err(error) => this.set_status(humanize_recovery_error(error.kind()), true, cx),
             }
         }).detach();
     }
@@ -588,7 +588,7 @@ impl LibraryState {
                     });
                     this.set_status(summary, false, cx);
                 }
-                Err(error) => this.set_status(humanize_recovery_error(error.code()), true, cx),
+                Err(error) => this.set_status(humanize_recovery_error(error.kind()), true, cx),
             }
         }).detach();
     }
@@ -654,7 +654,7 @@ impl LibraryState {
                         cx,
                     );
                 }
-                Err(error) => this.set_error(error.code(), cx),
+                Err(error) => this.set_error(error.kind(), cx),
             }
             this.reload(cx);
             this.scan_readers(cx);
@@ -789,7 +789,8 @@ impl LibraryState {
             || self.session.loading
             || self.session.section != Section::Library
         {
-            self.session.metadata_save_result = Some(Err(AppError::new("operation-in-progress")));
+            self.session.metadata_save_result =
+                Some(Err(takio::app_error!("operation-in-progress")));
             cx.notify();
             return;
         }
@@ -808,7 +809,7 @@ impl LibraryState {
                     this.reload(cx);
                 }
                 Err(error) => {
-                    this.set_error(error.code(), cx);
+                    this.set_error(error.kind(), cx);
                     this.session.metadata_save_result = Some(Err(error));
                 }
             }
@@ -889,7 +890,7 @@ impl LibraryState {
                             result
                                 .as_ref()
                                 .err()
-                                .map(|error| format!("{id}: {}", humanize_error(error.code())))
+                                .map(|error| format!("{id}: {}", humanize_error(error.kind())))
                         })
                         .collect::<Vec<_>>();
                     let mut detail = if failures.is_empty() {
@@ -929,7 +930,7 @@ impl LibraryState {
                         cx,
                     );
                 }
-                Err(error) => this.set_error(error.code(), cx),
+                Err(error) => this.set_error(error.kind(), cx),
             }
             this.reload(cx);
             this.scan_readers(cx);
@@ -1140,7 +1141,7 @@ impl LibraryState {
                     this.session.activity = Activity::ReviewingSend(preview);
                     this.set_status(format!("Review send: {ready} ready, {blocked} need attention. Nothing sent yet."), false, cx);
                 }
-                Err(error) => this.set_error(error.code(), cx),
+                Err(error) => this.set_error(error.kind(), cx),
             }
         }).detach();
     }
@@ -1231,7 +1232,7 @@ impl LibraryState {
                     );
                     this.session.delivery_report = Some(report);
                 }
-                Err(error) => this.set_error(error.code(), cx),
+                Err(error) => this.set_error(error.kind(), cx),
             }
             this.scan_readers(cx);
             cx.notify();
@@ -1253,7 +1254,7 @@ impl LibraryState {
             this.session.activity = Activity::Idle;
             match result {
                 Ok(()) => this.set_status(format!("Ejected {name}"), false, cx),
-                Err(error) => this.set_error(error.code(), cx),
+                Err(error) => this.set_error(error.kind(), cx),
             }
             this.refresh_destinations(cx);
         })
@@ -1313,10 +1314,10 @@ impl LibraryState {
                             cx,
                         );
                     } else {
-                        this.set_error("backend-unavailable", cx);
+                        this.set_error(takio::error::ErrorCode::BackendUnavailable, cx);
                     }
                 }
-                Err(error) => this.set_error(error.code(), cx),
+                Err(error) => this.set_error(error.kind(), cx),
             }
         })
         .detach();
@@ -1348,7 +1349,7 @@ impl LibraryState {
             return;
         };
         if !preview.backend.available {
-            self.set_error("backend-unavailable", cx);
+            self.set_error(takio::error::ErrorCode::BackendUnavailable, cx);
             return;
         }
         let Activity::ReviewingPreparation(preview) = std::mem::take(&mut self.session.activity)
@@ -1371,7 +1372,7 @@ impl LibraryState {
                     );
                     this.reload(cx);
                 }
-                Err(error) => this.set_error(error.code(), cx),
+                Err(error) => this.set_error(error.kind(), cx),
             }
         })
         .detach();
@@ -1384,7 +1385,7 @@ impl LibraryState {
         cx.notify();
     }
 
-    fn set_error(&mut self, code: &str, cx: &mut Context<Self>) {
+    fn set_error(&mut self, code: takio::error::ErrorCode, cx: &mut Context<Self>) {
         self.set_status(humanize_error(code), true, cx);
     }
 
@@ -1417,7 +1418,7 @@ impl LibraryState {
                             .spawn(async move { drop((old_items, old_facets)) })
                             .detach();
                     }
-                    Err(error) => this.set_error(error.code(), cx),
+                    Err(error) => this.set_error(error.kind(), cx),
                 }
                 cx.notify();
             });
@@ -1445,7 +1446,7 @@ impl LibraryState {
                 .spawn(async move {
                     receiver
                         .recv()
-                        .unwrap_or_else(|_| Err(AppError::new("storage-unavailable")))
+                        .unwrap_or_else(|_| Err(takio::app_error!("storage-unavailable")))
                 })
                 .await;
             let _ = this.update(cx, |this, cx| {
@@ -1505,48 +1506,9 @@ fn sort_items(items: &mut [Arc<LibraryItem>], sort: Sort) {
     }
 }
 
-pub fn humanize_error(code: &str) -> String {
-    match code {
-        "operation-in-progress" => "Finish the current operation first".into(),
-        "reader-scan-unavailable" => "Reader scanning could not start. Restart Takio to retry. Your library is still available.".into(),
-        "storage-unavailable" => "The library could not be read".into(),
-        "unsupported-format" => "That file format is not supported".into(),
-        "not-found" => "That book is no longer in the library".into(),
-        "destination-unavailable" | "unknown-destination" => "The reader is no longer available. Reconnect it with a data-capable USB cable. It reappears in a moment, or choose Refresh readers, then try again.".into(),
-        "source-unavailable" => "The book's file is unavailable. Check that its drive is connected and the file still exists, then try again.".into(),
-        "copy-failed" => "The copy could not be completed. Check the reader connection, available space, and write permissions before retrying.".into(),
-        "verification-failed" => "The copied book could not be verified. Do not rely on this transfer. Check the reader connection and try again.".into(),
-        "destination-file-exists" => "A file with that name already exists on the device".into(),
-        "send-review-changed" => "The compatible attachment changed after review. Review the send again before copying.".into(),
-        "prepare-source-unavailable" => "The EPUB source cannot be read. Reconnect its drive and check file permissions, then review preparation again.".into(),
-        "prepare-source-changed" => "The EPUB changed after review. Review preparation again before creating a copy.".into(),
-        "prepare-backend-changed" => "The conversion backend changed after review. Review preparation again before creating a copy.".into(),
-        "no-epub-source" => "No EPUB is attached to this book. Add an EPUB source before preparing an AZW3 copy.".into(),
-        "format-exists" => "An AZW3 copy is already attached. Review send to use it. Existing files were not replaced.".into(),
-        "destination-exists" => "A file already exists at the managed destination. It was not overwritten, and its existing bytes were kept. Review the library files before retrying.".into(),
-        "item-trashed" => "This book is in Trash. Restore it to the library, then review the operation again.".into(),
-        "backend-unavailable" => "Local preparation needs Calibre's ebook-convert. Install Calibre, then cancel and review preparation again. Nothing was converted or sent.".into(),
-        "conversion-failed" => "AZW3 preparation failed. The EPUB was kept. Check that the EPUB opens and the local converter works, then retry.".into(),
-        "conversion-timeout" => "AZW3 preparation exceeded the 120-second conversion limit. The EPUB was kept. Check the source and local converter before retrying.".into(),
-        "artifact-invalid" => "The converted file could not be verified. The EPUB was kept. Check the source and local converter before retrying.".into(),
-        "format-not-found" => "That book has no file to send".into(),
-        "no-compatible-format" | "destination-format-unsupported" => "No file this reader can open. KOReader reads EPUB, PDF, MOBI, AZW3, TXT and CBZ. A stock Kindle needs AZW3, MOBI, PDF or TXT.".into(),
-        "invalid-arguments" => "Check the book details and selection, then try again".into(),
-        "reader-scan-in-progress" => "Reader scan is still finishing. Wait for it to stop, then try Eject again.".into(),
-        "eject-failed" => "The device could not be ejected".into(),
-        other => format!("Something went wrong ({other})"),
-    }
-}
-
-fn humanize_recovery_error(code: &str) -> String {
-    match code {
-        "destination-exists" => "That location already exists. Choose a new folder name. Existing files were not replaced.".into(),
-        "invalid-arguments" => "Choose a new folder outside the current library and backup. Do not place recovery copies inside either library.".into(),
-        "source-invalid" | "incompatible-schema" | "invalid-stored-data" => "This is not a supported, safe Takio backup. Choose the complete backup folder created by a compatible Takio version. Your current library was not replaced.".into(),
-        "integrity-failed" => "The recovery copy could not be verified. A managed file or catalogue may be missing or changed. Keep the original library and try a different backup or destination.".into(),
-        _ => "The recovery copy could not be completed. Check free space, drive connections and permissions. Your current library was not replaced. Inspect the destination before retrying with a new folder name.".into(),
-    }
-}
+mod errors;
+pub use errors::humanize_error;
+use errors::{humanize_recovery_error, open_library_error};
 
 /// Convenience alias so views can declare their dependency plainly.
 pub type LibraryEntity = Entity<LibraryState>;
@@ -1633,7 +1595,8 @@ mod tests {
         let f = fixture(cx);
         settle(&f.state, cx);
         f.state.update(cx, |state, cx| {
-            state.session.metadata_save_result = Some(Err(AppError::new("old-error")));
+            state.session.metadata_save_result =
+                Some(Err(takio::app_error!("metadata-unavailable")));
             assert!(state.begin_metadata_editing(cx));
             assert!(state.session.metadata_save_result.is_none());
             assert!(!state.can_mutate());
@@ -2259,8 +2222,9 @@ mod tests {
     #[gpui::test]
     fn error_codes_are_humanized(cx: &mut TestAppContext) {
         let f = fixture(cx);
-        f.state
-            .update(cx, |s, cx| s.set_error("unsupported-format", cx));
+        f.state.update(cx, |s, cx| {
+            s.set_error(takio::error::ErrorCode::UnsupportedFormat, cx)
+        });
         let status = f
             .state
             .read_with(cx, |s, _| s.session.status.clone().unwrap());
@@ -2420,7 +2384,7 @@ mod tests {
 
     #[test]
     fn no_compatible_format_names_what_koreader_and_stock_kindle_read() {
-        let message = humanize_error("no-compatible-format");
+        let message = humanize_error(takio::error::ErrorCode::NoCompatibleFormat);
         assert!(
             message.contains("KOReader reads EPUB, PDF, MOBI, AZW3, TXT and CBZ"),
             "{message}"
@@ -2438,14 +2402,23 @@ mod tests {
     #[test]
     fn transfer_errors_include_actionable_recovery_without_raw_codes() {
         for (code, guidance) in [
-            ("unknown-destination", "Refresh readers"),
-            ("source-unavailable", "file still exists"),
-            ("copy-failed", "available space"),
-            ("verification-failed", "Do not rely on this transfer"),
+            (
+                takio::error::ErrorCode::UnknownDestination,
+                "Refresh readers",
+            ),
+            (
+                takio::error::ErrorCode::SourceUnavailable,
+                "file still exists",
+            ),
+            (takio::error::ErrorCode::CopyFailed, "available space"),
+            (
+                takio::error::ErrorCode::VerificationFailed,
+                "Do not rely on this transfer",
+            ),
         ] {
             let message = humanize_error(code);
             assert!(message.contains(guidance), "{message}");
-            assert!(!message.contains(code), "{message}");
+            assert!(!message.contains(code.as_str()), "{message}");
         }
     }
 
@@ -2468,10 +2441,10 @@ mod tests {
                 .unwrap()
                 .as_ref()
                 .unwrap_err();
-            assert_eq!(error.code(), "operation-in-progress");
+            assert_eq!(error.kind(), takio::error::ErrorCode::OperationInProgress);
             assert_eq!(error.exit_code(), 1);
             assert_eq!(
-                humanize_error(error.code()),
+                humanize_error(error.kind()),
                 "Finish the current operation first"
             );
             assert!(!state.saving_metadata());

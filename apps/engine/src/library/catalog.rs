@@ -76,7 +76,7 @@ pub fn write_catalog(
     format: &str,
     output: &std::path::Path,
 ) -> crate::output::AppResult<CatalogReport> {
-    use crate::output::{AppError, AppResult};
+    use crate::output::AppResult;
     use sha2::{Digest, Sha256};
     use std::io::Write;
     if output.exists()
@@ -87,10 +87,10 @@ pub fn write_catalog(
             .and_then(|value| value.to_str())
             .is_none_or(|value| !value.eq_ignore_ascii_case(format))
     {
-        return Err(AppError::new(if output.exists() {
-            "output-file-exists"
+        return Err(crate::app_error!(if output.exists() {
+            crate::error::ErrorCode::OutputFileExists
         } else {
-            "invalid-arguments"
+            crate::error::ErrorCode::InvalidArguments
         }));
     }
     let body = match format {
@@ -99,19 +99,19 @@ pub fn write_catalog(
             serde_json::to_string_pretty(
                 &json!({"version":1,"books":items.iter().map(catalog_record).collect::<Vec<_>>()})
             )
-            .map_err(|_| AppError::new("write-failed"))?
+            .map_err(|_| crate::app_error!("write-failed"))?
         ),
         "csv" => render_catalog_csv(items),
         "html" => render_catalog_html(items),
-        _ => return Err(AppError::new("invalid-arguments")),
+        _ => return Err(crate::app_error!("invalid-arguments")),
     };
     if body.len() > 64 * 1024 * 1024 {
-        return Err(AppError::new("write-failed"));
+        return Err(crate::app_error!("write-failed"));
     }
     let absolute_output = crate::paths::absolute(output)?;
     let parent = output
         .parent()
-        .ok_or_else(|| AppError::new("invalid-arguments"))?;
+        .ok_or_else(|| crate::app_error!("invalid-arguments"))?;
     let temporary = parent.join(format!(".takio-catalog-{}.tmp", uuid::Uuid::new_v4()));
     #[cfg(unix)]
     use std::os::unix::fs::OpenOptionsExt;
@@ -122,15 +122,15 @@ pub fn write_catalog(
     let publication = (|| -> AppResult<()> {
         let mut file = options
             .open(&temporary)
-            .map_err(|_| AppError::new("write-failed"))?;
+            .map_err(|_| crate::app_error!("write-failed"))?;
         file.write_all(body.as_bytes())
             .and_then(|_| file.flush())
             .and_then(|_| file.sync_all())
-            .map_err(|_| AppError::new("write-failed"))?;
+            .map_err(|_| crate::app_error!("write-failed"))?;
         if !temporary.is_file() {
-            return Err(AppError::new("write-failed"));
+            return Err(crate::app_error!("write-failed"));
         }
-        std::fs::hard_link(&temporary, output).map_err(|_| AppError::new("write-failed"))?;
+        std::fs::hard_link(&temporary, output).map_err(|_| crate::app_error!("write-failed"))?;
         Ok(())
     })();
     let _ = std::fs::remove_file(&temporary);

@@ -8,7 +8,7 @@ use signal_hook::consts::signal::{SIGINT, SIGTERM};
 use signal_hook::iterator::{Handle, Signals};
 
 use crate::model::LibraryItem;
-use crate::output::{AppError, AppResult};
+use crate::output::AppResult;
 use crate::portable_library::valid_item_id;
 
 const MAX_RECONCILE_ITEMS: usize = 64;
@@ -25,7 +25,7 @@ pub struct ReconcileRequest {
 impl ReconcileRequest {
     pub fn parse(value: Value) -> AppResult<Self> {
         let mut request: Self =
-            serde_json::from_value(value).map_err(|_| AppError::new("invalid-arguments"))?;
+            serde_json::from_value(value).map_err(|_| crate::app_error!("invalid-arguments"))?;
         request.item_ids = request
             .item_ids
             .into_iter()
@@ -43,7 +43,7 @@ impl ReconcileRequest {
                 .iter()
                 .any(|id| !valid_item_id(id) || !unique.insert(id.clone()))
         {
-            return Err(AppError::new("invalid-arguments"));
+            return Err(crate::app_error!("invalid-arguments"));
         }
         Ok(request)
     }
@@ -205,7 +205,7 @@ where
                             break;
                         };
                         let result = if canceled.load(Ordering::Acquire) {
-                            Err(AppError::new("operation-canceled"))
+                            Err(crate::app_error!("operation-canceled"))
                         } else {
                             discover(&item, include_online, timeout_seconds, canceled.as_ref())
                         };
@@ -427,7 +427,7 @@ mod tests {
             |item, _, _, _| match item.id.as_str() {
                 "ready" => Ok(vec![json!({"provenance":{"itemId":"ready"}})]),
                 "none" => Ok(Vec::new()),
-                _ => Err(AppError::new("metadata-unavailable")),
+                _ => Err(crate::app_error!("metadata-unavailable")),
             },
         );
         let value = serde_json::to_value(response).expect("response JSON");
@@ -455,7 +455,7 @@ mod tests {
         let response = reconcile(
             &ids,
             vec![
-                Err(AppError::new("invalid-stored-data")),
+                Err(crate::app_error!("invalid-stored-data")),
                 Ok(None),
                 Ok(Some(item("ready"))),
             ],

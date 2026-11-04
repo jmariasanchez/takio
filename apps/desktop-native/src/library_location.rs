@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
-use takio::output::{AppError, AppResult};
+use takio::output::AppResult;
 use takio::paths::LibraryPaths;
 use takio::store::LibraryStore;
 
@@ -14,11 +14,11 @@ pub struct OpenedLibrary {
 pub fn open(directory: &Path) -> AppResult<(LibraryStore, OpenedLibrary)> {
     let root = directory.canonicalize()?;
     if !root.is_dir() {
-        return Err(AppError::new("storage-unavailable"));
+        return Err(takio::app_error!("storage-unavailable"));
     }
     // Even a malformed or dangling manifest identifies a backup, not a live root.
     match std::fs::symlink_metadata(root.join("manifest.json")) {
-        Ok(_) => return Err(AppError::new("library-is-backup")),
+        Ok(_) => return Err(takio::app_error!("library-is-backup")),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => return Err(error.into()),
     }

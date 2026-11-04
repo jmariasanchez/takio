@@ -2,7 +2,7 @@
 use rusqlite::{OptionalExtension, TransactionBehavior, params};
 
 use super::{LibraryStore, METADATA_AUDIT_KEY};
-use crate::error::{AppError, AppResult};
+use crate::error::AppResult;
 use crate::model::CustomColumnDefinition;
 
 const MAX_CUSTOM_COLUMN_DEFINITIONS: usize = 64;
@@ -23,7 +23,7 @@ impl LibraryStore {
             })?
             .collect::<Result<Vec<_>, _>>()?;
         validate_custom_column_definitions(&definitions)
-            .map_err(|_| AppError::new("incompatible-schema"))?;
+            .map_err(|_| crate::app_error!("incompatible-schema"))?;
         Ok(definitions)
     }
 
@@ -42,13 +42,13 @@ impl LibraryStore {
             |row| row.get(0),
         )?;
         if count >= MAX_CUSTOM_COLUMN_DEFINITIONS {
-            return Err(AppError::new("invalid-arguments"));
+            return Err(crate::app_error!("invalid-arguments"));
         }
         transaction.execute(
             "INSERT INTO library_custom_column_definitions(key,label,type,position) VALUES(?1,?2,'text',?3)",
             params![key, label, count],
         ).map_err(|error| if error.sqlite_error_code() == Some(rusqlite::ErrorCode::ConstraintViolation) {
-            AppError::new("invalid-arguments")
+            crate::app_error!("invalid-arguments")
         } else { error.into() })?;
         transaction.commit()?;
         Ok(CustomColumnDefinition {
@@ -70,7 +70,7 @@ impl LibraryStore {
             params![key, label],
         )?;
         if changed == 0 {
-            return Err(AppError::new("not-found"));
+            return Err(crate::app_error!("not-found"));
         }
         self.connection.query_row(
             "SELECT key,label,type,position FROM library_custom_column_definitions WHERE key=?1",
@@ -84,7 +84,7 @@ impl LibraryStore {
         key: &str,
     ) -> AppResult<CustomColumnDefinition> {
         if !valid_custom_column_key(key) {
-            return Err(AppError::new("invalid-arguments"));
+            return Err(crate::app_error!("invalid-arguments"));
         }
         let transaction = self
             .connection
@@ -93,7 +93,7 @@ impl LibraryStore {
             "SELECT key,label,type,position FROM library_custom_column_definitions WHERE key=?1",
             [key],
             |row| Ok(CustomColumnDefinition { key: row.get(0)?, label: row.get(1)?, column_type: row.get(2)?, position: row.get(3)? }),
-        ).optional()?.ok_or_else(|| AppError::new("not-found"))?;
+        ).optional()?.ok_or_else(|| crate::app_error!("not-found"))?;
         transaction.execute(
             "DELETE FROM library_custom_column_definitions WHERE key=?1",
             [key],
@@ -126,7 +126,7 @@ pub(crate) fn validate_custom_column_definitions(
     definitions: &[CustomColumnDefinition],
 ) -> AppResult<()> {
     if definitions.len() > MAX_CUSTOM_COLUMN_DEFINITIONS {
-        return Err(AppError::new("invalid-arguments"));
+        return Err(crate::app_error!("invalid-arguments"));
     }
     let mut keys = std::collections::HashSet::new();
     for (position, definition) in definitions.iter().enumerate() {
@@ -134,11 +134,11 @@ pub(crate) fn validate_custom_column_definitions(
             || definition.position as usize != position
             || !keys.insert(&definition.key)
         {
-            return Err(AppError::new("invalid-arguments"));
+            return Err(crate::app_error!("invalid-arguments"));
         }
         let label = validate_custom_column_definition(&definition.key, &definition.label)?;
         if label != definition.label {
-            return Err(AppError::new("invalid-arguments"));
+            return Err(crate::app_error!("invalid-arguments"));
         }
     }
     Ok(())
@@ -146,11 +146,11 @@ pub(crate) fn validate_custom_column_definitions(
 
 fn validate_custom_column_definition(key: &str, label: &str) -> AppResult<String> {
     if !valid_custom_column_key(key) {
-        return Err(AppError::new("invalid-arguments"));
+        return Err(crate::app_error!("invalid-arguments"));
     }
     let label = label.trim();
     if label.is_empty() || label.encode_utf16().count() > 120 {
-        return Err(AppError::new("invalid-arguments"));
+        return Err(crate::app_error!("invalid-arguments"));
     }
     Ok(label.to_owned())
 }

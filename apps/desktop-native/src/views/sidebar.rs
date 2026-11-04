@@ -38,7 +38,7 @@ impl Render for Sidebar {
         let device_error = state
             .device_error
             .as_ref()
-            .map(|error| crate::state::humanize_error(error.code()));
+            .map(|error| crate::state::humanize_error(error.kind()));
         let readers: Vec<_> = destinations
             .into_iter()
             .filter(|device| !matches!(device.kind, takio::destinations::DestinationKind::Generic))
@@ -436,7 +436,7 @@ pub(crate) fn shelf_summary(
     let shelf = match shelf {
         Some(Ok(shelf)) => shelf,
         Some(Err(error)) => {
-            return format!("Could not check books. {}", humanize_error(error.code()));
+            return format!("Could not check books. {}", humanize_error(error.kind()));
         }
         None => return "Refresh to check books".to_owned(),
     };
@@ -501,9 +501,7 @@ mod tests {
         assert!(!shelf_summary(Some(&Ok(shelf(true, 0, 0)))).contains("finished"));
         assert!(!shelf_summary(Some(&Ok(shelf(false, 1, 2)))).contains("finished"));
         assert_eq!(
-            shelf_summary(Some(&Err(takio::output::AppError::new(
-                "storage-unavailable"
-            )))),
+            shelf_summary(Some(&Err(takio::app_error!("storage-unavailable")))),
             "Could not check books. The library could not be read"
         );
         assert_eq!(shelf_summary(None), "Refresh to check books");

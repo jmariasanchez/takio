@@ -30,7 +30,7 @@ fn validate_root(value: &str) -> AppResult<&Path> {
         || value.contains(['\0', '\r', '\n'])
         || !root.is_absolute()
     {
-        return Err(AppError::new("preference-invalid"));
+        return Err(takio::app_error!("preference-invalid"));
     }
     Ok(root)
 }
@@ -39,7 +39,7 @@ fn validate_root(value: &str) -> AppResult<&Path> {
 fn regular_or_missing(path: &Path) -> AppResult<bool> {
     match fs::symlink_metadata(path) {
         Ok(metadata) if metadata.is_file() => Ok(true),
-        Ok(_) => Err(AppError::new("preference-unsafe-path")),
+        Ok(_) => Err(takio::app_error!("preference-unsafe-path")),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
         Err(error) => Err(error.into()),
     }
@@ -54,16 +54,16 @@ pub fn load(path: &Path) -> AppResult<Option<PathBuf>> {
         .take((MAX_BYTES + 1) as u64)
         .read_to_end(&mut bytes)?;
     if bytes.len() > MAX_BYTES {
-        return Err(AppError::new("preference-invalid"));
+        return Err(takio::app_error!("preference-invalid"));
     }
-    let value = std::str::from_utf8(&bytes).map_err(|_| AppError::new("preference-invalid"))?;
+    let value = std::str::from_utf8(&bytes).map_err(|_| takio::app_error!("preference-invalid"))?;
     Ok(Some(validate_root(value)?.to_path_buf()))
 }
 
 pub fn save(path: &Path, root: &Path) -> AppResult<()> {
     let value = root
         .to_str()
-        .ok_or_else(|| AppError::new("preference-invalid"))?;
+        .ok_or_else(|| takio::app_error!("preference-invalid"))?;
     validate_root(value)?;
     regular_or_missing(path)?;
     let parent = path

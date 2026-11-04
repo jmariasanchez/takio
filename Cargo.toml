@@ -27,3 +27,8 @@ strip = "symbols"
 # parser compact without removing supported inputs or changing allocation limits.
 [profile.release.package.lopdf]
 opt-level = "z"
+
+# Keep the shared engine within the native bundle's existing size budget.
+# This retains loop vectorization while preferring compact library code.
+[profile.release.package.takio-engine]
+opt-level = "s"

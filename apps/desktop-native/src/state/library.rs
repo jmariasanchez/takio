@@ -42,7 +42,7 @@ impl LibraryState {
         let task = cx.background_executor().spawn(async move {
             let report = receiver
                 .recv()
-                .unwrap_or_else(|_| Err(AppError::new("storage-unavailable")))?;
+                .unwrap_or_else(|_| Err(takio::app_error!("storage-unavailable")))?;
             Ok::<_, AppError>(crate::activation::ActivationReport::remember(
                 report.root,
                 remember.as_deref(),
@@ -59,7 +59,7 @@ impl LibraryState {
                         let (message, error) = report.message();
                         this.set_status(message, error, cx);
                     }
-                    Err(error) => this.set_status(open_library_error(error.code()), true, cx),
+                    Err(error) => this.set_status(open_library_error(error.kind()), true, cx),
                 }
                 cx.notify();
             });
@@ -71,22 +71,4 @@ impl LibraryState {
         })
         .detach();
     }
-}
-
-fn open_library_error(code: &str) -> String {
-    let reason = match code {
-        "library-is-backup" => {
-            "This folder is a backup snapshot. Use Restore Backup to New Folder, then open the restored copy."
-        }
-        "incompatible-schema" => {
-            "This library uses an unsupported schema. Open a compatible copy or upgrade it with the appropriate Takio version first."
-        }
-        "integrity-failed" | "invalid-stored-data" => {
-            "The selected library failed catalogue validation. Restore a known-good backup to a new folder."
-        }
-        _ => {
-            "Could not open that library. Choose an existing Takio folder containing library.sqlite and check its access permissions."
-        }
-    };
-    format!("{reason} Your current library is still open and unchanged.")
 }

@@ -19,7 +19,9 @@ use takio::destinations::{self, DeliveryResult, Destination, DestinationKind};
 use takio::format::FormatId;
 use takio::import_scan::{ImportScan, scan_imports};
 use takio::model::{LibraryItem, LibraryPatch};
-use takio::output::{AppError, AppResult};
+#[cfg(test)]
+use takio::output::AppError;
+use takio::output::AppResult;
 use takio::paths::LibraryPaths;
 use takio::store::{BackupReport, LibraryStore, RestoreReport};
 
@@ -356,7 +358,7 @@ impl Engine {
         thread::Builder::new()
             .name("takio-engine".into())
             .spawn(move || worker(store, receiver, backend))
-            .map_err(|_| AppError::new("storage-unavailable"))?;
+            .map_err(|_| takio::app_error!("storage-unavailable"))?;
         Ok(Self { sender, root })
     }
 
@@ -506,7 +508,7 @@ fn worker_with_reader_scans(
                     let _ = reply.send(Err(error));
                 }
                 (None, _) => {
-                    let _ = reply.send(Err(AppError::new("reader-scan-unavailable")));
+                    let _ = reply.send(Err(takio::app_error!("reader-scan-unavailable")));
                 }
             },
             Request::ImportFromReader { destination, reply } => {
@@ -514,7 +516,7 @@ fn worker_with_reader_scans(
                 let result = destination
                     .path
                     .parent()
-                    .ok_or_else(|| AppError::new("unknown-destination"))
+                    .ok_or_else(|| takio::app_error!("unknown-destination"))
                     .and_then(|root| destinations::authorize(&destination.path, root))
                     .and_then(|destination| {
                         takio::reader_shelf::import_unmatched(
@@ -545,7 +547,7 @@ fn worker_with_reader_scans(
                 if let Some(scans) = &reader_scans {
                     scans.invalidate();
                     if scans.is_running() {
-                        let _ = reply.send(Err(AppError::new("reader-scan-in-progress")));
+                        let _ = reply.send(Err(takio::app_error!("reader-scan-in-progress")));
                         continue;
                     }
                 }
@@ -568,7 +570,7 @@ fn preview_send(
     item_ids: &[String],
 ) -> AppResult<SendPreview> {
     if item_ids.len() > MAX_SEND_ITEMS {
-        return Err(AppError::new("invalid-arguments"));
+        return Err(takio::app_error!("invalid-arguments"));
     }
     let destination = takio::delivery::reauthorize(destination)?;
     let entries = item_ids
@@ -600,7 +602,7 @@ fn send_reviewed(
     entries: &[SendPreviewEntry],
 ) -> AppResult<SendReport> {
     if entries.len() > MAX_SEND_ITEMS {
-        return Err(AppError::new("invalid-arguments"));
+        return Err(takio::app_error!("invalid-arguments"));
     }
     Ok(SendReport {
         entries: entries
@@ -677,7 +679,7 @@ mod tests {
             .unwrap()
             .unwrap_err();
         assert_eq!(error.code(), "reader-scan-unavailable");
-        assert!(crate::state::humanize_error(error.code()).contains("library is still available"));
+        assert!(crate::state::humanize_error(error.kind()).contains("library is still available"));
         assert!(
             engine
                 .request(|reply| Request::Query {
@@ -953,12 +955,18 @@ mod tests {
         let preview_entry = SendPreviewEntry {
             item_id: "reviewed-item".into(),
             title: "Reviewed".into(),
-            result: Err(AppError::with_exit_code("interrupted", 130)),
+            result: Err(AppError::with_exit_code(
+                takio::error::ErrorCode::Interrupted,
+                130,
+            )),
         };
         let delivery_entry = SendEntry {
             item_id: preview_entry.item_id.clone(),
             title: preview_entry.title.clone(),
-            result: Err(AppError::with_exit_code("destination-unavailable", 74)),
+            result: Err(AppError::with_exit_code(
+                takio::error::ErrorCode::DestinationUnavailable,
+                74,
+            )),
         };
         let preview_clone = preview_entry.clone();
         let report_clone = SendReport {

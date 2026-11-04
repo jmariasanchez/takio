@@ -20,7 +20,7 @@ use sha2::{Digest, Sha256};
 use tempfile::Builder;
 
 use crate::candidate_cover::CapturedCover;
-use crate::error::{AppError, AppResult};
+use crate::error::AppResult;
 use crate::executable_discovery::discover_executable;
 use crate::model::BookAuthor;
 
@@ -106,19 +106,19 @@ fn extract_with_cancellation(
     canceled: Option<&AtomicBool>,
 ) -> AppResult<ExtractedMetadata> {
     if timeout.is_zero() {
-        return Err(AppError::new("invalid-arguments"));
+        return Err(crate::app_error!("invalid-arguments"));
     }
-    let backend = discover_ebook_meta().ok_or_else(|| AppError::new("backend-unavailable"))?;
+    let backend = discover_ebook_meta().ok_or_else(|| crate::app_error!("backend-unavailable"))?;
     let source = source
         .canonicalize()
-        .map_err(|_| AppError::new("source-unavailable"))?;
+        .map_err(|_| crate::app_error!("source-unavailable"))?;
     if !source.is_file() || source.metadata().map_or(true, |value| value.len() == 0) {
-        return Err(AppError::new("source-unavailable"));
+        return Err(crate::app_error!("source-unavailable"));
     }
     let workspace = Builder::new()
         .prefix("takio-metadata-")
         .tempdir()
-        .map_err(|_| AppError::new("metadata-invalid"))?;
+        .map_err(|_| crate::app_error!("metadata-invalid"))?;
     let opf = workspace.path().join("metadata.opf");
     let cover = workspace.path().join("cover");
     let mut command = Command::new(backend);
@@ -134,7 +134,7 @@ fn extract_with_cancellation(
     run_bounded(
         &mut command,
         timeout,
-        "metadata-extraction-failed",
+        crate::error::ErrorCode::MetadataExtractionFailed,
         canceled,
     )?;
     let metadata = parse_opf(&read_bounded(&opf, MAX_OPF_BYTES)?)?;
@@ -229,21 +229,21 @@ fn fetch_with_cancellation(
             key.trim().is_empty() || key.contains(':') || value.trim().is_empty()
         })
     {
-        return Err(AppError::new("invalid-arguments"));
+        return Err(crate::app_error!("invalid-arguments"));
     }
     let backend =
-        discover_fetch_ebook_metadata().ok_or_else(|| AppError::new("backend-unavailable"))?;
+        discover_fetch_ebook_metadata().ok_or_else(|| crate::app_error!("backend-unavailable"))?;
     let workspace = Builder::new()
         .prefix("takio-metadata-fetch-")
         .tempdir()
-        .map_err(|_| AppError::new("metadata-fetch-failed"))?;
+        .map_err(|_| crate::app_error!("metadata-fetch-failed"))?;
     let opf = workspace.path().join("metadata.opf");
     let cover = workspace.path().join("cover");
     let stdout = OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(&opf)
-        .map_err(|_| AppError::new("metadata-fetch-failed"))?;
+        .map_err(|_| crate::app_error!("metadata-fetch-failed"))?;
     let mut command = Command::new(backend);
     command.arg("--opf");
     if let Some(title) = title {
@@ -269,7 +269,12 @@ fn fetch_with_cancellation(
         .stdin(Stdio::null())
         .stdout(stdout)
         .stderr(Stdio::null());
-    run_bounded(&mut command, timeout, "metadata-fetch-failed", canceled)?;
+    run_bounded(
+        &mut command,
+        timeout,
+        crate::error::ErrorCode::MetadataFetchFailed,
+        canceled,
+    )?;
     let metadata = parse_opf(&read_bounded(&opf, MAX_OPF_BYTES)?)?;
     let captured =
         optional_cover_data(&cover)?.map(|(bytes, extension, media_type)| CapturedCover {
@@ -294,12 +299,12 @@ fn fetch_with_cancellation(
 }
 
 pub fn parse_opf(bytes: &[u8]) -> AppResult<Value> {
-    let source = std::str::from_utf8(bytes).map_err(|_| AppError::new("metadata-invalid"))?;
-    let document = Document::parse(source).map_err(|_| AppError::new("metadata-invalid"))?;
+    let source = std::str::from_utf8(bytes).map_err(|_| crate::app_error!("metadata-invalid"))?;
+    let document = Document::parse(source).map_err(|_| crate::app_error!("metadata-invalid"))?;
     let metadata = document
         .descendants()
         .find(|node| node.is_element() && node.tag_name().name() == "metadata")
-        .ok_or_else(|| AppError::new("metadata-invalid"))?;
+        .ok_or_else(|| crate::app_error!("metadata-invalid"))?;
     let mut patch = Map::new();
     let children = metadata.children().filter(roxmltree::Node::is_element);
     let nodes = children.collect::<Vec<_>>();
@@ -737,26 +742,26 @@ fn publish_cover(
     let parent = output
         .parent()
         .filter(|path| path.is_dir())
-        .ok_or_else(|| AppError::new("invalid-arguments"))?;
+        .ok_or_else(|| crate::app_error!("invalid-arguments"))?;
     let output = parent.join(
         output
             .file_name()
-            .ok_or_else(|| AppError::new("invalid-arguments"))?,
+            .ok_or_else(|| crate::app_error!("invalid-arguments"))?,
     );
     let mut file = OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(&output)
         .map_err(|_| {
-            AppError::new(if output.exists() {
-                "cover-output-exists"
+            crate::app_error!(if output.exists() {
+                crate::error::ErrorCode::CoverOutputExists
             } else {
-                "cover-write-failed"
+                crate::error::ErrorCode::CoverWriteFailed
             })
         })?;
     if file.write_all(bytes).is_err() || file.sync_all().is_err() {
         let _ = fs::remove_file(&output);
-        return Err(AppError::new("cover-write-failed"));
+        return Err(crate::app_error!("cover-write-failed"));
     }
     let mut hash = Sha256::new();
     hash.update(bytes);
@@ -764,7 +769,7 @@ fn publish_cover(
         path: output,
         media_type: media_type.to_owned(),
         extension: extension.to_owned(),
-        bytes: u64::try_from(bytes.len()).map_err(|_| AppError::new("cover-write-failed"))?,
+        bytes: u64::try_from(bytes.len()).map_err(|_| crate::app_error!("cover-write-failed"))?,
         sha256: hex::encode(hash.finalize()),
     })
 }
@@ -772,18 +777,18 @@ fn publish_cover(
 fn read_bounded(path: &Path, maximum: u64) -> AppResult<Vec<u8>> {
     let metadata = path
         .metadata()
-        .map_err(|_| AppError::new("metadata-invalid"))?;
+        .map_err(|_| crate::app_error!("metadata-invalid"))?;
     if !metadata.is_file() || metadata.len() == 0 || metadata.len() > maximum {
-        return Err(AppError::new("metadata-invalid"));
+        return Err(crate::app_error!("metadata-invalid"));
     }
-    let mut file = fs::File::open(path).map_err(|_| AppError::new("metadata-invalid"))?;
+    let mut file = fs::File::open(path).map_err(|_| crate::app_error!("metadata-invalid"))?;
     let mut bytes = Vec::with_capacity(
-        usize::try_from(metadata.len()).map_err(|_| AppError::new("metadata-invalid"))?,
+        usize::try_from(metadata.len()).map_err(|_| crate::app_error!("metadata-invalid"))?,
     );
     file.read_to_end(&mut bytes)
-        .map_err(|_| AppError::new("metadata-invalid"))?;
+        .map_err(|_| crate::app_error!("metadata-invalid"))?;
     if u64::try_from(bytes.len()).ok() != Some(metadata.len()) {
-        return Err(AppError::new("metadata-invalid"));
+        return Err(crate::app_error!("metadata-invalid"));
     }
     Ok(bytes)
 }
@@ -791,31 +796,31 @@ fn read_bounded(path: &Path, maximum: u64) -> AppResult<Vec<u8>> {
 fn run_bounded(
     command: &mut Command,
     timeout: Duration,
-    failure: &'static str,
+    failure: crate::error::ErrorCode,
     canceled: Option<&AtomicBool>,
 ) -> AppResult<()> {
     if canceled.is_some_and(|flag| flag.load(Ordering::Acquire)) {
-        return Err(AppError::new("operation-canceled"));
+        return Err(crate::app_error!("operation-canceled"));
     }
     let mut child = command
         .spawn()
-        .map_err(|_| AppError::new("backend-unavailable"))?;
+        .map_err(|_| crate::app_error!("backend-unavailable"))?;
     let started = Instant::now();
     loop {
-        if let Some(status) = child.try_wait().map_err(|_| AppError::new(failure))? {
+        if let Some(status) = child.try_wait().map_err(|_| crate::app_error!(failure))? {
             return if status.success() {
                 Ok(())
             } else {
-                Err(AppError::new(failure))
+                Err(crate::app_error!(failure))
             };
         }
         if canceled.is_some_and(|flag| flag.load(Ordering::Acquire)) {
             terminate_and_reap(&mut child);
-            return Err(AppError::new("operation-canceled"));
+            return Err(crate::app_error!("operation-canceled"));
         }
         if started.elapsed() >= timeout {
             terminate_and_reap(&mut child);
-            return Err(AppError::new("metadata-timeout"));
+            return Err(crate::app_error!("metadata-timeout"));
         }
         thread::sleep(Duration::from_millis(25));
     }

@@ -150,11 +150,11 @@ fn recovery_blocks_overlap_and_close_until_reply(cx: &mut TestAppContext) {
         });
         match requests.try_recv().unwrap() {
             Request::Backup { reply, .. } if !restore => {
-                reply.send(Err(AppError::new("backup-failed"))).unwrap()
+                reply.send(Err(takio::app_error!("backup-failed"))).unwrap()
             }
-            Request::RestoreBackupCopy { reply, .. } if restore => {
-                reply.send(Err(AppError::new("restore-failed"))).unwrap()
-            }
+            Request::RestoreBackupCopy { reply, .. } if restore => reply
+                .send(Err(takio::app_error!("restore-failed")))
+                .unwrap(),
             _ => panic!("expected only the original recovery operation"),
         }
         assert!(requests.try_recv().is_err());

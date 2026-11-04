@@ -8,16 +8,16 @@ use uuid::Uuid;
 
 use crate::catalog::catalog_record;
 use crate::format::{FormatId, detect_format};
-use crate::output::{AppError, AppResult, print_success};
+use crate::output::{AppResult, print_success};
 use crate::store::LibraryStore;
 
 const MAX_CATALOG_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
 
 pub fn serve(store: &LibraryStore, host: &str, port: u16) -> AppResult<()> {
     if !loopback(host) {
-        return Err(AppError::new("invalid-arguments"));
+        return Err(takio::app_error!("invalid-arguments"));
     }
-    let server = Server::http((host, port)).map_err(|_| AppError::new("server-unavailable"))?;
+    let server = Server::http((host, port)).map_err(|_| takio::app_error!("server-unavailable"))?;
     let token = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
     let address = server.server_addr();
     let display_host = if host.contains(':') {

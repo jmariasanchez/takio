@@ -81,7 +81,7 @@ pub fn now_seconds() -> u64 {
 fn regular_or_missing(path: &Path) -> AppResult<bool> {
     match fs::symlink_metadata(path) {
         Ok(metadata) if metadata.is_file() => Ok(true),
-        Ok(_) => Err(AppError::new("automatic-backup-unsafe-settings")),
+        Ok(_) => Err(takio::app_error!("automatic-backup-unsafe-settings")),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
         Err(error) => Err(error.into()),
     }
@@ -92,7 +92,7 @@ fn path_text(path: &Path) -> AppResult<&str> {
         .filter(|value| {
             !value.is_empty() && path.is_absolute() && !value.contains(['\0', '\r', '\n'])
         })
-        .ok_or_else(|| AppError::new("automatic-backup-invalid-settings"))
+        .ok_or_else(|| takio::app_error!("automatic-backup-invalid-settings"))
 }
 
 /// Read-only and bounded. Missing settings mean disabled and create no files.
@@ -106,16 +106,16 @@ pub fn load(root: &Path) -> AppResult<Config> {
         .take((MAX_BYTES + 1) as u64)
         .read_to_end(&mut bytes)?;
     if bytes.len() > MAX_BYTES {
-        return Err(AppError::new("automatic-backup-invalid-settings"));
+        return Err(takio::app_error!("automatic-backup-invalid-settings"));
     }
     let text = std::str::from_utf8(&bytes)
-        .map_err(|_| AppError::new("automatic-backup-invalid-settings"))?;
+        .map_err(|_| takio::app_error!("automatic-backup-invalid-settings"))?;
     let fields: Vec<_> = text.split('\n').collect();
     if fields.len() != 4
         || fields[0] != "takio-automatic-backup-v1"
         || !matches!(fields[1], "enabled" | "disabled")
     {
-        return Err(AppError::new("automatic-backup-invalid-settings"));
+        return Err(takio::app_error!("automatic-backup-invalid-settings"));
     }
     let last_success = if fields[2] == "never" {
         None
@@ -123,7 +123,7 @@ pub fn load(root: &Path) -> AppResult<Config> {
         Some(
             fields[2]
                 .parse()
-                .map_err(|_| AppError::new("automatic-backup-invalid-settings"))?,
+                .map_err(|_| takio::app_error!("automatic-backup-invalid-settings"))?,
         )
     };
     let destination = if fields[3].is_empty() {
@@ -133,7 +133,7 @@ pub fn load(root: &Path) -> AppResult<Config> {
     };
     let enabled = fields[1] == "enabled";
     if enabled && destination.is_none() {
-        return Err(AppError::new("automatic-backup-invalid-settings"));
+        return Err(takio::app_error!("automatic-backup-invalid-settings"));
     }
     Ok(Config {
         enabled,
@@ -165,7 +165,7 @@ fn save(root: &Path, config: &Config) -> AppResult<()> {
         destination
     );
     if text.len() > MAX_BYTES || (config.enabled && destination.is_empty()) {
-        return Err(AppError::new("automatic-backup-invalid-settings"));
+        return Err(takio::app_error!("automatic-backup-invalid-settings"));
     }
     // The existing library is the parent. Never manufacture a missing library or drive.
     let mut staged = tempfile::NamedTempFile::new_in(&root)?;
@@ -181,14 +181,16 @@ fn save(root: &Path, config: &Config) -> AppResult<()> {
 fn validate_destination(root: &Path, destination: &Path) -> AppResult<PathBuf> {
     path_text(destination)?;
     let metadata = fs::symlink_metadata(destination)
-        .map_err(|_| AppError::new("automatic-backup-destination-unavailable"))?;
+        .map_err(|_| takio::app_error!("automatic-backup-destination-unavailable"))?;
     if !metadata.is_dir() {
-        return Err(AppError::new("automatic-backup-destination-unavailable"));
+        return Err(takio::app_error!(
+            "automatic-backup-destination-unavailable"
+        ));
     }
     let root = root.canonicalize()?;
     let destination = destination.canonicalize()?;
     if destination.starts_with(&root) || root.starts_with(&destination) {
-        return Err(AppError::new("automatic-backup-destination-overlap"));
+        return Err(takio::app_error!("automatic-backup-destination-overlap"));
     }
     Ok(destination)
 }
@@ -212,7 +214,7 @@ pub fn configure(root: &Path, destination: Option<PathBuf>) -> AppResult<Config>
 
 pub fn run(store: &LibraryStore, mut config: Config, now: u64) -> AppResult<RunReport> {
     if !config.enabled {
-        return Err(AppError::new("automatic-backup-disabled"));
+        return Err(takio::app_error!("automatic-backup-disabled"));
     }
     let root = &store.paths().root;
     let parent = validate_destination(
@@ -220,7 +222,7 @@ pub fn run(store: &LibraryStore, mut config: Config, now: u64) -> AppResult<RunR
         config
             .destination
             .as_deref()
-            .ok_or_else(|| AppError::new("automatic-backup-invalid-settings"))?,
+            .ok_or_else(|| takio::app_error!("automatic-backup-invalid-settings"))?,
     )?;
     // Reserve a timestamp/random container exclusively. The engine itself reserves every
     // entry in its new child directory, and never overwrites an existing recovery copy.

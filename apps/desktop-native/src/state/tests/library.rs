@@ -37,8 +37,8 @@ fn library_switch_resets_view_and_routes_mutation_to_new_catalogue(cx: &mut Test
             detail: "old".into(),
         });
         state.session.delivery_report = Some(SendReport::default());
-        state.session.device_error = Some(AppError::new("old-reader-error"));
-        state.session.metadata_save_result = Some(Err(AppError::new("old-metadata-error")));
+        state.session.device_error = Some(takio::app_error!("unknown-destination"));
+        state.session.metadata_save_result = Some(Err(takio::app_error!("metadata-unavailable")));
         state
             .session
             .on_reader
@@ -59,7 +59,7 @@ fn library_switch_resets_view_and_routes_mutation_to_new_catalogue(cx: &mut Test
         assert_eq!(state.session.sort, Sort::default());
         assert_ne!(
             state.device_error.as_ref().map(AppError::code),
-            Some("old-reader-error")
+            Some("unknown-destination")
         );
         assert!(state.metadata_save_result().is_none());
         assert!(!state.on_reader.contains_key("old-library-book"));
@@ -164,7 +164,7 @@ fn library_switch_pending_freezes_dispatch_and_failure_releases_busy(cx: &mut Te
     };
     assert!(requests.try_recv().is_err());
     reply
-        .send(Err(AppError::new("storage-unavailable")))
+        .send(Err(takio::app_error!("storage-unavailable")))
         .unwrap();
     settle(&f.state, cx);
     assert_eq!(titles(&f.state, cx), before);

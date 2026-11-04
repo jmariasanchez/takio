@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::model::LibraryItem;
-use crate::output::{AppError, AppResult};
+use crate::output::AppResult;
 pub use crate::store::SavedViewSortField as SortField;
 use crate::store::{
     LibraryQueryFilters, LibraryQueryScope, LibraryQuerySyntax, LibraryStore, SavedViewSort,
@@ -41,7 +41,7 @@ impl Filters {
         ] {
             for value in values {
                 if value.trim().is_empty() {
-                    return Err(AppError::new("invalid-arguments"));
+                    return Err(crate::app_error!("invalid-arguments"));
                 }
             }
         }
@@ -148,7 +148,7 @@ pub struct QueryResult {
 
 pub fn query(store: &LibraryStore, request: QueryRequest) -> AppResult<QueryResult> {
     if request.query.encode_utf16().count() > 1024 || !(1..=100).contains(&request.page.limit) {
-        return Err(AppError::new("invalid-arguments"));
+        return Err(crate::app_error!("invalid-arguments"));
     }
     request.filters.validate()?;
     let virtual_scope = request
@@ -157,11 +157,11 @@ pub fn query(store: &LibraryStore, request: QueryRequest) -> AppResult<QueryResu
         .map(|id| {
             let id = id.trim();
             if id.is_empty() || id.encode_utf16().count() > 256 {
-                return Err(AppError::new("invalid-arguments"));
+                return Err(crate::app_error!("invalid-arguments"));
             }
             let definition = store
                 .saved_view(id)?
-                .ok_or_else(|| AppError::new("not-found"))?
+                .ok_or_else(|| crate::app_error!("not-found"))?
                 .definition;
             let filters = Filters {
                 authors: definition.filters.authors,
@@ -177,7 +177,7 @@ pub fn query(store: &LibraryStore, request: QueryRequest) -> AppResult<QueryResu
             };
             filters
                 .validate()
-                .map_err(|_| AppError::new("invalid-stored-data"))?;
+                .map_err(|_| crate::app_error!("invalid-stored-data"))?;
             Ok((
                 definition.query,
                 definition

@@ -8,7 +8,7 @@ use serde::Serialize;
 use serde_json::{Value, json};
 
 use crate::conversion::detect_format;
-use crate::error::{AppError, AppResult};
+use crate::error::AppResult;
 use crate::model::{BookAuthor, LibraryPatch, Patch};
 use crate::paths::LibraryPaths;
 use crate::store::LibraryStore;
@@ -73,12 +73,13 @@ pub fn import_calibre_library(paths: LibraryPaths, library_root: &Path) -> AppRe
     let database_path = root
         .join("metadata.db")
         .canonicalize()
-        .map_err(|_| AppError::new("unreadable"))?;
+        .map_err(|_| crate::app_error!("unreadable"))?;
     validate_destination(&paths, &root, &database_path)?;
     let (_snapshot, database) = open_database(&database_path)?;
-    let books = read_books(&database, &root).map_err(|_| AppError::new("storage-unavailable"))?;
+    let books =
+        read_books(&database, &root).map_err(|_| crate::app_error!("storage-unavailable"))?;
     let definitions =
-        custom_definitions(&database).map_err(|_| AppError::new("storage-unavailable"))?;
+        custom_definitions(&database).map_err(|_| crate::app_error!("storage-unavailable"))?;
     drop(database);
     let mut store = LibraryStore::create_or_migrate(paths)?;
     let warnings = import_column_definitions(&mut store, definitions)?;
@@ -177,31 +178,31 @@ pub fn import_calibre_library(paths: LibraryPaths, library_root: &Path) -> AppRe
 
 fn validate_root(root: &Path) -> AppResult<PathBuf> {
     if root.as_os_str().is_empty() {
-        return Err(AppError::new("invalid-arguments"));
+        return Err(crate::app_error!("invalid-arguments"));
     }
     let metadata = fs::symlink_metadata(root).map_err(|error| {
         if error.kind() == std::io::ErrorKind::NotFound {
-            AppError::new("not-found")
+            crate::app_error!("not-found")
         } else {
-            AppError::new("unreadable")
+            crate::app_error!("unreadable")
         }
     })?;
     if metadata.file_type().is_symlink() || !metadata.is_dir() {
-        return Err(AppError::new("not-found"));
+        return Err(crate::app_error!("not-found"));
     }
     let root = root
         .canonicalize()
-        .map_err(|_| AppError::new("unreadable"))?;
+        .map_err(|_| crate::app_error!("unreadable"))?;
     let database = root.join("metadata.db");
     let metadata = fs::symlink_metadata(&database).map_err(|error| {
         if error.kind() == std::io::ErrorKind::NotFound {
-            AppError::new("not-found")
+            crate::app_error!("not-found")
         } else {
-            AppError::new("unreadable")
+            crate::app_error!("unreadable")
         }
     })?;
     if metadata.file_type().is_symlink() || !metadata.is_file() {
-        return Err(AppError::new("unreadable"));
+        return Err(crate::app_error!("unreadable"));
     }
     Ok(root)
 }
@@ -211,40 +212,41 @@ fn open_database(path: &Path) -> AppResult<(tempfile::TempDir, Connection)> {
         path,
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )
-    .map_err(|_| AppError::new("unreadable"))?;
+    .map_err(|_| crate::app_error!("unreadable"))?;
     source
         .pragma_update(None, "query_only", "ON")
-        .map_err(|_| AppError::new("unreadable"))?;
+        .map_err(|_| crate::app_error!("unreadable"))?;
     source
         .busy_timeout(std::time::Duration::from_millis(250))
-        .map_err(|_| AppError::new("unreadable"))?;
+        .map_err(|_| crate::app_error!("unreadable"))?;
     source
         .pragma_query_value(None, "schema_version", |row| row.get::<_, i64>(0))
-        .map_err(|_| AppError::new("unreadable"))?;
+        .map_err(|_| crate::app_error!("unreadable"))?;
 
-    let snapshot = tempfile::tempdir().map_err(|_| AppError::new("storage-unavailable"))?;
+    let snapshot = tempfile::tempdir().map_err(|_| crate::app_error!("storage-unavailable"))?;
     let snapshot_path = snapshot.path().join("metadata.db");
-    let mut database = Connection::open(&snapshot_path).map_err(|_| AppError::new("unreadable"))?;
+    let mut database =
+        Connection::open(&snapshot_path).map_err(|_| crate::app_error!("unreadable"))?;
     let backup = rusqlite::backup::Backup::new(&source, &mut database)
-        .map_err(|_| AppError::new("unreadable"))?;
+        .map_err(|_| crate::app_error!("unreadable"))?;
     backup
         .run_to_completion(64, std::time::Duration::from_millis(5), None)
-        .map_err(|_| AppError::new("unreadable"))?;
+        .map_err(|_| crate::app_error!("unreadable"))?;
     drop(backup);
     drop(source);
     database
         .pragma_update(None, "query_only", "ON")
-        .map_err(|_| AppError::new("unreadable"))?;
+        .map_err(|_| crate::app_error!("unreadable"))?;
     Ok((snapshot, database))
 }
 
 fn validate_destination(paths: &LibraryPaths, root: &Path, database: &Path) -> AppResult<()> {
     let destination_root = resolve_for_creation(&paths.root)?;
     if destination_root == root || destination_root.starts_with(root) {
-        return Err(AppError::new("invalid-arguments"));
+        return Err(crate::app_error!("invalid-arguments"));
     }
     if paths.database.exists() && same_file(&paths.database, database)? {
-        return Err(AppError::new("invalid-arguments"));
+        return Err(crate::app_error!("invalid-arguments"));
     }
     Ok(())
 }
@@ -257,16 +259,16 @@ fn resolve_for_creation(path: &Path) -> AppResult<PathBuf> {
         suffix.push(
             ancestor
                 .file_name()
-                .ok_or_else(|| AppError::new("invalid-arguments"))?
+                .ok_or_else(|| crate::app_error!("invalid-arguments"))?
                 .to_owned(),
         );
         ancestor = ancestor
             .parent()
-            .ok_or_else(|| AppError::new("invalid-arguments"))?;
+            .ok_or_else(|| crate::app_error!("invalid-arguments"))?;
     }
     let mut resolved = ancestor
         .canonicalize()
-        .map_err(|_| AppError::new("storage-unavailable"))?;
+        .map_err(|_| crate::app_error!("storage-unavailable"))?;
     for component in suffix.into_iter().rev() {
         resolved.push(component);
     }
@@ -275,7 +277,7 @@ fn resolve_for_creation(path: &Path) -> AppResult<PathBuf> {
 
 fn normalize_absolute(path: &Path) -> AppResult<PathBuf> {
     if !path.is_absolute() {
-        return Err(AppError::new("invalid-arguments"));
+        return Err(crate::app_error!("invalid-arguments"));
     }
     let mut normalized = PathBuf::new();
     for component in path.components() {
@@ -293,7 +295,7 @@ fn normalize_absolute(path: &Path) -> AppResult<PathBuf> {
 }
 
 fn same_file(left: &Path, right: &Path) -> AppResult<bool> {
-    same_file::is_same_file(left, right).map_err(|_| AppError::new("unreadable"))
+    same_file::is_same_file(left, right).map_err(|_| crate::app_error!("unreadable"))
 }
 
 fn read_books(database: &Connection, root: &Path) -> rusqlite::Result<Vec<CalibreBook>> {

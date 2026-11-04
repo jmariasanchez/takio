@@ -26,7 +26,7 @@ pub(super) fn ownership_paths(
             .as_ref()
             .is_some_and(|existing| *existing != root)
         {
-            return Err(AppError::new("integrity-failed"));
+            return Err(crate::app_error!("integrity-failed"));
         }
         recorded_root = Some(root);
     }
@@ -57,11 +57,11 @@ impl Output {
     fn parents(&mut self, path: &Path) -> AppResult<()> {
         match fs::symlink_metadata(path) {
             Ok(metadata) if metadata.is_dir() => Ok(()),
-            Ok(_) => Err(AppError::new("destination-exists")),
+            Ok(_) => Err(crate::app_error!("destination-exists")),
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
                 self.parents(
                     path.parent()
-                        .ok_or_else(|| AppError::new("invalid-arguments"))?,
+                        .ok_or_else(|| crate::app_error!("invalid-arguments"))?,
                 )?;
                 self.directory(path)
             }
@@ -83,7 +83,7 @@ impl Output {
         regular_file(source)?;
         let mut input = File::open(source)?;
         if !input.metadata()?.is_file() {
-            return Err(AppError::new("source-invalid"));
+            return Err(crate::app_error!("source-invalid"));
         }
         let mut output = self.file(target)?;
         io::copy(&mut input, &mut output)?;
@@ -94,21 +94,21 @@ impl Output {
         match fs::symlink_metadata(source) {
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
             Ok(metadata) if metadata.is_dir() => {}
-            _ => return Err(AppError::new("source-invalid")),
+            _ => return Err(crate::app_error!("source-invalid")),
         }
         for entry in walkdir::WalkDir::new(source).follow_links(false) {
-            let entry = entry.map_err(|_| AppError::new("source-invalid"))?;
+            let entry = entry.map_err(|_| crate::app_error!("source-invalid"))?;
             let relative = entry
                 .path()
                 .strip_prefix(source)
-                .map_err(|_| AppError::new("source-invalid"))?;
+                .map_err(|_| crate::app_error!("source-invalid"))?;
             let target = target.join(relative);
             if entry.file_type().is_dir() {
                 self.directory(&target)?;
             } else if entry.file_type().is_file() {
                 self.copy(entry.path(), &target)?;
             } else {
-                return Err(AppError::new("source-invalid"));
+                return Err(crate::app_error!("source-invalid"));
             }
         }
         Ok(())
@@ -130,7 +130,7 @@ impl Drop for Output {
 
 fn destination_error(error: io::Error) -> AppError {
     if error.kind() == io::ErrorKind::AlreadyExists {
-        AppError::new("destination-exists")
+        crate::app_error!("destination-exists")
     } else {
         error.into()
     }
@@ -138,10 +138,10 @@ fn destination_error(error: io::Error) -> AppError {
 
 fn regular_file(path: &Path) -> AppResult<()> {
     if !fs::symlink_metadata(path)
-        .map_err(|_| AppError::new("source-invalid"))?
+        .map_err(|_| crate::app_error!("source-invalid"))?
         .is_file()
     {
-        return Err(AppError::new("source-invalid"));
+        return Err(crate::app_error!("source-invalid"));
     }
     Ok(())
 }
@@ -152,7 +152,7 @@ fn normalized(path: &Path) -> AppResult<PathBuf> {
             .components()
             .any(|part| matches!(part, Component::ParentDir))
     {
-        return Err(AppError::new("invalid-arguments"));
+        return Err(crate::app_error!("invalid-arguments"));
     }
     let absolute = if path.is_absolute() {
         path.to_path_buf()
@@ -166,7 +166,7 @@ fn normalized(path: &Path) -> AppResult<PathBuf> {
             Ok(_) => {
                 let mut resolved = ancestor
                     .canonicalize()
-                    .map_err(|_| AppError::new("source-invalid"))?;
+                    .map_err(|_| crate::app_error!("source-invalid"))?;
                 for component in suffix.iter().rev() {
                     resolved.push(component);
                 }
@@ -176,12 +176,12 @@ fn normalized(path: &Path) -> AppResult<PathBuf> {
                 suffix.push(
                     ancestor
                         .file_name()
-                        .ok_or_else(|| AppError::new("invalid-arguments"))?
+                        .ok_or_else(|| crate::app_error!("invalid-arguments"))?
                         .to_os_string(),
                 );
                 ancestor = ancestor
                     .parent()
-                    .ok_or_else(|| AppError::new("invalid-arguments"))?;
+                    .ok_or_else(|| crate::app_error!("invalid-arguments"))?;
             }
             Err(error) => return Err(error.into()),
         }
@@ -192,7 +192,7 @@ pub(super) fn disjoint_destination(destination: &Path, source: &Path) -> AppResu
     let destination = normalized(destination)?;
     let source = normalized(source)?;
     if destination.starts_with(&source) || source.starts_with(&destination) {
-        return Err(AppError::new("invalid-arguments"));
+        return Err(crate::app_error!("invalid-arguments"));
     }
     Ok(destination)
 }
@@ -200,13 +200,13 @@ pub(super) fn disjoint_destination(destination: &Path, source: &Path) -> AppResu
 fn relative_owned<'a>(stored: &'a str, root: &Path) -> AppResult<&'a Path> {
     let relative = Path::new(stored)
         .strip_prefix(root)
-        .map_err(|_| AppError::new("invalid-stored-data"))?;
+        .map_err(|_| crate::app_error!("invalid-stored-data"))?;
     if relative.as_os_str().is_empty()
         || relative
             .components()
             .any(|part| !matches!(part, Component::Normal(_)))
     {
-        return Err(AppError::new("invalid-stored-data"));
+        return Err(crate::app_error!("invalid-stored-data"));
     }
     Ok(relative)
 }
@@ -220,7 +220,7 @@ fn verify_copy(
 ) -> AppResult<()> {
     let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
     if version != LIBRARY_SCHEMA_VERSION {
-        return Err(AppError::new("incompatible-schema"));
+        return Err(crate::app_error!("incompatible-schema"));
     }
     migration::verify_current(connection, original)?;
     let mut statement = connection.prepare("SELECT source_path,content_bytes,content_sha256 FROM library_item_formats WHERE provenance='managed'")?;
@@ -237,7 +237,7 @@ fn verify_copy(
         regular_file(&path)?;
         let actual = hash_file(&path)?;
         if u64::try_from(bytes).ok() != Some(actual.bytes) || hash != actual.sha256 {
-            return Err(AppError::new("integrity-failed"));
+            return Err(crate::app_error!("integrity-failed"));
         }
     }
     let mut statement =
@@ -259,7 +259,7 @@ pub(super) fn backup(store: &LibraryStore, destination: &Path) -> AppResult<Back
     output.parents(
         destination
             .parent()
-            .ok_or_else(|| AppError::new("invalid-arguments"))?,
+            .ok_or_else(|| crate::app_error!("invalid-arguments"))?,
     )?;
     output.directory(&destination)?;
     drop(output.file(&paths.database)?);
@@ -282,7 +282,7 @@ pub(super) fn backup(store: &LibraryStore, destination: &Path) -> AppResult<Back
         "managedFiles": report.managed_formats,
     });
     let manifest =
-        serde_json::to_vec_pretty(&manifest).map_err(|_| AppError::new("backup-failed"))?;
+        serde_json::to_vec_pretty(&manifest).map_err(|_| crate::app_error!("backup-failed"))?;
     output
         .file(&destination.join("manifest.json"))?
         .write_all(&manifest)?;
@@ -301,7 +301,7 @@ pub(super) fn restore(
 ) -> AppResult<RestoreReport> {
     let source = source
         .canonicalize()
-        .map_err(|_| AppError::new("source-invalid"))?;
+        .map_err(|_| crate::app_error!("source-invalid"))?;
     let destination = disjoint_destination(&paths.root, &source)?;
     // Public LibraryPaths fields must not redirect writes outside the selected root.
     if paths.database.parent() != Some(paths.root.as_path())
@@ -309,29 +309,29 @@ pub(super) fn restore(
         || paths.covers != paths.root.join("covers")
         || paths.jobs != paths.root.join("jobs.sqlite")
     {
-        return Err(AppError::new("invalid-arguments"));
+        return Err(crate::app_error!("invalid-arguments"));
     }
     let name = paths
         .database
         .file_name()
-        .ok_or_else(|| AppError::new("invalid-arguments"))?;
+        .ok_or_else(|| crate::app_error!("invalid-arguments"))?;
     if ["items", "covers", "jobs.sqlite", "manifest.json"]
         .iter()
         .any(|reserved| name == *reserved)
     {
-        return Err(AppError::new("invalid-arguments"));
+        return Err(crate::app_error!("invalid-arguments"));
     }
     let paths = LibraryPaths::resolve(None, Some(&destination.join(name)))?;
     for path in [&paths.database, &paths.jobs, &paths.items, &paths.covers] {
         if fs::symlink_metadata(path).is_ok() {
-            return Err(AppError::new("destination-exists"));
+            return Err(crate::app_error!("destination-exists"));
         }
     }
     for suffix in ["-journal", "-wal", "-shm"] {
         if fs::symlink_metadata(format!("{}{suffix}", paths.database.display())).is_ok()
             || fs::symlink_metadata(source.join(format!("library.sqlite{suffix}"))).is_ok()
         {
-            return Err(AppError::new("source-invalid"));
+            return Err(crate::app_error!("source-invalid"));
         }
     }
     regular_file(&source.join("manifest.json"))?;
@@ -342,16 +342,16 @@ pub(super) fn restore(
         .take((MAX_MANIFEST_BYTES + 1) as u64)
         .read_to_end(&mut manifest_bytes)?;
     if manifest_bytes.len() > MAX_MANIFEST_BYTES {
-        return Err(AppError::new("source-invalid"));
+        return Err(crate::app_error!("source-invalid"));
     }
     use serde_json::Value;
     let manifest: Value =
-        serde_json::from_slice(&manifest_bytes).map_err(|_| AppError::new("source-invalid"))?;
+        serde_json::from_slice(&manifest_bytes).map_err(|_| crate::app_error!("source-invalid"))?;
     let original_root = manifest
         .get("sourceRoot")
         .and_then(Value::as_str)
         .map(Path::new)
-        .ok_or_else(|| AppError::new("source-invalid"))?;
+        .ok_or_else(|| crate::app_error!("source-invalid"))?;
     if manifest.get("version").and_then(Value::as_u64) != Some(1)
         || manifest.get("schemaVersion").and_then(Value::as_i64) != Some(LIBRARY_SCHEMA_VERSION)
         || !original_root.is_absolute()
@@ -359,14 +359,14 @@ pub(super) fn restore(
             .components()
             .any(|part| matches!(part, Component::ParentDir))
     {
-        return Err(AppError::new("source-invalid"));
+        return Err(crate::app_error!("source-invalid"));
     }
     let original = LibraryPaths::resolve(None, Some(&original_root.join("library.sqlite")))?;
     let mut output = Output::default();
     output.parents(
         destination
             .parent()
-            .ok_or_else(|| AppError::new("invalid-arguments"))?,
+            .ok_or_else(|| crate::app_error!("invalid-arguments"))?,
     )?;
     if new_root || !destination.try_exists()? {
         output.directory(&destination)?;

@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use super::LibraryStore;
 use super::hydration::read_item_from;
 use crate::conversion::FormatId;
-use crate::error::{AppError, AppResult};
+use crate::error::AppResult;
 use crate::model::{LibraryItem, LibraryPatch};
 
 mod metadata;
@@ -135,7 +135,7 @@ impl LibraryStore {
         })? {
             let (left, right, token) = row?;
             if !valid_pair(&left, &right) || !valid_review_token(&token) {
-                return Err(AppError::new("invalid-stored-data"));
+                return Err(crate::app_error!("invalid-stored-data"));
             }
             reviews.insert((left, right), token);
         }
@@ -174,7 +174,7 @@ impl LibraryStore {
                 candidate.left.id == request.left_id && candidate.right.id == request.right_id
             })
             .filter(|candidate| candidate.review_token == request.review_token)
-            .ok_or_else(|| AppError::new("stale-review"))?;
+            .ok_or_else(|| crate::app_error!("stale-review"))?;
         transaction.execute(
             "INSERT INTO duplicate_pair_reviews (left_id,right_id,review_token,reviewed_at)
              VALUES (?1,?2,?3,?4)
@@ -197,7 +197,7 @@ impl LibraryStore {
                 candidate.left.id == request.left_id && candidate.right.id == request.right_id
             })
             .filter(|candidate| candidate.review_token == request.review_token)
-            .ok_or_else(|| AppError::new("stale-review"))?;
+            .ok_or_else(|| crate::app_error!("stale-review"))?;
         let stored: Option<String> = transaction
             .query_row(
                 "SELECT review_token FROM duplicate_pair_reviews WHERE left_id=?1 AND right_id=?2",
@@ -206,7 +206,7 @@ impl LibraryStore {
             )
             .optional()?;
         if stored.as_deref() != Some(&request.review_token) {
-            return Err(AppError::new("stale-review"));
+            return Err(crate::app_error!("stale-review"));
         }
         transaction.execute(
             "DELETE FROM duplicate_pair_reviews WHERE left_id=?1 AND right_id=?2",
@@ -230,7 +230,7 @@ impl LibraryStore {
             .into_iter()
             .find(|candidate| candidate.left.id == left_id && candidate.right.id == right_id)
             .filter(|candidate| candidate.review_token == request.review_token)
-            .ok_or_else(|| AppError::new("stale-review"))?;
+            .ok_or_else(|| crate::app_error!("stale-review"))?;
         let mut target = if candidate.left.id == request.target_id {
             candidate.left.clone()
         } else {
@@ -271,7 +271,7 @@ impl LibraryStore {
                 || selected.contains(&key)
                 || !source_rows.contains_key(key)
             {
-                return Err(AppError::new("invalid-arguments"));
+                return Err(crate::app_error!("invalid-arguments"));
             }
             selected.push(key);
         }
@@ -288,30 +288,30 @@ impl LibraryStore {
             "source" => Some(
                 source_cover
                     .clone()
-                    .ok_or_else(|| AppError::new("invalid-arguments"))?,
+                    .ok_or_else(|| crate::app_error!("invalid-arguments"))?,
             ),
             "none" => None,
-            _ => return Err(AppError::new("invalid-arguments")),
+            _ => return Err(crate::app_error!("invalid-arguments")),
         };
         if let Some(path) = &selected_cover
             && !Path::new(path).starts_with(&self.paths.covers)
         {
-            return Err(AppError::new("invalid-stored-data"));
+            return Err(crate::app_error!("invalid-stored-data"));
         }
 
         write_duplicate_metadata(&transaction, &target)?;
-        let next_position =
-            i64::try_from(target.formats.len()).map_err(|_| AppError::new("invalid-arguments"))?;
+        let next_position = i64::try_from(target.formats.len())
+            .map_err(|_| crate::app_error!("invalid-arguments"))?;
         for (index, format) in request.add_source_formats.iter().enumerate() {
             let (path, added_at, provenance, bytes, sha) = source_rows
                 .get(format.as_str())
-                .ok_or_else(|| AppError::new("invalid-arguments"))?;
+                .ok_or_else(|| crate::app_error!("invalid-arguments"))?;
             transaction.execute(
                 "INSERT INTO library_item_formats
                  (library_item_id,format,source_path,added_at,provenance,position,content_bytes,content_sha256)
                  VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
                 params![request.target_id, format.as_str(), path, added_at, provenance,
-                    next_position + i64::try_from(index).map_err(|_| AppError::new("invalid-arguments"))?, bytes, sha],
+                    next_position + i64::try_from(index).map_err(|_| crate::app_error!("invalid-arguments"))?, bytes, sha],
             )?;
         }
         transaction.execute(
@@ -323,16 +323,16 @@ impl LibraryStore {
             params![request.source_id, target.updated_at],
         )?;
         if changed != 1 {
-            return Err(AppError::new("stale-review"));
+            return Err(crate::app_error!("stale-review"));
         }
         transaction.execute(
             "DELETE FROM duplicate_pair_reviews WHERE left_id=?1 AND right_id=?2",
             params![left_id, right_id],
         )?;
         let target = read_item_from(&transaction, &request.target_id)?
-            .ok_or_else(|| AppError::new("storage-unavailable"))?;
+            .ok_or_else(|| crate::app_error!("storage-unavailable"))?;
         let trashed_source = read_item_from(&transaction, &request.source_id)?
-            .ok_or_else(|| AppError::new("storage-unavailable"))?;
+            .ok_or_else(|| crate::app_error!("storage-unavailable"))?;
         transaction.commit()?;
 
         let cleanup_pending = if let Some(old) = target_cover
@@ -359,7 +359,7 @@ impl LibraryStore {
 
 fn validate_duplicate_page(request: &ListDuplicateCandidatesRequest) -> AppResult<()> {
     if request.page.limit == 0 || request.page.limit > 100 {
-        return Err(AppError::new("invalid-arguments"));
+        return Err(crate::app_error!("invalid-arguments"));
     }
     Ok(())
 }
@@ -368,7 +368,7 @@ fn validate_pair_request(request: &DuplicatePairReviewRequest) -> AppResult<()> 
     if !valid_pair(&request.left_id, &request.right_id)
         || !valid_review_token(&request.review_token)
     {
-        return Err(AppError::new("invalid-arguments"));
+        return Err(crate::app_error!("invalid-arguments"));
     }
     Ok(())
 }
@@ -381,7 +381,7 @@ fn validate_merge_request(request: &MergeDuplicatePairRequest) -> AppResult<()> 
         || request.metadata.is_empty()
         || !matches!(request.cover.as_str(), "target" | "source" | "none")
     {
-        return Err(AppError::new("invalid-arguments"));
+        return Err(crate::app_error!("invalid-arguments"));
     }
     Ok(())
 }

@@ -7,7 +7,7 @@ use std::time::Duration;
 use takio::conversion::{self, BackendDiscovery};
 use takio::format::FormatId;
 use takio::model::LibraryItem;
-use takio::output::{AppError, AppResult};
+use takio::output::AppResult;
 use takio::store::LibraryStore;
 
 const PREPARATION_TIMEOUT: Duration = Duration::from_secs(120);
@@ -63,16 +63,16 @@ pub(crate) fn prepare_with_backend(
     timeout: Duration,
 ) -> AppResult<LibraryItem> {
     if !reviewed.backend.available || !backend.available {
-        return Err(AppError::new("backend-unavailable"));
+        return Err(takio::app_error!("backend-unavailable"));
     }
     let backend_path = backend
         .path
         .as_ref()
-        .ok_or_else(|| AppError::new("backend-unavailable"))?;
+        .ok_or_else(|| takio::app_error!("backend-unavailable"))?;
     if reviewed.backend.path.as_ref() != Some(backend_path)
         || reviewed.backend.source != backend.source
     {
-        return Err(AppError::new("prepare-backend-changed"));
+        return Err(takio::app_error!("prepare-backend-changed"));
     }
     validate_review(store, reviewed)?;
 
@@ -82,14 +82,14 @@ pub(crate) fn prepare_with_backend(
         .tempdir_in(&store.paths().root)?;
     let input = stage.path().join("source.epub");
     fs::copy(&reviewed.source_path, &input)
-        .map_err(|_| AppError::new("prepare-source-unavailable"))?;
+        .map_err(|_| takio::app_error!("prepare-source-unavailable"))?;
     if source_fingerprint(&input)?
         != (takio::fingerprint::Fingerprint {
             bytes: reviewed.source_bytes,
             sha256: reviewed.source_sha256.clone(),
         })
     {
-        return Err(AppError::new("prepare-source-changed"));
+        return Err(takio::app_error!("prepare-source-changed"));
     }
     let output = stage.path().join("prepared.azw3");
     let artifact = conversion::convert_with_backend(
@@ -100,9 +100,10 @@ pub(crate) fn prepare_with_backend(
         timeout,
         backend_path,
     )?;
-    let metadata = fs::symlink_metadata(&output).map_err(|_| AppError::new("artifact-invalid"))?;
+    let metadata =
+        fs::symlink_metadata(&output).map_err(|_| takio::app_error!("artifact-invalid"))?;
     if !metadata.file_type().is_file() || metadata.len() == 0 {
-        return Err(AppError::new("artifact-invalid"));
+        return Err(takio::app_error!("artifact-invalid"));
     }
     validate_review(store, reviewed)?;
     store.attach_verified_artifact(
@@ -124,7 +125,7 @@ fn validate_review(store: &LibraryStore, reviewed: &PreparationPreview) -> AppRe
                 sha256: reviewed.source_sha256.clone(),
             })
     {
-        return Err(AppError::new("prepare-source-changed"));
+        return Err(takio::app_error!("prepare-source-changed"));
     }
     Ok(())
 }
@@ -136,7 +137,7 @@ fn eligible_item(store: &LibraryStore, id: &str) -> AppResult<LibraryItem> {
         .iter()
         .any(|format| format.format == FormatId::Azw3)
     {
-        return Err(AppError::new("format-exists"));
+        return Err(takio::app_error!("format-exists"));
     }
     Ok(item)
 }
@@ -146,14 +147,14 @@ fn epub_path(item: &LibraryItem) -> AppResult<PathBuf> {
         .iter()
         .find(|format| format.format == FormatId::Epub)
         .map(|format| format.source_path.clone())
-        .ok_or_else(|| AppError::new("no-epub-source"))
+        .ok_or_else(|| takio::app_error!("no-epub-source"))
 }
 
 fn source_fingerprint(path: &Path) -> AppResult<takio::fingerprint::Fingerprint> {
     if !path.is_file() {
-        return Err(AppError::new("prepare-source-unavailable"));
+        return Err(takio::app_error!("prepare-source-unavailable"));
     }
-    takio::fingerprint::hash_file(path).map_err(|_| AppError::new("prepare-source-unavailable"))
+    takio::fingerprint::hash_file(path).map_err(|_| takio::app_error!("prepare-source-unavailable"))
 }
 
 #[cfg(all(test, unix))]

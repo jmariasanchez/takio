@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 use crate::destinations::{DeliveryResult, Destination, DestinationKind};
 use crate::format::FormatId;
-use crate::output::{AppError, AppResult};
+use crate::output::AppResult;
 use crate::store::LibraryStore;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -39,7 +39,7 @@ pub fn reauthorize(destination: &Destination) -> AppResult<Destination> {
     let root = destination
         .path
         .parent()
-        .ok_or_else(|| AppError::new("unknown-destination"))?;
+        .ok_or_else(|| crate::app_error!("unknown-destination"))?;
     destinations::authorize(&destination.path, root)
 }
 
@@ -59,20 +59,20 @@ pub fn plan_send(
                 .formats
                 .iter()
                 .find(|format| format.format == wanted)
-                .ok_or_else(|| AppError::new("format-not-found"))?;
+                .ok_or_else(|| crate::app_error!("format-not-found"))?;
             if !destination.readable_formats().contains(&wanted)
                 && !(matches!(destination.kind, DestinationKind::Generic)
                     && !destination.has_koreader())
             {
-                return Err(AppError::new("no-compatible-format"));
+                return Err(crate::app_error!("no-compatible-format"));
             }
             format
         }
         None => destination
             .preferred_format(&item.formats)
-            .ok_or_else(|| AppError::new("no-compatible-format"))?,
+            .ok_or_else(|| crate::app_error!("no-compatible-format"))?,
     };
-    let unavailable = || AppError::new("source-unavailable");
+    let unavailable = || crate::app_error!("source-unavailable");
     if !format.source_path.is_file() {
         return Err(unavailable());
     }
@@ -110,7 +110,7 @@ pub fn send_library_item(
         .reviewed
         .is_some_and(|reviewed| reviewed != &plan.ready)
     {
-        return Err(AppError::new("send-review-changed"));
+        return Err(crate::app_error!("send-review-changed"));
     }
     destinations::send(
         &plan.destination,

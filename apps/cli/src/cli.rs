@@ -23,7 +23,7 @@ use crate::metadata_candidates::{
 };
 use crate::metadata_reconcile::{CancellationSignals, ReconcileRequest, reconcile};
 use crate::model::LibraryPatch;
-use crate::output::{AppError, AppResult, print_success};
+use crate::output::{AppResult, print_success};
 use crate::paths::{LibraryPaths, absolute};
 use crate::portable_library;
 use crate::reader_shelf;
@@ -824,7 +824,7 @@ pub fn run() -> AppResult<()> {
                     print!("{error}");
                     return Ok(());
                 }
-                _ => return Err(AppError::new("invalid-arguments")),
+                _ => return Err(takio::app_error!("invalid-arguments")),
             }
         }
     };
@@ -835,7 +835,7 @@ pub fn run() -> AppResult<()> {
         }
         let mut root = Cli::command();
         root.print_help()
-            .map_err(|_| AppError::new("terminal-unavailable"))?;
+            .map_err(|_| takio::app_error!("terminal-unavailable"))?;
         println!();
         return Ok(());
     };
@@ -909,7 +909,7 @@ pub fn run() -> AppResult<()> {
             tls_key,
         } => {
             if allow_remote || tls_cert.is_some() || tls_key.is_some() {
-                return Err(AppError::new("invalid-arguments"));
+                return Err(takio::app_error!("invalid-arguments"));
             }
             let paths = LibraryPaths::resolve(cli.library.as_deref(), db.as_deref())?;
             let store = LibraryStore::open_read_only(paths)?;
@@ -1016,11 +1016,13 @@ fn metadata_candidates(command: MetadataCandidatesCommand, library: Option<&str>
             timeout_seconds,
         } => {
             if id.trim().is_empty() || timeout_seconds == 0 {
-                return Err(AppError::new("invalid-arguments"));
+                return Err(takio::app_error!("invalid-arguments"));
             }
             let paths = LibraryPaths::resolve(library, db.as_deref())?;
             let store = LibraryStore::open_read_only(paths)?;
-            let item = store.get(&id)?.ok_or_else(|| AppError::new("not-found"))?;
+            let item = store
+                .get(&id)?
+                .ok_or_else(|| takio::app_error!("not-found"))?;
             let candidates = metadata_candidates_for_item_at(
                 &item,
                 include_online,
@@ -1035,7 +1037,7 @@ fn metadata_candidates(command: MetadataCandidatesCommand, library: Option<&str>
             timeout_seconds,
         } => {
             if timeout_seconds == 0 {
-                return Err(AppError::new("invalid-arguments"));
+                return Err(takio::app_error!("invalid-arguments"));
             }
             let request = ReconcileRequest::parse(read_json(&request_json)?)?;
             let signals = CancellationSignals::install()?;
@@ -1067,7 +1069,7 @@ fn metadata_candidates(command: MetadataCandidatesCommand, library: Option<&str>
                     .into_iter()
                     .map(|candidate| {
                         serde_json::to_value(candidate)
-                            .map_err(|_| AppError::new("metadata-invalid"))
+                            .map_err(|_| takio::app_error!("metadata-invalid"))
                     })
                     .collect()
                 },
@@ -1086,7 +1088,7 @@ fn metadata_candidates(command: MetadataCandidatesCommand, library: Option<&str>
                 || provenance.trim().is_empty()
                 || candidate_json.is_some() == patch_json.is_some()
             {
-                return Err(AppError::new("invalid-arguments"));
+                return Err(takio::app_error!("invalid-arguments"));
             }
             let id = id.trim().to_owned();
             let provenance = provenance.trim().to_owned();
@@ -1096,11 +1098,11 @@ fn metadata_candidates(command: MetadataCandidatesCommand, library: Option<&str>
                 // envelope rather than the candidate apply response schema.
                 let patch_value = read_json(patch_json.as_deref().unwrap_or_default())?;
                 let patch: LibraryPatch = serde_json::from_value(patch_value)
-                    .map_err(|_| AppError::new("invalid-arguments"))?;
+                    .map_err(|_| takio::app_error!("invalid-arguments"))?;
                 let paths = LibraryPaths::resolve(library, db.as_deref())?;
                 let mut store = LibraryStore::create_or_migrate(paths)?;
                 if cover {
-                    return Err(AppError::new("invalid-arguments"));
+                    return Err(takio::app_error!("invalid-arguments"));
                 }
                 let item = store.update(&id, patch)?;
                 return print_success(
@@ -1150,11 +1152,11 @@ fn parse_identifiers(inputs: &[String]) -> AppResult<BTreeMap<String, String>> {
     for input in inputs {
         let (kind, value) = input
             .split_once(':')
-            .ok_or_else(|| AppError::new("invalid-arguments"))?;
+            .ok_or_else(|| takio::app_error!("invalid-arguments"))?;
         let kind = kind.trim().to_ascii_lowercase();
         let value = value.trim().to_owned();
         if kind.is_empty() || value.is_empty() || values.insert(kind, value).is_some() {
-            return Err(AppError::new("invalid-arguments"));
+            return Err(takio::app_error!("invalid-arguments"));
         }
     }
     Ok(values)
@@ -1190,14 +1192,14 @@ fn plan(
 ) -> AppResult<()> {
     let input = input
         .canonicalize()
-        .map_err(|_| AppError::new("input-unavailable"))?;
-    let from = detect_format(&input).ok_or_else(|| AppError::new("unsupported-format"))?;
+        .map_err(|_| takio::app_error!("input-unavailable"))?;
+    let from = detect_format(&input).ok_or_else(|| takio::app_error!("unsupported-format"))?;
     let available = discover_ebook_convert().available
         && CALIBRE_CAPABILITIES
             .iter()
             .any(|pair| pair.from == from && pair.to == to);
     if !available {
-        return Err(AppError::new("unsupported-conversion"));
+        return Err(takio::app_error!("unsupported-conversion"));
     }
     let value = json!({"id":format!("job_{}",uuid::Uuid::new_v4()),"input":input,"inputFormat":from,"outputFormat":to,"settings":{"version":1,"profileId":profile},"assignedTarget":{"id":"local","name":"This computer"},"status":"planned"});
     if as_json {
@@ -1257,7 +1259,7 @@ fn library(command: LibraryCommand, library: Option<&str>) -> AppResult<()> {
             let mode = match mode.as_str() {
                 "copy" => takio::model::ImportMode::Copy,
                 "move" => takio::model::ImportMode::Move,
-                _ => return Err(AppError::new("invalid-arguments")),
+                _ => return Err(takio::app_error!("invalid-arguments")),
             };
             let paths = LibraryPaths::resolve(library, db.as_deref())?;
             let mut store = LibraryStore::create_or_migrate(paths)?;
@@ -1293,7 +1295,7 @@ fn library(command: LibraryCommand, library: Option<&str>) -> AppResult<()> {
         }
         LibraryCommand::Update { db, id, patch_json } => {
             let patch: LibraryPatch = serde_json::from_value(read_json(&patch_json)?)
-                .map_err(|_| AppError::new("invalid-arguments"))?;
+                .map_err(|_| takio::app_error!("invalid-arguments"))?;
             let paths = LibraryPaths::resolve(library, db.as_deref())?;
             let mut store = LibraryStore::create_or_migrate(paths)?;
             print_success(json!({"item":store.update(&id, patch)?}))
@@ -1308,10 +1310,10 @@ fn library(command: LibraryCommand, library: Option<&str>) -> AppResult<()> {
                 || ids.iter().any(|id| id.trim().is_empty())
                 || ids.iter().collect::<std::collections::HashSet<_>>().len() != ids.len()
             {
-                return Err(AppError::new("invalid-arguments"));
+                return Err(takio::app_error!("invalid-arguments"));
             }
             let patch: LibraryPatch = serde_json::from_value(read_json(&patch_json)?)
-                .map_err(|_| AppError::new("invalid-arguments"))?;
+                .map_err(|_| takio::app_error!("invalid-arguments"))?;
             let paths = LibraryPaths::resolve(library, db.as_deref())?;
             let mut store = LibraryStore::create_or_migrate(paths)?;
             let mut outcomes = Vec::with_capacity(ids.len());
@@ -1350,7 +1352,7 @@ fn library(command: LibraryCommand, library: Option<&str>) -> AppResult<()> {
             let paths = LibraryPaths::resolve(library, db.as_deref())?;
             let item = LibraryStore::open_read_only(paths)?
                 .get(&id)?
-                .ok_or_else(|| AppError::new("not-found"))?;
+                .ok_or_else(|| takio::app_error!("not-found"))?;
             let selected = format
                 .map_or_else(
                     || item.formats.first(),
@@ -1360,7 +1362,7 @@ fn library(command: LibraryCommand, library: Option<&str>) -> AppResult<()> {
                             .find(|candidate| candidate.format == wanted)
                     },
                 )
-                .ok_or_else(|| AppError::new("format-not-found"))?;
+                .ok_or_else(|| takio::app_error!("format-not-found"))?;
             if json {
                 print_success(json!({"id":id,"path":selected.source_path,"format":selected.format}))
             } else {
@@ -1375,12 +1377,12 @@ fn library(command: LibraryCommand, library: Option<&str>) -> AppResult<()> {
             mode,
         } => {
             if source_paths.is_empty() || source_paths.len() > 256 {
-                return Err(AppError::new("invalid-arguments"));
+                return Err(takio::app_error!("invalid-arguments"));
             }
             let mode = match mode.as_str() {
                 "copy" => takio::model::ImportMode::Copy,
                 "move" => takio::model::ImportMode::Move,
-                _ => return Err(AppError::new("invalid-arguments")),
+                _ => return Err(takio::app_error!("invalid-arguments")),
             };
             let paths = LibraryPaths::resolve(library, db.as_deref())?;
             validate_import_sources(&paths, &source_paths)?;
@@ -1422,7 +1424,7 @@ fn library(command: LibraryCommand, library: Option<&str>) -> AppResult<()> {
             timeout_seconds,
         } => {
             if query.trim().is_empty() || !valid_selection(&ids, limit) || timeout_seconds == 0 {
-                return Err(AppError::new("invalid-arguments"));
+                return Err(takio::app_error!("invalid-arguments"));
             }
             let paths = LibraryPaths::resolve(library, db.as_deref())?;
             let store = LibraryStore::open_read_only(paths)?;
@@ -1441,7 +1443,7 @@ fn library(command: LibraryCommand, library: Option<&str>) -> AppResult<()> {
             timeout_seconds,
         } => {
             if !valid_selection(&ids, limit) || timeout_seconds == 0 {
-                return Err(AppError::new("invalid-arguments"));
+                return Err(takio::app_error!("invalid-arguments"));
             }
             let paths = LibraryPaths::resolve(library, db.as_deref())?;
             let store = LibraryStore::open_read_only(paths)?;
@@ -1476,7 +1478,7 @@ fn library(command: LibraryCommand, library: Option<&str>) -> AppResult<()> {
             max_cycles,
         } => {
             if source_paths.is_empty() || source_paths.len() > 256 {
-                return Err(AppError::new("invalid-arguments"));
+                return Err(takio::app_error!("invalid-arguments"));
             }
             import_watch(
                 library,
@@ -1538,14 +1540,14 @@ fn library_saved_views(command: SavedViewsCommand, library: Option<&str>) -> App
                 .as_object()
                 .is_none_or(|object| object.len() != 1 || !object.contains_key("id"))
             {
-                return Err(AppError::new("invalid-arguments"));
+                return Err(takio::app_error!("invalid-arguments"));
             }
             let id = request
                 .get("id")
                 .and_then(Value::as_str)
                 .map(str::trim)
                 .filter(|id| !id.is_empty() && id.encode_utf16().count() <= 256)
-                .ok_or_else(|| AppError::new("invalid-arguments"))?;
+                .ok_or_else(|| takio::app_error!("invalid-arguments"))?;
             let paths = LibraryPaths::resolve(library, db.as_deref())?;
             print_success(json!({"view":LibraryStore::create_or_migrate(paths)?.remove_view(id)?}))
         }
@@ -1557,18 +1559,18 @@ fn library_duplicates(command: DuplicateCommand, library: Option<&str>) -> AppRe
         DuplicateCommand::List { db, request_json } => {
             let request =
                 serde_json::from_value::<ListDuplicateCandidatesRequest>(read_json(&request_json)?)
-                    .map_err(|_| AppError::new("invalid-arguments"))?;
+                    .map_err(|_| takio::app_error!("invalid-arguments"))?;
             let paths = LibraryPaths::resolve(library, db.as_deref())?;
             let store = LibraryStore::open_read_only(paths)?;
             print_success(
                 serde_json::to_value(store.list_duplicate_candidates(&request)?)
-                    .map_err(|_| AppError::new("storage-unavailable"))?,
+                    .map_err(|_| takio::app_error!("storage-unavailable"))?,
             )
         }
         DuplicateCommand::Keep { db, request_json } => {
             let request =
                 serde_json::from_value::<DuplicatePairReviewRequest>(read_json(&request_json)?)
-                    .map_err(|_| AppError::new("invalid-arguments"))?;
+                    .map_err(|_| takio::app_error!("invalid-arguments"))?;
             let paths = LibraryPaths::resolve(library, db.as_deref())?;
             LibraryStore::create_or_migrate(paths)?.keep_duplicate_pair(&request)?;
             print_success(Value::Null)
@@ -1576,7 +1578,7 @@ fn library_duplicates(command: DuplicateCommand, library: Option<&str>) -> AppRe
         DuplicateCommand::Reopen { db, request_json } => {
             let request =
                 serde_json::from_value::<DuplicatePairReviewRequest>(read_json(&request_json)?)
-                    .map_err(|_| AppError::new("invalid-arguments"))?;
+                    .map_err(|_| takio::app_error!("invalid-arguments"))?;
             let paths = LibraryPaths::resolve(library, db.as_deref())?;
             LibraryStore::create_or_migrate(paths)?.reopen_duplicate_pair(&request)?;
             print_success(Value::Null)
@@ -1584,11 +1586,12 @@ fn library_duplicates(command: DuplicateCommand, library: Option<&str>) -> AppRe
         DuplicateCommand::Merge { db, request_json } => {
             let request =
                 serde_json::from_value::<MergeDuplicatePairRequest>(read_json(&request_json)?)
-                    .map_err(|_| AppError::new("invalid-arguments"))?;
+                    .map_err(|_| takio::app_error!("invalid-arguments"))?;
             let paths = LibraryPaths::resolve(library, db.as_deref())?;
             let result = LibraryStore::create_or_migrate(paths)?.merge_duplicate_pair(&request)?;
             print_success(
-                serde_json::to_value(result).map_err(|_| AppError::new("storage-unavailable"))?,
+                serde_json::to_value(result)
+                    .map_err(|_| takio::app_error!("storage-unavailable"))?,
             )
         }
     }
@@ -1690,7 +1693,7 @@ fn validate_library_formats(
     timeout: Duration,
 ) -> AppResult<Value> {
     if discover_ebook_meta().is_none() {
-        return Err(AppError::new("backend-unavailable"));
+        return Err(takio::app_error!("backend-unavailable"));
     }
     let (available, entries) = selected_items(store, ids, limit)?;
     let selected = entries.len();
@@ -1788,7 +1791,7 @@ struct ReplaceFormatRequest {
 }
 
 fn decode_request<T: DeserializeOwned>(value: &Value) -> AppResult<T> {
-    serde_json::from_value(value.clone()).map_err(|_| AppError::new("invalid-arguments"))
+    serde_json::from_value(value.clone()).map_err(|_| takio::app_error!("invalid-arguments"))
 }
 
 fn replace_format_request(
@@ -1796,7 +1799,7 @@ fn replace_format_request(
     request: ReplaceFormatRequest,
 ) -> AppResult<Value> {
     if request.id.is_empty() {
-        return Err(AppError::new("invalid-arguments"));
+        return Err(takio::app_error!("invalid-arguments"));
     }
     let result = store.replace_format(
         &request.id,
@@ -1805,7 +1808,7 @@ fn replace_format_request(
         &request.source.path,
         request.source.provenance(),
     )?;
-    serde_json::to_value(result).map_err(|_| AppError::new("storage-unavailable"))
+    serde_json::to_value(result).map_err(|_| takio::app_error!("storage-unavailable"))
 }
 
 fn library_format(command: FormatCommand, library: Option<&str>) -> AppResult<()> {
@@ -1840,7 +1843,7 @@ fn library_format(command: FormatCommand, library: Option<&str>) -> AppResult<()
         FormatCommand::Replace { db, request_json } => {
             let request: ReplaceFormatRequest = decode_request(&read_json(&request_json)?)?;
             if request.id.is_empty() {
-                return Err(AppError::new("invalid-arguments"));
+                return Err(takio::app_error!("invalid-arguments"));
             }
             let paths = LibraryPaths::resolve(library, db.as_deref())?;
             let mut store = LibraryStore::create_or_migrate(paths)?;
@@ -1929,7 +1932,7 @@ fn library_service(library: Option<&str>, database: Option<&Path>) -> AppResult<
         line.clear();
         let read = input
             .read_line(&mut line)
-            .map_err(|_| AppError::new("storage-unavailable"))?;
+            .map_err(|_| takio::app_error!("storage-unavailable"))?;
         if read == 0 {
             return Ok(());
         }
@@ -1944,16 +1947,16 @@ fn library_service(library: Option<&str>, database: Option<&Path>) -> AppResult<
                 let result = service_request(&mut store, &request);
                 (id, result)
             }
-            Err(_) => (String::new(), Err(AppError::new("invalid-arguments"))),
+            Err(_) => (String::new(), Err(takio::app_error!("invalid-arguments"))),
         };
         let response = match result {
             Ok(value) => json!({"id":id,"ok":true,"value":value}),
             Err(error) => json!({"id":id,"ok":false,"error":{"code":error.code()}}),
         };
-        writeln!(output, "{response}").map_err(|_| AppError::new("terminal-unavailable"))?;
+        writeln!(output, "{response}").map_err(|_| takio::app_error!("terminal-unavailable"))?;
         output
             .flush()
-            .map_err(|_| AppError::new("terminal-unavailable"))?;
+            .map_err(|_| takio::app_error!("terminal-unavailable"))?;
     }
 }
 
@@ -1961,75 +1964,75 @@ fn service_request(store: &mut LibraryStore, request: &Value) -> AppResult<Value
     let command = request
         .get("command")
         .and_then(Value::as_str)
-        .ok_or_else(|| AppError::new("invalid-arguments"))?;
+        .ok_or_else(|| takio::app_error!("invalid-arguments"))?;
     let args = request
         .get("args")
-        .ok_or_else(|| AppError::new("invalid-arguments"))?;
+        .ok_or_else(|| takio::app_error!("invalid-arguments"))?;
     match command {
         "library_custom_columns_list" => {
             if args.as_object().is_none_or(|args| !args.is_empty()) {
-                return Err(AppError::new("invalid-arguments"));
+                return Err(takio::app_error!("invalid-arguments"));
             }
             serde_json::to_value(store.list_custom_column_definitions()?)
-                .map_err(|_| AppError::new("storage-unavailable"))
+                .map_err(|_| takio::app_error!("storage-unavailable"))
         }
         "library_custom_columns_create" => {
             let request: ColumnLabelRequest = decode_request(args)?;
             serde_json::to_value(
                 store.create_custom_column_definition(&request.key, &request.label)?,
             )
-            .map_err(|_| AppError::new("storage-unavailable"))
+            .map_err(|_| takio::app_error!("storage-unavailable"))
         }
         "library_custom_columns_rename" => {
             let request: ColumnLabelRequest = decode_request(args)?;
             serde_json::to_value(
                 store.rename_custom_column_definition(&request.key, &request.label)?,
             )
-            .map_err(|_| AppError::new("storage-unavailable"))
+            .map_err(|_| takio::app_error!("storage-unavailable"))
         }
         "library_custom_columns_remove" => {
             let request: ColumnKeyRequest = decode_request(args)?;
             serde_json::to_value(store.remove_custom_column_definition(&request.key)?)
-                .map_err(|_| AppError::new("storage-unavailable"))
+                .map_err(|_| takio::app_error!("storage-unavailable"))
         }
         "library_duplicates_list" => {
             let request = serde_json::from_value::<ListDuplicateCandidatesRequest>(args.clone())
-                .map_err(|_| AppError::new("invalid-arguments"))?;
+                .map_err(|_| takio::app_error!("invalid-arguments"))?;
             serde_json::to_value(store.list_duplicate_candidates(&request)?)
-                .map_err(|_| AppError::new("storage-unavailable"))
+                .map_err(|_| takio::app_error!("storage-unavailable"))
         }
         "library_duplicates_keep" => {
             let request = serde_json::from_value::<DuplicatePairReviewRequest>(args.clone())
-                .map_err(|_| AppError::new("invalid-arguments"))?;
+                .map_err(|_| takio::app_error!("invalid-arguments"))?;
             store.keep_duplicate_pair(&request)?;
             Ok(Value::Null)
         }
         "library_duplicates_reopen" => {
             let request = serde_json::from_value::<DuplicatePairReviewRequest>(args.clone())
-                .map_err(|_| AppError::new("invalid-arguments"))?;
+                .map_err(|_| takio::app_error!("invalid-arguments"))?;
             store.reopen_duplicate_pair(&request)?;
             Ok(Value::Null)
         }
         "library_duplicates_merge" => {
             let request = serde_json::from_value::<MergeDuplicatePairRequest>(args.clone())
-                .map_err(|_| AppError::new("invalid-arguments"))?;
+                .map_err(|_| takio::app_error!("invalid-arguments"))?;
             serde_json::to_value(store.merge_duplicate_pair(&request)?)
-                .map_err(|_| AppError::new("storage-unavailable"))
+                .map_err(|_| takio::app_error!("storage-unavailable"))
         }
         "library_update" => {
             let id = request_id(args)?;
             let patch = serde_json::from_value::<LibraryPatch>(
                 args.get("patch")
                     .cloned()
-                    .ok_or_else(|| AppError::new("invalid-arguments"))?,
+                    .ok_or_else(|| takio::app_error!("invalid-arguments"))?,
             )
-            .map_err(|_| AppError::new("invalid-arguments"))?;
+            .map_err(|_| takio::app_error!("invalid-arguments"))?;
             Ok(json!({"item":store.update(id, patch)?}))
         }
         "library_attach_format" => {
             let request: AttachFormatRequest = decode_request(args)?;
             if request.id.is_empty() {
-                return Err(AppError::new("invalid-arguments"));
+                return Err(takio::app_error!("invalid-arguments"));
             }
             Ok(
                 json!({"item":store.attach_format(&request.id, &request.source.path, request.source.provenance())?}),
@@ -2040,18 +2043,18 @@ fn service_request(store: &mut LibraryStore, request: &Value) -> AppResult<Value
             let format = serde_json::from_value::<FormatId>(
                 args.get("format")
                     .cloned()
-                    .ok_or_else(|| AppError::new("invalid-arguments"))?,
+                    .ok_or_else(|| takio::app_error!("invalid-arguments"))?,
             )
-            .map_err(|_| AppError::new("invalid-arguments"))?;
+            .map_err(|_| takio::app_error!("invalid-arguments"))?;
             serde_json::to_value(store.remove_format(id, format)?)
-                .map_err(|_| AppError::new("storage-unavailable"))
+                .map_err(|_| takio::app_error!("storage-unavailable"))
         }
         "library_cover_set" => {
             let id = request_id(args)?;
             let path = args
                 .get("sourcePath")
                 .and_then(Value::as_str)
-                .ok_or_else(|| AppError::new("invalid-arguments"))?;
+                .ok_or_else(|| takio::app_error!("invalid-arguments"))?;
             Ok(json!({"item":store.set_cover(id, Path::new(path))?}))
         }
         "library_cover_remove" => {
@@ -2068,10 +2071,11 @@ fn service_request(store: &mut LibraryStore, request: &Value) -> AppResult<Value
         }
         "library_purge" => {
             let id = request_id(args)?;
-            serde_json::to_value(store.purge(id)?).map_err(|_| AppError::new("storage-unavailable"))
+            serde_json::to_value(store.purge(id)?)
+                .map_err(|_| takio::app_error!("storage-unavailable"))
         }
         "library_replace_format" => replace_format_request(store, decode_request(args)?),
-        _ => Err(AppError::new("invalid-arguments")),
+        _ => Err(takio::app_error!("invalid-arguments")),
     }
 }
 
@@ -2147,7 +2151,7 @@ fn import_watch(
     handle.close();
     signal_thread
         .join()
-        .map_err(|_| AppError::new("storage-unavailable"))?;
+        .map_err(|_| takio::app_error!("storage-unavailable"))?;
     print_success(json!({"cycles":cycles,"stopped":stopped,"counts":counts}))
 }
 
@@ -2157,7 +2161,7 @@ fn export_many(store: &LibraryStore, request: &Value) -> AppResult<crate::export
 
 fn library_query_value(store: &LibraryStore, request: &Value) -> AppResult<Value> {
     let result = crate::library_query::query(store, decode_request(request)?)?;
-    serde_json::to_value(result).map_err(|_| AppError::new("storage-unavailable"))
+    serde_json::to_value(result).map_err(|_| takio::app_error!("storage-unavailable"))
 }
 
 fn jobs(command: JobsCommand, library: Option<&str>) -> AppResult<()> {
@@ -2176,14 +2180,14 @@ fn jobs(command: JobsCommand, library: Option<&str>) -> AppResult<()> {
                     let paths = LibraryPaths::resolve(library, None)?;
                     let item = LibraryStore::open_read_only(paths)?
                         .get(item_id)?
-                        .ok_or_else(|| AppError::new("not-found"))?;
+                        .ok_or_else(|| takio::app_error!("not-found"))?;
                     item.formats
                         .into_iter()
                         .find(|candidate| candidate.format == format)
                         .map(|candidate| candidate.source_path)
-                        .ok_or_else(|| AppError::new("format-not-found"))?
+                        .ok_or_else(|| takio::app_error!("format-not-found"))?
                 }
-                _ => return Err(AppError::new("invalid-arguments")),
+                _ => return Err(takio::app_error!("invalid-arguments")),
             };
             let path = job_path(library, db.as_deref())?;
             print_success(json!({"job":JobStore::open(&path)?.enqueue(
@@ -2243,7 +2247,7 @@ fn jobs(command: JobsCommand, library: Option<&str>) -> AppResult<()> {
         }
         JobsCommand::RetryAttachment { db, id } => {
             if db.is_some() || id.trim().is_empty() {
-                return Err(AppError::new("invalid-arguments"));
+                return Err(takio::app_error!("invalid-arguments"));
             }
             let path = job_path(library, None)?;
             let store = JobStore::open(&path)?;
@@ -2428,9 +2432,9 @@ fn destination(command: DestinationCommand, library: Option<&str>) -> AppResult<
                 .formats
                 .iter()
                 .find(|candidate| candidate.format == format)
-                .ok_or_else(|| AppError::new("format-not-found"))?;
+                .ok_or_else(|| takio::app_error!("format-not-found"))?;
             if detect_format(&source.source_path) != Some(format) {
-                return Err(AppError::new("format-mismatch"));
+                return Err(takio::app_error!("format-mismatch"));
             }
             let destination = KindleSshDestination {
                 host,
@@ -2477,28 +2481,28 @@ fn read_json(input: &str) -> AppResult<Value> {
         std::io::stdin()
             .take(16 * 1024 + 1)
             .read_to_end(&mut data)
-            .map_err(|_| AppError::new("invalid-arguments"))?;
+            .map_err(|_| takio::app_error!("invalid-arguments"))?;
         data
     } else if let Some(path) = input.strip_prefix('@') {
-        std::fs::read(path).map_err(|_| AppError::new("invalid-arguments"))?
+        std::fs::read(path).map_err(|_| takio::app_error!("invalid-arguments"))?
     } else {
         input.as_bytes().to_vec()
     };
     if bytes.len() > 16 * 1024 {
-        return Err(AppError::new("invalid-arguments"));
+        return Err(takio::app_error!("invalid-arguments"));
     }
-    serde_json::from_slice(&bytes).map_err(|_| AppError::new("invalid-arguments"))
+    serde_json::from_slice(&bytes).map_err(|_| takio::app_error!("invalid-arguments"))
 }
 fn request_id(value: &Value) -> AppResult<&str> {
     value
         .get("id")
         .and_then(Value::as_str)
         .filter(|id| !id.is_empty())
-        .ok_or_else(|| AppError::new("invalid-arguments"))
+        .ok_or_else(|| takio::app_error!("invalid-arguments"))
 }
 fn job_path(library: Option<&str>, db: Option<&Path>) -> AppResult<PathBuf> {
     if db.is_some() && library.is_some() {
-        return Err(AppError::new("invalid-arguments"));
+        return Err(takio::app_error!("invalid-arguments"));
     }
     Ok(db
         .map(Path::to_path_buf)
@@ -2680,11 +2684,11 @@ fn open_path(path: &Path) -> AppResult<()> {
     } else {
         std::process::Command::new("xdg-open").arg(path).status()
     }
-    .map_err(|_| AppError::new("open-failed"))?;
+    .map_err(|_| takio::app_error!("open-failed"))?;
     if status.success() {
         Ok(())
     } else {
-        Err(AppError::new("open-failed"))
+        Err(takio::app_error!("open-failed"))
     }
 }
 

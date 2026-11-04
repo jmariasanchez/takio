@@ -27,14 +27,14 @@ impl LibraryPaths {
     /// application-data directory or current working directory cannot be resolved.
     pub fn resolve(library: Option<&str>, database: Option<&Path>) -> AppResult<Self> {
         if library.is_some() && database.is_some() {
-            return Err(AppError::new("invalid-arguments"));
+            return Err(crate::app_error!("invalid-arguments"));
         }
 
         let database = if let Some(path) = database {
             absolute(path)?
         } else {
             let project = ProjectDirs::from("com", "takio", "Takio")
-                .ok_or_else(|| AppError::new("storage-unavailable"))?;
+                .ok_or_else(|| crate::app_error!("storage-unavailable"))?;
             let root = project.data_local_dir();
             match library {
                 Some(name) => {
@@ -46,7 +46,7 @@ impl LibraryPaths {
         };
         let root = database
             .parent()
-            .ok_or_else(|| AppError::new("invalid-arguments"))?
+            .ok_or_else(|| crate::app_error!("invalid-arguments"))?
             .to_path_buf();
         Ok(Self {
             jobs: root.join("jobs.sqlite"),
@@ -60,7 +60,7 @@ impl LibraryPaths {
 
 pub fn absolute(path: &Path) -> AppResult<PathBuf> {
     if path.as_os_str().is_empty() {
-        return Err(AppError::new("invalid-arguments"));
+        return Err(crate::app_error!("invalid-arguments"));
     }
     std::path::absolute(path).map_err(AppError::from)
 }
@@ -91,7 +91,7 @@ fn validate_library_name(name: &str) -> AppResult<()> {
     if valid {
         Ok(())
     } else {
-        Err(AppError::new("invalid-arguments"))
+        Err(crate::app_error!("invalid-arguments"))
     }
 }
 

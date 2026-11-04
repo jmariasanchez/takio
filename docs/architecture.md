@@ -96,6 +96,14 @@ Machine commands keep stderr empty. Structured request values are limited to 16
 KiB and can be supplied inline, through stdin with `-`, or from a file with
 `@path`.
 
+`error::ErrorCode` is the closed application-error vocabulary. `AppError` stores
+that enum, exposes `kind()` for typed dispatch, and retains `code()` for stable
+wire strings. Native humanizers exhaustively match the enum. Existing literal
+producers use `app_error!`, which resolves only known wire literals at compile
+time; dynamic producers must supply an `ErrorCode`. Unknown literals fail
+compilation rather than becoming runtime fallback messages. Serde kebab-case
+serialization is checked against every previous wire spelling.
+
 Automation clients can use short-lived CLI commands or `takio library service`,
 a newline-delimited request loop that correlates every response with the caller's
 request ID. This protocol remains supported independently of the removed desktop

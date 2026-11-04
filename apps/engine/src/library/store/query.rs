@@ -11,7 +11,7 @@ use super::{
     LibraryQueryFilters, LibraryQueryScope, LibraryQuerySyntax, LibraryStore, METADATA_AUDIT_KEY,
     as_i64, count,
 };
-use crate::error::{AppError, AppResult};
+use crate::error::AppResult;
 use crate::model::LibraryItem;
 
 impl LibraryStore {
@@ -42,7 +42,7 @@ impl LibraryStore {
 
     pub fn get(&self, id: &str) -> AppResult<Option<LibraryItem>> {
         if id.trim().is_empty() {
-            return Err(AppError::new("invalid-arguments"));
+            return Err(crate::app_error!("invalid-arguments"));
         }
         self.read_item(id)
     }
@@ -53,7 +53,9 @@ impl LibraryStore {
     /// Returns `not-found` for a missing identifier and `item-trashed` when the
     /// item must first be explicitly restored. Empty identifiers are invalid.
     pub fn get_active(&self, id: &str) -> AppResult<LibraryItem> {
-        let item = self.get(id)?.ok_or_else(|| AppError::new("not-found"))?;
+        let item = self
+            .get(id)?
+            .ok_or_else(|| crate::app_error!("not-found"))?;
         let trashed: bool = self
             .connection
             .query_row(
@@ -62,9 +64,9 @@ impl LibraryStore {
                 |row| row.get(0),
             )
             .optional()?
-            .ok_or_else(|| AppError::new("not-found"))?;
+            .ok_or_else(|| crate::app_error!("not-found"))?;
         if trashed {
-            return Err(AppError::new("item-trashed"));
+            return Err(crate::app_error!("item-trashed"));
         }
         Ok(item)
     }
@@ -124,8 +126,8 @@ impl LibraryStore {
         let mut statement = self.connection.prepare(
             "SELECT id FROM library_items WHERE trashed_at IS NULL ORDER BY title COLLATE NOCASE,id LIMIT ?1 OFFSET ?2",
         )?;
-        let limit = u64::try_from(limit).map_err(|_| AppError::new("invalid-arguments"))?;
-        let offset = u64::try_from(offset).map_err(|_| AppError::new("invalid-arguments"))?;
+        let limit = u64::try_from(limit).map_err(|_| crate::app_error!("invalid-arguments"))?;
+        let offset = u64::try_from(offset).map_err(|_| crate::app_error!("invalid-arguments"))?;
         let ids = statement
             .query_map(params![as_i64(limit)?, as_i64(offset)?], |row| {
                 row.get::<_, String>(0)
@@ -230,7 +232,7 @@ pub(super) struct StructuredQueryTerm {
 
 pub(super) fn parse_structured_query(query: &str) -> AppResult<Vec<StructuredQueryTerm>> {
     if query.encode_utf16().count() > 1024 {
-        return Err(AppError::new("invalid-arguments"));
+        return Err(crate::app_error!("invalid-arguments"));
     }
     let mut tokens = Vec::<(String, Option<usize>, bool)>::new();
     let mut token = String::new();
@@ -241,7 +243,7 @@ pub(super) fn parse_structured_query(query: &str) -> AppResult<Vec<StructuredQue
     for character in query.chars() {
         if escaped {
             if !matches!(character, '"' | '\\') {
-                return Err(AppError::new("invalid-query"));
+                return Err(crate::app_error!("invalid-query"));
             }
             token.push(character);
             escaped = false;
@@ -262,19 +264,19 @@ pub(super) fn parse_structured_query(query: &str) -> AppResult<Vec<StructuredQue
             field_separator = Some(token.len());
             token.push(character);
         } else if matches!(character, '(' | ')') && !quoted {
-            return Err(AppError::new("invalid-query"));
+            return Err(crate::app_error!("invalid-query"));
         } else {
             token.push(character);
         }
     }
     if escaped || quoted {
-        return Err(AppError::new("invalid-query"));
+        return Err(crate::app_error!("invalid-query"));
     }
     if !token.is_empty() {
         tokens.push((token, field_separator, token_was_quoted));
     }
     if tokens.len() > 64 {
-        return Err(AppError::new("invalid-query"));
+        return Err(crate::app_error!("invalid-query"));
     }
 
     let mut terms = Vec::new();
@@ -283,17 +285,17 @@ pub(super) fn parse_structured_query(query: &str) -> AppResult<Vec<StructuredQue
     for (token, field_separator, token_was_quoted) in tokens {
         if !token_was_quoted && field_separator.is_none() && token.eq_ignore_ascii_case("and") {
             if terms.is_empty() || explicit_and_pending || negated {
-                return Err(AppError::new("invalid-query"));
+                return Err(crate::app_error!("invalid-query"));
             }
             explicit_and_pending = true;
             continue;
         }
         if !token_was_quoted && field_separator.is_none() && token.eq_ignore_ascii_case("or") {
-            return Err(AppError::new("invalid-query"));
+            return Err(crate::app_error!("invalid-query"));
         }
         if !token_was_quoted && field_separator.is_none() && token.eq_ignore_ascii_case("not") {
             if negated {
-                return Err(AppError::new("invalid-query"));
+                return Err(crate::app_error!("invalid-query"));
             }
             negated = true;
             continue;
@@ -310,7 +312,7 @@ pub(super) fn parse_structured_query(query: &str) -> AppResult<Vec<StructuredQue
             )
         });
         if value.is_empty() || value.encode_utf16().count() > 256 {
-            return Err(AppError::new("invalid-query"));
+            return Err(crate::app_error!("invalid-query"));
         }
         if let Some(field) = field.as_deref() {
             let valid = matches!(
@@ -334,7 +336,7 @@ pub(super) fn parse_structured_query(query: &str) -> AppResult<Vec<StructuredQue
                 .strip_prefix('#')
                 .is_some_and(|key| valid_custom_metadata_key(key) && key != METADATA_AUDIT_KEY);
             if !valid {
-                return Err(AppError::new("invalid-query"));
+                return Err(crate::app_error!("invalid-query"));
             }
         }
         terms.push(StructuredQueryTerm {
@@ -345,11 +347,11 @@ pub(super) fn parse_structured_query(query: &str) -> AppResult<Vec<StructuredQue
         negated = false;
         explicit_and_pending = false;
         if terms.len() > 32 {
-            return Err(AppError::new("invalid-query"));
+            return Err(crate::app_error!("invalid-query"));
         }
     }
     if negated || explicit_and_pending {
-        return Err(AppError::new("invalid-query"));
+        return Err(crate::app_error!("invalid-query"));
     }
     Ok(terms)
 }

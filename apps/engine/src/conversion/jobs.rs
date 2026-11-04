@@ -89,7 +89,7 @@ impl std::str::FromStr for JobAttachmentStatus {
             "pending" => Ok(Self::Pending),
             "attached" => Ok(Self::Attached),
             "failed" => Ok(Self::Failed),
-            _ => Err(AppError::new("invalid-stored-data")),
+            _ => Err(crate::app_error!("invalid-stored-data")),
         }
     }
 }
@@ -139,11 +139,11 @@ impl JobStore {
                 |row| row.get(0),
             )?;
             if existing {
-                return Err(AppError::new("incompatible-schema"));
+                return Err(crate::app_error!("incompatible-schema"));
             }
             create_schema(&connection)?;
         } else if version != 4 {
-            return Err(AppError::new("incompatible-schema"));
+            return Err(crate::app_error!("incompatible-schema"));
         }
         connection.execute("UPDATE jobs SET status='failed',finished_at=?1,error_code='conversion-interrupted',owner_pid=NULL WHERE status='running'",[Utc::now().to_rfc3339()])?;
         Ok(Self { connection })
@@ -158,22 +158,22 @@ impl JobStore {
     ) -> AppResult<ConversionJob> {
         let input = input
             .canonicalize()
-            .map_err(|_| AppError::new("input-unavailable"))?;
+            .map_err(|_| crate::app_error!("input-unavailable"))?;
         if !input.is_file() || !output.is_absolute() || output.exists() {
-            return Err(AppError::new(if output.exists() {
-                "output-file-exists"
+            return Err(crate::app_error!(if output.exists() {
+                crate::error::ErrorCode::OutputFileExists
             } else {
-                "invalid-arguments"
+                crate::error::ErrorCode::InvalidArguments
             }));
         }
         let input_format =
-            detect_format(&input).ok_or_else(|| AppError::new("unsupported-format"))?;
+            detect_format(&input).ok_or_else(|| crate::app_error!("unsupported-format"))?;
         let id = format!("job_{}", Uuid::new_v4());
         let created = Utc::now().to_rfc3339();
         self.connection.execute("INSERT INTO jobs(id,status,library_item_id,input_path,input_format,output_format,output_path,created_at) VALUES(?1,'queued',?2,?3,?4,?5,?6,?7)",
             params![id,library_item_id,input.to_string_lossy(),input_format.as_str(),output_format.as_str(),output.to_string_lossy(),created])?;
         self.get(&id)?
-            .ok_or_else(|| AppError::new("storage-unavailable"))
+            .ok_or_else(|| crate::app_error!("storage-unavailable"))
     }
 
     pub fn list(&self, status: Option<JobStatus>) -> AppResult<Vec<ConversionJob>> {
@@ -209,19 +209,22 @@ impl JobStore {
             params![id, Utc::now().to_rfc3339()],
         )?;
         if changed == 0 {
-            return Err(AppError::new(if self.get(id)?.is_some() {
-                "invalid-transition"
+            return Err(crate::app_error!(if self.get(id)?.is_some() {
+                crate::error::ErrorCode::InvalidTransition
             } else {
-                "unknown-job"
+                crate::error::ErrorCode::UnknownJob
             }));
         }
-        self.get(id)?.ok_or_else(|| AppError::new("unknown-job"))
+        self.get(id)?
+            .ok_or_else(|| crate::app_error!("unknown-job"))
     }
 
     pub fn retry(&self, id: &str) -> AppResult<ConversionJob> {
-        let old = self.get(id)?.ok_or_else(|| AppError::new("unknown-job"))?;
+        let old = self
+            .get(id)?
+            .ok_or_else(|| crate::app_error!("unknown-job"))?;
         if !matches!(old.status, JobStatus::Failed | JobStatus::Canceled) {
-            return Err(AppError::new("invalid-transition"));
+            return Err(crate::app_error!("invalid-transition"));
         }
         self.enqueue(
             &old.input_path,
@@ -232,20 +235,23 @@ impl JobStore {
     }
 
     pub fn retry_attachment(&self, id: &str) -> AppResult<ConversionJob> {
-        let job = self.get(id)?.ok_or_else(|| AppError::new("unknown-job"))?;
+        let job = self
+            .get(id)?
+            .ok_or_else(|| crate::app_error!("unknown-job"))?;
         if job.status != JobStatus::Completed
             || job.library_item_id.is_none()
             || job.artifact.is_none()
             || job.attachment.as_ref().map(|value| value.status)
                 != Some(JobAttachmentStatus::Failed)
         {
-            return Err(AppError::new("invalid-transition"));
+            return Err(crate::app_error!("invalid-transition"));
         }
         self.connection.execute(
             "UPDATE jobs SET attachment_status='pending',attachment_finished_at=NULL,attachment_error_code=NULL,attachment_owner_pid=NULL WHERE id=?1",
             [id],
         )?;
-        self.get(id)?.ok_or_else(|| AppError::new("unknown-job"))
+        self.get(id)?
+            .ok_or_else(|| crate::app_error!("unknown-job"))
     }
 
     pub fn finish_attachment(
@@ -263,13 +269,14 @@ impl JobStore {
             params![id, status, Utc::now().to_rfc3339(), error_code],
         )?;
         if changed == 0 {
-            return Err(AppError::new(if self.get(id)?.is_some() {
-                "invalid-transition"
+            return Err(crate::app_error!(if self.get(id)?.is_some() {
+                crate::error::ErrorCode::InvalidTransition
             } else {
-                "unknown-job"
+                crate::error::ErrorCode::UnknownJob
             }));
         }
-        self.get(id)?.ok_or_else(|| AppError::new("unknown-job"))
+        self.get(id)?
+            .ok_or_else(|| crate::app_error!("unknown-job"))
     }
 
     pub fn run_next(
@@ -327,7 +334,7 @@ impl JobStore {
         self.connection.execute(
         "UPDATE jobs SET status='completed',finished_at=?2,owner_pid=NULL,artifact_bytes=?3,artifact_sha256=?4,
          attachment_status=CASE WHEN library_item_id IS NULL THEN NULL ELSE 'pending' END WHERE id=?1 AND status='running'",
-        params![id,Utc::now().to_rfc3339(),i64::try_from(artifact.bytes).map_err(|_|AppError::new("artifact-invalid"))?,artifact.sha256])?;
+        params![id,Utc::now().to_rfc3339(),i64::try_from(artifact.bytes).map_err(|_|crate::app_error!("artifact-invalid"))?,artifact.sha256])?;
         Ok(())
     }
     fn fail(&self, id: &str, code: &str) -> AppResult<()> {
@@ -381,23 +388,23 @@ fn parse_job(row: JobRow) -> AppResult<ConversionJob> {
     let status = row
         .1
         .parse()
-        .map_err(|_| AppError::new("invalid-stored-data"))?;
+        .map_err(|_| crate::app_error!("invalid-stored-data"))?;
     let input_format = row
         .4
         .parse()
-        .map_err(|_| AppError::new("invalid-stored-data"))?;
+        .map_err(|_| crate::app_error!("invalid-stored-data"))?;
     let output_format = row
         .5
         .parse()
-        .map_err(|_| AppError::new("invalid-stored-data"))?;
+        .map_err(|_| crate::app_error!("invalid-stored-data"))?;
     let artifact = match (row.12, row.13) {
         (Some(bytes), Some(sha256)) => Some(JobArtifact {
             path: PathBuf::from(&row.6),
-            bytes: u64::try_from(bytes).map_err(|_| AppError::new("invalid-stored-data"))?,
+            bytes: u64::try_from(bytes).map_err(|_| crate::app_error!("invalid-stored-data"))?,
             sha256,
         }),
         (None, None) => None,
-        _ => return Err(AppError::new("invalid-stored-data")),
+        _ => return Err(crate::app_error!("invalid-stored-data")),
     };
     let attachment = row
         .14
@@ -424,7 +431,7 @@ fn parse_job(row: JobRow) -> AppResult<ConversionJob> {
             .10
             .map(u32::try_from)
             .transpose()
-            .map_err(|_| AppError::new("invalid-stored-data"))?,
+            .map_err(|_| crate::app_error!("invalid-stored-data"))?,
         error_code: row.11,
         artifact,
         attachment,

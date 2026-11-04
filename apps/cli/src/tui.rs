@@ -28,7 +28,7 @@ use crate::metadata_candidates::{
     prepare_metadata_candidate, release_metadata_candidate_covers,
 };
 use crate::model::LibraryItem;
-use crate::output::{AppError, AppResult};
+use crate::output::AppResult;
 use crate::paths::LibraryPaths;
 use crate::store::LibraryStore;
 
@@ -830,14 +830,14 @@ struct TerminalGuard {
 impl TerminalGuard {
     fn enter() -> AppResult<Self> {
         let mut cleanup = TerminalCleanup::new();
-        enable_raw_mode().map_err(|_| AppError::new("terminal-unavailable"))?;
+        enable_raw_mode().map_err(|_| takio::app_error!("terminal-unavailable"))?;
         cleanup.raw_mode = true;
         let mut stdout = io::stdout();
         execute!(stdout, EnterAlternateScreen)
-            .map_err(|_| AppError::new("terminal-unavailable"))?;
+            .map_err(|_| takio::app_error!("terminal-unavailable"))?;
         cleanup.alternate_screen = true;
         let terminal = Terminal::new(CrosstermBackend::new(stdout))
-            .map_err(|_| AppError::new("terminal-unavailable"))?;
+            .map_err(|_| takio::app_error!("terminal-unavailable"))?;
         let guard = Self {
             terminal,
             raw_mode: cleanup.raw_mode,
@@ -868,11 +868,11 @@ pub fn run(paths: LibraryPaths) -> AppResult<()> {
         terminal
             .terminal
             .draw(|frame| draw(frame, &app))
-            .map_err(|_| AppError::new("terminal-unavailable"))?;
+            .map_err(|_| takio::app_error!("terminal-unavailable"))?;
         if event::poll(Duration::from_millis(200))
-            .map_err(|_| AppError::new("terminal-unavailable"))?
+            .map_err(|_| takio::app_error!("terminal-unavailable"))?
             && let Event::Key(key) =
-                event::read().map_err(|_| AppError::new("terminal-unavailable"))?
+                event::read().map_err(|_| takio::app_error!("terminal-unavailable"))?
             && key.kind == KeyEventKind::Press
         {
             app.handle_key(key.code, key.modifiers);

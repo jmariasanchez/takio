@@ -69,11 +69,11 @@ mod tests {
 
     #[test]
     fn app_errors_preserve_codes_and_default_or_explicit_status() {
-        let default = AppError::new("invalid-arguments");
+        let default = crate::app_error!("invalid-arguments");
         assert_eq!(default.code(), "invalid-arguments");
         assert_eq!(default.to_string(), "invalid-arguments");
         assert_eq!(default.exit_code(), 1);
-        let explicit = AppError::with_exit_code("interrupted", 130);
+        let explicit = AppError::with_exit_code(crate::error::ErrorCode::Interrupted, 130);
         assert_eq!(explicit.code(), "interrupted");
         assert_eq!(explicit.exit_code(), 130);
     }
@@ -97,7 +97,7 @@ mod tests {
 
     #[test]
     fn cloned_app_errors_preserve_status_and_redacted_details() {
-        let explicit = AppError::with_exit_code("interrupted", 130).clone();
+        let explicit = AppError::with_exit_code(crate::error::ErrorCode::Interrupted, 130).clone();
         assert_eq!(explicit.code(), "interrupted");
         assert_eq!(explicit.exit_code(), 130);
         assert_eq!(explicit.to_string(), "interrupted");

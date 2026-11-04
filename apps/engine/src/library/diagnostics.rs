@@ -9,7 +9,7 @@ use sha2::{Digest, Sha256};
 use tempfile::Builder;
 use walkdir::WalkDir;
 
-use crate::output::{AppError, AppResult};
+use crate::output::AppResult;
 use crate::paths::LibraryPaths;
 use crate::store::{LibraryStore, VerifyReport};
 
@@ -60,15 +60,15 @@ pub fn write_library_diagnostics(
 ) -> AppResult<DiagnosticReport> {
     let destination = safe_destination(destination, &paths.root)?;
     if destination.exists() {
-        return Err(AppError::new("destination-exists"));
+        return Err(crate::app_error!("destination-exists"));
     }
     let parent = destination
         .parent()
-        .ok_or_else(|| AppError::new("invalid-arguments"))?;
+        .ok_or_else(|| crate::app_error!("invalid-arguments"))?;
     let parent_metadata =
-        fs::symlink_metadata(parent).map_err(|_| AppError::new("invalid-arguments"))?;
+        fs::symlink_metadata(parent).map_err(|_| crate::app_error!("invalid-arguments"))?;
     if !parent_metadata.file_type().is_dir() || parent_metadata.file_type().is_symlink() {
-        return Err(AppError::new("invalid-arguments"));
+        return Err(crate::app_error!("invalid-arguments"));
     }
 
     let generated_at = Utc::now().to_rfc3339();
@@ -114,31 +114,31 @@ pub fn write_library_diagnostics(
         }
     });
     let bytes =
-        serde_json::to_vec_pretty(&bundle).map_err(|_| AppError::new("diagnostics-failed"))?;
+        serde_json::to_vec_pretty(&bundle).map_err(|_| crate::app_error!("diagnostics-failed"))?;
     if bytes.is_empty() || bytes.len() > MAX_DIAGNOSTIC_BUNDLE_BYTES {
-        return Err(AppError::new("diagnostics-failed"));
+        return Err(crate::app_error!("diagnostics-failed"));
     }
 
     let mut temporary = Builder::new()
         .prefix(".takio-diagnostics-")
         .tempfile_in(parent)
-        .map_err(|_| AppError::new("diagnostics-failed"))?;
+        .map_err(|_| crate::app_error!("diagnostics-failed"))?;
     temporary
         .write_all(&bytes)
         .and_then(|()| temporary.as_file().sync_all())
-        .map_err(|_| AppError::new("diagnostics-failed"))?;
+        .map_err(|_| crate::app_error!("diagnostics-failed"))?;
     temporary.persist_noclobber(&destination).map_err(|error| {
         if error.error.kind() == std::io::ErrorKind::AlreadyExists {
-            AppError::new("destination-exists")
+            crate::app_error!("destination-exists")
         } else {
-            AppError::new("diagnostics-failed")
+            crate::app_error!("diagnostics-failed")
         }
     })?;
     sync_parent(parent)?;
 
     Ok(DiagnosticReport {
         path: destination,
-        bytes: u64::try_from(bytes.len()).map_err(|_| AppError::new("diagnostics-failed"))?,
+        bytes: u64::try_from(bytes.len()).map_err(|_| crate::app_error!("diagnostics-failed"))?,
         sha256: hex::encode(Sha256::digest(&bytes)),
         generated_at,
         verification_status,
@@ -151,7 +151,7 @@ fn safe_destination(destination: &Path, owned_root: &Path) -> AppResult<PathBuf>
             .components()
             .any(|component| matches!(component, Component::ParentDir))
     {
-        return Err(AppError::new("invalid-arguments"));
+        return Err(crate::app_error!("invalid-arguments"));
     }
     let destination = if destination.is_absolute() {
         destination.to_path_buf()
@@ -159,7 +159,7 @@ fn safe_destination(destination: &Path, owned_root: &Path) -> AppResult<PathBuf>
         std::env::current_dir()?.join(destination)
     };
     if destination == owned_root || destination.starts_with(owned_root) {
-        return Err(AppError::new("invalid-arguments"));
+        return Err(crate::app_error!("invalid-arguments"));
     }
     if let Some(parent) = destination.parent()
         && let Ok(parent) = parent.canonicalize()
@@ -168,7 +168,7 @@ fn safe_destination(destination: &Path, owned_root: &Path) -> AppResult<PathBuf>
             .canonicalize()
             .unwrap_or_else(|_| owned_root.to_path_buf());
         if parent == owned_root || parent.starts_with(owned_root) {
-            return Err(AppError::new("invalid-arguments"));
+            return Err(crate::app_error!("invalid-arguments"));
         }
     }
     Ok(destination)
@@ -262,7 +262,7 @@ fn integrity_value(report: &VerifyReport) -> Value {
 fn sync_parent(parent: &Path) -> AppResult<()> {
     File::open(parent)
         .and_then(|directory| directory.sync_all())
-        .map_err(|_| AppError::new("diagnostics-failed"))
+        .map_err(|_| crate::app_error!("diagnostics-failed"))
 }
 
 #[cfg(test)]

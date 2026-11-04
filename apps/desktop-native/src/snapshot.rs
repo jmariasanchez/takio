@@ -148,7 +148,7 @@ pub fn run() {
                 Err(error) => format!(
                     "{}: error {}",
                     reader.name,
-                    crate::state::humanize_error(error.code())
+                    crate::state::humanize_error(error.kind())
                 ),
             })
             .collect();

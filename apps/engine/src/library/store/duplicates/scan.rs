@@ -9,7 +9,7 @@ use unicode_normalization::UnicodeNormalization;
 
 use super::{DuplicateCandidate, DuplicateScanSummary, DuplicateSignal};
 use crate::conversion::FormatId;
-use crate::error::{AppError, AppResult};
+use crate::error::AppResult;
 use crate::fingerprint::Fingerprint;
 use crate::store::hash_file;
 use crate::store::hydration::read_item_from;
@@ -82,7 +82,8 @@ fn add_duplicate_signal(
         return Ok(());
     }
     let pair = canonical_pair(left, right);
-    let key = serde_json::to_string(&signal).map_err(|_| AppError::new("invalid-stored-data"))?;
+    let key =
+        serde_json::to_string(&signal).map_err(|_| crate::app_error!("invalid-stored-data"))?;
     signals.entry(pair).or_default().insert(key, signal);
     Ok(())
 }
@@ -108,8 +109,8 @@ pub(super) fn scan_duplicate_candidates_in(
     drop(statement);
     let mut items = HashMap::new();
     for id in ids {
-        let item =
-            read_item_from(connection, &id)?.ok_or_else(|| AppError::new("invalid-stored-data"))?;
+        let item = read_item_from(connection, &id)?
+            .ok_or_else(|| crate::app_error!("invalid-stored-data"))?;
         items.insert(id, item);
     }
 
@@ -138,24 +139,24 @@ pub(super) fn scan_duplicate_candidates_in(
         let format = FormatId::ALL
             .into_iter()
             .find(|candidate| candidate.as_str() == format)
-            .ok_or_else(|| AppError::new("invalid-stored-data"))?;
+            .ok_or_else(|| crate::app_error!("invalid-stored-data"))?;
         let fingerprint = if provenance == "managed" {
             let bytes = bytes
                 .and_then(|value| u64::try_from(value).ok())
-                .ok_or_else(|| AppError::new("invalid-stored-data"))?;
+                .ok_or_else(|| crate::app_error!("invalid-stored-data"))?;
             if bytes > MAX_SAFE_INTEGER {
-                return Err(AppError::new("invalid-stored-data"));
+                return Err(crate::app_error!("invalid-stored-data"));
             }
             let sha = sha
                 .filter(|value| valid_review_token(value))
-                .ok_or_else(|| AppError::new("invalid-stored-data"))?;
+                .ok_or_else(|| crate::app_error!("invalid-stored-data"))?;
             fingerprints_reused += 1;
             Some(Fingerprint { bytes, sha256: sha })
         } else if provenance == "referenced" {
             if let Ok(value) = hash_file(Path::new(&path)) {
                 files_hashed += 1;
                 if value.bytes > MAX_SAFE_INTEGER {
-                    return Err(AppError::new("invalid-stored-data"));
+                    return Err(crate::app_error!("invalid-stored-data"));
                 }
                 Some(value)
             } else {
@@ -163,7 +164,7 @@ pub(super) fn scan_duplicate_candidates_in(
                 None
             }
         } else {
-            return Err(AppError::new("invalid-stored-data"));
+            return Err(crate::app_error!("invalid-stored-data"));
         };
         if let Some(Fingerprint { bytes, sha256: sha }) = fingerprint
             && bytes > 0
@@ -207,7 +208,7 @@ pub(super) fn scan_duplicate_candidates_in(
     for item_id in item_ids {
         let item = items
             .get(&item_id)
-            .ok_or_else(|| AppError::new("invalid-stored-data"))?;
+            .ok_or_else(|| crate::app_error!("invalid-stored-data"))?;
         for (scheme, value) in &item.identifiers {
             let normalized_scheme = normalize_duplicate_text(scheme);
             let value = value.trim();
@@ -280,17 +281,17 @@ pub(super) fn scan_duplicate_candidates_in(
             right_id: &right_id,
             signals: &pair_signals,
         })
-        .map_err(|_| AppError::new("invalid-stored-data"))?;
+        .map_err(|_| crate::app_error!("invalid-stored-data"))?;
         let review_token = hex::encode(Sha256::digest(bytes));
         candidates.push(DuplicateCandidate {
             left: items
                 .get(&left_id)
                 .cloned()
-                .ok_or_else(|| AppError::new("invalid-stored-data"))?,
+                .ok_or_else(|| crate::app_error!("invalid-stored-data"))?,
             right: items
                 .get(&right_id)
                 .cloned()
-                .ok_or_else(|| AppError::new("invalid-stored-data"))?,
+                .ok_or_else(|| crate::app_error!("invalid-stored-data"))?,
             signals: pair_signals,
             review_token,
         });

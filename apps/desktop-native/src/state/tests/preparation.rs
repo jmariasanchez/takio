@@ -102,7 +102,7 @@ fn preparation_confirmation_captures_id_and_success_reloads_without_sending(
         s.session.delivery_exclusions.push(SendPreviewEntry {
             item_id: item.id.clone(),
             title: item.title.clone(),
-            result: Err(AppError::new("no-compatible-format")),
+            result: Err(takio::app_error!("no-compatible-format")),
         });
         s.select_only(0, cx);
         s.prepare_selected(cx);
@@ -182,7 +182,9 @@ fn preparation_review_and_running_conversion_block_overlapping_actions(cx: &mut 
         if running {
             match requests.try_recv().unwrap() {
                 Request::PrepareReviewed { reply, .. } => {
-                    reply.send(Err(AppError::new("conversion-failed"))).unwrap();
+                    reply
+                        .send(Err(takio::app_error!("conversion-failed")))
+                        .unwrap();
                 }
                 _ => panic!("expected conversion only"),
             }
@@ -221,18 +223,19 @@ fn preparation_unavailable_backend_and_invalid_selection_never_execute(cx: &mut 
 
 #[gpui::test]
 fn preparation_failure_preserves_sources_and_never_claims_success(cx: &mut TestAppContext) {
+    use takio::error::ErrorCode::*;
     for code in [
-        "prepare-source-unavailable",
-        "prepare-source-changed",
-        "prepare-backend-changed",
-        "no-epub-source",
-        "format-exists",
-        "destination-exists",
-        "item-trashed",
-        "backend-unavailable",
-        "conversion-failed",
-        "conversion-timeout",
-        "artifact-invalid",
+        PrepareSourceUnavailable,
+        PrepareSourceChanged,
+        PrepareBackendChanged,
+        NoEpubSource,
+        FormatExists,
+        DestinationExists,
+        ItemTrashed,
+        BackendUnavailable,
+        ConversionFailed,
+        ConversionTimeout,
+        ArtifactInvalid,
     ] {
         let f = fixture(cx);
         let requests = preparation_channel(&f, cx);
@@ -242,7 +245,9 @@ fn preparation_failure_preserves_sources_and_never_claims_success(cx: &mut TestA
             s.confirm_preparation(cx);
         });
         match requests.try_recv().unwrap() {
-            Request::PrepareReviewed { reply, .. } => reply.send(Err(AppError::new(code))).unwrap(),
+            Request::PrepareReviewed { reply, .. } => {
+                reply.send(Err(takio::app_error!(code))).unwrap()
+            }
             _ => panic!("expected preparation"),
         }
         settle(&f.state, cx);
@@ -250,18 +255,18 @@ fn preparation_failure_preserves_sources_and_never_claims_success(cx: &mut TestA
             let status = s.status.as_ref().unwrap();
             assert!(status.is_error);
             assert!(!status.text.contains("AZW3 prepared."));
-            assert!(!status.text.contains(code));
-            if code == "destination-exists" {
+            assert!(!status.text.contains(code.as_str()));
+            if code == takio::error::ErrorCode::DestinationExists {
                 assert!(status.text.contains("managed destination"));
                 assert!(status.text.contains("not overwritten"));
                 assert!(status.text.contains("existing bytes were kept"));
                 assert!(status.text.contains("before retrying"));
             }
-            if code == "item-trashed" {
+            if code == takio::error::ErrorCode::ItemTrashed {
                 assert!(status.text.contains("Restore it to the library"));
                 assert!(status.text.contains("review the operation again"));
             }
-            if code == "artifact-invalid" {
+            if code == takio::error::ErrorCode::ArtifactInvalid {
                 assert!(
                     status
                         .text

@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{LibraryQuerySyntax, parse_structured_query};
 use crate::conversion::FormatId;
-use crate::error::{AppError, AppResult};
+use crate::error::AppResult;
 use crate::model::Provenance;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -104,7 +104,7 @@ impl From<&crate::model::BookFormat> for ExpectedFormatSnapshot {
 
 pub(super) fn validate_saved_view_definition(definition: &SavedViewDefinition) -> AppResult<()> {
     if definition.version != 1 || definition.query.encode_utf16().count() > 1024 {
-        return Err(AppError::new("invalid-arguments"));
+        return Err(crate::app_error!("invalid-arguments"));
     }
     if matches!(
         definition.query_syntax,
@@ -123,7 +123,7 @@ pub(super) fn validate_saved_view_definition(definition: &SavedViewDefinition) -
             let value = value.trim();
             value.is_empty() || !seen.insert(value.to_ascii_lowercase())
         }) {
-            return Err(AppError::new("invalid-arguments"));
+            return Err(crate::app_error!("invalid-arguments"));
         }
     }
     let mut seen = std::collections::HashSet::new();
@@ -133,7 +133,7 @@ pub(super) fn validate_saved_view_definition(definition: &SavedViewDefinition) -
         .iter()
         .any(|format| !seen.insert(format.as_str()))
     {
-        return Err(AppError::new("invalid-arguments"));
+        return Err(crate::app_error!("invalid-arguments"));
     }
     Ok(())
 }

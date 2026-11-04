@@ -36,7 +36,7 @@ impl std::str::FromStr for ConversionProfile {
             "generic_eink" => Ok(Self::GenericEink),
             "kindle" => Ok(Self::Kindle),
             "kobo" => Ok(Self::Kobo),
-            _ => Err(AppError::new("invalid-arguments")),
+            _ => Err(crate::app_error!("invalid-arguments")),
         }
     }
 }
@@ -169,33 +169,34 @@ fn convert_inner(
 ) -> AppResult<Artifact> {
     let input = input
         .canonicalize()
-        .map_err(|_| AppError::new("input-unavailable"))?;
+        .map_err(|_| crate::app_error!("input-unavailable"))?;
     if !input.is_file() || output.exists() {
-        return Err(AppError::new(if output.exists() {
-            "output-file-exists"
+        return Err(crate::app_error!(if output.exists() {
+            crate::error::ErrorCode::OutputFileExists
         } else {
-            "invalid-arguments"
+            crate::error::ErrorCode::InvalidArguments
         }));
     }
-    let input_format = detect_format(&input).ok_or_else(|| AppError::new("unsupported-format"))?;
+    let input_format =
+        detect_format(&input).ok_or_else(|| crate::app_error!("unsupported-format"))?;
     if input_format == output_format {
-        return Err(AppError::new("invalid-arguments"));
+        return Err(crate::app_error!("invalid-arguments"));
     }
     if !CALIBRE_CAPABILITIES
         .iter()
         .any(|pair| pair.from == input_format && pair.to == output_format)
     {
-        return Err(AppError::new("unsupported-conversion"));
+        return Err(crate::app_error!("unsupported-conversion"));
     }
     let backend = backend
         .map(Path::to_path_buf)
         .or_else(|| discover_ebook_convert().path)
-        .ok_or_else(|| AppError::new("backend-unavailable"))?;
+        .ok_or_else(|| crate::app_error!("backend-unavailable"))?;
     let parent = output
         .parent()
-        .ok_or_else(|| AppError::new("invalid-arguments"))?;
+        .ok_or_else(|| crate::app_error!("invalid-arguments"))?;
     if !parent.is_dir() {
-        return Err(AppError::new("invalid-arguments"));
+        return Err(crate::app_error!("invalid-arguments"));
     }
     let temporary = parent.join(format!(
         ".takio-convert-{}.{}",
@@ -223,12 +224,12 @@ fn convert_inner(
     }
     let mut child = command
         .spawn()
-        .map_err(|_| AppError::new("backend-unavailable"))?;
+        .map_err(|_| crate::app_error!("backend-unavailable"))?;
     let started = Instant::now();
     let status = loop {
         if let Some(status) = child
             .try_wait()
-            .map_err(|_| AppError::new("conversion-failed"))?
+            .map_err(|_| crate::app_error!("conversion-failed"))?
         {
             break status;
         }
@@ -236,21 +237,22 @@ fn convert_inner(
             let _ = child.kill();
             let _ = child.wait();
             let _ = fs::remove_file(&temporary);
-            return Err(AppError::new("conversion-timeout"));
+            return Err(crate::app_error!("conversion-timeout"));
         }
         thread::sleep(Duration::from_millis(25));
     };
     if !status.success() || !temporary.is_file() {
         let _ = fs::remove_file(&temporary);
-        return Err(AppError::new("conversion-failed"));
+        return Err(crate::app_error!("conversion-failed"));
     }
     let crate::fingerprint::Fingerprint { bytes, sha256 } =
-        crate::fingerprint::hash_file(&temporary).map_err(|_| AppError::new("artifact-invalid"))?;
+        crate::fingerprint::hash_file(&temporary)
+            .map_err(|_| crate::app_error!("artifact-invalid"))?;
     if output.exists() {
         let _ = fs::remove_file(&temporary);
-        return Err(AppError::new("output-file-exists"));
+        return Err(crate::app_error!("output-file-exists"));
     }
-    fs::rename(&temporary, output).map_err(|_| AppError::new("publication-failed"))?;
+    fs::rename(&temporary, output).map_err(|_| crate::app_error!("publication-failed"))?;
     Ok(Artifact {
         path: output.to_path_buf(),
         bytes,

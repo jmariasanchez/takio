@@ -148,7 +148,7 @@ impl MetadataEditor {
                     }
                     Some(Err(error)) => {
                         this.submitted = false;
-                        this.error = Some(humanize_error(error.code()));
+                        this.error = Some(humanize_error(error.kind()));
                         for field in &this.fields {
                             field.update(cx, |field, cx| field.set_read_only(false, cx));
                         }
