@@ -590,7 +590,9 @@ fn custom_columns(database: &Connection) -> rusqlite::Result<Vec<CustomColumn>> 
             row.get::<_, String>(2)?,
         ))
     })?;
-    let safe_key = Regex::new(r"^[a-z][a-z0-9_]{0,63}$").expect("valid regex");
+    static SAFE_KEY: std::sync::LazyLock<Regex> =
+        std::sync::LazyLock::new(|| Regex::new(r"^[a-z][a-z0-9_]{0,63}$").expect("valid regex"));
+    let safe_key = &*SAFE_KEY;
     let mut seen = std::collections::HashSet::new();
     let mut columns = Vec::new();
     for row in rows {

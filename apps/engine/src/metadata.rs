@@ -8,6 +8,7 @@ use std::fs::{self, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::LazyLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -673,9 +674,15 @@ fn read_at(file: &mut fs::File, offset: u64, length: u64) -> Option<Vec<u8>> {
 }
 
 /// Page count read from raw PDF bytes, or `None` when it cannot be seen.
-// ponytail: byte heuristics instead of a PDF parser: the linearization `/N`, then plain
-// `/Type /Page` objects plus those inside bounded FlateDecode object streams. Incremental
-// updates can overcount; other filters or encryption hide pages. Use a parser if this misleads.
+///
+/// This deliberately does not reuse the strict lopdf parse in `metadata::pdf`:
+/// the folder-import "likely document" filter must still count pages for
+/// damaged or partially written PDFs (raw page objects, linearized `/N`, and
+/// Flate object streams without a valid xref), which strict lopdf loading
+/// rejects. Both readers share the 64 MiB input bound, and this one also caps
+/// total inflated bytes. Covered by `counts_pdf_pages_from_raw_bytes`.
+// ponytail: byte heuristics instead of a PDF parser. Incremental updates can
+// overcount; other filters or encryption hide pages.
 #[must_use]
 pub fn pdf_page_count(path: &Path) -> Option<usize> {
     let file = fs::File::open(path).ok()?;
@@ -684,12 +691,18 @@ pub fn pdf_page_count(path: &Path) -> Option<usize> {
     }
     let mut bytes = Vec::new();
     file.take(MAX_PDF_SCAN_BYTES).read_to_end(&mut bytes).ok()?;
-    let linearized = Regex::new(r"(?s-u)/Linearized\b.{0,300}?/N\s+(\d+)").expect("valid regex");
+    static LINEARIZED: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"(?s-u)/Linearized\b.{0,300}?/N\s+(\d+)").expect("valid regex")
+    });
+    static PAGE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"(?-u)/Type\s*/Page\b").expect("valid regex"));
+    static OBJECT_STREAM: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"(?s-u)/Type\s*/ObjStm\b.*?stream\r?\n").expect("valid regex")
+    });
+    let (linearized, page, object_stream) = (&*LINEARIZED, &*PAGE, &*OBJECT_STREAM);
     if let Some(captures) = linearized.captures(&bytes[..bytes.len().min(2048)]) {
         return std::str::from_utf8(&captures[1]).ok()?.parse().ok();
     }
-    let page = Regex::new(r"(?-u)/Type\s*/Page\b").expect("valid regex");
-    let object_stream = Regex::new(r"(?s-u)/Type\s*/ObjStm\b.*?stream\r?\n").expect("valid regex");
     let mut pages = page.find_iter(&bytes).count();
     let mut budget = MAX_PDF_INFLATED_BYTES;
     for stream in object_stream.find_iter(&bytes) {
