@@ -228,3 +228,84 @@ At this checkpoint the next item is
 still open. Read actual code and validate changes before resolving either.
 No work is scheduled beyond this session, no commits are pushed, and no personal
 book library or physical reader was modified.
+
+## Second iteration: November 4, 10:31 UTC
+
+### Blind subjective review
+
+Twenty context-isolated headless reviewers (Read/Grep/Glob only, one dimension
+each, five concurrent) scored the blind packet. They had no score history or
+targets, and the working tree stayed clean. Importing run `20261103_212808`
+moved strict from **21.9** to **79.0**. That jump is the first assessment of the
+75% subjective pool, not a code change. It also queued 115 review findings.
+
+### Remediation
+
+All 116 review work items (115 findings plus one carried detector item) were
+fixed across 33 local commits (`ed111fd..80fe065`). Each was resolved only after
+checking its commit, its regression tests and the code. `desloppify plan resolve`
+exits 0 even when it rejects a resolution (queue order, notes under 50
+characters), so every resolution was also confirmed in `state-rust.json`.
+Highlights:
+
+- Data safety: `library remove` now trashes instead of deleting, and permanent
+  deletion only purges trashed items. Committed destructive operations report
+  `cleanupPending` paths instead of failing after commit. Cover cleanup checks
+  references. Duplicate move imports preserve the source. Single-file imports
+  refuse files inside library-owned paths (`d75896d`, which was reproduced
+  against the real CLI before the fix).
+- Honest outcomes: a verified delivery with a failed manifest update is reported
+  as delivered. Batch trash/restore/purge attempt every item and report each one.
+  SSH transport failures are distinct from file collisions, and fake ssh/scp
+  protocol tests are not a physical Kindle compatibility claim.
+- Shared rules: one author policy, one facet/filter implementation, one send
+  plan with trash eligibility, and one store-level import overlap guard, used by
+  the CLI, TUI and desktop.
+- Structure: the engine is split into `apps/engine` (`takio-engine`, lib
+  `takio`), so the desktop no longer links clap, ratatui or tiny_http. Engine
+  modules are grouped by domain. `cli.rs` went from 4147 to 2840 lines.
+  Desktop modules follow the filesystem, `LibraryState` fields are private, and
+  activities are one enum. Startup, switch and recovery share one activation
+  path.
+- Types: explicit store open modes (read-only commands neither create nor
+  migrate), `ImportMode`/`Provenance`/overwrite policies instead of positional
+  bools, one `Fingerprint`, closed-set enums with unchanged wire JSON, and a typed
+  `ErrorCode` (82 variants, identical wire strings) whose native messages match
+  exhaustively with no wildcard.
+
+One detector item stays as attested wontfix: desktop `fatal()` for opt-in
+acceptance probes. GPUI's macOS quit calls Cocoa `terminate:` and never returns,
+so an error return would lose the probe's failure status. Production startup
+returns `ExitCode` (`50765e5`).
+
+### Validation on the integrated tree
+
+- `cargo fmt --all --check`, strict workspace Clippy, and
+  `cargo test --offline --workspace`: 604 passed, 3 pre-existing ignored,
+  0 failed, plus a compile-fail doctest for unknown error codes.
+- `CARGO_NET_OFFLINE=true bash scripts/check-native-macos.sh` and
+  `bash scripts/test-release-scripts.sh` pass.
+- `cargo tree --offline -p takio-desktop -e normal` contains no clap, ratatui
+  or tiny_http.
+- `scripts/bench-desktop-native.sh --interactions` on a disposable 10,000-book
+  library: median first paint 86.6 ms, first query 146.6 ms, search p95 35 ms,
+  sort p95 2.0 ms, select-all reload p95 9.0 ms, and all interactions correct.
+  Startup and interaction budgets pass.
+- The real `takio` CLI was exercised on scratch libraries for each data-safety
+  change above, including a missing-database `library list` that creates nothing.
+
+### Second blind review and score
+
+A fresh blind review of the changed code (run `20261104_101352`) raised 14 of 20
+dimensions. The largest gains were abstraction fitness 74 to 81, package
+organization 66 to 74, cross-module architecture 73.5 to 79, and API surface 70
+to 74. Convention outlier, logic clarity, naming and AI-generated debt dropped by
+1 to 2 points. The first pass scored abstraction fitness at exactly the 85
+target, which the tool flags as a gaming risk, so it was rerun blind and scored
+81.0. **Strict is 81.4**, against the 85 target, which is **not yet reached**.
+The second review queued 116 new, smaller findings, led by type safety (9),
+error consistency, mid-level elegance, API surface and design coherence (8
+each).
+
+Resume with `desloppify next`. Resolve only verified fixes in plan order, and
+check `state-rust.json` after each resolution.
