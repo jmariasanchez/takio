@@ -2663,10 +2663,10 @@ fn print_human_list(
 /// When the desktop app was switched to another library, say so: otherwise the CLI
 /// and the app would silently list different books.
 fn desktop_library_note(paths: &LibraryPaths) -> Option<String> {
-    let profile = std::env::var_os("TAKIO_DESKTOP_PROFILE_DIR");
+    let profile = std::env::var_os(takio::library::paths::TAKIO_DESKTOP_PROFILE_DIR);
     let preference = takio::library::paths::desktop_preference_location(
         &LibraryPaths::resolve(None, None).ok()?.root,
-        std::env::var_os("TAKIO_DATA_DIR").is_some(),
+        std::env::var_os(takio::library::paths::TAKIO_DATA_DIR).is_some(),
         profile.as_deref().map(Path::new),
     )?;
     let remembered = std::fs::read_to_string(preference).ok()?;

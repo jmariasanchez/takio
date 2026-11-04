@@ -20,7 +20,7 @@ fn unresolved_working_directory(stderr: Stdio, benchmark: bool) -> std::io::Resu
         ])
         .arg(&working)
         .arg(env!("CARGO_BIN_EXE_takio-desktop"))
-        .env("TAKIO_DATA_DIR", "relative-library")
+        .env(takio::library::paths::TAKIO_DATA_DIR, "relative-library")
         .env_remove("TAKIO_DESKTOP_BENCH")
         .env_remove("TAKIO_SNAPSHOT_OUTPUT")
         .stdout(Stdio::piped())

@@ -43,7 +43,10 @@ fn check_relative_backend(explicit: Option<&str>, path_entry: Option<&str>) {
         let mut command = cargo_bin_cmd!("takio");
         command
             .current_dir(&cwd)
-            .env("TAKIO_DATA_DIR", temp.path().join("isolated-library"))
+            .env(
+                takio::library::paths::TAKIO_DATA_DIR,
+                temp.path().join("isolated-library"),
+            )
             .env("PATH", &search)
             .env_remove("TAKIO_FETCH_EBOOK_METADATA");
         if let Some(explicit) = explicit {
@@ -114,7 +117,10 @@ fn invalid_explicit_override_refuses_valid_path_backend() {
         .unwrap();
         let result = cargo_bin_cmd!("takio")
             .current_dir(temp.path())
-            .env("TAKIO_DATA_DIR", temp.path().join("isolated-library"))
+            .env(
+                takio::library::paths::TAKIO_DATA_DIR,
+                temp.path().join("isolated-library"),
+            )
             .env("PATH", temp.path())
             .env("TAKIO_FETCH_EBOOK_METADATA", invalid)
             .args(["metadata", "fetch", "--title", "Fixture"])
@@ -148,7 +154,10 @@ printf '<package><metadata><title>Fixture</title></metadata></package>'
     let run = || {
         cargo_bin_cmd!("takio")
             .env("TAKIO_FETCH_EBOOK_METADATA", &backend)
-            .env("TAKIO_DATA_DIR", temp.path().join("isolated-library"))
+            .env(
+                takio::library::paths::TAKIO_DATA_DIR,
+                temp.path().join("isolated-library"),
+            )
             .args(["metadata", "fetch", "--title", "Fixture", "--cover-output"])
             .arg(&output)
             .output()

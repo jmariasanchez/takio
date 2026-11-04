@@ -4,6 +4,9 @@ use directories::ProjectDirs;
 
 use crate::error::{AppError, AppResult};
 
+pub const TAKIO_DATA_DIR: &str = "TAKIO_DATA_DIR";
+pub const TAKIO_DESKTOP_PROFILE_DIR: &str = "TAKIO_DESKTOP_PROFILE_DIR";
+
 #[derive(Clone, Debug)]
 pub struct LibraryPaths {
     pub root: PathBuf,

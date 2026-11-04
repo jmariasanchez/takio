@@ -1,6 +1,6 @@
 //! Opt-in startup and interaction probes using the real workspace and engine.
 use crate::{
-    engine::{self, Engine},
+    engine::Engine,
     state::{LibraryState, SortColumn},
     views::workspace::Workspace,
 };
@@ -305,9 +305,9 @@ impl Render for BenchWindow {
     }
 }
 
-pub fn run(started: Instant) {
-    let data_override = std::env::var_os("TAKIO_DATA_DIR").map(std::path::PathBuf::from);
-    let paths = engine::resolve_paths(data_override.as_deref())
+pub fn run(started: Instant, launch: &crate::launch::LaunchEnvironment) {
+    let paths = launch
+        .paths()
         .unwrap_or_else(|error| crate::fatal(error.code()));
     let engine =
         Engine::create_or_migrate(paths).unwrap_or_else(|error| crate::fatal(error.code()));

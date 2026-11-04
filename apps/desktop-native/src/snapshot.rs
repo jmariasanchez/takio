@@ -8,19 +8,19 @@ use std::time::Duration;
 
 use gpui::{AppContext, VisualTestAppContext, px, size};
 
-use crate::engine::{self, Engine};
+use crate::engine::Engine;
 use crate::state::LibraryState;
 use crate::views::workspace::Workspace;
 
-pub fn run() {
+pub fn run(launch: &crate::launch::LaunchEnvironment) {
     let output = PathBuf::from(
         std::env::var_os("TAKIO_SNAPSHOT_OUTPUT")
             .unwrap_or_else(|| crate::fatal("set TAKIO_SNAPSHOT_OUTPUT")),
     );
     let volumes = std::env::var_os("TAKIO_SNAPSHOT_VOLUMES").map(PathBuf::from);
     let select = std::env::var("TAKIO_SNAPSHOT_SELECT").ok();
-    let data_override = std::env::var_os("TAKIO_DATA_DIR").map(std::path::PathBuf::from);
-    let paths = engine::resolve_paths(data_override.as_deref())
+    let paths = launch
+        .paths()
         .unwrap_or_else(|error| crate::fatal(error.code()));
     let engine =
         Engine::create_or_migrate(paths).unwrap_or_else(|error| crate::fatal(error.code()));

@@ -4135,7 +4135,7 @@ fn human_list_says_when_the_desktop_app_uses_another_library() {
     fs::create_dir_all(&profile).unwrap();
     let list = || {
         let output = cargo_bin_cmd!("takio")
-            .env("TAKIO_DESKTOP_PROFILE_DIR", &profile)
+            .env(takio::library::paths::TAKIO_DESKTOP_PROFILE_DIR, &profile)
             .args(["library", "list", "--human", "--db"])
             .arg(&database)
             .args(["--volumes-root"])

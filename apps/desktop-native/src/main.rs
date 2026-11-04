@@ -7,6 +7,7 @@ mod bench;
 mod commands;
 mod covers;
 mod engine;
+mod launch;
 mod library_location;
 mod preferences;
 mod preparation;
@@ -69,17 +70,17 @@ actions!(
 
 fn main() -> ExitCode {
     let started = std::time::Instant::now();
+    let launch = launch::LaunchEnvironment::capture();
     if std::env::var_os("TAKIO_DESKTOP_BENCH").is_some() {
-        bench::run(started);
+        bench::run(started, &launch);
         return ExitCode::SUCCESS;
     }
     #[cfg(feature = "snapshot")]
     if std::env::var_os("TAKIO_SNAPSHOT_OUTPUT").is_some() {
-        snapshot::run();
+        snapshot::run(&launch);
         return ExitCode::SUCCESS;
     }
-    let data_override = std::env::var_os("TAKIO_DATA_DIR").map(std::path::PathBuf::from);
-    let paths = match engine::resolve_paths(data_override.as_deref()) {
+    let paths = match launch.paths() {
         Ok(paths) => paths,
         Err(error) => {
             let _ = writeln!(
@@ -90,12 +91,7 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let profile = std::env::var_os("TAKIO_DESKTOP_PROFILE_DIR").map(std::path::PathBuf::from);
-    let preference_path = takio::library::paths::desktop_preference_location(
-        &paths.root,
-        data_override.is_some(),
-        profile.as_deref(),
-    );
+    let preference_path = launch.preference_path(&paths.root);
     application().run(move |cx: &mut App| {
         theme::initialize(cx);
         cx.bind_keys(commands::keybindings());
