@@ -309,3 +309,44 @@ each).
 
 Resume with `desloppify next`. Resolve only verified fixes in plan order, and
 check `state-rust.json` after each resolution.
+
+## Third iteration: November 4, 15:18 UTC
+
+All 116 second-review findings were fixed across lanes for paths and typed
+codes, engine contracts, CLI adapters, and desktop. The work landed in
+`a445b0f..5e8e949`, including the coordinator commits `8a8bc7e` (atomic joint
+slice), `7cfd592`, `777d4a8` and `7d0c7a7`, plus per-lane reports under
+`docs/reports/2026-11-04-round3-*.md`. Every resolution was checked against the
+code and confirmed in `state-rust.json`. That makes 237 review findings fixed
+across both rounds.
+
+Notable behavior fixes, each exercised on the real binaries or with
+red-then-green tests:
+
+- The read-only HTTP server returns 404 for trashed book and format routes and
+  serves them again after restore (checked against a real loopback server).
+- Destructive trash/purge requests reject unknown fields. A purge with a
+  misspelled field is refused and the managed file is kept.
+- Structured authors are authoritative. A scalar-only author patch writes one
+  structured author, and migration backfills scalar-only rows idempotently
+  inside its transaction, after the verified backup (v4 fixture).
+- Startup with an unresolvable saved root falls back safely.
+- The `metadata` module is a leaf layer below the library store.
+
+The PDF page heuristic is deliberately kept separate from strict lopdf loading,
+because the import filter must count damaged or partial PDFs. The reason is
+documented in code.
+
+Validation on the integrated tree: fmt, strict workspace Clippy, and 638 tests
+passed (3 pre-existing ignored). `scripts/check-native-macos.sh` and the release
+self-tests pass. The 10,000-book native benchmark passes every budget: first
+paint 104.8 ms, first query 173.4 ms, search p95 29–35 ms, sort p95 4.0 ms, and
+select-all reload p95 18.5 ms, with all interactions correct.
+
+A third blind review (run `20261104_150333`) raised 14 of 20 dimensions. API
+surface went from 74 to 79, mid-level elegance from 77 to 84, contract coherence
+from 85.5 to 90, and package organization from 74 to 80. Design coherence (77
+to 74), authorization consistency (86 to 83), abstraction fitness (81 to 80) and
+incomplete migration (77 to 76) dipped. No dimension landed exactly on the
+target. **Strict is 83.8**, still below the 85 target. The review queued 83 new
+findings.
