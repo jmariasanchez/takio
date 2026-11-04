@@ -15,7 +15,7 @@ use std::time::Duration;
 use gpui::{Context, Entity, Task};
 use takio::delivery::destinations::Destination;
 use takio::error::{AppError, AppResult};
-use takio::import::scan::ImportOutcome;
+use takio::import::scan::{ImportOutcome, SkipReason};
 use takio::library::model::{LibraryItem, LibraryPatch};
 
 use crate::engine::{Engine, Request, SendPreview, SendPreviewEntry, SendReport};
@@ -633,13 +633,13 @@ impl LibraryState {
                 Ok(scan) => {
                     let counts = scan.counts;
                     let skipped_for = |wanted| scan.outcomes.iter().filter(|outcome| matches!(outcome, ImportOutcome::Skipped { reason, .. } if *reason == wanted)).count();
-                    let documents = skipped_for("likely-document");
+                    let documents = skipped_for(SkipReason::LikelyDocument);
                     let mut skipped = match documents {
                         0 => counts.skipped.to_string(),
                         1 => format!("{} (1 short PDF looked like a document)", counts.skipped),
                         n => format!("{} ({n} short PDFs looked like documents)", counts.skipped),
                     };
-                    let unsupported = skipped_for("unsupported-format");
+                    let unsupported = skipped_for(SkipReason::UnsupportedFormat);
                     if unsupported > 0 {
                         skipped.push_str(&format!(
                             " ({unsupported} in a format Takio cannot store, such as Kindle store books)"

@@ -1,4 +1,54 @@
 use serde_json::json;
+
+#[test]
+fn per_item_error_codes_keep_exact_wire_shapes() {
+    use takio::error::ErrorCode;
+    use takio::import::calibre::{CalibreImportReport, CalibreImportWarning};
+    use takio::import::scan::{ImportCounts, ImportOutcome};
+    use takio::library::export::ExportStatus;
+    use takio::metadata::reconcile::ReconcileOutcome;
+    for &code in ErrorCode::ALL {
+        assert_eq!(
+            serde_json::to_value(ExportStatus::Failed { code }).unwrap(),
+            json!({"status":"failed", "code":code.as_str()})
+        );
+        assert_eq!(
+            serde_json::to_value(ReconcileOutcome::Failed {
+                item_id: "book-1".into(),
+                code
+            })
+            .unwrap(),
+            json!({"status":"failed", "itemId":"book-1", "code":code.as_str()})
+        );
+        let outcomes = vec![ImportOutcome::Failed {
+            source_path: "book.epub".into(),
+            code,
+        }];
+        let report = CalibreImportReport {
+            counts: ImportCounts::from_outcomes(&outcomes),
+            outcomes,
+            warnings: vec![CalibreImportWarning::CustomColumn {
+                key: "custom".into(),
+                code,
+            }],
+        };
+        assert_eq!(
+            serde_json::to_value(report).unwrap(),
+            json!({
+                "outcomes":[{"status":"failed", "sourcePath":"book.epub", "code":code.as_str()}],
+                "warnings":[{"kind":"custom-column", "key":"custom", "code":code.as_str()}],
+                "counts":{"total":1,"imported":0,"skipped":0,"duplicates":0,"failed":1}
+            })
+        );
+    }
+    assert_eq!(
+        serde_json::to_value(ExportStatus::Skipped {
+            reason: ErrorCode::DestinationExists
+        })
+        .unwrap(),
+        json!({"status":"skipped", "reason":"destination-exists"})
+    );
+}
 use takio::conversion::ConversionProfile;
 use takio::delivery::destinations::{DestinationFeature, InventoryStatus, OverwritePolicy};
 use takio::delivery::reader_shelf::{ShelfEntry, ShelfMatchSource};

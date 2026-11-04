@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::conversion::{Artifact, ConversionProfile, convert};
-use crate::error::{AppError, AppResult};
+use crate::error::{AppError, AppResult, ErrorCode};
 use crate::format::{FormatId, detect_format};
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -33,7 +33,7 @@ impl JobStatus {
 }
 
 impl std::str::FromStr for JobStatus {
-    type Err = &'static str;
+    type Err = AppError;
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value {
             "queued" => Ok(Self::Queued),
@@ -41,7 +41,7 @@ impl std::str::FromStr for JobStatus {
             "completed" => Ok(Self::Completed),
             "failed" => Ok(Self::Failed),
             "canceled" => Ok(Self::Canceled),
-            _ => Err("invalid-stored-data"),
+            _ => Err(crate::app_error!("invalid-stored-data")),
         }
     }
 }
@@ -61,7 +61,7 @@ pub struct JobAttachment {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub finished_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub error_code: Option<String>,
+    pub error_code: Option<ErrorCode>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
@@ -114,7 +114,7 @@ pub struct ConversionJob {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub owner_pid: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub error_code: Option<String>,
+    pub error_code: Option<ErrorCode>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub artifact: Option<JobArtifact>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -146,7 +146,7 @@ impl JobStore {
         } else if version != 4 {
             return Err(crate::app_error!("incompatible-schema"));
         }
-        connection.execute("UPDATE jobs SET status='failed',finished_at=?1,error_code='conversion-interrupted',owner_pid=NULL WHERE status='running'",[Utc::now().to_rfc3339()])?;
+        connection.execute("UPDATE jobs SET status='failed',finished_at=?1,error_code=?2,owner_pid=NULL WHERE status='running'",params![Utc::now().to_rfc3339(), ErrorCode::ConversionInterrupted.as_str()])?;
         Ok(Self { connection })
     }
 
@@ -258,16 +258,16 @@ impl JobStore {
     pub fn finish_attachment(
         &self,
         id: &str,
-        error_code: Option<&str>,
+        error_code: Option<ErrorCode>,
     ) -> AppResult<ConversionJob> {
         let status = if error_code.is_some() {
-            "failed"
+            JobAttachmentStatus::Failed
         } else {
-            "attached"
+            JobAttachmentStatus::Attached
         };
         let changed = self.connection.execute(
             "UPDATE jobs SET attachment_status=?2,attachment_finished_at=?3,attachment_error_code=?4,attachment_owner_pid=NULL WHERE id=?1 AND attachment_status='pending'",
-            params![id, status, Utc::now().to_rfc3339(), error_code],
+            params![id, status.as_str(), Utc::now().to_rfc3339(), error_code.map(ErrorCode::as_str)],
         )?;
         if changed == 0 {
             return Err(crate::app_error!(if self.get(id)?.is_some() {
@@ -310,7 +310,7 @@ impl JobStore {
         );
         match result {
             Ok(artifact) => self.complete(&job.id, &artifact)?,
-            Err(error) => self.fail(&job.id, error.code())?,
+            Err(error) => self.fail(&job.id, error.kind())?,
         }
         self.get(&job.id)
     }
@@ -338,8 +338,8 @@ impl JobStore {
         params![id,Utc::now().to_rfc3339(),i64::try_from(artifact.bytes).map_err(|_|crate::app_error!("artifact-invalid"))?,artifact.sha256])?;
         Ok(())
     }
-    fn fail(&self, id: &str, code: &str) -> AppResult<()> {
-        self.connection.execute("UPDATE jobs SET status='failed',finished_at=?2,owner_pid=NULL,error_code=?3 WHERE id=?1 AND status='running'",params![id,Utc::now().to_rfc3339(),code])?;
+    fn fail(&self, id: &str, code: ErrorCode) -> AppResult<()> {
+        self.connection.execute("UPDATE jobs SET status='failed',finished_at=?2,owner_pid=NULL,error_code=?3 WHERE id=?1 AND status='running'",params![id,Utc::now().to_rfc3339(),code.as_str()])?;
         Ok(())
     }
 }
@@ -385,6 +385,13 @@ fn read_job(row: &rusqlite::Row<'_>) -> rusqlite::Result<JobRow> {
         row.get(16)?,
     ))
 }
+fn parse_error_code(wire: Option<String>) -> AppResult<Option<ErrorCode>> {
+    wire.map(|wire| {
+        ErrorCode::from_wire(&wire).ok_or_else(|| crate::app_error!("invalid-stored-data"))
+    })
+    .transpose()
+}
+
 fn parse_job(row: JobRow) -> AppResult<ConversionJob> {
     let status = row
         .1
@@ -407,13 +414,14 @@ fn parse_job(row: JobRow) -> AppResult<ConversionJob> {
         (None, None) => None,
         _ => return Err(crate::app_error!("invalid-stored-data")),
     };
+    let attachment_error = parse_error_code(row.16)?;
     let attachment = row
         .14
         .map(|status| -> AppResult<_> {
             Ok(JobAttachment {
                 status: status.parse()?,
                 finished_at: row.15,
-                error_code: row.16,
+                error_code: attachment_error,
             })
         })
         .transpose()?;
@@ -433,7 +441,7 @@ fn parse_job(row: JobRow) -> AppResult<ConversionJob> {
             .map(u32::try_from)
             .transpose()
             .map_err(|_| crate::app_error!("invalid-stored-data"))?,
-        error_code: row.11,
+        error_code: parse_error_code(row.11)?,
         artifact,
         attachment,
     })
@@ -452,6 +460,76 @@ fn create_schema(connection: &Connection) -> AppResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn persisted_error_codes_round_trip_and_unknown_codes_are_rejected() {
+        let temp = tempfile::tempdir().unwrap();
+        let input = temp.path().join("book.epub");
+        std::fs::write(&input, b"book").unwrap();
+        let database = temp.path().join("jobs.sqlite");
+        let store = JobStore::open(&database).unwrap();
+        let job = store
+            .enqueue(
+                &input,
+                FormatId::Pdf,
+                &temp.path().join("book.pdf"),
+                Some("book-1"),
+            )
+            .unwrap();
+        for &code in ErrorCode::ALL {
+            store
+                .connection
+                .execute(
+                    "UPDATE jobs SET status='running',attachment_status='pending'",
+                    [],
+                )
+                .unwrap();
+            store.fail(&job.id, code).unwrap();
+            let job = store.finish_attachment(&job.id, Some(code)).unwrap();
+            assert_eq!(job.error_code, Some(code));
+            assert_eq!(job.attachment.as_ref().unwrap().error_code, Some(code));
+            let wire = serde_json::to_value(job).unwrap();
+            assert_eq!(wire["errorCode"], code.as_str());
+            assert_eq!(wire["attachment"]["errorCode"], code.as_str());
+            assert_eq!(wire["attachment"]["status"], "failed");
+        }
+        for column in ["error_code", "attachment_error_code"] {
+            store
+                .connection
+                .execute(
+                    "UPDATE jobs SET error_code=NULL,attachment_error_code=NULL",
+                    [],
+                )
+                .unwrap();
+            store
+                .connection
+                .execute(&format!("UPDATE jobs SET {column}='unknown-code'"), [])
+                .unwrap();
+            assert_eq!(
+                store.get(&job.id).unwrap_err().kind(),
+                ErrorCode::InvalidStoredData
+            );
+            assert_eq!(
+                store.list(None).unwrap_err().kind(),
+                ErrorCode::InvalidStoredData
+            );
+        }
+        store
+            .connection
+            .execute(
+                "UPDATE jobs SET status='running',error_code=NULL,attachment_error_code=NULL",
+                [],
+            )
+            .unwrap();
+        drop(store);
+        let reopened = JobStore::open(&database).unwrap();
+        let recovered = reopened.get(&job.id).unwrap().unwrap();
+        assert_eq!(recovered.error_code, Some(ErrorCode::ConversionInterrupted));
+        assert_eq!(
+            serde_json::to_value(recovered).unwrap()["errorCode"],
+            "conversion-interrupted"
+        );
+    }
     #[test]
     fn corrupt_attachment_status_and_owner_pid_are_rejected() {
         let temp = tempfile::tempdir().unwrap();

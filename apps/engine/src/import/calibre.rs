@@ -5,9 +5,12 @@ use std::path::{Component, Path, PathBuf};
 use regex::Regex;
 use rusqlite::{Connection, OpenFlags};
 use serde::Serialize;
-use serde_json::{Value, json};
+use serde_json::Value;
 
-use crate::error::AppResult;
+use super::scan::{
+    DuplicateReason, ExistingImport, ImportCounts, ImportOutcome, SkipReason, io_code,
+};
+use crate::error::{AppResult, ErrorCode};
 use crate::format::detect_format;
 use crate::library::model::{BookAuthor, LibraryPatch, Patch};
 use crate::library::paths::LibraryPaths;
@@ -18,8 +21,15 @@ const MAX_CUSTOM_VALUE_BYTES: usize = 16 * 1024;
 
 #[derive(Debug, Serialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
-enum CalibreImportWarning {
-    CustomColumn { key: String, code: &'static str },
+pub enum CalibreImportWarning {
+    CustomColumn { key: String, code: ErrorCode },
+}
+
+#[derive(Debug, Serialize)]
+pub struct CalibreImportReport {
+    pub outcomes: Vec<ImportOutcome>,
+    pub warnings: Vec<CalibreImportWarning>,
+    pub counts: ImportCounts,
 }
 
 fn import_column_definitions(
@@ -38,7 +48,7 @@ fn import_column_definitions(
         {
             warnings.push(CalibreImportWarning::CustomColumn {
                 key,
-                code: error.code(),
+                code: error.kind(),
             });
         }
     }
@@ -68,7 +78,10 @@ struct CalibreBook {
     cover_path: Option<PathBuf>,
 }
 
-pub fn import_calibre_library(paths: LibraryPaths, library_root: &Path) -> AppResult<Value> {
+pub fn import_calibre_library(
+    paths: LibraryPaths,
+    library_root: &Path,
+) -> AppResult<CalibreImportReport> {
     let root = validate_root(library_root)?;
     let database_path = root
         .join("metadata.db")
@@ -94,37 +107,42 @@ pub fn import_calibre_library(paths: LibraryPaths, library_root: &Path) -> AppRe
         let primary = &book.formats[0];
         match fs::symlink_metadata(&primary.path) {
             Ok(metadata) if metadata.file_type().is_symlink() => {
-                outcomes.push(
-                    json!({"status":"skipped","sourcePath":primary.path,"reason":"symbolic-link"}),
-                );
+                outcomes.push(ImportOutcome::Skipped {
+                    source_path: primary.path.clone(),
+                    reason: SkipReason::SymbolicLink,
+                });
                 continue;
             }
             Ok(metadata) if !metadata.is_file() => {
-                outcomes.push(json!({"status":"skipped","sourcePath":primary.path,"reason":"unsupported-file-type"}));
+                outcomes.push(ImportOutcome::Skipped {
+                    source_path: primary.path.clone(),
+                    reason: SkipReason::UnsupportedFileType,
+                });
                 continue;
             }
             Ok(_) => {}
             Err(error) => {
-                outcomes.push(json!({
-                    "status":"failed",
-                    "sourcePath":primary.path,
-                    "code":if error.kind()==std::io::ErrorKind::NotFound{"not-found"}else{"unreadable"}
-                }));
+                outcomes.push(ImportOutcome::Failed {
+                    source_path: primary.path.clone(),
+                    code: io_code(&error),
+                });
                 continue;
             }
         }
         if let Some((existing, existing_format)) = store.find_managed_duplicate(&primary.path)? {
             let reason = if original_ids.contains(&existing.id) {
-                "existing-library"
+                DuplicateReason::ExistingLibrary
             } else {
-                "earlier-in-request"
+                DuplicateReason::EarlierInRequest
             };
-            outcomes.push(json!({
-                "status":"duplicate",
-                "sourcePath":primary.path,
-                "existing":{"itemId":existing.id,"format":existing_format},
-                "reason":reason
-            }));
+            outcomes.push(ImportOutcome::Duplicate {
+                source_path: primary.path.clone(),
+                existing: ExistingImport {
+                    item_id: existing.id,
+                    format: existing_format,
+                },
+                reason,
+            });
             continue;
         }
 
@@ -132,11 +150,10 @@ pub fn import_calibre_library(paths: LibraryPaths, library_root: &Path) -> AppRe
             match store.import(&primary.path, None, crate::library::model::ImportMode::Copy) {
                 Ok(item) => item,
                 Err(error) => {
-                    outcomes.push(json!({
-                        "status":"failed",
-                        "sourcePath":primary.path,
-                        "code":import_failure_code(error.code())
-                    }));
+                    outcomes.push(ImportOutcome::Failed {
+                        source_path: primary.path.clone(),
+                        code: error.kind(),
+                    });
                     continue;
                 }
             };
@@ -157,26 +174,18 @@ pub fn import_calibre_library(paths: LibraryPaths, library_root: &Path) -> AppRe
         {
             item = covered;
         }
-        outcomes.push(json!({"status":"imported","sourcePath":primary.path,"item":item}));
+        outcomes.push(ImportOutcome::Imported {
+            source_path: primary.path.clone(),
+            item: Box::new(item),
+        });
     }
 
-    let count = |status: &str| {
-        outcomes
-            .iter()
-            .filter(|outcome| outcome["status"] == status)
-            .count()
-    };
-    Ok(json!({
-        "outcomes":outcomes,
-        "warnings":warnings,
-        "counts":{
-            "total":outcomes.len(),
-            "imported":count("imported"),
-            "skipped":count("skipped"),
-            "duplicates":count("duplicate"),
-            "failed":count("failed")
-        }
-    }))
+    let counts = ImportCounts::from_outcomes(&outcomes);
+    Ok(CalibreImportReport {
+        outcomes,
+        warnings,
+        counts,
+    })
 }
 
 fn validate_root(root: &Path) -> AppResult<PathBuf> {
@@ -752,17 +761,6 @@ fn maybe_json(value: &str) -> String {
             other => other.to_string(),
         },
     )
-}
-
-fn import_failure_code(code: &str) -> &'static str {
-    match code {
-        "not-found" => "not-found",
-        "source-changed" => "source-changed",
-        "cross-device-move" => "cross-device-move",
-        "storage-unavailable" => "storage-unavailable",
-        "invalid-title" => "invalid-title",
-        _ => "unreadable",
-    }
 }
 
 #[cfg(test)]

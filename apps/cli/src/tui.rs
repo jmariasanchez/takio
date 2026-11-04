@@ -101,7 +101,7 @@ struct CandidateReview {
     loading: bool,
 }
 
-type CandidateLoadResult = (u64, String, Result<Vec<MetadataCandidate>, String>);
+type CandidateLoadResult = (u64, String, AppResult<Vec<MetadataCandidate>>);
 
 struct App {
     paths: LibraryPaths,
@@ -396,8 +396,7 @@ impl App {
         let canceled = Arc::new(CandidateLoaderCancel::new());
         let worker_canceled = Arc::clone(&canceled);
         thread::spawn(move || {
-            let result = load(&item, include_online, &worker_canceled.requested)
-                .map_err(|error| error.code().to_owned());
+            let result = load(&item, include_online, &worker_canceled.requested);
             let mut pending = Some((generation, item.id, result));
             worker_canceled.send_unless_canceled(|| {
                 if let Some(message) = pending.take()
@@ -441,7 +440,7 @@ impl App {
             Err(TryRecvError::Disconnected) => Some((
                 self.candidate_generation,
                 String::new(),
-                Err("metadata-unavailable".to_owned()),
+                Err(takio::app_error!("metadata-unavailable")),
             )),
         };
         let Some((generation, item_id, result)) = result else {

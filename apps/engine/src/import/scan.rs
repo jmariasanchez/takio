@@ -4,7 +4,7 @@ use std::path::{Component, Path, PathBuf};
 
 use serde::Serialize;
 
-use crate::error::AppResult;
+use crate::error::{AppResult, ErrorCode};
 use crate::format::{FormatId, detect_format};
 use crate::library::model::{ImportMode, LibraryItem};
 use crate::library::paths::LibraryPaths;
@@ -89,6 +89,33 @@ fn import_paths_overlap(source: &Path, protected: &Path) -> bool {
             .any(|ancestor| same_file::is_same_file(ancestor, source).unwrap_or(false))
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum DuplicateReason {
+    ExistingLibrary,
+    EarlierInRequest,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SkipReason {
+    UnsupportedFormat,
+    LikelyDocument,
+    SymbolicLink,
+    UnsupportedFileType,
+}
+
+impl std::fmt::Display for SkipReason {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::UnsupportedFormat => "unsupported-format",
+            Self::LikelyDocument => "likely-document",
+            Self::SymbolicLink => "symbolic-link",
+            Self::UnsupportedFileType => "unsupported-file-type",
+        })
+    }
+}
+
 #[derive(Debug, Serialize)]
 #[serde(tag = "status", rename_all = "kebab-case")]
 pub enum ImportOutcome {
@@ -101,25 +128,25 @@ pub enum ImportOutcome {
         #[serde(rename = "sourcePath")]
         source_path: PathBuf,
         existing: ExistingImport,
-        reason: &'static str,
+        reason: DuplicateReason,
     },
     Skipped {
         #[serde(rename = "sourcePath")]
         source_path: PathBuf,
-        reason: &'static str,
+        reason: SkipReason,
     },
     Failed {
         #[serde(rename = "sourcePath")]
         source_path: PathBuf,
-        code: &'static str,
+        code: ErrorCode,
     },
 }
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExistingImport {
-    item_id: String,
-    format: FormatId,
+    pub(crate) item_id: String,
+    pub(crate) format: FormatId,
 }
 
 #[derive(Clone, Copy, Debug, Default, Serialize)]
@@ -132,6 +159,20 @@ pub struct ImportCounts {
 }
 
 impl ImportCounts {
+    pub fn from_outcomes(outcomes: &[ImportOutcome]) -> Self {
+        let mut counts = Self::default();
+        for outcome in outcomes {
+            counts.total += 1;
+            match outcome {
+                ImportOutcome::Imported { .. } => counts.imported += 1,
+                ImportOutcome::Duplicate { .. } => counts.duplicates += 1,
+                ImportOutcome::Skipped { .. } => counts.skipped += 1,
+                ImportOutcome::Failed { .. } => counts.failed += 1,
+            }
+        }
+        counts
+    }
+
     pub fn add(&mut self, other: Self) {
         self.total += other.total;
         self.imported += other.imported;
@@ -195,7 +236,7 @@ where
                 if !observe && detect_format(&canonical).is_none() {
                     outcomes.push(ImportOutcome::Skipped {
                         source_path: source,
-                        reason: "unsupported-format",
+                        reason: SkipReason::UnsupportedFormat,
                     });
                     continue;
                 }
@@ -219,9 +260,9 @@ where
                         store.find_managed_duplicate(&canonical)?
                     {
                         let reason = if encountered.contains(&fingerprint) {
-                            "earlier-in-request"
+                            DuplicateReason::EarlierInRequest
                         } else {
-                            "existing-library"
+                            DuplicateReason::ExistingLibrary
                         };
                         encountered.insert(fingerprint.clone());
                         (
@@ -243,7 +284,7 @@ where
                         (
                             ImportOutcome::Skipped {
                                 source_path: source,
-                                reason: "likely-document",
+                                reason: SkipReason::LikelyDocument,
                             },
                             Some(ImportWatchOutcome::Unsupported),
                         )
@@ -262,7 +303,7 @@ where
                             Err(error) => (
                                 ImportOutcome::Failed {
                                     source_path: source,
-                                    code: import_failure_code(error.code()),
+                                    code: error.kind(),
                                 },
                                 None,
                             ),
@@ -272,7 +313,7 @@ where
                     (
                         ImportOutcome::Skipped {
                             source_path: source,
-                            reason: "unsupported-format",
+                            reason: SkipReason::UnsupportedFormat,
                         },
                         Some(ImportWatchOutcome::Unsupported),
                     )
@@ -289,16 +330,7 @@ where
         }
     }
 
-    let mut counts = ImportCounts::default();
-    for outcome in &outcomes {
-        counts.total += 1;
-        match outcome {
-            ImportOutcome::Imported { .. } => counts.imported += 1,
-            ImportOutcome::Duplicate { .. } => counts.duplicates += 1,
-            ImportOutcome::Skipped { .. } => counts.skipped += 1,
-            ImportOutcome::Failed { .. } => counts.failed += 1,
-        }
-    }
+    let counts = ImportCounts::from_outcomes(&outcomes);
     Ok(ImportScan {
         outcomes,
         counts,
@@ -350,7 +382,7 @@ where
                         Ok(entry) if entry.file_type().is_symlink() => {
                             entries.push(ScanEntry::Outcome(Box::new(ImportOutcome::Skipped {
                                 source_path: entry.into_path(),
-                                reason: "symbolic-link",
+                                reason: SkipReason::SymbolicLink,
                             })));
                         }
                         Ok(entry) if entry.file_type().is_file() => {
@@ -359,7 +391,7 @@ where
                         Ok(entry) => {
                             entries.push(ScanEntry::Outcome(Box::new(ImportOutcome::Skipped {
                                 source_path: entry.into_path(),
-                                reason: "unsupported-file-type",
+                                reason: SkipReason::UnsupportedFileType,
                             })));
                         }
                         Err(error) => {
@@ -367,7 +399,7 @@ where
                                 source_path: error
                                     .path()
                                     .map_or_else(|| root.clone(), Path::to_path_buf),
-                                code: "unreadable",
+                                code: ErrorCode::Unreadable,
                             })));
                         }
                     }
@@ -376,7 +408,7 @@ where
             Ok(metadata) if metadata.file_type().is_symlink() => {
                 entries.push(ScanEntry::Outcome(Box::new(ImportOutcome::Skipped {
                     source_path: root.clone(),
-                    reason: "symbolic-link",
+                    reason: SkipReason::SymbolicLink,
                 })));
             }
             Ok(metadata) if metadata.is_file() => {
@@ -384,7 +416,7 @@ where
             }
             Ok(_) => entries.push(ScanEntry::Outcome(Box::new(ImportOutcome::Skipped {
                 source_path: root.clone(),
-                reason: "unsupported-file-type",
+                reason: SkipReason::UnsupportedFileType,
             }))),
             Err(error) => entries.push(ScanEntry::Outcome(Box::new(ImportOutcome::Failed {
                 source_path: root.clone(),
@@ -395,29 +427,21 @@ where
     (entries, false)
 }
 
-fn fingerprint(path: &Path) -> Result<crate::fingerprint::Fingerprint, &'static str> {
+fn fingerprint(path: &Path) -> Result<crate::fingerprint::Fingerprint, ErrorCode> {
     let before = fs::metadata(path).map_err(|error| io_code(&error))?;
     let fingerprint = crate::fingerprint::hash_file(path).map_err(|error| io_code(&error))?;
     let after = fs::metadata(path).map_err(|error| io_code(&error))?;
     if before.len() != after.len() || before.modified().ok() != after.modified().ok() {
-        return Err("source-changed");
+        return Err(ErrorCode::SourceChanged);
     }
     Ok(fingerprint)
 }
 
-fn io_code(error: &std::io::Error) -> &'static str {
+pub(super) fn io_code(error: &std::io::Error) -> ErrorCode {
     if error.kind() == std::io::ErrorKind::NotFound {
-        "not-found"
+        ErrorCode::NotFound
     } else {
-        "unreadable"
-    }
-}
-
-fn import_failure_code(code: &str) -> &'static str {
-    match code {
-        "storage-unavailable" => "storage-unavailable",
-        "source-changed" => "source-changed",
-        _ => "unreadable",
+        ErrorCode::Unreadable
     }
 }
 
@@ -425,6 +449,105 @@ fn import_failure_code(code: &str) -> &'static str {
 mod tests {
     use super::*;
     use crate::library::paths::LibraryPaths;
+
+    #[test]
+    fn import_outcome_wire_codes_reasons_and_counts_are_stable() {
+        use serde_json::json;
+        let source = PathBuf::from("book.epub");
+        let mut outcomes = Vec::new();
+        for (reason, wire) in [
+            (SkipReason::UnsupportedFormat, "unsupported-format"),
+            (SkipReason::LikelyDocument, "likely-document"),
+            (SkipReason::SymbolicLink, "symbolic-link"),
+            (SkipReason::UnsupportedFileType, "unsupported-file-type"),
+        ] {
+            let outcome = ImportOutcome::Skipped {
+                source_path: source.clone(),
+                reason,
+            };
+            assert_eq!(
+                serde_json::to_value(&outcome).unwrap(),
+                json!({
+                    "status":"skipped", "sourcePath":"book.epub", "reason":wire
+                })
+            );
+            assert_eq!(reason.to_string(), wire);
+            outcomes.push(outcome);
+        }
+        for (reason, wire) in [
+            (DuplicateReason::ExistingLibrary, "existing-library"),
+            (DuplicateReason::EarlierInRequest, "earlier-in-request"),
+        ] {
+            let outcome = ImportOutcome::Duplicate {
+                source_path: source.clone(),
+                existing: ExistingImport {
+                    item_id: "book-1".into(),
+                    format: FormatId::Epub,
+                },
+                reason,
+            };
+            assert_eq!(
+                serde_json::to_value(&outcome).unwrap(),
+                json!({
+                    "status":"duplicate", "sourcePath":"book.epub",
+                    "existing":{"itemId":"book-1","format":"epub"}, "reason":wire
+                })
+            );
+            outcomes.push(outcome);
+        }
+        for &code in ErrorCode::ALL {
+            let outcome = ImportOutcome::Failed {
+                source_path: source.clone(),
+                code,
+            };
+            assert_eq!(
+                serde_json::to_value(&outcome).unwrap(),
+                json!({
+                    "status":"failed", "sourcePath":"book.epub", "code":code.as_str()
+                })
+            );
+            outcomes.push(outcome);
+        }
+        let counts = ImportCounts::from_outcomes(&outcomes);
+        assert_eq!(
+            serde_json::to_value(counts).unwrap(),
+            json!({
+                "total":6 + ErrorCode::ALL.len(), "imported":0, "skipped":4,
+                "duplicates":2, "failed":ErrorCode::ALL.len()
+            })
+        );
+    }
+
+    #[test]
+    fn readable_import_with_empty_title_is_not_reported_as_unreadable() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut store = open_store(&temp.path().join("library"));
+        let source = temp.path().join(".kepub.epub");
+        fs::write(&source, b"readable file with empty filename title").unwrap();
+        assert_eq!(
+            store
+                .import(&source, None, ImportMode::Copy)
+                .unwrap_err()
+                .kind(),
+            ErrorCode::InvalidTitle
+        );
+        let scan = scan_imports(
+            &mut store,
+            std::slice::from_ref(&source),
+            ImportMode::Copy,
+            ImportObservation::Untracked,
+            || false,
+        )
+        .unwrap();
+        assert_eq!(
+            serde_json::to_value(&scan.outcomes).unwrap(),
+            serde_json::json!([
+                {"status":"failed", "sourcePath":source, "code":"invalid-title"}
+            ])
+        );
+        assert!(source.exists());
+        assert_eq!(scan.counts.failed, 1);
+    }
 
     fn open_store(root: &Path) -> LibraryStore {
         let paths = LibraryPaths::resolve(None, Some(&root.join("library.sqlite"))).unwrap();
@@ -546,10 +669,10 @@ mod tests {
                 b"ebook fixture"
             );
             assert!(
-                matches!(&scan.outcomes[1], ImportOutcome::Skipped { source_path, reason: "unsupported-format" } if source_path == &unsupported)
+                matches!(&scan.outcomes[1], ImportOutcome::Skipped { source_path, reason: SkipReason::UnsupportedFormat } if source_path == &unsupported)
             );
             assert!(
-                matches!(&scan.outcomes[2], ImportOutcome::Failed { source_path, code: "not-found" } if source_path == &missing)
+                matches!(&scan.outcomes[2], ImportOutcome::Failed { source_path, code: ErrorCode::NotFound } if source_path == &missing)
             );
             assert_eq!(fs::read(&unsupported).unwrap(), b"keep these bytes");
             assert_eq!(supported.exists(), mode == ImportMode::Copy);
@@ -696,7 +819,7 @@ mod tests {
                 assert!(matches!(
                     &watch.outcomes[..],
                     [ImportOutcome::Failed {
-                        code: "unreadable",
+                        code: ErrorCode::Unreadable,
                         ..
                     }]
                 ));

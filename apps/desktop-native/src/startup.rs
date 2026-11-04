@@ -46,7 +46,7 @@ pub fn open(
         Ok(_) => match Engine::open_existing(default.root.clone()) {
             Ok(engine) => engine,
             Err(error)
-                if error.code() == "incompatible-schema"
+                if error.kind() == takio::error::ErrorCode::IncompatibleSchema
                     && LibraryStore::preflight_startup(default.clone())? =>
             {
                 Engine::open(default)?

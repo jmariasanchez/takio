@@ -80,7 +80,7 @@ pub enum ReconcileOutcome {
     Failed {
         #[serde(rename = "itemId")]
         item_id: String,
-        code: &'static str,
+        code: crate::error::ErrorCode,
     },
     Canceled {
         #[serde(rename = "itemId")]
@@ -180,7 +180,7 @@ where
             Err(error) => {
                 outcomes[index] = Some(ReconcileOutcome::Failed {
                     item_id: item_ids[index].clone(),
-                    code: error.code(),
+                    code: error.kind(),
                 });
                 None
             }
@@ -247,12 +247,14 @@ where
                             item_id: item_ids[index].clone(),
                             candidates,
                         },
-                        Err(error) if error.code() == "operation-canceled" => {
+                        Err(error)
+                            if error.kind() == crate::error::ErrorCode::OperationCanceled =>
+                        {
                             ReconcileOutcome::canceled(item_ids[index].clone())
                         }
                         Err(error) => ReconcileOutcome::Failed {
                             item_id: item_ids[index].clone(),
-                            code: error.code(),
+                            code: error.kind(),
                         },
                     }
                 });

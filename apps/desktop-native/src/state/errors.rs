@@ -1,6 +1,8 @@
 pub fn humanize_error(code: takio::error::ErrorCode) -> String {
     use takio::error::ErrorCode::*;
     match code {
+        ConversionInterrupted => "The conversion was interrupted. The original file was kept. Retry the job when ready.".into(),
+        InvalidAttachment => "The converted copy could not be attached to that book. Review the job and library selection.".into(),
         InvalidRequest | MethodNotAllowed | MissingFile | ResponseTooLarge | Unauthorized => "The content server could not complete that request. Check access and request details.".into(),
         OperationInProgress => "Finish the current operation first".into(),
         ReaderScanUnavailable => "Reader scanning could not start. Restart Takio to retry. Your library is still available.".into(),
@@ -50,6 +52,7 @@ pub fn humanize_error(code: takio::error::ErrorCode) -> String {
 pub(super) fn humanize_recovery_error(code: takio::error::ErrorCode) -> String {
     use takio::error::ErrorCode::*;
     match code {
+        ConversionInterrupted | InvalidAttachment => "The conversion attachment failed. Your current library was not replaced.".into(),
         InvalidRequest | MethodNotAllowed | MissingFile | ResponseTooLarge | Unauthorized => "The server request failed. Your current library was not replaced.".into(),
         DestinationExists => "That location already exists. Choose a new folder name. Existing files were not replaced.".into(),
         InvalidArguments => "Choose a new folder outside the current library and backup. Do not place recovery copies inside either library.".into(),
@@ -79,6 +82,7 @@ pub(super) fn humanize_recovery_error(code: takio::error::ErrorCode) -> String {
 pub(super) fn open_library_error(code: takio::error::ErrorCode) -> String {
     use takio::error::ErrorCode::*;
     let reason = match code {
+        ConversionInterrupted | InvalidAttachment => "The conversion job could not be completed.",
         InvalidRequest | MethodNotAllowed | MissingFile | ResponseTooLarge | Unauthorized => {
             "The content server request could not be completed."
         }

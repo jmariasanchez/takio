@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use unicode_normalization::UnicodeNormalization;
 
-use crate::error::AppResult;
+use crate::error::{AppResult, ErrorCode};
 use crate::format::FormatId;
 use crate::library::model::LibraryItem;
 use crate::library::store::LibraryStore;
@@ -62,10 +62,10 @@ pub enum ExportStatus {
         metadata: &'static str,
     },
     Skipped {
-        reason: &'static str,
+        reason: ErrorCode,
     },
     Failed {
-        code: &'static str,
+        code: ErrorCode,
     },
 }
 
@@ -94,20 +94,20 @@ pub fn export_many(store: &LibraryStore, request: ExportRequest) -> AppResult<Ex
         return Err(crate::app_error!("invalid-arguments"));
     }
     std::fs::create_dir_all(&request.destination_path)
-        .map_err(|_| crate::app_error!("destination-unavailable"))?;
+        .map_err(|_| crate::app_error!(ErrorCode::DestinationUnavailable))?;
     let destination = request
         .destination_path
         .canonicalize()
-        .map_err(|_| crate::app_error!("destination-unavailable"))?;
+        .map_err(|_| crate::app_error!(ErrorCode::DestinationUnavailable))?;
     if !destination.is_dir() {
-        return Err(crate::app_error!("destination-unavailable"));
+        return Err(crate::app_error!(ErrorCode::DestinationUnavailable));
     }
     let mut outcomes = Vec::new();
     for id in request.ids {
         let item = store.get(&id)?;
         let missing_code = match &item {
-            None => Some("not-found"),
-            Some(item) if item.formats.is_empty() => Some("source-unavailable"),
+            None => Some(ErrorCode::NotFound),
+            Some(item) if item.formats.is_empty() => Some(ErrorCode::SourceUnavailable),
             _ => None,
         };
         if let Some(code) = missing_code {
@@ -141,7 +141,7 @@ pub fn export_many(store: &LibraryStore, request: ExportRequest) -> AppResult<Ex
                 Err(_) => (
                     requested,
                     ExportStatus::Failed {
-                        code: "destination-unavailable",
+                        code: ErrorCode::DestinationUnavailable,
                     },
                 ),
             };
@@ -237,27 +237,27 @@ fn prepare_directory(destination: &Path, segment: Option<&str>) -> AppResult<Pat
     let directory = destination.join(segment);
     match std::fs::symlink_metadata(&directory) {
         Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
-            return Err(crate::app_error!("destination-unavailable"));
+            return Err(crate::app_error!(ErrorCode::DestinationUnavailable));
         }
         Ok(_) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             std::fs::create_dir(&directory)
-                .map_err(|_| crate::app_error!("destination-unavailable"))?
+                .map_err(|_| crate::app_error!(ErrorCode::DestinationUnavailable))?
         }
-        Err(_) => return Err(crate::app_error!("destination-unavailable")),
+        Err(_) => return Err(crate::app_error!(ErrorCode::DestinationUnavailable)),
     }
     let canonical = directory
         .canonicalize()
-        .map_err(|_| crate::app_error!("destination-unavailable"))?;
+        .map_err(|_| crate::app_error!(ErrorCode::DestinationUnavailable))?;
     if canonical == destination || !canonical.starts_with(destination) {
-        return Err(crate::app_error!("destination-unavailable"));
+        return Err(crate::app_error!(ErrorCode::DestinationUnavailable));
     }
     Ok(canonical)
 }
 
 fn copy_file(source: &Path, target: &Path) -> ExportStatus {
     let skipped = || ExportStatus::Skipped {
-        reason: "destination-exists",
+        reason: ErrorCode::DestinationExists,
     };
     let failed = |code| ExportStatus::Failed { code };
     if std::fs::symlink_metadata(target).is_ok() {
@@ -265,15 +265,15 @@ fn copy_file(source: &Path, target: &Path) -> ExportStatus {
     }
     let source = match source.canonicalize() {
         Ok(source) => source,
-        Err(_) => return failed("source-unavailable"),
+        Err(_) => return failed(ErrorCode::SourceUnavailable),
     };
     let mut input = match std::fs::File::open(&source) {
         Ok(input) => input,
-        Err(_) => return failed("source-unavailable"),
+        Err(_) => return failed(ErrorCode::SourceUnavailable),
     };
     let before = match input.metadata() {
         Ok(metadata) if metadata.is_file() && metadata.len() > 0 => metadata,
-        _ => return failed("source-unavailable"),
+        _ => return failed(ErrorCode::SourceUnavailable),
     };
     let partial = target.with_file_name(format!(".takio-export-{}.partial", uuid::Uuid::new_v4()));
     let mut output = match std::fs::OpenOptions::new()
@@ -282,41 +282,43 @@ fn copy_file(source: &Path, target: &Path) -> ExportStatus {
         .open(&partial)
     {
         Ok(output) => output,
-        Err(_) => return failed("destination-unavailable"),
+        Err(_) => return failed(ErrorCode::DestinationUnavailable),
     };
-    let result = (|| -> Result<crate::fingerprint::Fingerprint, &'static str> {
+    let result = (|| -> Result<crate::fingerprint::Fingerprint, ErrorCode> {
         let fingerprint = crate::fingerprint::copy_and_hash(&mut input, &mut output).map_err(
             |error| match error {
-                crate::fingerprint::CopyError::Read(_) => "source-unavailable",
-                crate::fingerprint::CopyError::Write(_) => "destination-unavailable",
+                crate::fingerprint::CopyError::Read(_) => ErrorCode::SourceUnavailable,
+                crate::fingerprint::CopyError::Write(_) => ErrorCode::DestinationUnavailable,
             },
         )?;
-        let after = input.metadata().map_err(|_| "source-changed")?;
+        let after = input.metadata().map_err(|_| ErrorCode::SourceChanged)?;
         if fingerprint.bytes != before.len()
             || after.len() != before.len()
             || after.modified().ok() != before.modified().ok()
         {
-            return Err("source-changed");
+            return Err(ErrorCode::SourceChanged);
         }
-        output.sync_all().map_err(|_| "destination-unavailable")?;
+        output
+            .sync_all()
+            .map_err(|_| ErrorCode::DestinationUnavailable)?;
         drop(output);
-        if crate::fingerprint::hash_file(&partial).map_err(|_| "destination-unavailable")?
+        if crate::fingerprint::hash_file(&partial).map_err(|_| ErrorCode::DestinationUnavailable)?
             != fingerprint
         {
-            return Err("destination-unavailable");
+            return Err(ErrorCode::DestinationUnavailable);
         }
         match std::fs::hard_link(&partial, target) {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                return Err("destination-exists");
+                return Err(ErrorCode::DestinationExists);
             }
-            Err(_) => return Err("destination-unavailable"),
+            Err(_) => return Err(ErrorCode::DestinationUnavailable),
         }
-        if crate::fingerprint::hash_file(target).map_err(|_| "destination-unavailable")?
+        if crate::fingerprint::hash_file(target).map_err(|_| ErrorCode::DestinationUnavailable)?
             != fingerprint
         {
             let _ = std::fs::remove_file(target);
-            return Err("destination-unavailable");
+            return Err(ErrorCode::DestinationUnavailable);
         }
         Ok(fingerprint)
     })();
@@ -327,7 +329,7 @@ fn copy_file(source: &Path, target: &Path) -> ExportStatus {
             sha256: fingerprint.sha256,
             metadata: "unsupported",
         },
-        Err("destination-exists") => skipped(),
+        Err(ErrorCode::DestinationExists) => skipped(),
         Err(code) => failed(code),
     }
 }

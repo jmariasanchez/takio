@@ -4,17 +4,17 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use clap::{CommandFactory, Parser, Subcommand};
-use serde::{Deserialize, de::DeserializeOwned};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 
 use crate::output::print_success;
-use takio::conversion::jobs::{JobStatus, JobStore};
+use takio::conversion::jobs::{JobAttachmentStatus, JobStatus, JobStore};
 use takio::conversion::maintenance::{self, discover_ebook_polish};
 use takio::conversion::{CALIBRE_CAPABILITIES, convert, discover_ebook_convert};
 use takio::delivery::destinations::{self, DestinationKind};
 use takio::delivery::kindle_ssh::{self, KindleSshDestination};
 use takio::delivery::reader_shelf;
-use takio::error::AppResult;
+use takio::error::{AppResult, ErrorCode};
 use takio::format::{FormatId, detect_format};
 use takio::import::calibre::import_calibre_library;
 use takio::import::scan::{ImportCounts, ImportOutcome, scan_imports, validate_import_sources};
@@ -32,6 +32,25 @@ use takio::metadata::candidates::{
 };
 use takio::metadata::reconcile::{CancellationSignals, ReconcileRequest, reconcile};
 use takio::metadata::{self, discover_ebook_meta, discover_fetch_ebook_metadata};
+
+#[derive(Serialize)]
+#[serde(tag = "status", rename_all = "kebab-case")]
+enum UpdateOutcome {
+    Updated {
+        #[serde(rename = "itemId")]
+        item_id: String,
+        item: Box<takio::library::model::LibraryItem>,
+    },
+    Missing {
+        #[serde(rename = "itemId")]
+        item_id: String,
+    },
+    Failed {
+        #[serde(rename = "itemId")]
+        item_id: String,
+        code: ErrorCode,
+    },
+}
 
 #[derive(Parser)]
 #[command(
@@ -1320,22 +1339,28 @@ fn library(command: LibraryCommand, library: Option<&str>) -> AppResult<()> {
             let mut outcomes = Vec::with_capacity(ids.len());
             for id in ids {
                 match store.update(&id, patch.clone()) {
-                    Ok(item) => outcomes.push(json!({"status":"updated","itemId":id,"item":item})),
-                    Err(error) if error.code() == "not-found" => {
-                        outcomes.push(json!({"status":"missing","itemId":id}));
+                    Ok(item) => outcomes.push(UpdateOutcome::Updated {
+                        item_id: id,
+                        item: Box::new(item),
+                    }),
+                    Err(error) if error.kind() == ErrorCode::NotFound => {
+                        outcomes.push(UpdateOutcome::Missing { item_id: id });
                     }
                     Err(error) => {
-                        outcomes.push(json!({"status":"failed","itemId":id,"code":error.code()}));
+                        outcomes.push(UpdateOutcome::Failed {
+                            item_id: id,
+                            code: error.kind(),
+                        });
                     }
                 }
             }
             let updated = outcomes
                 .iter()
-                .filter(|outcome| outcome["status"] == "updated")
+                .filter(|outcome| matches!(outcome, UpdateOutcome::Updated { .. }))
                 .count();
             let missing = outcomes
                 .iter()
-                .filter(|outcome| outcome["status"] == "missing")
+                .filter(|outcome| matches!(outcome, UpdateOutcome::Missing { .. }))
                 .count();
             let failed = outcomes.len() - updated - missing;
             print_success(
@@ -2267,14 +2292,14 @@ fn reconcile_job_attachment(
     library: Option<&str>,
     job: takio::conversion::jobs::ConversionJob,
 ) -> AppResult<takio::conversion::jobs::ConversionJob> {
-    if job.attachment.as_ref().map(|value| value.status.as_str()) != Some("pending") {
+    if job.attachment.as_ref().map(|value| value.status) != Some(JobAttachmentStatus::Pending) {
         return Ok(job);
     }
     let Some(item_id) = job.library_item_id.as_deref() else {
-        return jobs.finish_attachment(&job.id, Some("invalid-attachment"));
+        return jobs.finish_attachment(&job.id, Some(ErrorCode::InvalidAttachment));
     };
     let Some(artifact) = job.artifact.as_ref() else {
-        return jobs.finish_attachment(&job.id, Some("artifact-invalid"));
+        return jobs.finish_attachment(&job.id, Some(ErrorCode::ArtifactInvalid));
     };
     let paths = LibraryPaths::resolve(library, None)?;
     let result = LibraryStore::create_or_migrate(paths).and_then(|mut store| {
@@ -2288,7 +2313,7 @@ fn reconcile_job_attachment(
     });
     match result {
         Ok(_) => jobs.finish_attachment(&job.id, None),
-        Err(error) => jobs.finish_attachment(&job.id, Some(error.code())),
+        Err(error) => jobs.finish_attachment(&job.id, Some(error.kind())),
     }
 }
 
@@ -2701,6 +2726,37 @@ fn open_path(path: &Path) -> AppResult<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn typed_update_outcomes_keep_wire_shape() {
+        for &code in ErrorCode::ALL {
+            assert_eq!(
+                serde_json::to_value(UpdateOutcome::Failed {
+                    item_id: "book-1".into(),
+                    code
+                })
+                .unwrap(),
+                json!({"status":"failed","itemId":"book-1","code":code.as_str()})
+            );
+        }
+        assert_eq!(
+            serde_json::to_value(UpdateOutcome::Missing {
+                item_id: "book-1".into()
+            })
+            .unwrap(),
+            json!({"status":"missing","itemId":"book-1"})
+        );
+        let item = takio::library::catalog::tests::sparse_book();
+        let expected = json!({"status":"updated","itemId":"book-1","item":item});
+        assert_eq!(
+            serde_json::to_value(UpdateOutcome::Updated {
+                item_id: "book-1".into(),
+                item: Box::new(item)
+            })
+            .unwrap(),
+            expected
+        );
+    }
+
     #[test]
     fn mixed_legacy_and_structured_authors_count_once() {
         let mut legacy = takio::library::catalog::tests::sparse_book();

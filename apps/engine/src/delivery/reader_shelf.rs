@@ -803,7 +803,7 @@ mod tests {
         );
         assert!(scan.outcomes.iter().any(|outcome| matches!(
             outcome,
-            ImportOutcome::Skipped { source_path, reason: "unsupported-format" }
+            ImportOutcome::Skipped { source_path, reason: crate::import::scan::SkipReason::UnsupportedFormat }
                 if source_path.ends_with("Store Book.azw")
         )));
         let titles: Vec<_> = f
