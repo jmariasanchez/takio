@@ -391,7 +391,7 @@ fn worker(
     worker_with_reader_scans(
         store,
         receiver,
-        preparation_backend,
+        preparation_backend.unwrap_or_else(takio::conversion::discover_ebook_convert),
         ReaderScanWorker::start().ok(),
     );
 }
@@ -399,7 +399,7 @@ fn worker(
 fn worker_with_reader_scans(
     mut store: LibraryStore,
     receiver: Receiver<Request>,
-    preparation_backend: Option<BackendDiscovery>,
+    preparation_backend: BackendDiscovery,
     reader_scans: Option<ReaderScanWorker>,
 ) {
     // The scan worker is the sole writer of the native persistent hash cache.
@@ -440,24 +440,20 @@ fn worker_with_reader_scans(
                 let _ = reply.send(store.restore_backup_copy(&source, &destination));
             }
             Request::PreviewPrepare { item_id, reply } => {
-                let result = match &preparation_backend {
-                    Some(backend) => {
-                        preparation::preview_with_backend(&store, &item_id, backend.clone())
-                    }
-                    None => preparation::preview(&store, &item_id),
-                };
+                let result = preparation::preview_with_backend(
+                    &store,
+                    &item_id,
+                    preparation_backend.clone(),
+                );
                 let _ = reply.send(result);
             }
             Request::PrepareReviewed { preview, reply } => {
-                let result = match &preparation_backend {
-                    Some(backend) => preparation::prepare_with_backend(
-                        &mut store,
-                        &preview,
-                        backend.clone(),
-                        takio::conversion::prepare::PREPARATION_TIMEOUT,
-                    ),
-                    None => preparation::prepare(&mut store, &preview),
-                };
+                let result = preparation::prepare_with_backend(
+                    &mut store,
+                    &preview,
+                    preparation_backend.clone(),
+                    takio::conversion::prepare::PREPARATION_TIMEOUT,
+                );
                 let _ = reply.send(result);
             }
             Request::Query {
@@ -689,7 +685,14 @@ mod tests {
     fn missing_reader_worker_does_not_report_library_failure() {
         let (_temp, store, _) = delivery_fixture();
         let (sender, receiver) = mpsc::channel();
-        let worker = thread::spawn(move || worker_with_reader_scans(store, receiver, None, None));
+        let worker = thread::spawn(move || {
+            worker_with_reader_scans(
+                store,
+                receiver,
+                takio::conversion::discover_ebook_convert(),
+                None,
+            )
+        });
         let engine = Engine {
             sender,
             root: PathBuf::new(),
@@ -750,8 +753,14 @@ mod tests {
         })
         .unwrap();
         let (sender, receiver) = mpsc::channel();
-        let worker =
-            thread::spawn(move || worker_with_reader_scans(store, receiver, None, Some(scans)));
+        let worker = thread::spawn(move || {
+            worker_with_reader_scans(
+                store,
+                receiver,
+                takio::conversion::discover_ebook_convert(),
+                Some(scans),
+            )
+        });
         let engine = Engine {
             sender,
             root: PathBuf::new(),
@@ -825,8 +834,14 @@ mod tests {
         })
         .unwrap();
         let (sender, receiver) = mpsc::channel();
-        let worker =
-            thread::spawn(move || worker_with_reader_scans(store, receiver, None, Some(scans)));
+        let worker = thread::spawn(move || {
+            worker_with_reader_scans(
+                store,
+                receiver,
+                takio::conversion::discover_ebook_convert(),
+                Some(scans),
+            )
+        });
         let engine = Engine {
             sender,
             root: PathBuf::new(),

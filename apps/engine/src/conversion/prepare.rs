@@ -22,10 +22,6 @@ pub struct PreparationPreview {
     pub backend: BackendDiscovery,
 }
 
-pub fn preview(store: &LibraryStore, item_id: &str) -> AppResult<PreparationPreview> {
-    preview_with_backend(store, item_id, conversion::discover_ebook_convert())
-}
-
 pub fn preview_with_backend(
     store: &LibraryStore,
     item_id: &str,
@@ -45,15 +41,6 @@ pub fn preview_with_backend(
         source_sha256,
         backend,
     })
-}
-
-pub fn prepare(store: &mut LibraryStore, reviewed: &PreparationPreview) -> AppResult<LibraryItem> {
-    prepare_with_backend(
-        store,
-        reviewed,
-        conversion::discover_ebook_convert(),
-        PREPARATION_TIMEOUT,
-    )
 }
 
 pub fn prepare_with_backend(
