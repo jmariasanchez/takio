@@ -87,7 +87,7 @@ pub fn validate_import_sources(paths: &LibraryPaths, sources: &[PathBuf]) -> App
 }
 
 fn path_for_overlap(path: &Path) -> AppResult<PathBuf> {
-    resolve_for_creation(path).map_err(|_| crate::app_error!("invalid-arguments"))
+    resolve_for_creation(path).map_err(crate::io_error!("invalid-arguments"))
 }
 
 /// Resolve existing ancestors without creating a missing suffix. Parent components

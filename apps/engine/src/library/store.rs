@@ -1763,7 +1763,7 @@ fn publish_copy(source: &Path, target: &Path, expected: &Fingerprint) -> AppResu
         return Err(crate::app_error!("destination-exists"));
     }
     let temporary = parent.join(format!(".takio-{}.tmp", Uuid::new_v4()));
-    let mut input = File::open(source).map_err(|_| crate::app_error!("source-unavailable"))?;
+    let mut input = File::open(source).map_err(crate::io_error!("source-unavailable"))?;
     let mut output = OpenOptions::new()
         .create_new(true)
         .write(true)

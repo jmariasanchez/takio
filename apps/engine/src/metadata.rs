@@ -112,14 +112,14 @@ fn extract_with_cancellation(
     let backend = discover_ebook_meta().ok_or_else(|| crate::app_error!("backend-unavailable"))?;
     let source = source
         .canonicalize()
-        .map_err(|_| crate::app_error!("source-unavailable"))?;
+        .map_err(crate::io_error!("source-unavailable"))?;
     if !source.is_file() || source.metadata().map_or(true, |value| value.len() == 0) {
         return Err(crate::app_error!("source-unavailable"));
     }
     let workspace = Builder::new()
         .prefix("takio-metadata-")
         .tempdir()
-        .map_err(|_| crate::app_error!("metadata-invalid"))?;
+        .map_err(crate::io_error!("metadata-invalid"))?;
     let opf = workspace.path().join("metadata.opf");
     let cover = workspace.path().join("cover");
     let mut command = Command::new(backend);
@@ -218,14 +218,14 @@ fn fetch_with_cancellation(
     let workspace = Builder::new()
         .prefix("takio-metadata-fetch-")
         .tempdir()
-        .map_err(|_| crate::app_error!("metadata-fetch-failed"))?;
+        .map_err(crate::io_error!("metadata-fetch-failed"))?;
     let opf = workspace.path().join("metadata.opf");
     let cover = workspace.path().join("cover");
     let stdout = OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(&opf)
-        .map_err(|_| crate::app_error!("metadata-fetch-failed"))?;
+        .map_err(crate::io_error!("metadata-fetch-failed"))?;
     let mut command = Command::new(backend);
     command.arg("--opf");
     if let Some(title) = title {
@@ -770,16 +770,16 @@ fn publish_cover(
 fn read_bounded(path: &Path, maximum: u64) -> AppResult<Vec<u8>> {
     let metadata = path
         .metadata()
-        .map_err(|_| crate::app_error!("metadata-invalid"))?;
+        .map_err(crate::io_error!("metadata-invalid"))?;
     if !metadata.is_file() || metadata.len() == 0 || metadata.len() > maximum {
         return Err(crate::app_error!("metadata-invalid"));
     }
-    let mut file = fs::File::open(path).map_err(|_| crate::app_error!("metadata-invalid"))?;
+    let mut file = fs::File::open(path).map_err(crate::io_error!("metadata-invalid"))?;
     let mut bytes = Vec::with_capacity(
         usize::try_from(metadata.len()).map_err(|_| crate::app_error!("metadata-invalid"))?,
     );
     file.read_to_end(&mut bytes)
-        .map_err(|_| crate::app_error!("metadata-invalid"))?;
+        .map_err(crate::io_error!("metadata-invalid"))?;
     if u64::try_from(bytes.len()).ok() != Some(metadata.len()) {
         return Err(crate::app_error!("metadata-invalid"));
     }
@@ -797,7 +797,7 @@ fn run_bounded(
     }
     let mut child = command
         .spawn()
-        .map_err(|_| crate::app_error!("backend-unavailable"))?;
+        .map_err(crate::io_error!("backend-unavailable"))?;
     let started = Instant::now();
     loop {
         if let Some(status) = child.try_wait().map_err(|_| crate::app_error!(failure))? {

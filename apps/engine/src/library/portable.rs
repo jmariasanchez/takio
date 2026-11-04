@@ -241,8 +241,7 @@ fn rebuild_into(
 }
 
 fn validate_source(root: &Path) -> AppResult<ParsedSource> {
-    let root_metadata =
-        fs::symlink_metadata(root).map_err(|_| crate::app_error!("source-invalid"))?;
+    let root_metadata = fs::symlink_metadata(root).map_err(crate::io_error!("source-invalid"))?;
     if !root_metadata.is_dir() || root_metadata.file_type().is_symlink() {
         return Err(crate::app_error!("source-invalid"));
     }
@@ -262,7 +261,7 @@ fn validate_source(root: &Path) -> AppResult<ParsedSource> {
     require_exact_entries(root, &["books", "manifest.json"])?;
     let books_root = root.join("books");
     let books_metadata =
-        fs::symlink_metadata(&books_root).map_err(|_| crate::app_error!("source-invalid"))?;
+        fs::symlink_metadata(&books_root).map_err(crate::io_error!("source-invalid"))?;
     if !books_metadata.is_dir() || books_metadata.file_type().is_symlink() {
         return Err(crate::app_error!("source-invalid"));
     }
@@ -285,7 +284,7 @@ fn validate_source(root: &Path) -> AppResult<ParsedSource> {
     for book in &manifest.books {
         let book_root = books_root.join(&book.directory);
         let metadata =
-            fs::symlink_metadata(&book_root).map_err(|_| crate::app_error!("source-invalid"))?;
+            fs::symlink_metadata(&book_root).map_err(crate::io_error!("source-invalid"))?;
         if !metadata.is_dir() || metadata.file_type().is_symlink() || book.artifacts.len() < 2 {
             return Err(crate::app_error!("source-invalid"));
         }
@@ -720,7 +719,7 @@ fn copy_artifact(source: &Path, destination: &Path, relative: &str) -> AppResult
 }
 
 fn fingerprint(path: &Path, relative: &str) -> AppResult<PortableArtifact> {
-    let metadata = fs::symlink_metadata(path).map_err(|_| crate::app_error!("source-invalid"))?;
+    let metadata = fs::symlink_metadata(path).map_err(crate::io_error!("source-invalid"))?;
     if !metadata.is_file()
         || metadata.file_type().is_symlink()
         || metadata.len() == 0
@@ -729,11 +728,11 @@ fn fingerprint(path: &Path, relative: &str) -> AppResult<PortableArtifact> {
         return Err(crate::app_error!("source-invalid"));
     }
     let crate::fingerprint::Fingerprint { bytes, sha256 } =
-        crate::fingerprint::hash_file(path).map_err(|_| crate::app_error!("source-invalid"))?;
+        crate::fingerprint::hash_file(path).map_err(crate::io_error!("source-invalid"))?;
     if bytes > MAX_SAFE_INTEGER {
         return Err(crate::app_error!("source-invalid"));
     }
-    let after = fs::symlink_metadata(path).map_err(|_| crate::app_error!("source-invalid"))?;
+    let after = fs::symlink_metadata(path).map_err(crate::io_error!("source-invalid"))?;
     if !after.is_file() || after.file_type().is_symlink() || after.len() != bytes {
         return Err(crate::app_error!("source-invalid"));
     }
@@ -759,8 +758,8 @@ fn read_bounded_regular(path: &Path, max: u64) -> AppResult<Vec<u8>> {
 fn require_exact_entries(root: &Path, expected: &[&str]) -> AppResult<()> {
     let expected = expected.iter().copied().collect::<HashSet<_>>();
     let mut actual = HashSet::new();
-    for entry in fs::read_dir(root).map_err(|_| crate::app_error!("source-invalid"))? {
-        let entry = entry.map_err(|_| crate::app_error!("source-invalid"))?;
+    for entry in fs::read_dir(root).map_err(crate::io_error!("source-invalid"))? {
+        let entry = entry.map_err(crate::io_error!("source-invalid"))?;
         let name = entry
             .file_name()
             .into_string()

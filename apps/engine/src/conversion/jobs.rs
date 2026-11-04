@@ -170,7 +170,7 @@ impl JobStore {
     ) -> AppResult<ConversionJob> {
         let input = input
             .canonicalize()
-            .map_err(|_| crate::app_error!("input-unavailable"))?;
+            .map_err(crate::io_error!("input-unavailable"))?;
         if !input.is_file() || !output.is_absolute() || output.exists() {
             return Err(crate::app_error!(if output.exists() {
                 crate::error::ErrorCode::OutputFileExists

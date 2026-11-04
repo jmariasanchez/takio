@@ -155,7 +155,7 @@ fn destination_error(error: io::Error) -> AppError {
 
 fn regular_file(path: &Path) -> AppResult<()> {
     if !fs::symlink_metadata(path)
-        .map_err(|_| crate::app_error!("source-invalid"))?
+        .map_err(crate::io_error!("source-invalid"))?
         .is_file()
     {
         return Err(crate::app_error!("source-invalid"));
@@ -171,8 +171,7 @@ fn normalized(path: &Path) -> AppResult<PathBuf> {
     {
         return Err(crate::app_error!("invalid-arguments"));
     }
-    crate::library::paths::resolve_for_creation(path)
-        .map_err(|_| crate::app_error!("source-invalid"))
+    crate::library::paths::resolve_for_creation(path).map_err(crate::io_error!("source-invalid"))
 }
 
 pub(super) fn disjoint_destination(destination: &Path, source: &Path) -> AppResult<PathBuf> {
@@ -288,7 +287,7 @@ pub(super) fn restore(
 ) -> AppResult<RestoreReport> {
     let source = source
         .canonicalize()
-        .map_err(|_| crate::app_error!("source-invalid"))?;
+        .map_err(crate::io_error!("source-invalid"))?;
     let destination = disjoint_destination(&paths.root, &source)?;
     // Public LibraryPaths fields must not redirect writes outside the selected root.
     if paths.database.parent() != Some(paths.root.as_path())

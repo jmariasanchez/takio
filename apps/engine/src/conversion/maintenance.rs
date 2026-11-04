@@ -64,7 +64,7 @@ pub fn polish(
     }
     let input = input
         .canonicalize()
-        .map_err(|_| crate::app_error!("source-unavailable"))?;
+        .map_err(crate::io_error!("source-unavailable"))?;
     if !input.is_file() {
         return Err(crate::app_error!("source-unavailable"));
     }
@@ -118,7 +118,7 @@ pub fn polish(
     let partial = parent.join(format!(".takio-polish-{}", Uuid::new_v4()));
     let publication = (|| -> AppResult<()> {
         let mut source =
-            fs::File::open(&staged_output).map_err(|_| crate::app_error!("artifact-invalid"))?;
+            fs::File::open(&staged_output).map_err(crate::io_error!("artifact-invalid"))?;
         let mut target = OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -159,7 +159,7 @@ pub fn extract_text(source: &Path, timeout: Duration) -> AppResult<(FormatId, St
     }
     let source = source
         .canonicalize()
-        .map_err(|_| crate::app_error!("source-unavailable"))?;
+        .map_err(crate::io_error!("source-unavailable"))?;
     let format = detect_format(&source).ok_or_else(|| crate::app_error!("unsupported-format"))?;
     if !format.is_text_extractable() {
         return Err(crate::app_error!("unsupported-format"));
@@ -167,13 +167,13 @@ pub fn extract_text(source: &Path, timeout: Duration) -> AppResult<(FormatId, St
     if format == FormatId::Txt {
         let metadata = source
             .metadata()
-            .map_err(|_| crate::app_error!("source-unavailable"))?;
+            .map_err(crate::io_error!("source-unavailable"))?;
         if metadata.len() > 64 * 1024 * 1024 {
             return Err(crate::app_error!("artifact-invalid"));
         }
         return fs::read_to_string(source)
             .map(|text| (format, text))
-            .map_err(|_| crate::app_error!("artifact-invalid"));
+            .map_err(crate::io_error!("artifact-invalid"));
     }
     let backend = discover_ebook_convert()
         .path
@@ -181,7 +181,7 @@ pub fn extract_text(source: &Path, timeout: Duration) -> AppResult<(FormatId, St
     let workspace = Builder::new()
         .prefix("takio-text-")
         .tempdir()
-        .map_err(|_| crate::app_error!("extraction-failed"))?;
+        .map_err(crate::io_error!("extraction-failed"))?;
     let output = workspace.path().join("content.txt");
     let mut command = Command::new(backend);
     command
@@ -199,13 +199,13 @@ pub fn extract_text(source: &Path, timeout: Duration) -> AppResult<(FormatId, St
     )?;
     let metadata = output
         .metadata()
-        .map_err(|_| crate::app_error!("artifact-invalid"))?;
+        .map_err(crate::io_error!("artifact-invalid"))?;
     if metadata.len() > 64 * 1024 * 1024 {
         return Err(crate::app_error!("artifact-invalid"));
     }
     fs::read_to_string(output)
         .map(|text| (format, text))
-        .map_err(|_| crate::app_error!("artifact-invalid"))
+        .map_err(crate::io_error!("artifact-invalid"))
 }
 
 #[must_use]
@@ -285,7 +285,7 @@ fn run_bounded(
 ) -> AppResult<()> {
     let mut child = command
         .spawn()
-        .map_err(|_| crate::app_error!("backend-unavailable"))?;
+        .map_err(crate::io_error!("backend-unavailable"))?;
     let started = Instant::now();
     loop {
         if let Some(status) = child.try_wait().map_err(|_| crate::app_error!(failure))? {
@@ -305,7 +305,7 @@ fn run_bounded(
 }
 
 fn fingerprint(path: &Path) -> AppResult<crate::fingerprint::Fingerprint> {
-    crate::fingerprint::hash_file(path).map_err(|_| crate::app_error!("artifact-invalid"))
+    crate::fingerprint::hash_file(path).map_err(crate::io_error!("artifact-invalid"))
 }
 
 #[cfg(test)]

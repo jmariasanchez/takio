@@ -64,7 +64,7 @@ pub fn prepare_with_backend(
         .tempdir_in(&store.paths().root)?;
     let input = stage.path().join("source.epub");
     fs::copy(&reviewed.source_path, &input)
-        .map_err(|_| crate::app_error!("prepare-source-unavailable"))?;
+        .map_err(crate::io_error!("prepare-source-unavailable"))?;
     if source_fingerprint(&input)? != reviewed.source {
         return Err(crate::app_error!("prepare-source-changed"));
     }
@@ -77,8 +77,7 @@ pub fn prepare_with_backend(
         timeout,
         backend_path,
     )?;
-    let metadata =
-        fs::symlink_metadata(&output).map_err(|_| crate::app_error!("artifact-invalid"))?;
+    let metadata = fs::symlink_metadata(&output).map_err(crate::io_error!("artifact-invalid"))?;
     if !metadata.file_type().is_file() || metadata.len() == 0 {
         return Err(crate::app_error!("artifact-invalid"));
     }
@@ -127,7 +126,7 @@ fn source_fingerprint(path: &Path) -> AppResult<crate::fingerprint::Fingerprint>
     if !path.is_file() {
         return Err(crate::app_error!("prepare-source-unavailable"));
     }
-    crate::fingerprint::hash_file(path).map_err(|_| crate::app_error!("prepare-source-unavailable"))
+    crate::fingerprint::hash_file(path).map_err(crate::io_error!("prepare-source-unavailable"))
 }
 
 #[cfg(all(test, unix))]

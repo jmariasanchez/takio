@@ -52,7 +52,7 @@ fn send_with_programs(
     }
     let source = source
         .canonicalize()
-        .map_err(|_| crate::app_error!("source-unavailable"))?;
+        .map_err(crate::io_error!("source-unavailable"))?;
     if !source.is_file() {
         return Err(crate::app_error!("source-unavailable"));
     }
@@ -267,7 +267,7 @@ fn run(command: &mut Command, timeout: Duration) -> AppResult<CommandOutput> {
     command.stdout(Stdio::from(output.try_clone()?));
     let mut child = command
         .spawn()
-        .map_err(|_| crate::app_error!("backend-unavailable"))?;
+        .map_err(crate::io_error!("backend-unavailable"))?;
     let started = Instant::now();
     let status = loop {
         match child.try_wait() {
@@ -306,7 +306,7 @@ fn run(command: &mut Command, timeout: Duration) -> AppResult<CommandOutput> {
 }
 
 fn fingerprint(path: &Path) -> AppResult<crate::fingerprint::Fingerprint> {
-    crate::fingerprint::hash_file(path).map_err(|_| crate::app_error!("source-unavailable"))
+    crate::fingerprint::hash_file(path).map_err(crate::io_error!("source-unavailable"))
 }
 
 fn sanitize_file_name(value: &str) -> Option<String> {

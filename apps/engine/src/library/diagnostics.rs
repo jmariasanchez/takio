@@ -66,7 +66,7 @@ pub fn write_library_diagnostics(
         .parent()
         .ok_or_else(|| crate::app_error!("invalid-arguments"))?;
     let parent_metadata =
-        fs::symlink_metadata(parent).map_err(|_| crate::app_error!("invalid-arguments"))?;
+        fs::symlink_metadata(parent).map_err(crate::io_error!("invalid-arguments"))?;
     if !parent_metadata.file_type().is_dir() || parent_metadata.file_type().is_symlink() {
         return Err(crate::app_error!("invalid-arguments"));
     }

@@ -188,7 +188,7 @@ pub fn claim(
         manifest_path(&root, &descriptor.artifact_id),
         claimed_manifest_path(&root, &descriptor.artifact_id),
     )
-    .map_err(|_| crate::app_error!("candidate-cover-unavailable"))?;
+    .map_err(crate::io_error!("candidate-cover-unavailable"))?;
     Ok(ClaimedCover {
         descriptor: validated.descriptor,
         source: validated.source,
@@ -205,7 +205,7 @@ impl ClaimedCover {
             claimed_manifest_path(&root, &self.descriptor.artifact_id),
             manifest_path(&root, &self.descriptor.artifact_id),
         )
-        .map_err(|_| crate::app_error!("candidate-cover-unavailable"))?;
+        .map_err(crate::io_error!("candidate-cover-unavailable"))?;
         self.finished = true;
         Ok(())
     }
@@ -391,18 +391,18 @@ fn reject_symlink(path: &Path) -> AppResult<()> {
 fn read_regular(path: &Path, max: u64) -> AppResult<Vec<u8>> {
     let metadata = path
         .symlink_metadata()
-        .map_err(|_| crate::app_error!("candidate-cover-unavailable"))?;
+        .map_err(crate::io_error!("candidate-cover-unavailable"))?;
     if !metadata.is_file() || metadata.file_type().is_symlink() || metadata.len() > max {
         return Err(crate::app_error!("candidate-cover-unavailable"));
     }
     let file = OpenOptions::new()
         .read(true)
         .open(path)
-        .map_err(|_| crate::app_error!("candidate-cover-unavailable"))?;
+        .map_err(crate::io_error!("candidate-cover-unavailable"))?;
     let mut bytes = Vec::with_capacity(metadata.len() as usize);
     file.take(max + 1)
         .read_to_end(&mut bytes)
-        .map_err(|_| crate::app_error!("candidate-cover-unavailable"))?;
+        .map_err(crate::io_error!("candidate-cover-unavailable"))?;
     if bytes.len() as u64 > max {
         return Err(crate::app_error!("candidate-cover-unavailable"));
     }

@@ -148,7 +148,7 @@ pub fn list(root: &Path) -> AppResult<Vec<Destination>> {
 pub fn authorize(path: &Path, root: &Path) -> AppResult<Destination> {
     let canonical = path
         .canonicalize()
-        .map_err(|_| crate::app_error!("unknown-destination"))?;
+        .map_err(crate::io_error!("unknown-destination"))?;
     list(root)?
         .into_iter()
         .find(|destination| destination.path == canonical)
@@ -395,7 +395,7 @@ pub fn eject(destination: &Destination) -> AppResult<()> {
         .args(["eject"])
         .arg(&destination.path)
         .status()
-        .map_err(|_| crate::app_error!("eject-failed"))?;
+        .map_err(crate::io_error!("eject-failed"))?;
     if status.success() {
         Ok(())
     } else {

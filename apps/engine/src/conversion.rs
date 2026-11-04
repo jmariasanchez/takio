@@ -167,7 +167,7 @@ fn convert_inner(
 ) -> AppResult<Artifact> {
     let input = input
         .canonicalize()
-        .map_err(|_| crate::app_error!("input-unavailable"))?;
+        .map_err(crate::io_error!("input-unavailable"))?;
     if !input.is_file() || output.exists() {
         return Err(crate::app_error!(if output.exists() {
             crate::error::ErrorCode::OutputFileExists
@@ -222,7 +222,7 @@ fn convert_inner(
     }
     let mut child = command
         .spawn()
-        .map_err(|_| crate::app_error!("backend-unavailable"))?;
+        .map_err(crate::io_error!("backend-unavailable"))?;
     let started = Instant::now();
     let status = loop {
         match child.try_wait() {
@@ -248,8 +248,7 @@ fn convert_inner(
         return Err(crate::app_error!("conversion-failed"));
     }
     let crate::fingerprint::Fingerprint { bytes, sha256 } =
-        crate::fingerprint::hash_file(&temporary)
-            .map_err(|_| crate::app_error!("artifact-invalid"))?;
+        crate::fingerprint::hash_file(&temporary).map_err(crate::io_error!("artifact-invalid"))?;
     if output.exists() {
         let _ = fs::remove_file(&temporary);
         return Err(crate::app_error!("output-file-exists"));

@@ -86,7 +86,7 @@ pub fn import_calibre_library(
     let database_path = root
         .join("metadata.db")
         .canonicalize()
-        .map_err(|_| crate::app_error!("unreadable"))?;
+        .map_err(crate::io_error!("unreadable"))?;
     validate_destination(&paths, &root, &database_path)?;
     let (_snapshot, database) = open_database(&database_path)?;
     let books = read_books(&database, &root)?;
@@ -202,7 +202,7 @@ fn validate_root(root: &Path) -> AppResult<PathBuf> {
     }
     let root = root
         .canonicalize()
-        .map_err(|_| crate::app_error!("unreadable"))?;
+        .map_err(crate::io_error!("unreadable"))?;
     let database = root.join("metadata.db");
     let metadata = fs::symlink_metadata(&database).map_err(|error| {
         if error.kind() == std::io::ErrorKind::NotFound {
@@ -269,7 +269,7 @@ fn resolve_for_creation(path: &Path) -> AppResult<PathBuf> {
 }
 
 fn same_file(left: &Path, right: &Path) -> AppResult<bool> {
-    same_file::is_same_file(left, right).map_err(|_| crate::app_error!("unreadable"))
+    same_file::is_same_file(left, right).map_err(crate::io_error!("unreadable"))
 }
 
 fn read_books(database: &Connection, root: &Path) -> rusqlite::Result<Vec<CalibreBook>> {
