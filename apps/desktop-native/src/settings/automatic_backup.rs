@@ -168,8 +168,10 @@ pub(crate) fn validate_destination(root: &Path, destination: &Path) -> AppResult
             "automatic-backup-destination-unavailable"
         ));
     }
-    let root = root.canonicalize()?;
-    let destination = destination.canonicalize()?;
+    let unavailable =
+        |error| AppError::from_io(ErrorCode::AutomaticBackupDestinationUnavailable, error);
+    let root = root.canonicalize().map_err(unavailable)?;
+    let destination = destination.canonicalize().map_err(unavailable)?;
     if destination.starts_with(&root) || root.starts_with(&destination) {
         return Err(takio::app_error!("automatic-backup-destination-overlap"));
     }

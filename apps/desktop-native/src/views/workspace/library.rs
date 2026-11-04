@@ -1,7 +1,6 @@
 //! Explicit existing-folder selection and per-library native view lifetime.
 use super::*;
 
-const SWITCH_BUSY: &str = "Finish the current operation, save/cancel edits and close any review before opening another library.";
 const LIBRARY_CHOOSER_FAILED: &str =
     "The library chooser could not be opened. Try again. Your current library is unchanged.";
 
@@ -12,7 +11,7 @@ impl Workspace {
         }
         if !self.state.read(cx).can_switch_library() {
             self.state.update(cx, |state, cx| {
-                state.set_status(SWITCH_BUSY.into(), true, cx);
+                state.set_status(crate::state::SWITCH_BUSY.into(), true, cx);
             });
             return;
         }

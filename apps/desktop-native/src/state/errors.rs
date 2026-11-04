@@ -1,6 +1,7 @@
 pub(super) const BACKUP_BUSY: &str = "Finish the current operation or save/cancel your edits, then choose Back Up Library again. No new backup was started.";
 pub(super) const RESTORE_BUSY: &str = "Finish the current operation or save/cancel your edits, then choose Restore Backup again. No restore was started.";
 pub(super) const BACKUP_DETAIL: &str = "Includes the catalogue, Trash and managed files. External referenced files and conversion jobs are not included. Keep a copy on a separate drive.";
+pub const SWITCH_BUSY: &str = "Finish the current operation, save/cancel edits and close any review before opening another library.";
 pub(super) const SEND_CANCELLED: &str = "Send review cancelled. Nothing was sent.";
 pub(super) const PREPARATION_CANCELLED: &str = "Preparation cancelled. No copy was prepared.";
 
@@ -23,6 +24,11 @@ pub(super) fn preparation_started() -> String {
 
 pub fn humanize_app_error(error: &takio::error::AppError) -> String {
     with_io_hint(humanize_error(error.kind()), error)
+}
+
+/// Open-library wording plus the same actionable disk-full/permission hint.
+pub(super) fn open_library_app_error(error: &takio::error::AppError) -> String {
+    with_io_hint(open_library_error(error.kind()), error)
 }
 
 /// Recovery wording plus the same actionable disk-full/permission hint.

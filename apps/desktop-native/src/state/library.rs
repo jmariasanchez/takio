@@ -24,11 +24,7 @@ impl LibraryState {
 
     pub fn open_library(&mut self, directory: PathBuf, cx: &mut Context<Self>) {
         if !self.can_switch_library() {
-            self.set_status(
-                "Finish the current operation, save/cancel edits and close any review before opening another library.".into(),
-                true,
-                cx,
-            );
+            self.set_status(errors::SWITCH_BUSY.into(), true, cx);
             return;
         }
         self.session.activity = Activity::SwitchingLibrary;
@@ -57,7 +53,7 @@ impl LibraryState {
                         let (message, error) = report.message();
                         this.set_status(message, error, cx);
                     }
-                    Err(error) => this.set_status(open_library_error(error.kind()), true, cx),
+                    Err(error) => this.set_status(open_library_app_error(&error), true, cx),
                 }
                 cx.notify();
             });

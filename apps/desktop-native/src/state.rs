@@ -1485,8 +1485,8 @@ fn import_summary(scan: &takio::import::scan::ImportScan) -> String {
 }
 
 mod errors;
-pub use errors::{humanize_app_error, humanize_error};
-use errors::{humanize_recovery_app_error, open_library_error};
+pub use errors::{SWITCH_BUSY, humanize_app_error, humanize_error};
+use errors::{humanize_recovery_app_error, open_library_app_error};
 
 /// Convenience alias so views can declare their dependency plainly.
 pub type LibraryEntity = Entity<LibraryState>;
