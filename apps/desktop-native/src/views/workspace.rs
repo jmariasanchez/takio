@@ -190,12 +190,7 @@ impl Workspace {
         let readers: Vec<_> = state
             .destinations()
             .iter()
-            .filter(|device| {
-                !matches!(
-                    device.kind,
-                    takio::delivery::destinations::DestinationKind::Generic
-                )
-            })
+            .filter(|device| device.is_reader())
             .cloned()
             .collect();
         if readers.is_empty() {

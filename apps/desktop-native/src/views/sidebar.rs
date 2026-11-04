@@ -94,12 +94,7 @@ impl Sidebar {
         let readers: Vec<_> = state
             .destinations()
             .iter()
-            .filter(|reader| {
-                !matches!(
-                    reader.kind,
-                    takio::delivery::destinations::DestinationKind::Generic
-                )
-            })
+            .filter(|reader| reader.is_reader())
             .cloned()
             .collect();
         let has_stock_kindle = readers.iter().any(|reader| {

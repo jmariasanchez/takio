@@ -889,12 +889,7 @@ impl LibraryState {
         let destinations: Vec<_> = self
             .destinations
             .iter()
-            .filter(|destination| {
-                !matches!(
-                    destination.kind,
-                    takio::delivery::destinations::DestinationKind::Generic
-                )
-            })
+            .filter(|destination| destination.is_reader())
             .cloned()
             .collect();
         if destinations.is_empty() {

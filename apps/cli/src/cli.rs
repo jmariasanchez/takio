@@ -11,7 +11,7 @@ use crate::output::print_success;
 use takio::conversion::jobs::{JobAttachmentStatus, JobStatus, JobStore};
 use takio::conversion::maintenance::{self, discover_ebook_polish};
 use takio::conversion::{CALIBRE_CAPABILITIES, convert, discover_ebook_convert};
-use takio::delivery::destinations::{self, DestinationKind};
+use takio::delivery::destinations;
 use takio::delivery::kindle_ssh::{self, KindleSshDestination};
 use takio::delivery::reader_shelf;
 use takio::error::{AppResult, ErrorCode};
@@ -2558,7 +2558,7 @@ fn print_human_list(
     let readers: Vec<_> = destinations::list(volumes_root)
         .unwrap_or_default()
         .into_iter()
-        .filter(|device| !matches!(device.kind, DestinationKind::Generic))
+        .filter(|device| device.is_reader())
         .collect();
     let library = if readers.is_empty() {
         Vec::new()

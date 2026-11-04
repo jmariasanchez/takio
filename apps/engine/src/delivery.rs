@@ -7,7 +7,7 @@ pub mod reader_shelf;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-use crate::delivery::destinations::{DeliveryResult, Destination, DestinationKind};
+use crate::delivery::destinations::{DeliveryResult, Destination};
 use crate::error::AppResult;
 use crate::format::FormatId;
 use crate::library::store::LibraryStore;
@@ -61,8 +61,7 @@ pub fn plan_send(
                 .find(|format| format.format == wanted)
                 .ok_or_else(|| crate::app_error!("format-not-found"))?;
             if !destination.readable_formats().contains(&wanted)
-                && !(matches!(destination.kind, DestinationKind::Generic)
-                    && !destination.has_koreader())
+                && (destination.is_reader() || destination.has_koreader())
             {
                 return Err(crate::app_error!("no-compatible-format"));
             }

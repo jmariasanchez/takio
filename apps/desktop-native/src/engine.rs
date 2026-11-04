@@ -14,7 +14,9 @@ use std::thread;
 pub use crate::library_location::OpenedLibrary;
 use crate::preparation::{self, PreparationPreview};
 use takio::conversion::BackendDiscovery;
-use takio::delivery::destinations::{self, DeliveryResult, Destination, DestinationKind};
+#[cfg(test)]
+use takio::delivery::destinations::DestinationKind;
+use takio::delivery::destinations::{self, DeliveryResult, Destination};
 #[cfg(test)]
 use takio::error::AppError;
 use takio::error::AppResult;
@@ -509,7 +511,7 @@ fn worker_with_reader_scans(
                     root: store.paths().root.clone(),
                     destinations: destinations
                         .into_iter()
-                        .filter(|destination| !matches!(destination.kind, DestinationKind::Generic))
+                        .filter(|destination| destination.is_reader())
                         .collect(),
                     fingerprints,
                     current: Arc::new(AtomicBool::new(true)),

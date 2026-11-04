@@ -175,6 +175,11 @@ pub fn delivery_records(destination: &Destination) -> AppResult<Vec<DeliveryReco
 }
 
 impl Destination {
+    #[must_use]
+    pub fn is_reader(&self) -> bool {
+        !matches!(self.kind, DestinationKind::Generic)
+    }
+
     /// KOReader was detected on this volume (a jailbroken Kindle or a Kobo with it installed).
     #[must_use]
     pub fn has_koreader(&self) -> bool {
@@ -683,6 +688,18 @@ mod tests {
             .code(),
             "destination-file-exists"
         );
+    }
+
+    #[test]
+    fn reader_classification_depends_only_on_kind() {
+        let mut destination = manifest_destination(Path::new("unused"));
+        assert!(destination.is_reader());
+        destination.kind = DestinationKind::Kobo;
+        assert!(destination.is_reader());
+        destination.kind = DestinationKind::Generic;
+        assert!(!destination.is_reader());
+        destination.features.push(DestinationFeature::Koreader);
+        assert!(!destination.is_reader());
     }
 
     fn manifest_destination(path: &Path) -> Destination {
