@@ -873,8 +873,7 @@ pub fn run() -> AppResult<()> {
             if allow_remote || tls_cert.is_some() || tls_key.is_some() {
                 return Err(takio::app_error!("invalid-arguments"));
             }
-            let paths = LibraryPaths::resolve(cli.library.as_deref(), db.as_deref())?;
-            let store = LibraryStore::open_read_only(paths)?;
+            let store = read_store(cli.library.as_deref(), db.as_deref())?;
             crate::server::serve(&store, &host, port)
         }
     }
@@ -1053,8 +1052,7 @@ fn metadata_candidates(command: MetadataCandidatesCommand, library: Option<&str>
                 // envelope rather than the candidate apply response schema.
                 let patch_value = read_json(patch_json.as_deref().unwrap_or_default())?;
                 let patch: LibraryPatch = decode_request(&patch_value)?;
-                let paths = LibraryPaths::resolve(library, db.as_deref())?;
-                let mut store = LibraryStore::create_or_migrate(paths)?;
+                let mut store = write_store(library, db.as_deref())?;
                 if cover {
                     return Err(takio::app_error!("invalid-arguments"));
                 }
@@ -1176,8 +1174,7 @@ fn library(
             print_success(json!({"databasePath":paths.database,"rootPath":paths.root}))
         }
         LibraryCommand::Verify { db } => {
-            let paths = LibraryPaths::resolve(library, db.as_deref())?;
-            let report = LibraryStore::open_read_only(paths)?.verify()?;
+            let report = read_store(library, db.as_deref())?.verify()?;
             print_success(json!({"report":integrity_value(&report)}))
         }
         LibraryCommand::Backup { db, dest } => {
@@ -1229,15 +1226,11 @@ fn library(
             }
         }
         LibraryCommand::Get { db, id } => {
-            let paths = LibraryPaths::resolve(library, db.as_deref())?;
-            print_success(json!({"item":LibraryStore::open_read_only(paths)?.get(&id)?}))
+            print_success(json!({"item":read_store(library, db.as_deref())?.get(&id)?}))
         }
-        LibraryCommand::Search { db, query } => {
-            let paths = LibraryPaths::resolve(library, db.as_deref())?;
-            print_success(
-                json!({"items":LibraryStore::open_read_only(paths)?.query_items(&query, &Default::default())?}),
-            )
-        }
+        LibraryCommand::Search { db, query } => print_success(
+            json!({"items":read_store(library, db.as_deref())?.query_items(&query, &Default::default())?}),
+        ),
         LibraryCommand::Query { db, request_json } => {
             let request = read_json(&request_json)?;
             let store = read_store(library, db.as_deref())?;
@@ -1304,8 +1297,7 @@ fn library(
             format,
             json,
         } => {
-            let paths = LibraryPaths::resolve(library, db.as_deref())?;
-            let item = LibraryStore::open_read_only(paths)?
+            let item = read_store(library, db.as_deref())?
                 .get(&id)?
                 .ok_or_else(|| takio::app_error!("not-found"))?;
             let selected = format
@@ -1364,8 +1356,7 @@ fn library(
             print_success(import_calibre_library(paths, &library_root)?)
         }
         LibraryCommand::Catalog { db, format, output } => {
-            let paths = LibraryPaths::resolve(library, db.as_deref())?;
-            let items = LibraryStore::open_read_only(paths)?.list(false)?;
+            let items = read_store(library, db.as_deref())?.list(false)?;
             print_success(json!({"catalog":write_catalog(&items, format, &output)?}))
         }
         LibraryCommand::ContentSearch {
@@ -1474,16 +1465,12 @@ fn custom_columns(command: CustomColumnsCommand, library: Option<&str>) -> AppRe
 fn library_saved_views(command: SavedViewsCommand, library: Option<&str>) -> AppResult<()> {
     match command {
         SavedViewsCommand::List { db } => {
-            let paths = LibraryPaths::resolve(library, db.as_deref())?;
-            print_success(json!({"views":LibraryStore::open_read_only(paths)?.list_saved_views()?}))
+            print_success(json!({"views":read_store(library, db.as_deref())?.list_saved_views()?}))
         }
         SavedViewsCommand::Save { db, request_json } => {
             let request: takio::library::store::SaveViewRequest =
                 decode_request(&read_json(&request_json)?)?;
-            let paths = LibraryPaths::resolve(library, db.as_deref())?;
-            print_success(
-                json!({"view":LibraryStore::create_or_migrate(paths)?.save_view(&request)?}),
-            )
+            print_success(json!({"view":write_store(library, db.as_deref())?.save_view(&request)?}))
         }
         SavedViewsCommand::Remove { db, request_json } => {
             let request = read_json(&request_json)?;
@@ -1499,8 +1486,7 @@ fn library_saved_views(command: SavedViewsCommand, library: Option<&str>) -> App
                 .map(str::trim)
                 .filter(|id| !id.is_empty() && id.encode_utf16().count() <= 256)
                 .ok_or_else(|| takio::app_error!("invalid-arguments"))?;
-            let paths = LibraryPaths::resolve(library, db.as_deref())?;
-            print_success(json!({"view":LibraryStore::create_or_migrate(paths)?.remove_view(id)?}))
+            print_success(json!({"view":write_store(library, db.as_deref())?.remove_view(id)?}))
         }
     }
 }
@@ -1719,8 +1705,7 @@ fn library_cover(command: CoverCommand, library: Option<&str>) -> AppResult<()> 
 fn library_trash(command: TrashCommand, library: Option<&str>) -> AppResult<()> {
     match command {
         TrashCommand::List { db, request_json } => {
-            let paths = LibraryPaths::resolve(library, db.as_deref())?;
-            let items = LibraryStore::open_read_only(paths)?.list_trash()?;
+            let items = read_store(library, db.as_deref())?.list_trash()?;
             let request = request_json.as_deref().map(read_json).transpose()?;
             let offset = request
                 .as_ref()
@@ -1996,8 +1981,7 @@ fn destination(command: DestinationCommand, library: Option<&str>) -> AppResult<
             port,
             timeout_ms,
         } => {
-            let paths = LibraryPaths::resolve(library, None)?;
-            let item = LibraryStore::open_read_only(paths)?.get_active(&id)?;
+            let item = read_store(library, None)?.get_active(&id)?;
             let source = item
                 .formats
                 .iter()
