@@ -2946,7 +2946,8 @@ fn item_filename_candidates_use_the_import_title_after_managed_publication() {
     let value = success_value(&output.stdout);
     let candidate = &value["candidates"][0];
     assert_eq!(candidate["patch"]["title"], "Real Title");
-    assert_eq!(candidate["patch"]["author"], "Ada Writer");
+    assert_eq!(candidate["patch"]["authors"][0]["name"], "Ada Writer");
+    assert!(candidate["patch"].get("author").is_none());
     assert_eq!(candidate["provenance"]["itemId"], id);
     assert_eq!(candidate["provenance"]["sourcePath"], source_path);
 }

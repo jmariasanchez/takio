@@ -520,7 +520,6 @@ fn filename_candidates_for_stem(
             ..LibraryPatch::default()
         };
         if let Some(author) = clean("author") {
-            patch.author = Patch::Set(author.clone());
             patch.authors = Patch::Set(vec![BookAuthor {
                 name: author,
                 sort_name: None,

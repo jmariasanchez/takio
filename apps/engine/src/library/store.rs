@@ -529,13 +529,7 @@ impl LibraryStore {
         } else {
             embedded_authors
         };
-        let author = (!authors.is_empty()).then(|| {
-            authors
-                .iter()
-                .map(|author| author.name.as_str())
-                .collect::<Vec<_>>()
-                .join(", ")
-        });
+        let author = crate::library::model::derived_display_author(&authors);
         let fingerprint = hash_file(&source)?;
         if let Some(id) = self
             .connection
@@ -1170,13 +1164,7 @@ impl LibraryStore {
             }
         }
         if authors_changed {
-            item.author = (!item.authors.is_empty()).then(|| {
-                item.authors
-                    .iter()
-                    .map(|author| author.name.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            });
+            item.author = crate::library::model::derived_display_author(&item.authors);
         }
         match patch.series {
             Patch::Missing => {}

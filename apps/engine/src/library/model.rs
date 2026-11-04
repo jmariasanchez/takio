@@ -181,6 +181,19 @@ impl LibraryItem {
     }
 }
 
+/// The legacy scalar `author` wire field, always derived from structured
+/// authors. It is never an independent source of truth.
+#[must_use]
+pub fn derived_display_author(authors: &[BookAuthor]) -> Option<String> {
+    (!authors.is_empty()).then(|| {
+        authors
+            .iter()
+            .map(|author| author.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    })
+}
+
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct LibraryPatch {

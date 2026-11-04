@@ -399,6 +399,28 @@ fn remove_view_ignores_unrelated_corrupt_definition() {
 }
 
 #[test]
+fn scalar_author_is_always_derived_when_structured_authors_are_patched() {
+    let (_temp, mut store, item) = fixture();
+    let updated = store
+        .update(
+            &item.id,
+            serde_json::from_value(serde_json::json!({
+                "author": "Ignored scalar",
+                "authors": [{"name": "Ada"}, {"name": "Grace"}]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+    assert_eq!(updated.author.as_deref(), Some("Ada, Grace"));
+    let stored = store.get(&item.id).unwrap().unwrap();
+    assert_eq!(stored.author.as_deref(), Some("Ada, Grace"));
+    assert_eq!(
+        stored.author,
+        crate::library::model::derived_display_author(&stored.authors)
+    );
+}
+
+#[test]
 fn scalar_author_patch_updates_structured_authors_so_they_cannot_diverge() {
     let (_temp, mut store, item) = fixture();
     store

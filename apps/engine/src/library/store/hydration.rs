@@ -196,13 +196,7 @@ pub(super) fn read_items_bulk(
             .first()
             .ok_or_else(|| crate::app_error!("invalid-stored-data"))?;
         let item_authors = authors.remove(id).unwrap_or_default();
-        let author = (!item_authors.is_empty()).then(|| {
-            item_authors
-                .iter()
-                .map(|author| author.name.as_str())
-                .collect::<Vec<_>>()
-                .join(", ")
-        });
+        let author = crate::library::model::derived_display_author(&item_authors);
         items.push(LibraryItem {
             id: id.clone(),
             title: base.title,
