@@ -75,7 +75,7 @@ impl Render for Sidebar {
             sidebar = sidebar.child(
                 div()
                     .id(label)
-                    .map(|el| super::search::accessible_button(el, label, available))
+                    .map(|el| super::text_input::accessible_button(el, label, available))
                     .aria_selected(section == target)
                     .h(px(26.))
                     .px_2()
@@ -107,7 +107,7 @@ impl Render for Sidebar {
                     div()
                         .id("refresh-readers")
                         .map(|el| {
-                            super::search::accessible_button(el, "Refresh readers", !refreshing)
+                            super::text_input::accessible_button(el, "Refresh readers", !refreshing)
                         })
                         .text_xs()
                         .cursor_pointer()
@@ -188,7 +188,7 @@ impl Render for Sidebar {
                             div()
                                 .id(("import-reader", index))
                                 .map(|el| {
-                                    super::search::accessible_button(
+                                    super::text_input::accessible_button(
                                         el,
                                         format!("Add {unmatched} books from reader"),
                                         can_import,
@@ -226,7 +226,7 @@ impl Render for Sidebar {
                                 div()
                                     .id(("send-device", index))
                                     .map(|el| {
-                                        super::search::accessible_button(
+                                        super::text_input::accessible_button(
                                             el,
                                             format!("Review {selected} books to send"),
                                             can_send,
@@ -262,7 +262,7 @@ impl Render for Sidebar {
                                 div()
                                     .id(("eject", index))
                                     .map(|el| {
-                                        super::search::accessible_button(
+                                        super::text_input::accessible_button(
                                             el,
                                             "Eject reader",
                                             available,
@@ -291,7 +291,7 @@ impl Render for Sidebar {
         if has_stock_kindle {
             sidebar = sidebar.child(div().px_2().py_2().flex().flex_col().gap_1()
             .child(div().text_xs().text_color(theme.text_secondary).child("Have an EPUB? Reveal its file in the inspector, then upload it yourself on Amazon."))
-            .child(div().id("amazon-send-to-kindle").map(|el| super::search::accessible_button(el, "Open Send to Kindle website", true)).debug_selector(|| "amazon-send-to-kindle".to_owned()).text_xs().text_color(theme.accent).cursor_pointer()
+            .child(div().id("amazon-send-to-kindle").map(|el| super::text_input::accessible_button(el, "Open Send to Kindle website", true)).debug_selector(|| "amazon-send-to-kindle".to_owned()).text_xs().text_color(theme.accent).cursor_pointer()
                 .child("Open Send to Kindle website")
                 .on_click(|_, _, cx| cx.open_url("https://www.amazon.com/sendtokindle")))
             .child(div().text_xs().text_color(theme.text_tertiary).child("Opens your browser. Takio does not upload files or confirm Amazon delivery.")));
@@ -306,7 +306,7 @@ impl Render for Sidebar {
             groups = groups.child(
                 div()
                     .id("clear-filters")
-                    .map(|el| super::search::accessible_button(el, "Clear filters", available))
+                    .map(|el| super::text_input::accessible_button(el, "Clear filters", available))
                     .px_2()
                     .py_1()
                     .cursor_pointer()
@@ -351,7 +351,7 @@ impl Render for Sidebar {
             groups = groups.child(
                 div()
                     .id(name)
-                    .map(|el| super::search::accessible_button(el, name, true))
+                    .map(|el| super::text_input::accessible_button(el, name, true))
                     .aria_expanded(!collapsed)
                     .px_2()
                     .py_1()
@@ -377,7 +377,7 @@ impl Render for Sidebar {
                     div()
                         .id(gpui::SharedString::from(format!("facet:{name}:{value}")))
                         .map(|el| {
-                            super::search::accessible_button(
+                            super::text_input::accessible_button(
                                 el,
                                 format!("{name}: {value}, {count} books"),
                                 available,

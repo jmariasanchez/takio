@@ -33,7 +33,7 @@ fn fixture_with_preparation_backend(
     cx: &mut TestAppContext,
 ) -> Fixture {
     cx.executor().allow_parking();
-    cx.update(|cx| cx.set_global(Theme::LIGHT));
+    cx.update(crate::theme::initialize);
     let temp = tempfile::tempdir().unwrap();
     let paths =
         LibraryPaths::resolve(None, Some(&temp.path().join("library/library.sqlite"))).unwrap();
@@ -1144,6 +1144,44 @@ fn send_action_while_metadata_editing_never_prompts(cx: &mut TestAppContext) {
             .count(),
         0
     );
+}
+
+#[gpui::test]
+fn both_modals_block_every_global_command(cx: &mut TestAppContext) {
+    for editor in [false, true] {
+        let f = fixture(false, cx);
+        f.window
+            .update(cx, |_, window, cx| {
+                let action: Box<dyn gpui::Action> = if editor {
+                    Box::new(crate::EditSelected)
+                } else {
+                    Box::new(crate::TogglePalette)
+                };
+                window.dispatch_action(action, cx);
+            })
+            .unwrap();
+        cx.run_until_parked();
+        cx.update_window(f.window.into(), |_, window, cx| window.draw(cx).clear(cx))
+            .unwrap();
+        let count = std::rc::Rc::new(std::cell::Cell::new(0));
+        cx.update(|cx| crate::commands::observe_global_actions(cx, count.clone()));
+        for command in crate::commands::COMMANDS {
+            f.window
+                .update(cx, |_, window, cx| {
+                    window.dispatch_action((command.action)(), cx)
+                })
+                .unwrap();
+            cx.run_until_parked();
+            assert_eq!(
+                count.get(),
+                0,
+                "{} escaped {}",
+                command.label,
+                if editor { "editor" } else { "palette" }
+            );
+            assert!(!cx.has_pending_prompt());
+        }
+    }
 }
 
 #[gpui::test]

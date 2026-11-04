@@ -4,6 +4,21 @@
 
 use gpui::{Rgba, WindowAppearance};
 
+pub fn initialize(cx: &mut gpui::App) {
+    cx.set_global(Theme::LIGHT);
+    crate::views::text_input::install(cx);
+}
+
+pub fn install(window: &mut gpui::Window, cx: &mut gpui::App) {
+    cx.set_global(Theme::for_appearance(window.appearance()));
+    window
+        .observe_window_appearance(|window, cx| {
+            cx.set_global(Theme::for_appearance(window.appearance()));
+            window.refresh();
+        })
+        .detach();
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct Theme {
     pub window_bg: Rgba,
@@ -91,6 +106,19 @@ pub mod metrics {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[gpui::test]
+    fn window_theme_installs_without_a_workspace(cx: &mut gpui::TestAppContext) {
+        cx.update(initialize);
+        cx.add_window(|window, cx| {
+            install(window, cx);
+            assert_eq!(
+                cx.global::<Theme>().window_bg,
+                Theme::for_appearance(window.appearance()).window_bg
+            );
+            gpui::Empty
+        });
+    }
 
     fn luminance(color: Rgba) -> f64 {
         let linear = |value: f32| {

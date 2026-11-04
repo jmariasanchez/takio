@@ -5,7 +5,7 @@ use gpui::{
 };
 use takio::library::model::{BookAuthor, LibraryItem, LibraryPatch, Patch};
 
-use super::search::Search;
+use super::text_input::TextInput;
 use crate::state::{LibraryEntity, humanize_error};
 use crate::theme::{Theme, metrics};
 
@@ -98,7 +98,7 @@ pub struct Closed;
 pub struct MetadataEditor {
     state: LibraryEntity,
     original: LibraryItem,
-    fields: [Entity<Search>; 4],
+    fields: [Entity<TextInput>; 4],
     save_focus: FocusHandle,
     cancel_focus: FocusHandle,
     return_focus: Option<FocusHandle>,
@@ -125,7 +125,7 @@ impl MetadataEditor {
         ]);
         let draft = Draft::from_item(&item);
         let fields = [draft.title, draft.authors, draft.series, draft.tags]
-            .map(|text| cx.new(|cx| Search::text_input(text, cx)));
+            .map(|text| cx.new(|cx| TextInput::new(text, cx)));
         for (field, label) in fields.iter().zip([
             "Title (required)",
             "Authors (separate with semicolons)",
@@ -269,18 +269,7 @@ impl Render for MetadataEditor {
                     this.save(window, cx);
                 }
             }))
-            .on_action(|_: &crate::TrashSelected, _, cx| cx.stop_propagation())
-            .on_action(|_: &crate::PurgeSelected, _, cx| cx.stop_propagation())
-            .on_action(|_: &crate::RestoreSelected, _, cx| cx.stop_propagation())
-            .on_action(|_: &crate::OpenSelected, _, cx| cx.stop_propagation())
-            .on_action(|_: &crate::SelectAll, _, cx| cx.stop_propagation())
-            .on_action(|_: &crate::ShowLibrary, _, cx| cx.stop_propagation())
-            .on_action(|_: &crate::ShowTrash, _, cx| cx.stop_propagation())
-            .on_action(|_: &crate::TogglePalette, _, cx| cx.stop_propagation())
-            .on_action(|_: &crate::FocusSearch, _, cx| cx.stop_propagation())
-            .on_action(|_: &crate::SendSelected, _, cx| cx.stop_propagation())
-            .on_action(|_: &crate::EjectReader, _, cx| cx.stop_propagation())
-            .on_action(|_: &crate::EditSelected, _, cx| cx.stop_propagation())
+            .map(crate::commands::block_modal_actions)
             .child(div().text_lg().child("Edit details"))
             .child(
                 div()
@@ -324,7 +313,7 @@ impl Render for MetadataEditor {
                         div()
                             .id("save-details")
                             .map(|el| {
-                                super::search::accessible_button(
+                                super::text_input::accessible_button(
                                     el,
                                     if busy {
                                         "Saving details"
@@ -354,7 +343,7 @@ impl Render for MetadataEditor {
                         div()
                             .id("cancel-details")
                             .map(|el| {
-                                super::search::accessible_button(
+                                super::text_input::accessible_button(
                                     el,
                                     "Cancel editing details",
                                     !busy,
@@ -476,7 +465,7 @@ mod tests {
 
     fn setup(cx: &mut TestAppContext) -> (tempfile::TempDir, LibraryEntity) {
         cx.executor().allow_parking();
-        cx.update(|cx| cx.set_global(Theme::LIGHT));
+        cx.update(crate::theme::initialize);
         let temp = tempfile::tempdir().unwrap();
         let paths = LibraryPaths::resolve(None, Some(&temp.path().join("library.sqlite"))).unwrap();
         let engine = Engine::open(paths).unwrap();

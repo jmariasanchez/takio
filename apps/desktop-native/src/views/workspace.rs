@@ -17,7 +17,7 @@ use gpui::{
 use crate::state::{LibraryEntity, Section, humanize_error};
 use crate::theme::{Theme, metrics};
 use crate::views::library_list::LibraryList;
-use crate::views::{search::Search, sidebar::Sidebar};
+use crate::views::{sidebar::Sidebar, text_input::TextInput};
 use crate::{
     Import, ImportMove, OpenSelected, PurgeSelected, RefreshDevices, RestoreSelected, SelectAll,
     ShowLibrary, ShowTrash, TrashSelected,
@@ -33,7 +33,7 @@ enum ReaderAction {
 pub struct Workspace {
     state: LibraryEntity,
     list: Entity<LibraryList>,
-    search: Entity<Search>,
+    search: Entity<TextInput>,
     sidebar: Entity<Sidebar>,
     inspector: Entity<crate::views::inspector::Inspector>,
     palette: Entity<crate::views::palette::Palette>,
@@ -44,7 +44,7 @@ pub struct Workspace {
 }
 
 impl Workspace {
-    pub(crate) fn benchmark_search(&self) -> Entity<Search> {
+    pub(crate) fn benchmark_search(&self) -> Entity<TextInput> {
         self.search.clone()
     }
 
@@ -53,16 +53,11 @@ impl Workspace {
     }
 
     pub fn new(state: LibraryEntity, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let search = cx.new(|cx| Search::new(state.clone(), cx));
+        let search = cx.new(|cx| super::search::new(state.clone(), cx));
         let sidebar = cx.new(|cx| Sidebar::new(state.clone(), cx));
         let list = cx.new(|cx| LibraryList::new(state.clone(), cx));
         let inspector = cx.new(|cx| crate::views::inspector::Inspector::new(state.clone(), cx));
         cx.observe(&state, |_, _, cx| cx.notify()).detach();
-        cx.observe_window_appearance(window, |_, window, cx| {
-            cx.set_global(Theme::for_appearance(window.appearance()));
-            cx.notify();
-        })
-        .detach();
         let focus = list.read(cx).focus_handle(cx);
         window.focus(&focus, cx);
         let palette = cx.new(|cx| crate::views::palette::Palette::new(focus.clone(), cx));
@@ -780,7 +775,7 @@ impl Render for Workspace {
                                                 div()
                                                     .id("dismiss-transfers")
                                                     .map(|el| {
-                                                        super::search::accessible_button(
+                                                        super::text_input::accessible_button(
                                                             el,
                                                             "Dismiss transfer results",
                                                             true,
@@ -867,7 +862,7 @@ fn toolbar_button(
     let label = label.into();
     div()
         .id(id)
-        .map(|el| super::search::accessible_button(el, label.clone(), enabled))
+        .map(|el| super::text_input::accessible_button(el, label.clone(), enabled))
         .debug_selector(move || id.to_owned())
         .px_2()
         .py_1()

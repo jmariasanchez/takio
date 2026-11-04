@@ -20,7 +20,7 @@ fn settle(view: &Entity<StartupWindow>, cx: &mut TestAppContext) {
 
 fn fixture(cx: &mut TestAppContext) -> Fixture {
     cx.executor().allow_parking();
-    cx.update(|cx| cx.set_global(Theme::LIGHT));
+    cx.update(crate::theme::initialize);
     let temp = tempfile::tempdir().unwrap();
     let paths =
         LibraryPaths::resolve(None, Some(&temp.path().join("broken/library.sqlite"))).unwrap();

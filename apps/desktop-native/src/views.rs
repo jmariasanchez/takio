@@ -4,4 +4,5 @@ pub mod metadata_editor;
 pub mod palette;
 pub mod search;
 pub mod sidebar;
+pub mod text_input;
 pub mod workspace;

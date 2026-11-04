@@ -51,7 +51,7 @@ impl Workspace {
             return;
         }
         self.library_epoch = epoch;
-        self.search = cx.new(|cx| Search::new(self.state.clone(), cx));
+        self.search = cx.new(|cx| crate::views::search::new(self.state.clone(), cx));
         self.sidebar = cx.new(|cx| Sidebar::new(self.state.clone(), cx));
         self.list = cx.new(|cx| LibraryList::new(self.state.clone(), cx));
         self.inspector =

@@ -2,7 +2,6 @@
 use crate::{
     engine::{self, Engine},
     state::{LibraryState, SortColumn},
-    theme::Theme,
     views::workspace::Workspace,
 };
 use gpui::{
@@ -310,8 +309,8 @@ pub fn run(started: Instant) {
         .unwrap_or_else(|error| crate::fatal(error.code()));
     let engine = Engine::open(paths).unwrap_or_else(|error| crate::fatal(error.code()));
     gpui_platform::application().run(move |cx: &mut App| {
-        cx.set_global(Theme::LIGHT);
-        cx.set_menus(crate::menus());
+        crate::theme::initialize(cx);
+        cx.set_menus(crate::commands::menus());
         let volumes = engine.root().join("benchmark-volumes");
         let state = cx.new(|cx| LibraryState::new_with_volumes(engine, volumes, cx));
         let measurements = Rc::new(RefCell::new(Measurements {
@@ -335,7 +334,7 @@ pub fn run(started: Instant) {
         })
         .detach();
         cx.open_window(crate::main_window_options(cx), move |window, cx| {
-            cx.set_global(Theme::for_appearance(window.appearance()));
+            crate::theme::install(window, cx);
             let presented = measurements.clone();
             window.on_next_frame(move |window, _| {
                 window.on_next_frame(move |_, cx| {

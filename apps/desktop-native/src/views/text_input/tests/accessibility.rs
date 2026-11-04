@@ -4,7 +4,7 @@
 use super::*;
 use crate::{
     engine::{Engine, Request},
-    state::{LibraryState, Section},
+    state::{LibraryEntity, LibraryState, Section},
     views::{library_list::LibraryList, sidebar::Sidebar, workspace::Workspace},
 };
 use gpui::Focusable;
@@ -16,7 +16,7 @@ use crate::test_support::settle;
 
 pub(crate) fn fixture(cx: &mut TestAppContext) -> (tempfile::TempDir, LibraryEntity) {
     cx.executor().allow_parking();
-    cx.update(|cx| cx.set_global(Theme::LIGHT));
+    cx.update(crate::theme::initialize);
     let temp = tempfile::tempdir().unwrap();
     let paths =
         LibraryPaths::resolve(None, Some(&temp.path().join("library/library.sqlite"))).unwrap();
@@ -52,9 +52,9 @@ pub(crate) fn fixture(cx: &mut TestAppContext) -> (tempfile::TempDir, LibraryEnt
 
 #[gpui::test]
 fn search_node_reports_actual_role_label_value_and_set_value_capability(cx: &mut TestAppContext) {
-    cx.update(|cx| cx.set_global(Theme::LIGHT));
+    cx.update(crate::theme::initialize);
     let window = cx.add_window(|_, cx| {
-        let mut input = Search::text_input("a\u{1f642}b".into(), cx);
+        let mut input = TextInput::new("a\u{1f642}b".into(), cx);
         input.set_label("Title (required)");
         input
     });

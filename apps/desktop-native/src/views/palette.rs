@@ -1,152 +1,9 @@
 //! Keyboard-first command launcher, with native text input and restored action focus.
-use super::search::Search;
+use super::text_input::TextInput;
 use crate::theme::Theme;
-use gpui::{
-    Action, Context, Entity, FocusHandle, MouseButton, Subscription, Window, div, prelude::*, px,
-};
+use gpui::{Context, Entity, FocusHandle, MouseButton, Subscription, Window, div, prelude::*, px};
 
-struct Command {
-    label: &'static str,
-    hint: &'static str,
-    action: fn() -> Box<dyn Action>,
-}
-const COMMANDS: &[Command] = &[
-    Command {
-        label: "Enable automatic recovery copies...",
-        hint: "",
-        action: || Box::new(crate::EnableAutomaticBackups),
-    },
-    Command {
-        label: "Disable automatic recovery copies",
-        hint: "",
-        action: || Box::new(crate::DisableAutomaticBackups),
-    },
-    Command {
-        label: "Open Library...",
-        hint: "Cmd Shift O",
-        action: || Box::new(crate::OpenLibrary),
-    },
-    Command {
-        label: "Reveal Current Library",
-        hint: "",
-        action: || Box::new(crate::RevealLibrary),
-    },
-    Command {
-        label: "Back Up Library...",
-        hint: "",
-        action: || Box::new(crate::BackUpLibrary),
-    },
-    Command {
-        label: "Restore Backup to New Folder...",
-        hint: "",
-        action: || Box::new(crate::RestoreBackupCopy),
-    },
-    Command {
-        label: "Reveal Last Recovery Copy",
-        hint: "",
-        action: || Box::new(crate::RevealRecovery),
-    },
-    Command {
-        label: "Import...",
-        hint: "Cmd Shift I",
-        action: || Box::new(crate::Import),
-    },
-    Command {
-        label: "Import and Move...",
-        hint: "",
-        action: || Box::new(crate::ImportMove),
-    },
-    Command {
-        label: "Open Selected",
-        hint: "Cmd O",
-        action: || Box::new(crate::OpenSelected),
-    },
-    Command {
-        label: "Edit Book Details...",
-        hint: "Cmd E",
-        action: || Box::new(crate::EditSelected),
-    },
-    Command {
-        label: "Prepare for Kindle...",
-        hint: "Cmd Shift P",
-        action: || Box::new(crate::PrepareSelected),
-    },
-    Command {
-        label: "Convert Reviewed EPUB to AZW3",
-        hint: "",
-        action: || Box::new(crate::ConfirmPreparation),
-    },
-    Command {
-        label: "Cancel Preparation",
-        hint: "",
-        action: || Box::new(crate::CancelPreparation),
-    },
-    Command {
-        label: "Send Selected Books...",
-        hint: "Cmd Shift S",
-        action: || Box::new(crate::SendSelected),
-    },
-    Command {
-        label: "Send Ready Books from Review",
-        hint: "Cmd Enter",
-        action: || Box::new(crate::ConfirmSend),
-    },
-    Command {
-        label: "Cancel Send Review",
-        hint: "Cmd .",
-        action: || Box::new(crate::CancelSend),
-    },
-    Command {
-        label: "Eject Reader...",
-        hint: "",
-        action: || Box::new(crate::EjectReader),
-    },
-    Command {
-        label: "Move to Trash",
-        hint: "Cmd Backspace",
-        action: || Box::new(crate::TrashSelected),
-    },
-    Command {
-        label: "Restore Selected",
-        hint: "",
-        action: || Box::new(crate::RestoreSelected),
-    },
-    Command {
-        label: "Delete Permanently",
-        hint: "",
-        action: || Box::new(crate::PurgeSelected),
-    },
-    Command {
-        label: "Select All",
-        hint: "Cmd A",
-        action: || Box::new(crate::SelectAll),
-    },
-    Command {
-        label: "Show Library",
-        hint: "Cmd 1",
-        action: || Box::new(crate::ShowLibrary),
-    },
-    Command {
-        label: "Show Trash",
-        hint: "Cmd 2",
-        action: || Box::new(crate::ShowTrash),
-    },
-    Command {
-        label: "Refresh Devices",
-        hint: "Cmd R",
-        action: || Box::new(crate::RefreshDevices),
-    },
-    Command {
-        label: "Focus Search",
-        hint: "Cmd F",
-        action: || Box::new(crate::FocusSearch),
-    },
-    Command {
-        label: "Quit Takio",
-        hint: "Cmd Q",
-        action: || Box::new(crate::Quit),
-    },
-];
+use crate::commands::COMMANDS;
 
 fn matching_commands(query: &str) -> Vec<usize> {
     let query = query.to_lowercase();
@@ -159,7 +16,7 @@ fn matching_commands(query: &str) -> Vec<usize> {
 
 pub struct Palette {
     open: bool,
-    input: Entity<Search>,
+    input: Entity<TextInput>,
     _input_change: Subscription,
     previous_focus: Option<FocusHandle>,
     action_focus: FocusHandle,
@@ -168,15 +25,16 @@ pub struct Palette {
 impl Palette {
     pub fn new(action_focus: FocusHandle, cx: &mut Context<Self>) -> Self {
         let input = cx.new(|cx| {
-            let mut input = Search::text_input(String::new(), cx);
+            let mut input = TextInput::new(String::new(), cx);
             input.set_label("Command palette");
             input.set_placeholder("Type a command");
             input
         });
-        let input_change = cx.subscribe(&input, |this, _, _: &super::search::TextChanged, cx| {
-            this.highlighted = 0;
-            cx.notify();
-        });
+        let input_change =
+            cx.subscribe(&input, |this, _, _: &super::text_input::TextChanged, cx| {
+                this.highlighted = 0;
+                cx.notify();
+            });
         Self {
             open: false,
             input,
@@ -247,15 +105,7 @@ impl Render for Palette {
                     .role(gpui::Role::Group)
                     .aria_label("Command palette")
                     .key_context("Palette")
-                    .on_action(|_: &crate::TrashSelected, _, cx| cx.stop_propagation())
-                    .on_action(|_: &crate::PurgeSelected, _, cx| cx.stop_propagation())
-                    .on_action(|_: &crate::RestoreSelected, _, cx| cx.stop_propagation())
-                    .on_action(|_: &crate::OpenSelected, _, cx| cx.stop_propagation())
-                    .on_action(|_: &crate::SendSelected, _, cx| cx.stop_propagation())
-                    .on_action(|_: &crate::PrepareSelected, _, cx| cx.stop_propagation())
-                    .on_action(|_: &crate::ConfirmSend, _, cx| cx.stop_propagation())
-                    .on_action(|_: &crate::ConfirmPreparation, _, cx| cx.stop_propagation())
-                    .on_action(|_: &crate::EjectReader, _, cx| cx.stop_propagation())
+                    .map(crate::commands::block_modal_actions)
                     .w(px(520.))
                     .bg(theme.panel_bg)
                     .rounded_lg()
@@ -313,7 +163,7 @@ impl Render for Palette {
                                     .id(index)
                                     .role(gpui::Role::ListBoxOption)
                                     .aria_label(command.label)
-                                    .aria_keyshortcuts(command.hint)
+                                    .aria_keyshortcuts(command.hint())
                                     .aria_selected(row == self.highlighted)
                                     .when(row == self.highlighted, |el| el.aria_active_descendant())
                                     .h(px(32.))
@@ -332,7 +182,7 @@ impl Render for Palette {
                                         div()
                                             .text_xs()
                                             .text_color(theme.text_tertiary)
-                                            .child(command.hint),
+                                            .child(command.hint()),
                                     )
                                     .on_click(cx.listener(move |this, _, window, cx| {
                                         this.run(index, window, cx)
@@ -359,7 +209,7 @@ mod tests {
 
     #[gpui::test]
     fn palette_shared_input_composition_refilters_and_resets_highlight(cx: &mut TestAppContext) {
-        cx.update(|cx| cx.set_global(crate::theme::Theme::LIGHT));
+        cx.update(crate::theme::initialize);
         let window = cx.add_window(|window, cx| {
             let focus = cx.focus_handle();
             let mut palette = super::Palette::new(focus, cx);

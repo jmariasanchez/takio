@@ -109,7 +109,7 @@ impl Inspector {
                         div()
                             .id("edit-details")
                             .map(|el| {
-                                super::search::accessible_button(
+                                super::text_input::accessible_button(
                                     el,
                                     "Edit details",
                                     self.state.read(cx).can_mutate(),
@@ -299,7 +299,7 @@ impl Inspector {
                                 div()
                                     .id(("open-format", index))
                                     .map(|el| {
-                                        super::search::accessible_button(
+                                        super::text_input::accessible_button(
                                             el,
                                             format!("Open {}", format.format.as_str()),
                                             true,
@@ -319,7 +319,7 @@ impl Inspector {
                                 div()
                                     .id(("reveal-format", index))
                                     .map(|el| {
-                                        super::search::accessible_button(
+                                        super::text_input::accessible_button(
                                             el,
                                             format!("Reveal {} file", format.format.as_str()),
                                             true,

@@ -10,7 +10,6 @@ use gpui::{AppContext, VisualTestAppContext, px, size};
 
 use crate::engine::{self, Engine};
 use crate::state::LibraryState;
-use crate::theme::Theme;
 use crate::views::workspace::Workspace;
 
 pub fn run() {
@@ -26,7 +25,7 @@ pub fn run() {
     let engine = Engine::open(paths).unwrap_or_else(|error| crate::fatal(error.code()));
 
     let mut cx = VisualTestAppContext::new(gpui_platform::current_platform(false));
-    cx.update(|cx| cx.set_global(Theme::LIGHT));
+    cx.update(crate::theme::initialize);
     let state = cx.new(|cx| match volumes {
         Some(volumes) => LibraryState::new_with_volumes(engine, volumes, cx),
         None => LibraryState::new(engine, cx),
@@ -121,6 +120,7 @@ pub fn run() {
     }
     let window = cx
         .open_offscreen_window(size(px(1280.), px(800.)), |window, cx| {
+            crate::theme::install(window, cx);
             cx.new(|cx| Workspace::new(state.clone(), window, cx))
         })
         .unwrap_or_else(|_| crate::fatal("could not open offscreen window"));

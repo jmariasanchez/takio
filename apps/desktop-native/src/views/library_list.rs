@@ -9,7 +9,7 @@ use takio::library::model::LibraryItem;
 
 use crate::state::{LibraryEntity, SortColumn, author_label};
 use crate::theme::{Theme, metrics};
-use crate::{OpenSelected, SelectAll, SelectNext, SelectPrevious, TrashSelected};
+use crate::{SelectNext, SelectPrevious};
 
 #[derive(Clone, Copy, Debug)]
 struct ColumnLayout {
@@ -106,7 +106,7 @@ impl LibraryList {
         let state = self.state.clone();
         div()
             .id(label)
-            .map(|el| super::search::accessible_button(el, format!("Sort by {label}"), enabled))
+            .map(|el| super::text_input::accessible_button(el, format!("Sort by {label}"), enabled))
             .aria_description(if active {
                 if sort.ascending {
                     "Sorted ascending"
@@ -243,18 +243,6 @@ impl Render for LibraryList {
             .on_action(cx.listener(|this, _: &SelectPrevious, _, cx| {
                 this.state
                     .update(cx, |state, cx| state.move_selection(-1, cx));
-            }))
-            .on_action(cx.listener(|this, _: &SelectAll, _, cx| {
-                this.state.update(cx, |state, cx| state.select_all(cx));
-            }))
-            .on_action(cx.listener(|this, _: &TrashSelected, _, cx| {
-                this.state.update(cx, |state, cx| state.trash_selected(cx));
-            }))
-            .on_action(cx.listener(|this, _: &OpenSelected, _, cx| {
-                let path = this.state.read(cx).primary_source_path();
-                if let Some(path) = path {
-                    cx.open_with_system(&path);
-                }
             }))
             .flex()
             .flex_col()
@@ -394,7 +382,7 @@ mod tests {
 
     #[gpui::test]
     fn row_accessibility_uses_stable_book_identity_and_selection(cx: &mut TestAppContext) {
-        let (_temp, state) = crate::views::search::tests::accessibility::fixture(cx);
+        let (_temp, state) = crate::views::text_input::tests::accessibility::fixture(cx);
         let item = state.read_with(cx, |state, _| state.items[0].clone());
         let first = row(
             0,
