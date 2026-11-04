@@ -1640,7 +1640,7 @@ fn existing_owned_root(path: &Path, canonical_root: &Path, directory: &str) -> A
 fn canonical_file(path: &Path) -> AppResult<PathBuf> {
     let path = path
         .canonicalize()
-        .map_err(|_| crate::app_error!("not-found"))?;
+        .map_err(|error| AppError::from_io(crate::error::ErrorCode::NotFound, error))?;
     if path.is_file() {
         Ok(path)
     } else {
@@ -1691,7 +1691,8 @@ fn metadata_from_filename(path: &Path) -> (String, Vec<BookAuthor>) {
 }
 
 fn hash_file(path: &Path) -> AppResult<Fingerprint> {
-    crate::fingerprint::hash_file(path).map_err(|_| crate::app_error!("source-unavailable"))
+    crate::fingerprint::hash_file(path)
+        .map_err(|error| AppError::from_io(crate::error::ErrorCode::SourceUnavailable, error))
 }
 
 fn publish_copy(source: &Path, target: &Path, expected: &Fingerprint) -> AppResult<()> {

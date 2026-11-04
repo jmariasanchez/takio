@@ -89,10 +89,8 @@ pub fn import_calibre_library(
         .map_err(|_| crate::app_error!("unreadable"))?;
     validate_destination(&paths, &root, &database_path)?;
     let (_snapshot, database) = open_database(&database_path)?;
-    let books =
-        read_books(&database, &root).map_err(|_| crate::app_error!("storage-unavailable"))?;
-    let definitions =
-        custom_definitions(&database).map_err(|_| crate::app_error!("storage-unavailable"))?;
+    let books = read_books(&database, &root)?;
+    let definitions = custom_definitions(&database)?;
     drop(database);
     let mut store = LibraryStore::create_or_migrate(paths)?;
     let warnings = import_column_definitions(&mut store, definitions)?;
@@ -235,7 +233,7 @@ fn open_database(path: &Path) -> AppResult<(tempfile::TempDir, Connection)> {
         .pragma_query_value(None, "schema_version", |row| row.get::<_, i64>(0))
         .map_err(|_| crate::app_error!("unreadable"))?;
 
-    let snapshot = tempfile::tempdir().map_err(|_| crate::app_error!("storage-unavailable"))?;
+    let snapshot = tempfile::tempdir()?;
     let snapshot_path = snapshot.path().join("metadata.db");
     let mut database =
         Connection::open(&snapshot_path).map_err(|_| crate::app_error!("unreadable"))?;
@@ -278,9 +276,7 @@ fn resolve_for_creation(path: &Path) -> AppResult<PathBuf> {
             .parent()
             .ok_or_else(|| crate::app_error!("invalid-arguments"))?;
     }
-    let mut resolved = ancestor
-        .canonicalize()
-        .map_err(|_| crate::app_error!("storage-unavailable"))?;
+    let mut resolved = ancestor.canonicalize()?;
     for component in suffix.into_iter().rev() {
         resolved.push(component);
     }

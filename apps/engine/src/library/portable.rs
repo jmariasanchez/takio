@@ -10,7 +10,7 @@ use sha2::{Digest, Sha256};
 use unicode_normalization::UnicodeNormalization;
 use uuid::Uuid;
 
-use crate::error::AppResult;
+use crate::error::{AppError, AppResult};
 use crate::format::FormatId;
 use crate::library::model::{BookAuthor, CustomColumnDefinition, LibraryItem, Provenance};
 use crate::library::paths::{LibraryPaths, absolute as absolute_nonempty};
@@ -697,26 +697,26 @@ fn safe_book_directory(item: &LibraryItem) -> String {
 }
 
 fn copy_artifact(source: &Path, destination: &Path, relative: &str) -> AppResult<PortableArtifact> {
-    let source_metadata =
-        fs::symlink_metadata(source).map_err(|_| crate::app_error!("storage-unavailable"))?;
+    let source_metadata = fs::symlink_metadata(source)?;
     if !source_metadata.is_file()
         || source_metadata.file_type().is_symlink()
         || source_metadata.len() == 0
     {
         return Err(crate::app_error!("storage-unavailable"));
     }
-    let mut input = File::open(source).map_err(|_| crate::app_error!("storage-unavailable"))?;
+    let mut input = File::open(source)?;
     let mut output = OpenOptions::new()
         .write(true)
         .create_new(true)
-        .open(destination)
-        .map_err(|_| crate::app_error!("storage-unavailable"))?;
+        .open(destination)?;
     let crate::fingerprint::Fingerprint { bytes, sha256 } =
-        crate::fingerprint::copy_and_hash(&mut input, &mut output)
-            .map_err(|_| crate::app_error!("storage-unavailable"))?;
-    output
-        .sync_all()
-        .map_err(|_| crate::app_error!("storage-unavailable"))?;
+        crate::fingerprint::copy_and_hash(&mut input, &mut output).map_err(
+            |error| match error {
+                crate::fingerprint::CopyError::Read(error)
+                | crate::fingerprint::CopyError::Write(error) => AppError::from(error),
+            },
+        )?;
+    output.sync_all()?;
     if bytes == 0 || bytes > MAX_SAFE_INTEGER {
         return Err(crate::app_error!("storage-unavailable"));
     }
@@ -832,25 +832,18 @@ fn owned_staging_path(destination: &Path) -> AppResult<PathBuf> {
     Ok(parent.join(format!(".{name}.{}.tmp", Uuid::new_v4())))
 }
 fn create_private_dir(path: &Path) -> AppResult<()> {
-    fs::create_dir(path).map_err(|_| crate::app_error!("storage-unavailable"))?;
+    fs::create_dir(path)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(path, fs::Permissions::from_mode(0o700))
-            .map_err(|_| crate::app_error!("storage-unavailable"))?;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
     }
     Ok(())
 }
 fn write_new_file(path: &Path, bytes: &[u8]) -> AppResult<()> {
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(path)
-        .map_err(|_| crate::app_error!("storage-unavailable"))?;
-    file.write_all(bytes)
-        .map_err(|_| crate::app_error!("storage-unavailable"))?;
-    file.sync_all()
-        .map_err(|_| crate::app_error!("storage-unavailable"))
+    let mut file = OpenOptions::new().write(true).create_new(true).open(path)?;
+    file.write_all(bytes)?;
+    file.sync_all().map_err(AppError::from)
 }
 fn xml(value: &str) -> String {
     value
@@ -963,6 +956,20 @@ fn integrity_value(report: &VerifyReport) -> serde_json::Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn portable_io_errors_preserve_kind_and_wire_code() {
+        let temp = tempfile::tempdir().unwrap();
+        let error = write_new_file(&temp.path().join("missing/manifest.json"), b"{}").unwrap_err();
+        assert_eq!(error.code(), "storage-unavailable");
+        assert_eq!(error.io_kind(), Some(std::io::ErrorKind::NotFound));
+        let path = temp.path().join("existing");
+        fs::write(&path, b"keep").unwrap();
+        let error = write_new_file(&path, b"replace").unwrap_err();
+        assert_eq!(error.code(), "storage-unavailable");
+        assert_eq!(error.io_kind(), Some(std::io::ErrorKind::AlreadyExists));
+        assert_eq!(fs::read(path).unwrap(), b"keep");
+    }
 
     fn replace_opf(fixture: &Path, before: &str, after: &str) {
         let opf = fixture.join("books/Book [abc]/metadata.opf");

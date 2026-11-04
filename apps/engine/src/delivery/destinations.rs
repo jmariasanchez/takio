@@ -7,7 +7,7 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::error::{AppError, AppResult};
+use crate::error::{AppError, AppResult, ErrorCode};
 use crate::fingerprint::{CopyError, Fingerprint};
 use crate::format::FormatId;
 use crate::library::model::BookFormat;
@@ -447,7 +447,8 @@ fn ensure_contained(parent: &Path, child: &Path) -> AppResult<()> {
 }
 
 fn copy_and_hash(source: &Path, target: &Path) -> AppResult<Fingerprint> {
-    let mut input = File::open(source).map_err(|_| crate::app_error!("source-unavailable"))?;
+    let mut input = File::open(source)
+        .map_err(|error| AppError::from_io(ErrorCode::SourceUnavailable, error))?;
     let mut output = OpenOptions::new()
         .create_new(true)
         .write(true)
@@ -456,13 +457,13 @@ fn copy_and_hash(source: &Path, target: &Path) -> AppResult<Fingerprint> {
     let result = (|| {
         let fingerprint = crate::fingerprint::copy_and_hash(&mut input, &mut output).map_err(
             |error| match error {
-                CopyError::Read(_) => crate::app_error!("source-unavailable"),
-                CopyError::Write(_) => crate::app_error!("copy-failed"),
+                CopyError::Read(error) => AppError::from_io(ErrorCode::SourceUnavailable, error),
+                CopyError::Write(error) => AppError::from_io(ErrorCode::CopyFailed, error),
             },
         )?;
         output
             .sync_all()
-            .map_err(|_| crate::app_error!("copy-failed"))?;
+            .map_err(|error| AppError::from_io(ErrorCode::CopyFailed, error))?;
         Ok(fingerprint)
     })();
     drop(output);
@@ -473,11 +474,12 @@ fn copy_and_hash(source: &Path, target: &Path) -> AppResult<Fingerprint> {
 }
 
 fn publication_error(error: std::io::Error) -> AppError {
-    if error.kind() == std::io::ErrorKind::AlreadyExists {
-        crate::app_error!("destination-file-exists")
+    let code = if error.kind() == std::io::ErrorKind::AlreadyExists {
+        ErrorCode::DestinationFileExists
     } else {
-        crate::app_error!("copy-failed")
-    }
+        ErrorCode::CopyFailed
+    };
+    AppError::from_io(code, error)
 }
 
 fn publish_noclobber(partial: &Path, target: &Path, expected: &Fingerprint) -> AppResult<()> {

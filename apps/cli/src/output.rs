@@ -152,5 +152,6 @@ mod tests {
         let error = write_line(&mut ClosedPipe, &success_line(Value::Null))
             .expect_err("closed output must be reported");
         assert_eq!(error.code(), "storage-unavailable");
+        assert_eq!(error.io_kind(), Some(io::ErrorKind::BrokenPipe));
     }
 }

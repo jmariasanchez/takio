@@ -169,17 +169,42 @@ macro_rules! app_error {
 pub struct AppError {
     code: ErrorCode,
     exit_code: i32,
+    io_kind: Option<std::io::ErrorKind>,
 }
 
 impl AppError {
     #[must_use]
     pub const fn new(code: ErrorCode) -> Self {
-        Self { code, exit_code: 1 }
+        Self {
+            code,
+            exit_code: 1,
+            io_kind: None,
+        }
     }
 
     #[must_use]
     pub const fn with_exit_code(code: ErrorCode, exit_code: i32) -> Self {
-        Self { code, exit_code }
+        Self {
+            code,
+            exit_code,
+            io_kind: None,
+        }
+    }
+
+    /// Preserve the OS failure category without retaining paths or private error text.
+    /// Call sites choose a domain code when the operation has a more specific contract.
+    #[must_use]
+    pub fn from_io(code: ErrorCode, error: std::io::Error) -> Self {
+        Self {
+            code,
+            exit_code: 1,
+            io_kind: Some(error.kind()),
+        }
+    }
+
+    #[must_use]
+    pub const fn io_kind(&self) -> Option<std::io::ErrorKind> {
+        self.io_kind
     }
 
     #[must_use]
@@ -207,14 +232,40 @@ impl From<rusqlite::Error> for AppError {
 }
 
 impl From<std::io::Error> for AppError {
-    fn from(_: std::io::Error) -> Self {
-        Self::new(ErrorCode::StorageUnavailable)
+    fn from(error: std::io::Error) -> Self {
+        Self::from_io(ErrorCode::StorageUnavailable, error)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn io_errors_keep_redacted_kind_and_explicit_codes() {
+        use std::io::{Error, ErrorKind};
+        for kind in [
+            ErrorKind::NotFound,
+            ErrorKind::PermissionDenied,
+            ErrorKind::AlreadyExists,
+            ErrorKind::BrokenPipe,
+            ErrorKind::StorageFull,
+        ] {
+            let error = AppError::from(Error::new(kind, "private file path"));
+            assert_eq!(error.kind(), ErrorCode::StorageUnavailable);
+            assert_eq!(error.io_kind(), Some(kind));
+            assert_eq!(error.to_string(), "storage-unavailable");
+            let explicit = AppError::from_io(
+                ErrorCode::CopyFailed,
+                Error::new(kind, "private device path"),
+            );
+            assert_eq!(explicit.kind(), ErrorCode::CopyFailed);
+            assert_eq!(explicit.clone().io_kind(), Some(kind));
+            assert_eq!(explicit.exit_code(), 1);
+            assert!(!format!("{explicit:?}").contains("private"));
+        }
+        assert_eq!(AppError::new(ErrorCode::InvalidArguments).io_kind(), None);
+    }
 
     #[test]
     fn every_error_code_preserves_its_wire_string() {

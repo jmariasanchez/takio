@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use crate::error::AppResult;
+use crate::error::{AppError, AppResult};
 
 pub const MAX_COVER_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_ARTIFACTS: usize = 128;
@@ -85,7 +85,7 @@ pub fn stage(
     }
     validate_cover_type(&cover.media_type, &cover.extension)?;
     let root = root(library_root);
-    fs::create_dir_all(&root).map_err(|_| crate::app_error!("storage-unavailable"))?;
+    fs::create_dir_all(&root)?;
     reject_symlink(&root)?;
     let _guard = StageGuard::acquire(&root)?;
     gc(&root)?;
@@ -280,12 +280,10 @@ fn gc(root: &Path) -> AppResult<()> {
     reject_symlink(root)?;
     let mut data_files = HashMap::new();
     let mut manifests = Vec::new();
-    for entry in fs::read_dir(root).map_err(|_| crate::app_error!("storage-unavailable"))? {
-        let entry = entry.map_err(|_| crate::app_error!("storage-unavailable"))?;
+    for entry in fs::read_dir(root)? {
+        let entry = entry?;
         let path = entry.path();
-        let file_type = entry
-            .file_type()
-            .map_err(|_| crate::app_error!("storage-unavailable"))?;
+        let file_type = entry.file_type()?;
         if file_type.is_symlink() || !file_type.is_file() {
             let _ = fs::remove_file(path);
             continue;
@@ -303,10 +301,7 @@ fn gc(root: &Path) -> AppResult<()> {
         }
         match path.extension().and_then(|value| value.to_str()) {
             Some("bin") => {
-                let bytes = entry
-                    .metadata()
-                    .map_err(|_| crate::app_error!("storage-unavailable"))?
-                    .len();
+                let bytes = entry.metadata()?.len();
                 data_files.insert(id.to_owned(), bytes);
             }
             Some("json" | "claimed") => manifests.push((id.to_owned(), path)),
@@ -351,12 +346,10 @@ fn gc(root: &Path) -> AppResult<()> {
 fn usage(root: &Path) -> AppResult<(usize, u64)> {
     let mut count = 0;
     let mut total = 0u64;
-    for entry in fs::read_dir(root).map_err(|_| crate::app_error!("storage-unavailable"))? {
-        let entry = entry.map_err(|_| crate::app_error!("storage-unavailable"))?;
+    for entry in fs::read_dir(root)? {
+        let entry = entry?;
         if entry.path().extension().and_then(|value| value.to_str()) == Some("bin") {
-            let metadata = entry
-                .metadata()
-                .map_err(|_| crate::app_error!("storage-unavailable"))?;
+            let metadata = entry.metadata()?;
             if metadata.is_file() {
                 count += 1;
                 total = total.saturating_add(metadata.len());
@@ -425,15 +418,9 @@ fn read_regular(path: &Path, max: u64) -> AppResult<Vec<u8>> {
 }
 
 fn write_new(path: &Path, bytes: &[u8]) -> AppResult<()> {
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(path)
-        .map_err(|_| crate::app_error!("storage-unavailable"))?;
-    file.write_all(bytes)
-        .map_err(|_| crate::app_error!("storage-unavailable"))?;
-    file.sync_all()
-        .map_err(|_| crate::app_error!("storage-unavailable"))
+    let mut file = OpenOptions::new().write(true).create_new(true).open(path)?;
+    file.write_all(bytes)?;
+    file.sync_all().map_err(AppError::from)
 }
 
 fn data_path(root: &Path, id: &str) -> PathBuf {
@@ -452,7 +439,7 @@ struct StageGuard {
 
 impl StageGuard {
     fn acquire(root: &Path) -> AppResult<Self> {
-        fs::create_dir_all(root).map_err(|_| crate::app_error!("storage-unavailable"))?;
+        fs::create_dir_all(root)?;
         reject_symlink(root)?;
         let lock_path = root.join(LOCK_FILE);
         reject_symlink(&lock_path)?;
@@ -461,8 +448,7 @@ impl StageGuard {
             .write(true)
             .create(true)
             .truncate(false)
-            .open(lock_path)
-            .map_err(|_| crate::app_error!("storage-unavailable"))?;
+            .open(lock_path)?;
         let deadline = Instant::now() + LOCK_TIMEOUT;
         loop {
             match file.try_lock() {
@@ -489,6 +475,14 @@ impl Drop for StageGuard {
 mod tests {
     use super::*;
     use std::sync::{Arc, Barrier};
+
+    #[test]
+    fn staged_cover_io_errors_preserve_kind_and_wire_code() {
+        let temp = tempfile::tempdir().unwrap();
+        let error = write_new(&temp.path().join("missing/cover.bin"), b"cover").unwrap_err();
+        assert_eq!(error.code(), "storage-unavailable");
+        assert_eq!(error.io_kind(), Some(std::io::ErrorKind::NotFound));
+    }
 
     fn jpeg() -> CapturedCover {
         CapturedCover {

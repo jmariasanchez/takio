@@ -130,7 +130,7 @@ impl Drop for Output {
 
 fn destination_error(error: io::Error) -> AppError {
     if error.kind() == io::ErrorKind::AlreadyExists {
-        crate::app_error!("destination-exists")
+        AppError::from_io(crate::error::ErrorCode::DestinationExists, error)
     } else {
         error.into()
     }

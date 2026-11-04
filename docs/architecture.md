@@ -103,7 +103,17 @@ wire strings. Native humanizers exhaustively match the enum. Existing literal
 producers use `app_error!`, which resolves only known wire literals at compile
 time; dynamic producers must supply an `ErrorCode`. Unknown literals fail
 compilation rather than becoming runtime fallback messages. Serde kebab-case
-serialization is checked against every previous wire spelling.
+serialization is checked against every previous wire spelling. Per-item import,
+export, reconciliation, and conversion-job failures carry `ErrorCode`, including
+persisted job codes validated when loading the ledger. Import skip and duplicate
+reasons are enums shared by recursive and Calibre imports. Import failures retain
+the store's actual code instead of mislabeling every other failure as unreadable.
+
+`AppError::from_io` associates an operation-specific code with a redacted IO kind.
+The default IO conversion keeps `storage-unavailable` for wire compatibility,
+but retains `io_kind()` for diagnostics. It never retains private paths or OS
+error text. Call sites with established source, publication, or copy error codes
+choose those codes explicitly and retain the same IO-kind information.
 
 Automation clients can use short-lived CLI commands or `takio library service`,
 a newline-delimited request loop that correlates every response with the caller's
