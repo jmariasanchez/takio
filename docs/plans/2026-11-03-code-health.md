@@ -350,3 +350,59 @@ to 74), authorization consistency (86 to 83), abstraction fitness (81 to 80) and
 incomplete migration (77 to 76) dipped. No dimension landed exactly on the
 target. **Strict is 83.8**, still below the 85 target. The review queued 83 new
 findings.
+
+## Fourth iteration: November 4, 22:48 UTC
+
+Round 4 worked the 83 third-review findings. The salvaged lanes landed in
+`609d9c2`, and round 4b in `3497e64..c78fecf` (`docs/reports/2026-11-04-round4b.md`).
+Round 5 added coordinator commits `7a2afea..3075c60`. A resolution was recorded
+only after an independent read-only auditor, looking at the current code,
+confirmed the defect was gone. Partial fixes stayed open and were reworked
+until the audit agreed, or were left open with the reason written down. In
+total, 313 review findings are fixed, 1 is wontfix and 6 are open.
+
+Behavior changes, each covered by tests and, where noted, checked on the real
+binaries against scratch libraries:
+
+- Every committed item mutation returns one `MutationResult` envelope
+  (`item`, `cleanupPending`, `cleanupPendingPaths`). The CLI no longer
+  fabricates cleanup fields for `library remove`. New fields only; none removed.
+- Authors are the only patch input. The legacy scalar `author` JSON key is
+  folded into one structured author at the wire boundary, then dropped.
+  `LibraryItem.author` is a crate-private derived display value. Writable opens
+  repair scalar-only rows from other writers with the idempotent backfill.
+  Real binary: a blank author is rejected, `" Ada "` is stored as `Ada`, and
+  null clears it.
+- `io_error!` keeps the redacted `std::io::ErrorKind` at every engine
+  `map_err` site that receives an io error. The compiler picked the sites. CLI
+  and service error envelopes add a path-free `reason` (`storage-full`,
+  `permission-denied`), and desktop messages add the matching hint. Real
+  binary: a catalog written to a read-only scratch folder reports
+  `{code: write-failed, reason: permission-denied}`.
+- `cli.rs` drops from 2690 to about 710 lines, split by command domain. All
+  handlers dispatch through one typed `OperationName`, and the only CLI-only
+  response shape is the documented `CliEnvelope::Wrapped`.
+- `model` is a top-level domain leaf, so `metadata` no longer imports
+  `library`.
+- Inline copy moved out of closures so rustfmt formats the handlers. Real
+  binary `capabilities`, `doctor` and `devices --json` output is identical
+  before and after the reflow.
+
+Validation on the integrated tree: fmt, strict workspace Clippy and 664 tests
+passed (3 pre-existing ignored). `scripts/check-native-macos.sh` and the release
+self-tests pass. The 10,000-book benchmark passes every budget: first paint
+98.6 ms, first query 153.5 ms, search p95 26–34 ms, sort p95 3.4 ms and
+select-all reload p95 13.3 ms, all correct.
+
+Open and not addressed by design:
+
+- `bun_store_parallel_schema_owner`, `duplicate_sqlite_store_in_typescript` and
+  `ts_reference_store_shadows_rust_engine` need a product-owner decision on the
+  frozen TypeScript store. They are left open rather than deleted.
+- `io_kind_captured_never_consumed`, `inline_copy_defeats_rustfmt_in_closures`
+  and `legacy_scalar_author_dual_path` are mostly fixed, but the auditor still
+  points to residuals:
+  - io: the closed-pipe path stays `storage-unavailable`.
+  - copy: a few long literal lines.
+  - authors: read-only opens stay write-free by design, and the input-only
+    scalar alias is kept for compatibility.
