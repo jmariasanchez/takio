@@ -51,3 +51,19 @@ test fixture references follow their moved subjects, and the CI benchmark
 allowlist follows the grouped paths. No workflow behavior changes are intended.
 Formatting, all offline workspace tests (594 passed, three existing ignored),
 and strict workspace Clippy pass after the domain moves.
+
+## Test namespaces
+
+The convention is a subject-local `tests` namespace: inline for small tests,
+`<subject>/tests.rs` for extracted suites, and `<subject>/tests/<group>.rs` for
+larger groups. Recovery now uses normal `mod tests;` resolution. Store safety and
+existing-open tests and native search accessibility tests are grouped below
+their subject's `tests` namespace. Existing desktop startup-window and workspace
+test directories already followed this convention and were preserved.
+
+Before and after the external moves, `cargo test --offline --workspace -- --list`
+discovers 597 tests. Comparing the multiset of leaf test names finds no additions
+or removals. Engine recovery/safety moves were coordinated into commit `675a469`
+with the concurrent worker's policy-signature updates so each commit compiles.
+The final namespace nesting also preserves all 597 discovered tests. Formatting,
+workspace tests (594 passed, three existing ignored), and strict Clippy pass.

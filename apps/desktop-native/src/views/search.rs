@@ -501,10 +501,9 @@ pub(crate) fn accessible_button(
 }
 
 #[cfg(test)]
-pub(crate) mod accessibility_tests;
+pub(crate) mod tests {
+    pub(crate) mod accessibility;
 
-#[cfg(test)]
-mod tests {
     use super::*;
     use gpui::TestAppContext;
 

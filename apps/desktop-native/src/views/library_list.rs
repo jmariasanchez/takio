@@ -394,7 +394,7 @@ mod tests {
 
     #[gpui::test]
     fn row_accessibility_uses_stable_book_identity_and_selection(cx: &mut TestAppContext) {
-        let (_temp, state) = crate::views::search::accessibility_tests::fixture(cx);
+        let (_temp, state) = crate::views::search::tests::accessibility::fixture(cx);
         let item = state.read_with(cx, |state, _| state.items[0].clone());
         let first = row(
             0,

@@ -2545,153 +2545,151 @@ mod tests {
             .unwrap();
         assert_eq!(hash_file(&pdf.source_path).unwrap(), expected);
     }
-}
+    mod existing_open {
+        use super::*;
 
-#[cfg(test)]
-mod existing_open_tests {
-    use super::*;
-
-    fn paths(root: &Path) -> LibraryPaths {
-        LibraryPaths::resolve(
-            None,
-            Some(&root.canonicalize().unwrap().join("library.sqlite")),
-        )
-        .unwrap()
-    }
-
-    #[test]
-    fn strict_existing_open_never_creates_or_migrates() {
-        let temp = tempfile::tempdir().unwrap();
-        let paths = paths(temp.path());
-        assert!(LibraryStore::open_existing(paths.clone()).is_err());
-        assert!(fs::read_dir(temp.path()).unwrap().next().is_none());
-        for version in [0, 1, LIBRARY_SCHEMA_VERSION + 1] {
-            let connection = Connection::open(&paths.database).unwrap();
-            if version == 1 {
-                connection
-                    .execute_batch(include_str!(
-                        "../../tests/fixtures/legacy-library-schemas/schema-v1.sql"
-                    ))
-                    .unwrap();
-            }
-            connection
-                .pragma_update(None, "user_version", version)
-                .unwrap();
-            drop(connection);
-            let before = fs::read(&paths.database).unwrap();
-            assert_eq!(
-                LibraryStore::open_existing(paths.clone())
-                    .err()
-                    .unwrap()
-                    .code(),
-                "incompatible-schema"
-            );
-            assert_eq!(fs::read(&paths.database).unwrap(), before);
-            assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 1);
-            fs::remove_file(&paths.database).unwrap();
+        fn paths(root: &Path) -> LibraryPaths {
+            LibraryPaths::resolve(
+                None,
+                Some(&root.canonicalize().unwrap().join("library.sqlite")),
+            )
+            .unwrap()
         }
-    }
 
-    #[test]
-    fn strict_existing_open_rejects_domain_and_trash_data_without_writes() {
-        for corruption in [
-            "DELETE FROM library_item_formats",
-            "UPDATE library_items SET title=CAST(x'ff' AS TEXT)",
-            "UPDATE library_item_formats SET content_sha256='bad'",
-            "DROP INDEX library_items_by_title",
-        ] {
+        #[test]
+        fn strict_existing_open_never_creates_or_migrates() {
+            let temp = tempfile::tempdir().unwrap();
+            let paths = paths(temp.path());
+            assert!(LibraryStore::open_existing(paths.clone()).is_err());
+            assert!(fs::read_dir(temp.path()).unwrap().next().is_none());
+            for version in [0, 1, LIBRARY_SCHEMA_VERSION + 1] {
+                let connection = Connection::open(&paths.database).unwrap();
+                if version == 1 {
+                    connection
+                        .execute_batch(include_str!(
+                            "../../tests/fixtures/legacy-library-schemas/schema-v1.sql"
+                        ))
+                        .unwrap();
+                }
+                connection
+                    .pragma_update(None, "user_version", version)
+                    .unwrap();
+                drop(connection);
+                let before = fs::read(&paths.database).unwrap();
+                assert_eq!(
+                    LibraryStore::open_existing(paths.clone())
+                        .err()
+                        .unwrap()
+                        .code(),
+                    "incompatible-schema"
+                );
+                assert_eq!(fs::read(&paths.database).unwrap(), before);
+                assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 1);
+                fs::remove_file(&paths.database).unwrap();
+            }
+        }
+
+        #[test]
+        fn strict_existing_open_rejects_domain_and_trash_data_without_writes() {
+            for corruption in [
+                "DELETE FROM library_item_formats",
+                "UPDATE library_items SET title=CAST(x'ff' AS TEXT)",
+                "UPDATE library_item_formats SET content_sha256='bad'",
+                "DROP INDEX library_items_by_title",
+            ] {
+                let temp = tempfile::tempdir().unwrap();
+                let paths = paths(temp.path());
+                let mut store = LibraryStore::create_or_migrate(paths.clone()).unwrap();
+                let source = temp.path().join("source.epub");
+                fs::write(&source, b"book").unwrap();
+                let item = store.import(&source, None, ImportMode::Copy).unwrap();
+                store.trash(&item.id).unwrap();
+                store
+                    .connection
+                    .pragma_update(None, "ignore_check_constraints", "ON")
+                    .unwrap();
+                store.connection.execute_batch(corruption).unwrap();
+                drop(store);
+                let before = fs::read(&paths.database).unwrap();
+                assert!(
+                    LibraryStore::open_existing(paths.clone()).is_err(),
+                    "{corruption}"
+                );
+                assert_eq!(fs::read(&paths.database).unwrap(), before);
+            }
+        }
+
+        #[test]
+        fn strict_existing_open_keeps_missing_external_files_manageable() {
             let temp = tempfile::tempdir().unwrap();
             let paths = paths(temp.path());
             let mut store = LibraryStore::create_or_migrate(paths.clone()).unwrap();
             let source = temp.path().join("source.epub");
             fs::write(&source, b"book").unwrap();
             let item = store.import(&source, None, ImportMode::Copy).unwrap();
-            store.trash(&item.id).unwrap();
-            store
-                .connection
-                .pragma_update(None, "ignore_check_constraints", "ON")
-                .unwrap();
-            store.connection.execute_batch(corruption).unwrap();
-            drop(store);
-            let before = fs::read(&paths.database).unwrap();
-            assert!(
-                LibraryStore::open_existing(paths.clone()).is_err(),
-                "{corruption}"
-            );
-            assert_eq!(fs::read(&paths.database).unwrap(), before);
-        }
-    }
-
-    #[test]
-    fn strict_existing_open_keeps_missing_external_files_manageable() {
-        let temp = tempfile::tempdir().unwrap();
-        let paths = paths(temp.path());
-        let mut store = LibraryStore::create_or_migrate(paths.clone()).unwrap();
-        let source = temp.path().join("source.epub");
-        fs::write(&source, b"book").unwrap();
-        let item = store.import(&source, None, ImportMode::Copy).unwrap();
-        store.connection.execute(
+            store.connection.execute(
             "UPDATE library_item_formats SET provenance='referenced',source_path=?1,content_bytes=NULL,content_sha256=NULL",
             [source.to_string_lossy()],
         ).unwrap();
-        drop(store);
-        fs::remove_file(&source).unwrap();
-        let mut reopened = LibraryStore::open_existing(paths).unwrap();
-        assert_eq!(reopened.list(false).unwrap()[0].id, item.id);
-        reopened.trash(&item.id).unwrap();
-        reopened.restore(&item.id).unwrap();
-    }
-
-    #[test]
-    fn strict_existing_open_rejects_copied_roots_and_traversal() {
-        let temp = tempfile::tempdir().unwrap();
-        let paths = paths(temp.path());
-        let mut store = LibraryStore::create_or_migrate(paths.clone()).unwrap();
-        let source = temp.path().join("source.epub");
-        fs::write(&source, b"book").unwrap();
-        let item = store.import(&source, None, ImportMode::Copy).unwrap();
-        let copied = tempfile::tempdir().unwrap();
-        fs::copy(&paths.database, copied.path().join("library.sqlite")).unwrap();
-        let copied_paths = LibraryPaths::resolve(
-            None,
-            Some(&copied.path().canonicalize().unwrap().join("library.sqlite")),
-        )
-        .unwrap();
-        assert!(LibraryStore::open_existing(copied_paths).is_err());
-        for invalid in [
-            paths.items.join(".. escape").join("..").join("book.epub"),
-            paths.items.clone(),
-            PathBuf::from("relative/items/book.epub"),
-        ] {
-            store
-                .connection
-                .execute(
-                    "UPDATE library_item_formats SET source_path=?1 WHERE library_item_id=?2",
-                    params![invalid.to_string_lossy(), item.id],
-                )
-                .unwrap();
-            assert!(
-                LibraryStore::open_existing(paths.clone()).is_err(),
-                "{}",
-                invalid.display()
-            );
+            drop(store);
+            fs::remove_file(&source).unwrap();
+            let mut reopened = LibraryStore::open_existing(paths).unwrap();
+            assert_eq!(reopened.list(false).unwrap()[0].id, item.id);
+            reopened.trash(&item.id).unwrap();
+            reopened.restore(&item.id).unwrap();
         }
-    }
 
-    #[cfg(unix)]
-    #[test]
-    fn strict_existing_open_rejects_items_tree_symlink_outside_root() {
-        let temp = tempfile::tempdir().unwrap();
-        let paths = paths(temp.path());
-        let mut store = LibraryStore::create_or_migrate(paths.clone()).unwrap();
-        let source = temp.path().join("source.epub");
-        fs::write(&source, b"book").unwrap();
-        store.import(&source, None, ImportMode::Copy).unwrap();
-        drop(store);
-        let outside = tempfile::tempdir().unwrap();
-        let moved = outside.path().join("items");
-        fs::rename(&paths.items, &moved).unwrap();
-        std::os::unix::fs::symlink(&moved, &paths.items).unwrap();
-        assert!(LibraryStore::open_existing(paths).is_err());
+        #[test]
+        fn strict_existing_open_rejects_copied_roots_and_traversal() {
+            let temp = tempfile::tempdir().unwrap();
+            let paths = paths(temp.path());
+            let mut store = LibraryStore::create_or_migrate(paths.clone()).unwrap();
+            let source = temp.path().join("source.epub");
+            fs::write(&source, b"book").unwrap();
+            let item = store.import(&source, None, ImportMode::Copy).unwrap();
+            let copied = tempfile::tempdir().unwrap();
+            fs::copy(&paths.database, copied.path().join("library.sqlite")).unwrap();
+            let copied_paths = LibraryPaths::resolve(
+                None,
+                Some(&copied.path().canonicalize().unwrap().join("library.sqlite")),
+            )
+            .unwrap();
+            assert!(LibraryStore::open_existing(copied_paths).is_err());
+            for invalid in [
+                paths.items.join(".. escape").join("..").join("book.epub"),
+                paths.items.clone(),
+                PathBuf::from("relative/items/book.epub"),
+            ] {
+                store
+                    .connection
+                    .execute(
+                        "UPDATE library_item_formats SET source_path=?1 WHERE library_item_id=?2",
+                        params![invalid.to_string_lossy(), item.id],
+                    )
+                    .unwrap();
+                assert!(
+                    LibraryStore::open_existing(paths.clone()).is_err(),
+                    "{}",
+                    invalid.display()
+                );
+            }
+        }
+
+        #[cfg(unix)]
+        #[test]
+        fn strict_existing_open_rejects_items_tree_symlink_outside_root() {
+            let temp = tempfile::tempdir().unwrap();
+            let paths = paths(temp.path());
+            let mut store = LibraryStore::create_or_migrate(paths.clone()).unwrap();
+            let source = temp.path().join("source.epub");
+            fs::write(&source, b"book").unwrap();
+            store.import(&source, None, ImportMode::Copy).unwrap();
+            drop(store);
+            let outside = tempfile::tempdir().unwrap();
+            let moved = outside.path().join("items");
+            fs::rename(&paths.items, &moved).unwrap();
+            std::os::unix::fs::symlink(&moved, &paths.items).unwrap();
+            assert!(LibraryStore::open_existing(paths).is_err());
+        }
     }
 }

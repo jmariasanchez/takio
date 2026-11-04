@@ -42,6 +42,12 @@ inventory), `metadata/` (recognition and candidate workflows), and `conversion/`
 `takio::destinations`, and other public module paths. Shared error, format,
 fingerprint, and output primitives remain at the engine root.
 
+Unit tests live under their subject's `#[cfg(test)] mod tests` namespace. Small
+tests may stay inline. Extracted suites use `<subject>/tests.rs` or named groups
+under `<subject>/tests/`, with normal module resolution rather than `#[path]`
+overrides or sibling `*_tests.rs` files. Shared fixture builders are the only
+feature-gated test-support API.
+
 | Module | Responsibility |
 | --- | --- |
 | `cli` | Clap commands and automation service, request mapping, metadata candidate review, bulk export, catalogue rendering, and query presentation |
