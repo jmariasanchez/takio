@@ -173,9 +173,17 @@ fn doctor(human: bool) -> AppResult<()> {
         );
         Ok(())
     } else {
-        print_success(
-            json!({"status":if backend.available{"ready"}else{"degraded"},"cli":{"name":"takio","version":env!("CARGO_PKG_VERSION")},"platform":std::env::consts::OS,"kernel":{"ebookConvert":backend}}),
-        )
+        let status = if backend.available {
+            "ready"
+        } else {
+            "degraded"
+        };
+        print_success(json!({
+            "status": status,
+            "cli": {"name": "takio", "version": env!("CARGO_PKG_VERSION")},
+            "platform": std::env::consts::OS,
+            "kernel": {"ebookConvert": backend},
+        }))
     }
 }
 fn capabilities() -> AppResult<()> {
@@ -188,9 +196,35 @@ fn capabilities() -> AppResult<()> {
     } else {
         Vec::new()
     };
-    print_success(
-        json!({"protocolVersion":1,"implementation":"rust","tui":true,"limits":{"structuredJsonBytes":16384},"librarySchemaVersion":LIBRARY_SCHEMA_VERSION,"jobsSchemaVersion":4,"formats":FormatId::ALL,"conversionPairs":pairs,"backends":{"ebookConvert":backend,"ebookMeta":{"available":metadata_backend.is_some(),"path":metadata_backend},"fetchEbookMetadata":{"available":online_metadata_backend.is_some(),"path":online_metadata_backend},"ebookPolish":{"available":polish_backend.is_some(),"path":polish_backend}},"features":{"library":true,"jobs":true,"destinations":true,"metadata":true,"polish":true,"rootedKindleSsh":true,"contentServer":true,"contentServerRemoteTls":false,"nativeKepub":false},"unsupportedCommands":[]}),
-    )
+    let optional = |path: Option<PathBuf>| json!({"available": path.is_some(), "path": path});
+    print_success(json!({
+        "protocolVersion": 1,
+        "implementation": "rust",
+        "tui": true,
+        "limits": {"structuredJsonBytes": 16384},
+        "librarySchemaVersion": LIBRARY_SCHEMA_VERSION,
+        "jobsSchemaVersion": 4,
+        "formats": FormatId::ALL,
+        "conversionPairs": pairs,
+        "backends": {
+            "ebookConvert": backend,
+            "ebookMeta": optional(metadata_backend),
+            "fetchEbookMetadata": optional(online_metadata_backend),
+            "ebookPolish": optional(polish_backend),
+        },
+        "features": {
+            "library": true,
+            "jobs": true,
+            "destinations": true,
+            "metadata": true,
+            "polish": true,
+            "rootedKindleSsh": true,
+            "contentServer": true,
+            "contentServerRemoteTls": false,
+            "nativeKepub": false,
+        },
+        "unsupportedCommands": [],
+    }))
 }
 fn formats(as_json: bool) -> AppResult<()> {
     let values = FormatId::ALL
@@ -220,7 +254,12 @@ fn devices(as_json: bool) -> AppResult<()> {
     } else {
         Vec::new()
     };
-    let value = json!({"devices":[{"id":"local","name":"This computer","status":"online","capabilities":capabilities}]});
+    let value = json!({"devices": [{
+        "id": "local",
+        "name": "This computer",
+        "status": "online",
+        "capabilities": capabilities,
+    }]});
     if as_json {
         print_success(value)
     } else {
@@ -252,7 +291,15 @@ fn plan(
     if !available {
         return Err(takio::app_error!("unsupported-conversion"));
     }
-    let value = json!({"id":format!("job_{}",uuid::Uuid::new_v4()),"input":input,"inputFormat":from,"outputFormat":to,"settings":{"version":1,"profileId":profile},"assignedTarget":{"id":"local","name":"This computer"},"status":"planned"});
+    let value = json!({
+        "id": format!("job_{}", uuid::Uuid::new_v4()),
+        "input": input,
+        "inputFormat": from,
+        "outputFormat": to,
+        "settings": {"version": 1, "profileId": profile},
+        "assignedTarget": {"id": "local", "name": "This computer"},
+        "status": "planned",
+    });
     if as_json {
         print_success(value)
     } else {
