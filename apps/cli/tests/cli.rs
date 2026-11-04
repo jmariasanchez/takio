@@ -905,7 +905,7 @@ fn export_many_organizes_every_format_and_uses_stable_collision_safe_names() {
         (&first_id, &paths[1]),
         (&second_id, &paths[2]),
     ] {
-        let identity = format!("{:x}", Sha256::digest(id.as_bytes()));
+        let identity = hex::encode(Sha256::digest(id.as_bytes()));
         assert!(
             path.file_name()
                 .unwrap()
@@ -3989,7 +3989,7 @@ fn reader_fingerprints_are_remembered_between_commands_and_never_trusted_for_imp
     )["item"]["formats"][0]["sourcePath"];
     let digest = |path: &std::path::Path| {
         use sha2::Digest;
-        format!("{:x}", sha2::Sha256::digest(fs::read(path).unwrap()))
+        hex::encode(sha2::Sha256::digest(fs::read(path).unwrap()))
     };
     assert_eq!(
         saved["entries"][0]["sha256"].as_str(),

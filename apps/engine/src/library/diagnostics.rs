@@ -75,7 +75,7 @@ pub fn write_library_diagnostics(
     let verification =
         match LibraryStore::open_read_only(paths.clone()).and_then(|store| store.verify()) {
             Ok(report) => json!({"status":"ok","report":integrity_value(&report)}),
-            Err(error) => json!({"status":"failed","errorCode":error.code()}),
+            Err(error) => json!({"status":"failed","errorCode":error.kind()}),
         };
     let verification_status = if verification["status"] == "ok" {
         "ok"

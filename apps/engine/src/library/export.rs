@@ -211,7 +211,7 @@ fn path_segment(value: &str, fallback: &str) -> String {
 fn file_name(title: &str, author: Option<&str>, item_id: &str, extension: &str) -> String {
     let base = crate::delivery::destinations::destination_file_name(title, author, extension);
     let stem = base.strip_suffix(&format!(".{extension}")).unwrap_or(&base);
-    let identity = format!("{:x}", Sha256::digest(item_id.as_bytes()));
+    let identity = hex::encode(Sha256::digest(item_id.as_bytes()));
     let suffix = format!(" [{identity}].{extension}");
     let stem = truncate_utf8_bytes(
         &stem.nfc().collect::<String>(),

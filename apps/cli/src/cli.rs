@@ -1686,7 +1686,9 @@ fn content_search(
                     | FormatId::Txt
             )
         }) else {
-            outcomes.push(json!({"status":"skipped","itemId":item_id,"code":"unsupported-format"}));
+            outcomes.push(
+                json!({"status":"skipped","itemId":item_id,"code":ErrorCode::UnsupportedFormat}),
+            );
             continue;
         };
         match maintenance::extract_text(&format.source_path, timeout) {
@@ -1698,7 +1700,7 @@ fn content_search(
                     outcomes.push(json!({"status":"matched","itemId":item_id,"title":item.title,"format":format.format,"matches":matches,"snippets":snippets}));
                 }
             }
-            Err(error) => outcomes.push(json!({"status":"failed","itemId":item_id,"format":format.format,"code":error.code()})),
+            Err(error) => outcomes.push(json!({"status":"failed","itemId":item_id,"format":format.format,"code":error.kind()})),
         }
     }
     let count = |status: &str| {
@@ -1749,7 +1751,7 @@ fn validate_library_formats(
             });
             match result {
                 Ok(content) => outcomes.push(json!({"status":"valid","itemId":item_id,"format":format.format,"content":content})),
-                Err(error) => outcomes.push(json!({"status":"failed","itemId":item_id,"format":format.format,"code":error.code()})),
+                Err(error) => outcomes.push(json!({"status":"failed","itemId":item_id,"format":format.format,"code":error.kind()})),
             }
         }
     }
