@@ -122,11 +122,11 @@ pub fn write_library_diagnostics(
     let mut temporary = Builder::new()
         .prefix(".takio-diagnostics-")
         .tempfile_in(parent)
-        .map_err(|_| crate::app_error!("diagnostics-failed"))?;
+        .map_err(crate::io_error!("diagnostics-failed"))?;
     temporary
         .write_all(&bytes)
         .and_then(|()| temporary.as_file().sync_all())
-        .map_err(|_| crate::app_error!("diagnostics-failed"))?;
+        .map_err(crate::io_error!("diagnostics-failed"))?;
     temporary.persist_noclobber(&destination).map_err(|error| {
         if error.error.kind() == std::io::ErrorKind::AlreadyExists {
             crate::app_error!("destination-exists")
@@ -263,7 +263,7 @@ pub fn integrity_value(report: &VerifyReport) -> Value {
 fn sync_parent(parent: &Path) -> AppResult<()> {
     File::open(parent)
         .and_then(|directory| directory.sync_all())
-        .map_err(|_| crate::app_error!("diagnostics-failed"))
+        .map_err(crate::io_error!("diagnostics-failed"))
 }
 
 #[cfg(test)]

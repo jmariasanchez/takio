@@ -523,7 +523,7 @@ impl LibraryState {
                     });
                     this.set_status(summary, false, cx);
                 }
-                Err(error) => this.set_status(humanize_recovery_error(error.kind()), true, cx),
+                Err(error) => this.set_status(humanize_recovery_app_error(&error), true, cx),
             }
         })
         .detach();
@@ -572,7 +572,7 @@ impl LibraryState {
                     });
                     this.set_status(summary, false, cx);
                 }
-                Err(error) => this.set_status(humanize_recovery_error(error.kind()), true, cx),
+                Err(error) => this.set_status(humanize_recovery_app_error(&error), true, cx),
             }
         })
         .detach();
@@ -1482,7 +1482,7 @@ fn sort_items(items: &mut [Arc<LibraryItem>], sort: Sort) {
 
 mod errors;
 pub use errors::{humanize_app_error, humanize_error};
-use errors::{humanize_recovery_error, open_library_error};
+use errors::{humanize_recovery_app_error, open_library_error};
 
 /// Convenience alias so views can declare their dependency plainly.
 pub type LibraryEntity = Entity<LibraryState>;

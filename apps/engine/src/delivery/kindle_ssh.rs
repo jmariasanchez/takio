@@ -291,13 +291,11 @@ fn run(command: &mut Command, timeout: Duration) -> AppResult<CommandOutput> {
         thread::sleep(Duration::from_millis(25));
     };
     let mut stdout = String::new();
-    output
-        .rewind()
-        .map_err(|_| crate::app_error!("copy-failed"))?;
+    output.rewind().map_err(crate::io_error!("copy-failed"))?;
     output
         .take(MAX_OUTPUT_BYTES + 1)
         .read_to_string(&mut stdout)
-        .map_err(|_| crate::app_error!("copy-failed"))?;
+        .map_err(crate::io_error!("copy-failed"))?;
     if stdout.len() as u64 > MAX_OUTPUT_BYTES {
         return Err(crate::app_error!("copy-failed"));
     }

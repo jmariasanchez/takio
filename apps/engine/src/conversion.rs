@@ -254,7 +254,7 @@ fn convert_inner(
         let _ = fs::remove_file(&temporary);
         return Err(crate::app_error!("output-file-exists"));
     }
-    fs::rename(&temporary, output).map_err(|_| crate::app_error!("publication-failed"))?;
+    fs::rename(&temporary, output).map_err(crate::io_error!("publication-failed"))?;
     Ok(Artifact {
         path: output.to_path_buf(),
         bytes,

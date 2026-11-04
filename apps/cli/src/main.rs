@@ -14,7 +14,7 @@ fn main() -> ExitCode {
             let _ = writeln!(
                 std::io::stdout().lock(),
                 "{}",
-                output::failure_line(error.kind())
+                output::app_failure_line(&error)
             );
             ExitCode::from(u8::try_from(error.exit_code()).unwrap_or(1))
         }

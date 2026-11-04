@@ -22,7 +22,15 @@ pub(super) fn preparation_started() -> String {
 }
 
 pub fn humanize_app_error(error: &takio::error::AppError) -> String {
-    let message = humanize_error(error.kind());
+    with_io_hint(humanize_error(error.kind()), error)
+}
+
+/// Recovery wording plus the same actionable disk-full/permission hint.
+pub(super) fn humanize_recovery_app_error(error: &takio::error::AppError) -> String {
+    with_io_hint(humanize_recovery_error(error.kind()), error)
+}
+
+fn with_io_hint(message: String, error: &takio::error::AppError) -> String {
     match error.io_kind() {
         Some(std::io::ErrorKind::StorageFull) => {
             format!("{message} The disk is full. Free space and retry.")
@@ -58,6 +66,14 @@ mod io_tests {
             super::humanize_app_error(&error),
             super::humanize_error(error.kind())
         );
+        let full = takio::error::AppError::from_io(
+            takio::error::ErrorCode::BackupFailed,
+            std::io::Error::new(std::io::ErrorKind::StorageFull, "private/path"),
+        );
+        let message = super::humanize_recovery_app_error(&full);
+        assert!(message.starts_with(&super::humanize_recovery_error(full.kind())));
+        assert!(message.contains("disk is full"));
+        assert!(!message.contains("private/path"));
     }
 }
 

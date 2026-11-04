@@ -305,7 +305,7 @@ pub(super) fn library_service(library: Option<&str>, database: Option<&Path>) ->
         };
         let mut response = match result {
             Ok(value) => crate::output::success(value),
-            Err(error) => crate::output::failure(error.kind()),
+            Err(error) => crate::output::app_failure(&error),
         };
         response["id"] = json!(id);
         writeln!(output, "{response}").map_err(|_| takio::app_error!("terminal-unavailable"))?;

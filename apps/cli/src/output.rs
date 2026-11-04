@@ -9,17 +9,34 @@ pub fn success_line<T: Serialize>(value: T) -> String {
     success(value).to_string()
 }
 
-#[must_use]
-pub fn failure_line(code: ErrorCode) -> String {
-    failure(code).to_string()
-}
-
 pub fn success<T: Serialize>(value: T) -> Value {
     json!({ "ok": true, "value": value })
 }
 
 pub fn failure(code: ErrorCode) -> Value {
     json!({ "ok": false, "error": { "code": code } })
+}
+
+/// Failure envelope for an engine error. Adds a stable, path-free `reason`
+/// only for the actionable OS categories a caller can fix: `storage-full` and
+/// `permission-denied`. Other io kinds are omitted rather than guessed.
+#[must_use]
+pub fn app_failure(error: &AppError) -> Value {
+    let mut value = failure(error.kind());
+    let reason = match error.io_kind() {
+        Some(io::ErrorKind::StorageFull) => Some("storage-full"),
+        Some(io::ErrorKind::PermissionDenied) => Some("permission-denied"),
+        _ => None,
+    };
+    if let Some(reason) = reason {
+        value["error"]["reason"] = json!(reason);
+    }
+    value
+}
+
+#[must_use]
+pub fn app_failure_line(error: &AppError) -> String {
+    app_failure(error).to_string()
 }
 
 /// Write a success envelope as one newline-terminated JSON record.
@@ -37,7 +54,7 @@ fn write_line(writer: &mut impl Write, line: &str) -> AppResult<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{AppError, ErrorCode, failure_line, success_line, write_line};
+    use super::{AppError, ErrorCode, app_failure, app_failure_line, success_line, write_line};
     use serde_json::{Value, json};
     use std::io::{self, Write};
 
@@ -59,9 +76,27 @@ mod tests {
     }
 
     #[test]
+    fn failure_envelope_adds_only_actionable_path_free_io_reasons() {
+        for (kind, reason) in [
+            (io::ErrorKind::StorageFull, json!("storage-full")),
+            (io::ErrorKind::PermissionDenied, json!("permission-denied")),
+            (io::ErrorKind::NotFound, Value::Null),
+        ] {
+            let error = AppError::from_io(
+                ErrorCode::WriteFailed,
+                io::Error::new(kind, "/private/path"),
+            );
+            let value = app_failure(&error);
+            assert_eq!(value["error"]["code"], "write-failed");
+            assert_eq!(value["error"]["reason"], reason);
+            assert!(!value.to_string().contains("private"));
+        }
+    }
+
+    #[test]
     fn failure_envelope_preserves_every_typed_wire_code() -> serde_json::Result<()> {
         for &code in ErrorCode::ALL {
-            let line = failure_line(code);
+            let line = app_failure_line(&AppError::new(code));
             assert!(!line.contains(['\n', '\r']));
             assert_eq!(
                 serde_json::from_str::<Value>(&line)?,
@@ -119,10 +154,11 @@ mod tests {
             assert_eq!(cloned.exit_code(), 1);
             assert_eq!(cloned.to_string(), "storage-unavailable");
             assert!(!format!("{cloned:?}").contains("private"));
-            assert_eq!(
-                failure_line(cloned.kind()),
-                failure_line(ErrorCode::StorageUnavailable)
-            );
+            let line = app_failure_line(&cloned);
+            assert!(!line.contains("private"));
+            assert_eq!(app_failure_line(&original), line);
+            let value: Value = serde_json::from_str(&line).unwrap();
+            assert_eq!(value["error"]["code"], "storage-unavailable");
         }
     }
 
