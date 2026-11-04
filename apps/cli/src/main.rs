@@ -1,8 +1,14 @@
 use std::io::Write;
 use std::process::ExitCode;
 
+pub use takio::*;
+
+mod cli;
+mod server;
+mod tui;
+
 fn main() -> ExitCode {
-    match takio::run() {
+    match cli::run() {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             // A closed output pipe cannot receive an error envelope either.

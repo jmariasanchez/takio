@@ -1,5 +1,5 @@
 [workspace]
-members = ["apps/cli", "apps/desktop-native"]
+members = ["apps/engine", "apps/cli", "apps/desktop-native"]
 resolver = "3"
 
 [workspace.package]

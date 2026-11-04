@@ -5762,15 +5762,43 @@ name = "takio"
 version = "0.1.0"
 dependencies = [
  "assert_cmd",
- "chrono",
  "clap",
  "crossterm",
+ "flate2",
+ "hex",
+ "predicates",
+ "ratatui",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "signal-hook",
+ "takio-engine",
+ "tempfile",
+ "tiny_http",
+ "uuid",
+]
+
+[[package]]
+name = "takio-desktop"
+version = "0.1.0"
+dependencies = [
+ "gpui-pre",
+ "gpui-pre-platform",
+ "image",
+ "takio-engine",
+ "tempfile",
+]
+
+[[package]]
+name = "takio-engine"
+version = "0.1.0"
+dependencies = [
+ "chrono",
  "directories",
  "flate2",
  "hex",
  "lopdf",
- "predicates",
- "ratatui",
  "regex",
  "roxmltree 0.20.0",
  "rusqlite",
@@ -5781,21 +5809,9 @@ dependencies = [
  "signal-hook",
  "tempfile",
  "thiserror 2.0.20",
- "tiny_http",
  "unicode-normalization",
  "uuid",
  "walkdir",
-]
-
-[[package]]
-name = "takio-desktop"
-version = "0.1.0"
-dependencies = [
- "gpui-pre",
- "gpui-pre-platform",
- "image",
- "takio",
- "tempfile",
 ]
 
 [[package]]

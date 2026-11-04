@@ -13,6 +13,11 @@ repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repository_root"
 
 cargo fmt --all --check
+native_dependencies=$(cargo tree --offline -p takio-desktop -e normal)
+if grep -E 'clap|ratatui|tiny_http' <<< "$native_dependencies"; then
+  echo 'Native desktop must not depend on CLI, terminal, or HTTP server adapters.' >&2
+  exit 1
+fi
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 cargo build --release -p takio-desktop

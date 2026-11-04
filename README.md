@@ -306,7 +306,8 @@ operating system's installed applications.
 
 ```text
 apps/desktop-native         GPUI desktop linking the Rust engine in-process (see docs/specs/gpui-desktop.md)
-apps/cli                    Rust CLI, Ratatui interface, SQLite store, jobs, and delivery
+apps/engine                 Shared Rust library, SQLite store, jobs, and delivery
+apps/cli                    Rust CLI, Ratatui interface, and HTTP server
 packages/core               Reusable TypeScript domain and validation
 packages/library-contract   Runtime-neutral library wire schemas
 packages/library-store-bun  TypeScript reference and contract implementation for tests and migration work

@@ -9,7 +9,7 @@ cp "$repo/scripts/package-macos-release.sh" "$repo/scripts/verify-release-versio
 printf '{"version":"0.1.0"}\n' > "$root/package.json"
 cat > "$root/tools/cargo" <<'EOF'
 #!/usr/bin/env bash
-printf '{"packages":[{"name":"takio","version":"%s","manifest_path":"cli/Cargo.toml"},{"name":"takio-desktop","version":"%s","manifest_path":"native/Cargo.toml"}]}\n' "${CLI_VERSION:-0.1.0}" "${NATIVE_VERSION:-0.1.0}"
+printf '{"packages":[{"name":"takio","version":"%s","manifest_path":"cli/Cargo.toml"},{"name":"takio-engine","version":"%s","manifest_path":"engine/Cargo.toml"},{"name":"takio-desktop","version":"%s","manifest_path":"native/Cargo.toml"}]}\n' "${CLI_VERSION:-0.1.0}" "${ENGINE_VERSION:-0.1.0}" "${NATIVE_VERSION:-0.1.0}"
 EOF
 cat > "$root/tools/uname" <<'EOF'
 #!/usr/bin/env bash
@@ -65,6 +65,7 @@ reject Usage version 0.1.0
 reject Usage version v01.1.0
 reject 'Release version mismatch' version v0.1.1
 CLI_VERSION=0.2.0 reject 'cli/Cargo.toml' version v0.1.0
+ENGINE_VERSION=0.2.0 reject 'engine/Cargo.toml' version v0.1.0
 NATIVE_VERSION=0.2.0 reject 'native/Cargo.toml' version v0.1.0
 reject Usage package --unknown
 reject APPLE_SIGNING_IDENTITY package --distribution

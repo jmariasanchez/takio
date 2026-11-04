@@ -6,7 +6,8 @@ gates are recorded in `../plans/2026-11-03-native-completion.md`.
 
 ## Why
 
-The library engine is one Rust crate. The former Electron desktop reached it
+The library engine is the `apps/engine` Rust crate (`takio-engine`, library name
+`takio`). The CLI adapters live separately in `apps/cli`. The former Electron desktop reached it
 through a JSON sidecar, IPC, a context-isolated preload, and a Chromium
 renderer: four process boundaries and ~250 MB of runtime to show a table of
 books. A GPUI app links the engine directly. There is no serialization, no

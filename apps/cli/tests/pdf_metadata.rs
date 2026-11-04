@@ -4,7 +4,7 @@ use std::path::Path;
 use assert_cmd::cargo::cargo_bin_cmd;
 use serde_json::Value;
 
-#[path = "support/pdf.rs"]
+#[path = "../../engine/tests/support/pdf.rs"]
 mod fixture;
 
 fn add(database: &Path, source: &Path, title: Option<&str>) -> Value {

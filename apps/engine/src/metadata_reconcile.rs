@@ -15,7 +15,7 @@ const MAX_RECONCILE_ITEMS: usize = 64;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct ReconcileRequest {
+pub struct ReconcileRequest {
     schema_version: u8,
     item_ids: Vec<String>,
     include_online: bool,
@@ -23,7 +23,7 @@ pub(crate) struct ReconcileRequest {
 }
 
 impl ReconcileRequest {
-    pub(crate) fn parse(value: Value) -> AppResult<Self> {
+    pub fn parse(value: Value) -> AppResult<Self> {
         let mut request: Self =
             serde_json::from_value(value).map_err(|_| AppError::new("invalid-arguments"))?;
         request.item_ids = request
@@ -48,22 +48,22 @@ impl ReconcileRequest {
         Ok(request)
     }
 
-    pub(crate) fn item_ids(&self) -> &[String] {
+    pub fn item_ids(&self) -> &[String] {
         &self.item_ids
     }
 
-    pub(crate) const fn include_online(&self) -> bool {
+    pub const fn include_online(&self) -> bool {
         self.include_online
     }
 
-    pub(crate) const fn concurrency(&self) -> usize {
+    pub const fn concurrency(&self) -> usize {
         self.concurrency
     }
 }
 
 #[derive(Debug, Serialize)]
 #[serde(tag = "status", rename_all = "kebab-case")]
-pub(crate) enum ReconcileOutcome {
+pub enum ReconcileOutcome {
     Ready {
         #[serde(rename = "itemId")]
         item_id: String,
@@ -96,7 +96,7 @@ impl ReconcileOutcome {
 
 #[derive(Debug, Default, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct ReconcileCounts {
+pub struct ReconcileCounts {
     total: usize,
     ready: usize,
     no_candidates: usize,
@@ -107,20 +107,20 @@ pub(crate) struct ReconcileCounts {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct ReconcileResponse {
+pub struct ReconcileResponse {
     schema_version: u8,
     outcomes: Vec<ReconcileOutcome>,
     counts: ReconcileCounts,
 }
 
-pub(crate) struct CancellationSignals {
+pub struct CancellationSignals {
     canceled: Arc<AtomicBool>,
     handle: Handle,
     thread: Option<std::thread::JoinHandle<()>>,
 }
 
 impl CancellationSignals {
-    pub(crate) fn install() -> AppResult<Self> {
+    pub fn install() -> AppResult<Self> {
         let mut signals = Signals::new([SIGINT, SIGTERM])?;
         let handle = signals.handle();
         let canceled = Arc::new(AtomicBool::new(false));
@@ -137,7 +137,7 @@ impl CancellationSignals {
         })
     }
 
-    pub(crate) fn flag(&self) -> Arc<AtomicBool> {
+    pub fn flag(&self) -> Arc<AtomicBool> {
         Arc::clone(&self.canceled)
     }
 }
@@ -151,7 +151,7 @@ impl Drop for CancellationSignals {
     }
 }
 
-pub(crate) fn reconcile<F>(
+pub fn reconcile<F>(
     item_ids: &[String],
     snapshots: Vec<AppResult<Option<LibraryItem>>>,
     include_online: bool,

@@ -19,8 +19,9 @@ removed in the November 3, 2026 native-only completion work.
 
 | Boundary | Responsibility |
 | --- | --- |
-| `apps/cli` | Rust CLI, Ratatui interface, SQLite library, conversion queue, Calibre adapters, content server, and verified delivery |
-| `apps/desktop-native` | GPUI desktop that links `apps/cli` as a library: engine thread, state entity, virtualized views, native menus and dialogs |
+| `apps/engine` | Shared `takio-engine` package, exported as library `takio`: SQLite library, conversion queue, Calibre adapters, and verified delivery |
+| `apps/cli` | `takio` executable package: Clap CLI, Ratatui interface, and content server adapters |
+| `apps/desktop-native` | GPUI desktop that links `apps/engine` directly: engine thread, state entity, virtualized views, native menus and dialogs |
 | `packages/core` | Reusable ebook domain schemas and format vocabulary |
 | `packages/library-contract` | Runtime-neutral automation wire schemas |
 | `packages/library-store-bun` | TypeScript reference and contract implementation, independent of the native desktop |
@@ -29,7 +30,10 @@ removed in the November 3, 2026 native-only completion work.
 
 ## Rust executable
 
-The `takio` crate is split by responsibility:
+The `takio-engine` package exports the `takio` library, preserving engine import
+paths without making the desktop depend on Clap, Ratatui, or the HTTP server.
+The `takio` binary package owns `cli`, `tui`, and `server`; all other modules below
+belong to the engine:
 
 | Module | Responsibility |
 | --- | --- |

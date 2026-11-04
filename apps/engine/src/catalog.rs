@@ -39,7 +39,7 @@ struct CatalogRecord<'a> {
     custom_metadata: BTreeMap<String, String>,
 }
 
-pub(crate) fn catalog_record(item: &LibraryItem) -> Value {
+pub fn catalog_record(item: &LibraryItem) -> Value {
     // Explicitly allowlist public fields, never serialize LibraryItem or BookFormat:
     // both contain private paths and other library-internal state.
     json!(CatalogRecord {
@@ -231,11 +231,11 @@ fn html_escape(value: &str) -> String {
         .replace('\'', "&#39;")
 }
 
-#[cfg(test)]
-pub(crate) mod tests {
+#[cfg(any(test, feature = "test-support"))]
+pub mod tests {
     use super::*;
 
-    pub(crate) fn sparse_book() -> LibraryItem {
+    pub fn sparse_book() -> LibraryItem {
         serde_json::from_value(json!({
             "id":"book-1", "title":"Example", "sourcePath":"/private/book.epub",
             "format":"epub", "addedAt":"2026-01-01", "formats":[],
@@ -244,7 +244,7 @@ pub(crate) mod tests {
         .unwrap()
     }
 
-    pub(crate) fn rich_book() -> LibraryItem {
+    pub fn rich_book() -> LibraryItem {
         let mut item = sparse_book();
         item.author = Some("Legacy author".into());
         item.authors = vec![crate::model::BookAuthor {
@@ -273,12 +273,12 @@ pub(crate) mod tests {
         item
     }
 
-    pub(crate) fn sparse_record() -> Value {
+    pub fn sparse_record() -> Value {
         json!({"id":"book-1", "title":"Example", "authors":[], "tags":[],
             "formats":[], "hasCover":false})
     }
 
-    pub(crate) fn rich_record() -> Value {
+    pub fn rich_record() -> Value {
         json!({"id":"book-1", "title":"Example", "authors":["Public author"],
             "tags":["fiction"], "formats":["epub"], "hasCover":true,
             "series":"Series", "seriesIndex":0.0, "publisher":"Publisher",

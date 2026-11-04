@@ -7,13 +7,12 @@
 //! reader are explicit operations, not side effects of querying the catalogue.
 //!
 //! Fallible engine operations return [`output::AppResult`] with stable error
-//! codes. [`run`] is the command-line entry point, including argument parsing
-//! and output. Embedders should use the engine modules directly instead.
+//! codes. Command-line parsing and presentation live in the separate `takio`
+//! executable package, not in this engine.
 
 pub mod calibre_import;
-pub(crate) mod candidate_cover;
-mod catalog;
-pub mod cli;
+pub mod candidate_cover;
+pub mod catalog;
 pub mod conversion;
 pub mod delivery;
 pub mod destinations;
@@ -31,14 +30,10 @@ pub mod library_query;
 pub mod maintenance;
 pub mod metadata;
 pub mod metadata_candidates;
-mod metadata_reconcile;
+pub mod metadata_reconcile;
 pub mod model;
 pub mod output;
 pub mod paths;
 pub mod portable_library;
 pub mod reader_shelf;
-pub mod server;
 pub mod store;
-pub mod tui;
-
-pub use cli::run;

@@ -58,7 +58,7 @@ impl LibraryPaths {
     }
 }
 
-pub(crate) fn absolute(path: &Path) -> AppResult<PathBuf> {
+pub fn absolute(path: &Path) -> AppResult<PathBuf> {
     if path.as_os_str().is_empty() {
         return Err(AppError::new("invalid-arguments"));
     }

@@ -10,7 +10,7 @@ import json, sys
 metadata = json.load(sys.stdin)
 expected = sys.argv[1][1:]
 versions = {"package.json": json.load(open("package.json"))["version"]}
-for name in ("takio", "takio-desktop"):
+for name in ("takio", "takio-engine", "takio-desktop"):
     package = next(p for p in metadata["packages"] if p["name"] == name)
     versions[package["manifest_path"]] = package["version"]
 for source, version in versions.items():

@@ -2,7 +2,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 # GPUI release support is macOS-only. Other hosts retain the Rust CLI/TUI.
-packages=(-p takio)
+packages=(-p takio -p takio-engine)
 if [[ "$(uname -s)" == Darwin ]]; then packages=(--workspace); fi
 case "${1:-}" in
   build) cargo build --release "${packages[@]}" ;;

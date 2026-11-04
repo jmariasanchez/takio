@@ -43,7 +43,7 @@ fn read_only_cli_commands_do_not_migrate_legacy_library() {
         let connection = rusqlite::Connection::open(&database).unwrap();
         connection
             .execute_batch(include_str!(
-                "fixtures/legacy-library-schemas/schema-v1.sql"
+                "../../engine/tests/fixtures/legacy-library-schemas/schema-v1.sql"
             ))
             .unwrap();
         drop(connection);
