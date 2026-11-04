@@ -2558,7 +2558,7 @@ mod existing_open_tests {
             if version == 1 {
                 connection
                     .execute_batch(include_str!(
-                        "../tests/fixtures/legacy-library-schemas/schema-v1.sql"
+                        "../../tests/fixtures/legacy-library-schemas/schema-v1.sql"
                     ))
                     .unwrap();
             }

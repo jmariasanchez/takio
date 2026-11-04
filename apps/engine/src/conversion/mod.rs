@@ -1,3 +1,7 @@
+pub(crate) mod executable_discovery;
+pub mod jobs;
+pub mod maintenance;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};

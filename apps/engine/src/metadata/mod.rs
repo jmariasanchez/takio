@@ -1,3 +1,7 @@
+pub mod candidate_cover;
+pub mod metadata_candidates;
+pub mod metadata_reconcile;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};

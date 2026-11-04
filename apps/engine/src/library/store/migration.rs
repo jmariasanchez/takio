@@ -15,15 +15,24 @@ type TableInfoSignature = Vec<(String, String, String, i64, Option<String>, i64)
 type ForeignKeySignature = Vec<(String, String, String, String, String, String)>;
 type SchemaSignature = Vec<(String, String, String, String)>;
 
-const V1_SCHEMA: &str = include_str!("../../tests/fixtures/legacy-library-schemas/schema-v1.sql");
-const V2_SCHEMA: &str = include_str!("../../tests/fixtures/legacy-library-schemas/schema-v2.sql");
-const V3_SCHEMA: &str = include_str!("../../tests/fixtures/legacy-library-schemas/schema-v3.sql");
-const V4_SCHEMA: &str = include_str!("../../tests/fixtures/legacy-library-schemas/schema-v4.sql");
-const V5_SCHEMA: &str = include_str!("../../tests/fixtures/legacy-library-schemas/schema-v5.sql");
-const V6_SCHEMA: &str = include_str!("../../tests/fixtures/legacy-library-schemas/schema-v6.sql");
-const V7_SCHEMA: &str = include_str!("../../tests/fixtures/legacy-library-schemas/schema-v7.sql");
-const V8_SCHEMA: &str = include_str!("../../tests/fixtures/legacy-library-schemas/schema-v8.sql");
-const V9_SCHEMA: &str = include_str!("../../tests/fixtures/legacy-library-schemas/schema-v9.sql");
+const V1_SCHEMA: &str =
+    include_str!("../../../tests/fixtures/legacy-library-schemas/schema-v1.sql");
+const V2_SCHEMA: &str =
+    include_str!("../../../tests/fixtures/legacy-library-schemas/schema-v2.sql");
+const V3_SCHEMA: &str =
+    include_str!("../../../tests/fixtures/legacy-library-schemas/schema-v3.sql");
+const V4_SCHEMA: &str =
+    include_str!("../../../tests/fixtures/legacy-library-schemas/schema-v4.sql");
+const V5_SCHEMA: &str =
+    include_str!("../../../tests/fixtures/legacy-library-schemas/schema-v5.sql");
+const V6_SCHEMA: &str =
+    include_str!("../../../tests/fixtures/legacy-library-schemas/schema-v6.sql");
+const V7_SCHEMA: &str =
+    include_str!("../../../tests/fixtures/legacy-library-schemas/schema-v7.sql");
+const V8_SCHEMA: &str =
+    include_str!("../../../tests/fixtures/legacy-library-schemas/schema-v8.sql");
+const V9_SCHEMA: &str =
+    include_str!("../../../tests/fixtures/legacy-library-schemas/schema-v9.sql");
 
 const CANONICAL_V11_INDEXES: &str = "
     CREATE INDEX library_items_by_title ON library_items(title COLLATE NOCASE,id);
@@ -1111,15 +1120,15 @@ mod tests {
     use super::*;
     use crate::store::{LIBRARY_SCHEMA_VERSION, LibraryStore};
 
-    const V1: &str = include_str!("../../tests/fixtures/legacy-library-schemas/schema-v1.sql");
-    const V2: &str = include_str!("../../tests/fixtures/legacy-library-schemas/schema-v2.sql");
-    const V3: &str = include_str!("../../tests/fixtures/legacy-library-schemas/schema-v3.sql");
-    const V4: &str = include_str!("../../tests/fixtures/legacy-library-schemas/schema-v4.sql");
-    const V5: &str = include_str!("../../tests/fixtures/legacy-library-schemas/schema-v5.sql");
-    const V6: &str = include_str!("../../tests/fixtures/legacy-library-schemas/schema-v6.sql");
-    const V7: &str = include_str!("../../tests/fixtures/legacy-library-schemas/schema-v7.sql");
-    const V8: &str = include_str!("../../tests/fixtures/legacy-library-schemas/schema-v8.sql");
-    const V9: &str = include_str!("../../tests/fixtures/legacy-library-schemas/schema-v9.sql");
+    const V1: &str = include_str!("../../../tests/fixtures/legacy-library-schemas/schema-v1.sql");
+    const V2: &str = include_str!("../../../tests/fixtures/legacy-library-schemas/schema-v2.sql");
+    const V3: &str = include_str!("../../../tests/fixtures/legacy-library-schemas/schema-v3.sql");
+    const V4: &str = include_str!("../../../tests/fixtures/legacy-library-schemas/schema-v4.sql");
+    const V5: &str = include_str!("../../../tests/fixtures/legacy-library-schemas/schema-v5.sql");
+    const V6: &str = include_str!("../../../tests/fixtures/legacy-library-schemas/schema-v6.sql");
+    const V7: &str = include_str!("../../../tests/fixtures/legacy-library-schemas/schema-v7.sql");
+    const V8: &str = include_str!("../../../tests/fixtures/legacy-library-schemas/schema-v8.sql");
+    const V9: &str = include_str!("../../../tests/fixtures/legacy-library-schemas/schema-v9.sql");
 
     fn paths(temp: &tempfile::TempDir) -> LibraryPaths {
         LibraryPaths::resolve(None, Some(&temp.path().join("library.sqlite"))).unwrap()

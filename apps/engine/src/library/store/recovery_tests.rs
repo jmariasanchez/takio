@@ -541,7 +541,7 @@ fn startup_preflight_preserves_supported_legacy_migration_and_rejects_corruption
     let connection = Connection::open(&paths.database).unwrap();
     connection
         .execute_batch(include_str!(
-            "../../tests/fixtures/legacy-library-schemas/schema-v1.sql"
+            "../../../tests/fixtures/legacy-library-schemas/schema-v1.sql"
         ))
         .unwrap();
     connection.execute("DELETE FROM library_items", []).unwrap();

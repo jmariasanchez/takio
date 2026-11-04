@@ -32,7 +32,7 @@ jobs:
             exit 1
           fi
           ignored="$(git grep -nE '#\[ignore([^]]*)?\]' -- '*.rs' || true)"
-          unexpected="$(printf '%s\n' "$ignored" | grep -vE '^(apps/engine/src/store.rs:[0-9]+:    #\[ignore = "release performance report, not a wall-clock correctness gate"\]|apps/engine/src/import_scan.rs:[0-9]+:    #\[ignore = "release microbenchmark using generated temporary files"\]|apps/cli/tests/pdf_metadata.rs:[0-9]+:#\[ignore = "requires independent local Poppler pdfinfo oracle"\])$' | grep -v '^$' || true)"
+          unexpected="$(printf '%s\n' "$ignored" | grep -vE '^(apps/engine/src/library/store.rs:[0-9]+:    #\[ignore = "release performance report, not a wall-clock correctness gate"\]|apps/engine/src/import/import_scan.rs:[0-9]+:    #\[ignore = "release microbenchmark using generated temporary files"\]|apps/cli/tests/pdf_metadata.rs:[0-9]+:#\[ignore = "requires independent local Poppler pdfinfo oracle"\])$' | grep -v '^$' || true)"
           if [[ -n "$unexpected" ]]; then
             printf 'Unexpected ignored Rust tests:\n%s\n' "$unexpected" >&2
             exit 1

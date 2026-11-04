@@ -42,3 +42,12 @@ Shared catalogue fixture builders are available only under the engine's
 and release binary do not enable it. Historical source links in dated plans
 retain their historical meaning; current architecture, spec, README, CI paths,
 release version validation, and non-macOS workspace selection use the new layout.
+
+## Domain grouping
+
+The source is grouped into library, import, delivery, metadata, and conversion
+directories. Root re-exports preserve external module paths. Existing engine
+test fixture references follow their moved subjects, and the CI benchmark
+allowlist follows the grouped paths. No workflow behavior changes are intended.
+Formatting, all offline workspace tests (594 passed, three existing ignored),
+and strict workspace Clippy pass after the domain moves.

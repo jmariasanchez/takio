@@ -1,8 +1,13 @@
 //! Shared eligibility, format choice, naming, and reviewed delivery workflow.
+pub mod destinations;
+pub mod kindle_ssh;
+pub mod koreader;
+pub mod reader_shelf;
+
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-use crate::destinations::{self, DeliveryResult, Destination, DestinationKind};
+use crate::destinations::{DeliveryResult, Destination, DestinationKind};
 use crate::format::FormatId;
 use crate::output::{AppError, AppResult};
 use crate::store::LibraryStore;

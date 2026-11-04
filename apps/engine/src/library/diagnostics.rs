@@ -343,7 +343,7 @@ mod tests {
                 "legacy" => {
                     let connection = rusqlite::Connection::open(&library.database)?;
                     connection.execute_batch(include_str!(
-                        "../tests/fixtures/legacy-library-schemas/schema-v1.sql"
+                        "../../tests/fixtures/legacy-library-schemas/schema-v1.sql"
                     ))?;
                 }
                 _ => fs::write(&library.database, b"not a SQLite database")?,

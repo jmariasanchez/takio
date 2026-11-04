@@ -35,6 +35,13 @@ paths without making the desktop depend on Clap, Ratatui, or the HTTP server.
 The `takio` binary package owns `cli`, `tui`, and `server`; all other modules below
 belong to the engine:
 
+Engine source is grouped into `library/` (catalogue, storage, recovery), `import/`
+(discovery and external-library ingestion), `delivery/` (reader transports and
+inventory), `metadata/` (recognition and candidate workflows), and `conversion/`
+(backends, maintenance, and jobs). Root re-exports preserve existing `takio::store`,
+`takio::destinations`, and other public module paths. Shared error, format,
+fingerprint, and output primitives remain at the engine root.
+
 | Module | Responsibility |
 | --- | --- |
 | `cli` | Clap commands and automation service, request mapping, metadata candidate review, bulk export, catalogue rendering, and query presentation |

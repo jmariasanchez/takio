@@ -10,30 +10,21 @@
 //! codes. Command-line parsing and presentation live in the separate `takio`
 //! executable package, not in this engine.
 
-pub mod calibre_import;
-pub mod candidate_cover;
-pub mod catalog;
 pub mod conversion;
 pub mod delivery;
-pub mod destinations;
-pub mod diagnostics;
 pub mod error;
-mod executable_discovery;
-pub mod export;
 pub mod fingerprint;
 pub mod format;
-pub mod import_scan;
-pub mod jobs;
-pub mod kindle_ssh;
-pub mod koreader;
-pub mod library_query;
-pub mod maintenance;
+pub mod import;
+pub mod library;
 pub mod metadata;
-pub mod metadata_candidates;
-pub mod metadata_reconcile;
-pub mod model;
 pub mod output;
-pub mod paths;
-pub mod portable_library;
-pub mod reader_shelf;
-pub mod store;
+
+pub(crate) use conversion::executable_discovery;
+pub use conversion::{jobs, maintenance};
+pub use delivery::{destinations, kindle_ssh, koreader, reader_shelf};
+pub use import::{calibre_import, import_scan};
+pub use library::{
+    catalog, diagnostics, export, library_query, model, paths, portable_library, store,
+};
+pub use metadata::{candidate_cover, metadata_candidates, metadata_reconcile};
