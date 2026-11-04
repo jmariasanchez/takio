@@ -4,6 +4,13 @@ use std::collections::HashSet;
 use gpui::{Context, Div, IntoElement, Render, Stateful, Window, div, prelude::*, px};
 use takio::delivery::destinations::Destination;
 
+const NO_READER_HINT: &str = "Connect your reader with a data-capable USB cable. It appears here a moment after it mounts. Only mounted USB readers appear here. MTP is not supported yet.";
+const SEND_TO_KINDLE_HINT: &str =
+    "Have an EPUB? Reveal its file in the inspector, then upload it yourself on Amazon.";
+const SEND_TO_KINDLE_NOTE: &str =
+    "Opens your browser. Takio does not upload files or confirm Amazon delivery.";
+const SEND_TO_KINDLE_URL: &str = "https://www.amazon.com/sendtokindle";
+
 use crate::state::{FilterDimension, LibraryEntity, Section};
 use crate::theme::{Theme, metrics};
 
@@ -132,19 +139,56 @@ impl Sidebar {
                 ),
         );
         if readers.is_empty() {
-            sidebar = sidebar.child(div().px_2().py_2().text_xs().text_color(theme.text_secondary)
-                .child(destination_error.unwrap_or_else(|| "Connect your reader with a data-capable USB cable. It appears here a moment after it mounts. Only mounted USB readers appear here. MTP is not supported yet.".into())));
+            sidebar = sidebar.child(
+                div()
+                    .px_2()
+                    .py_2()
+                    .text_xs()
+                    .text_color(theme.text_secondary)
+                    .child(destination_error.unwrap_or_else(|| NO_READER_HINT.into())),
+            );
         }
         for (index, destination) in readers.into_iter().enumerate() {
             sidebar = sidebar.child(self.render_reader(index, destination, cx));
         }
         if has_stock_kindle {
-            sidebar = sidebar.child(div().px_2().py_2().flex().flex_col().gap_1()
-            .child(div().text_xs().text_color(theme.text_secondary).child("Have an EPUB? Reveal its file in the inspector, then upload it yourself on Amazon."))
-            .child(div().id("amazon-send-to-kindle").map(|el| super::button::accessible_button(el, "Open Send to Kindle website", true)).debug_selector(|| "amazon-send-to-kindle".to_owned()).text_xs().text_color(theme.accent).cursor_pointer()
-                .child("Open Send to Kindle website")
-                .on_click(|_, _, cx| cx.open_url("https://www.amazon.com/sendtokindle")))
-            .child(div().text_xs().text_color(theme.text_tertiary).child("Opens your browser. Takio does not upload files or confirm Amazon delivery.")));
+            sidebar = sidebar.child(
+                div()
+                    .px_2()
+                    .py_2()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(theme.text_secondary)
+                            .child(SEND_TO_KINDLE_HINT),
+                    )
+                    .child(
+                        div()
+                            .id("amazon-send-to-kindle")
+                            .map(|el| {
+                                super::button::accessible_button(
+                                    el,
+                                    "Open Send to Kindle website",
+                                    true,
+                                )
+                            })
+                            .debug_selector(|| "amazon-send-to-kindle".to_owned())
+                            .text_xs()
+                            .text_color(theme.accent)
+                            .cursor_pointer()
+                            .child("Open Send to Kindle website")
+                            .on_click(|_, _, cx| cx.open_url(SEND_TO_KINDLE_URL)),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(theme.text_tertiary)
+                            .child(SEND_TO_KINDLE_NOTE),
+                    ),
+            );
         }
         sidebar
     }

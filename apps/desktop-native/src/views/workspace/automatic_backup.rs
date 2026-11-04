@@ -1,6 +1,10 @@
 //! Explicit consent and an existing external destination precede every enable request.
 use super::*;
 
+const DESTINATION_PROMPT: &str = "Keep all recovery copies here";
+const DESTINATION_CHOOSER_FAILED: &str =
+    "Could not open the recovery destination chooser. Settings were not changed.";
+
 impl Workspace {
     pub(super) fn prompt_automatic_backup(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.recovery_prompt_open
@@ -39,21 +43,30 @@ impl Workspace {
             cx,
         );
         self.after_dialog(answer, cx, |this, answer, cx| {
-                if answer != Some(Ok(1)) {
-                    this.finish_automatic_backup_prompt(cx);
-                    return;
+            if answer != Some(Ok(1)) {
+                this.finish_automatic_backup_prompt(cx);
+                return;
+            }
+            let receiver = cx.prompt_for_paths(PathPromptOptions {
+                files: false,
+                directories: true,
+                multiple: false,
+                prompt: Some(DESTINATION_PROMPT.into()),
+            });
+            this.after_dialog(receiver, cx, |this, response, cx| {
+                this.finish_automatic_backup_prompt(cx);
+                match response {
+                    Some(Ok(Ok(Some(mut paths)))) if paths.len() == 1 => {
+                        this.state.update(cx, |state, cx| {
+                            state.configure_automatic_backup(paths.pop(), cx)
+                        });
+                    }
+                    None | Some(Ok(Ok(_))) => {}
+                    _ => this.state.update(cx, |state, cx| {
+                        state.set_status(DESTINATION_CHOOSER_FAILED.into(), true, cx)
+                    }),
                 }
-                let receiver = cx.prompt_for_paths(PathPromptOptions { files: false, directories: true, multiple: false, prompt: Some("Keep all recovery copies here".into()) });
-                this.after_dialog(receiver, cx, |this, response, cx| {
-                        this.finish_automatic_backup_prompt(cx);
-                        match response {
-                            Some(Ok(Ok(Some(mut paths)))) if paths.len() == 1 => {
-                                this.state.update(cx, |state, cx| state.configure_automatic_backup(paths.pop(), cx));
-                            }
-                            None | Some(Ok(Ok(_))) => {}
-                            _ => this.state.update(cx, |state, cx| state.set_status("Could not open the recovery destination chooser. Settings were not changed.".into(), true, cx)),
-                        }
-                });
+            });
         });
     }
 

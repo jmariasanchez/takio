@@ -616,32 +616,8 @@ impl LibraryState {
             this.session.activity = Activity::Idle;
             match result {
                 Ok(scan) => {
-                    let counts = scan.counts;
-                    fn skipped_for(outcomes: &[ImportOutcome], wanted: SkipReason) -> usize {
-                        outcomes.iter().filter(|outcome| {
-                            matches!(outcome, ImportOutcome::Skipped { reason, .. } if *reason == wanted)
-                        }).count()
-                    }
-                    let documents = skipped_for(&scan.outcomes, SkipReason::LikelyDocument);
-                    let mut skipped = match documents {
-                        0 => counts.skipped.to_string(),
-                        1 => format!("{} (1 short PDF looked like a document)", counts.skipped),
-                        n => format!("{} ({n} short PDFs looked like documents)", counts.skipped),
-                    };
-                    let unsupported = skipped_for(&scan.outcomes, SkipReason::UnsupportedFormat);
-                    if unsupported > 0 {
-                        skipped.push_str(&format!(
-                            " ({unsupported} in a format Takio cannot store, such as Kindle store books)"
-                        ));
-                    }
-                    this.set_status(
-                        format!(
-                            "Imported {}, skipped {skipped}, failed {}",
-                            counts.imported, counts.failed
-                        ),
-                        counts.failed > 0,
-                        cx,
-                    );
+                    let failed = scan.counts.failed > 0;
+                    this.set_status(import_summary(&scan), failed, cx);
                 }
                 Err(error) => this.set_app_error(&error, cx),
             }
@@ -1478,6 +1454,34 @@ fn sort_items(items: &mut [Arc<LibraryItem>], sort: Sort) {
     if !sort.ascending {
         items.reverse();
     }
+}
+
+/// One-line import outcome, naming skipped documents and unsupported formats.
+fn import_summary(scan: &takio::import::scan::ImportScan) -> String {
+    let skipped_for = |wanted: SkipReason| {
+        scan.outcomes
+            .iter()
+            .filter(|outcome| {
+                matches!(outcome, ImportOutcome::Skipped { reason, .. } if *reason == wanted)
+            })
+            .count()
+    };
+    let counts = &scan.counts;
+    let mut skipped = match skipped_for(SkipReason::LikelyDocument) {
+        0 => counts.skipped.to_string(),
+        1 => format!("{} (1 short PDF looked like a document)", counts.skipped),
+        n => format!("{} ({n} short PDFs looked like documents)", counts.skipped),
+    };
+    let unsupported = skipped_for(SkipReason::UnsupportedFormat);
+    if unsupported > 0 {
+        skipped.push_str(&format!(
+            " ({unsupported} in a format Takio cannot store, such as Kindle store books)"
+        ));
+    }
+    format!(
+        "Imported {}, skipped {skipped}, failed {}",
+        counts.imported, counts.failed
+    )
 }
 
 mod errors;

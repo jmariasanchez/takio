@@ -1,6 +1,10 @@
 //! Explicit existing-folder selection and per-library native view lifetime.
 use super::*;
 
+const SWITCH_BUSY: &str = "Finish the current operation, save/cancel edits and close any review before opening another library.";
+const LIBRARY_CHOOSER_FAILED: &str =
+    "The library chooser could not be opened. Try again. Your current library is unchanged.";
+
 impl Workspace {
     pub(super) fn prompt_open_library(&mut self, cx: &mut Context<Self>) {
         if self.library_picker_open || self.recovery_prompt_open {
@@ -8,7 +12,7 @@ impl Workspace {
         }
         if !self.state.read(cx).can_switch_library() {
             self.state.update(cx, |state, cx| {
-                state.set_status("Finish the current operation, save/cancel edits and close any review before opening another library.".into(), true, cx);
+                state.set_status(SWITCH_BUSY.into(), true, cx);
             });
             return;
         }
@@ -21,17 +25,18 @@ impl Workspace {
         });
         cx.notify();
         self.after_dialog(receiver, cx, |this, response, cx| {
-                this.library_picker_open = false;
-                match response {
-                    Some(Ok(Ok(Some(mut paths)))) if paths.len() == 1 => {
-                        this.state.update(cx, |state, cx| state.open_library(paths.remove(0), cx));
-                    }
-                    None | Some(Ok(Ok(_))) => {},
-                    _ => this.state.update(cx, |state, cx| {
-                        state.set_status("The library chooser could not be opened. Try again. Your current library is unchanged.".into(), true, cx);
-                    }),
+            this.library_picker_open = false;
+            match response {
+                Some(Ok(Ok(Some(mut paths)))) if paths.len() == 1 => {
+                    this.state
+                        .update(cx, |state, cx| state.open_library(paths.remove(0), cx));
                 }
-                cx.notify();
+                None | Some(Ok(Ok(_))) => {}
+                _ => this.state.update(cx, |state, cx| {
+                    state.set_status(LIBRARY_CHOOSER_FAILED.into(), true, cx);
+                }),
+            }
+            cx.notify();
         });
     }
 

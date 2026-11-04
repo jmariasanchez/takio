@@ -2,6 +2,10 @@
 use super::*;
 use std::path::{Path, PathBuf};
 
+const RESTORE_DETAIL: &str = "Choose a complete Takio backup, then a new folder name. The restored copy will be verified. Your current library stays open and is never replaced or merged. External references still need their original files. Conversion jobs are not restored.";
+const BACKUP_PROMPT_DETAIL: &str = "Copies the catalogue, including Trash, and Takio-managed books and covers. External referenced files and conversion jobs are NOT included. Choose a new folder outside your library, preferably on a separate drive. Existing folders are never replaced.";
+const RECOVERY_CHOOSER_FAILED: &str = "The recovery folder chooser could not be opened. Try again. No recovery operation was started.";
+
 impl Workspace {
     pub(super) fn prompt_recovery(
         &mut self,
@@ -19,13 +23,13 @@ impl Workspace {
         let (title, detail, proceed) = if restore {
             (
                 "Restore a backup to a new folder?",
-                "Choose a complete Takio backup, then a new folder name. The restored copy will be verified. Your current library stays open and is never replaced or merged. External references still need their original files. Conversion jobs are not restored.",
+                RESTORE_DETAIL,
                 "Choose backup",
             )
         } else {
             (
                 "Back up the whole library?",
-                "Copies the catalogue, including Trash, and Takio-managed books and covers. External referenced files and conversion jobs are NOT included. Choose a new folder outside your library, preferably on a separate drive. Existing folders are never replaced.",
+                BACKUP_PROMPT_DETAIL,
                 "Choose location",
             )
         };
@@ -107,7 +111,7 @@ impl Workspace {
     fn recovery_picker_failed(&mut self, cx: &mut Context<Self>) {
         self.recovery_prompt_open = false;
         self.state.update(cx, |state, cx| {
-            state.set_status("The recovery folder chooser could not be opened. Try again. No recovery operation was started.".into(), true, cx);
+            state.set_status(RECOVERY_CHOOSER_FAILED.into(), true, cx);
         });
     }
 
