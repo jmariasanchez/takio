@@ -18,8 +18,10 @@ use library_location::OpenedLibrary;
 use takio::conversion::BackendDiscovery;
 use takio::conversion::prepare::{self as preparation, PreparationPreview};
 #[cfg(test)]
+use takio::delivery::destinations::DeliveryResult;
+#[cfg(test)]
 use takio::delivery::destinations::DestinationKind;
-use takio::delivery::destinations::{self, DeliveryResult, Destination};
+use takio::delivery::destinations::{self, Destination};
 #[cfg(test)]
 use takio::error::AppError;
 use takio::error::AppResult;
@@ -162,58 +164,10 @@ use takio::library::query::Filters;
 
 use takio::library::model::ImportMode;
 
-/// Larger batches are rejected before any destination is modified.
-pub const MAX_SEND_ITEMS: usize = 256;
-
-/// Format/source readiness only, not a promise of delivery or collision avoidance.
-#[derive(Clone, Debug)]
-pub struct SendPreview {
-    pub destination: Destination,
-    pub entries: Vec<SendPreviewEntry>,
-}
-
-#[derive(Clone, Debug)]
-pub struct SendPreviewEntry {
-    pub item_id: String,
-    /// Stored title, or the requested ID when the item could not be loaded.
-    pub title: String,
-    pub result: AppResult<ReadyFile>,
-}
-
-use takio::delivery::ReadyFile;
-
-impl SendPreview {
-    #[cfg(test)]
-    pub fn ready_ids(&self) -> Vec<String> {
-        self.entries
-            .iter()
-            .filter(|entry| entry.result.is_ok())
-            .map(|entry| entry.item_id.clone())
-            .collect()
-    }
-
-    pub fn ready_count(&self) -> usize {
-        self.entries
-            .iter()
-            .filter(|entry| entry.result.is_ok())
-            .count()
-    }
-}
-
-/// One outcome per requested ID, in request order, including failures.
-#[derive(Clone, Debug, Default)]
-pub struct SendReport {
-    pub entries: Vec<SendEntry>,
-}
-
-#[derive(Clone, Debug)]
-pub struct SendEntry {
-    pub item_id: String,
-    /// Stored title, or the requested ID when the item could not be loaded.
-    pub title: String,
-    /// Verified delivery, or the typed application error including its exit status.
-    pub result: AppResult<DeliveryResult>,
-}
+#[cfg(test)]
+use takio::delivery::SendEntry;
+pub use takio::delivery::{MAX_SEND_ITEMS, SendPreview, SendPreviewEntry, SendReport};
+use takio::delivery::{preview_send_many as preview_send, send_reviewed_many as send_reviewed};
 
 /// Every requested mutation is attempted, with committed results retained in order.
 pub type MutationReport = Vec<(String, AppResult<takio::library::store::MutationResult>)>;
@@ -582,89 +536,6 @@ fn mutation_report_for(
     mut op: impl FnMut(&str) -> AppResult<takio::library::store::MutationResult>,
 ) -> MutationReport {
     ids.iter().map(|id| (id.clone(), op(id))).collect()
-}
-
-fn preview_send(
-    store: &LibraryStore,
-    destination: &Destination,
-    item_ids: &[String],
-) -> AppResult<SendPreview> {
-    if item_ids.len() > MAX_SEND_ITEMS {
-        return Err(takio::app_error!("invalid-arguments"));
-    }
-    let destination = takio::delivery::reauthorize(destination)?;
-    let entries = item_ids
-        .iter()
-        .map(|id| {
-            let mut title = id.clone();
-            let result = store.get(id).and_then(|item| {
-                if let Some(item) = item {
-                    title.clone_from(&item.title);
-                }
-                takio::delivery::plan_send(store, &destination, id, None).map(|plan| plan.ready)
-            });
-            SendPreviewEntry {
-                item_id: id.clone(),
-                title,
-                result,
-            }
-        })
-        .collect();
-    Ok(SendPreview {
-        destination,
-        entries,
-    })
-}
-
-fn send_reviewed(
-    store: &LibraryStore,
-    destination: &Destination,
-    entries: &[SendPreviewEntry],
-) -> AppResult<SendReport> {
-    if entries.len() > MAX_SEND_ITEMS {
-        return Err(takio::app_error!("invalid-arguments"));
-    }
-    Ok(SendReport {
-        entries: entries
-            .iter()
-            .map(|entry| match &entry.result {
-                Ok(ready) => send_entry(store, destination, &entry.item_id, ready),
-                Err(error) => SendEntry {
-                    item_id: entry.item_id.clone(),
-                    title: entry.title.clone(),
-                    result: Err(error.clone()),
-                },
-            })
-            .collect(),
-    })
-}
-
-fn send_entry(
-    store: &LibraryStore,
-    destination: &Destination,
-    id: &str,
-    reviewed: &ReadyFile,
-) -> SendEntry {
-    let mut title = id.to_owned();
-    let result = store.get(id).and_then(|item| {
-        if let Some(item) = item {
-            title.clone_from(&item.title);
-        }
-        takio::delivery::send_library_item(
-            store,
-            destination,
-            id,
-            takio::delivery::DeliveryOptions {
-                reviewed: Some(reviewed),
-                ..Default::default()
-            },
-        )
-    });
-    SendEntry {
-        item_id: id.to_owned(),
-        title,
-        result,
-    }
 }
 
 /// Resolve the library location the desktop should open.
@@ -1436,12 +1307,13 @@ mod tests {
         let (temp, mut store, destination) = delivery_fixture();
         let first = add_book(&mut store, temp.path(), "Existing", "azw3");
         let second = add_book(&mut store, temp.path(), "Next", "mobi");
-        let target = destination
-            .path
-            .join("documents")
-            .join(destinations::destination_file_name(
-                "Existing", None, "azw3",
-            ));
+        let target =
+            destination
+                .path
+                .join("documents")
+                .join(takio::file_name::destination_file_name(
+                    "Existing", None, "azw3",
+                ));
         fs::write(&target, b"keep me").unwrap();
         let report = preview_and_send(&store, &destination, &[first.id, second.id]).unwrap();
         assert_eq!(

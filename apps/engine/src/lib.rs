@@ -10,9 +10,15 @@
 //! codes. Command-line parsing and presentation live in the separate `takio`
 //! executable package, not in this engine.
 
+//! [`library::model`] is a shared domain-value leaf, not a storage layer.
+//! It depends only on serde, standard collections, and [`format`]. Metadata
+//! extractors may use its value types without depending on library storage.
+
 pub mod conversion;
 pub mod delivery;
 pub mod error;
+pub(crate) mod executable_discovery;
+pub mod file_name;
 pub mod fingerprint;
 pub mod format;
 pub mod import;

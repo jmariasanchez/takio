@@ -1095,13 +1095,14 @@ fn confirm_send_rechecks_source_reader_capabilities_disconnect_and_collision(
             .state
             .read_with(cx, |state, _| state.session().items[0].clone());
         preview_selected(&f, &reader, cx);
-        let target = reader.path.join("documents").join(
-            takio::delivery::destinations::destination_file_name(
+        let target = reader
+            .path
+            .join("documents")
+            .join(takio::file_name::destination_file_name(
                 &chosen.title,
                 chosen.author.as_deref(),
                 "epub",
-            ),
-        );
+            ));
         let expected = match change {
             "source" => {
                 std::fs::remove_file(&chosen.formats[0].source_path).unwrap();

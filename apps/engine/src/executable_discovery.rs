@@ -19,24 +19,6 @@ pub(crate) fn discover_executable_with_source(
     )
 }
 
-// Keep environment reads at the boundary so tests never mutate process-wide PATH.
-#[cfg(test)]
-fn discover_from(
-    explicit: Option<&OsStr>,
-    search_path: Option<&OsStr>,
-    name: &str,
-    macos_path: &Path,
-) -> Option<PathBuf> {
-    discover_with_paths(
-        explicit.map(Path::new),
-        search_path,
-        name,
-        cfg!(target_os = "macos").then_some(macos_path),
-        std::env::current_dir().ok().as_deref(),
-    )
-    .map(|(path, _)| path)
-}
-
 pub(crate) fn discover_with_paths(
     explicit: Option<&Path>,
     search_path: Option<&OsStr>,
@@ -128,16 +110,24 @@ mod tests {
         symlink(&real, &alias).unwrap();
         let canonical = real.canonicalize().unwrap();
         assert_eq!(
-            discover_from(Some(alias.as_os_str()), None, "backend", &alias),
+            discover_with_paths(Some(&alias), None, "backend", Some(&alias), None)
+                .map(|(path, _)| path),
             Some(canonical.clone())
         );
         assert_eq!(
-            discover_from(None, Some(temp.path().as_os_str()), "backend", &alias),
+            discover_with_paths(
+                None,
+                Some(temp.path().as_os_str()),
+                "backend",
+                Some(&alias),
+                None
+            )
+            .map(|(path, _)| path),
             Some(canonical.clone())
         );
         assert_eq!(
-            discover_from(None, None, "backend", &alias),
-            cfg!(target_os = "macos").then_some(canonical)
+            discover_with_paths(None, None, "backend", Some(&alias), None).map(|(path, _)| path),
+            Some(canonical)
         );
     }
 
@@ -150,12 +140,14 @@ mod tests {
         backend(&fallback);
         let search = std::env::join_paths([temp.path()]).unwrap();
         assert_eq!(
-            discover_from(
-                Some(explicit.as_os_str()),
+            discover_with_paths(
+                Some(&explicit),
                 Some(&search),
                 "backend",
-                &fallback
-            ),
+                Some(&fallback),
+                None,
+            )
+            .map(|(path, _)| path),
             Some(explicit.canonicalize().unwrap())
         );
         for invalid in [
@@ -164,11 +156,12 @@ mod tests {
             PathBuf::new(),
         ] {
             assert_eq!(
-                discover_from(
-                    Some(invalid.as_os_str()),
+                discover_with_paths(
+                    Some(&invalid),
                     Some(&search),
                     "backend",
-                    &fallback
+                    Some(&fallback),
+                    None,
                 ),
                 None
             );
@@ -190,13 +183,22 @@ mod tests {
         backend(&second);
         let search = std::env::join_paths(&directories).unwrap();
         assert_eq!(
-            discover_from(None, Some(&search), "backend", &second),
+            discover_with_paths(None, Some(&search), "backend", Some(&second), None)
+                .map(|(path, _)| path),
             Some(first.canonicalize().unwrap())
         );
-        let fallback = cfg!(target_os = "macos").then(|| second.canonicalize().unwrap());
-        assert_eq!(discover_from(None, None, "backend", &second), fallback);
         assert_eq!(
-            discover_from(None, None, "backend", &temp.path().join("absent")),
+            discover_with_paths(None, None, "backend", Some(&second), None).map(|(path, _)| path),
+            Some(second.canonicalize().unwrap())
+        );
+        assert_eq!(
+            discover_with_paths(
+                None,
+                None,
+                "backend",
+                Some(&temp.path().join("absent")),
+                None
+            ),
             None
         );
     }
@@ -217,11 +219,12 @@ mod tests {
         backend(&valid);
         let search = std::env::join_paths([first, second]).unwrap();
         assert_eq!(
-            discover_from(None, Some(&search), "backend", &valid),
+            discover_with_paths(None, Some(&search), "backend", Some(&valid), None)
+                .map(|(path, _)| path),
             Some(valid.canonicalize().unwrap())
         );
         assert_eq!(
-            discover_from(Some(blocked.as_os_str()), Some(&search), "backend", &valid),
+            discover_with_paths(Some(&blocked), Some(&search), "backend", Some(&valid), None),
             None
         );
     }

@@ -16,12 +16,6 @@ pub fn open(directory: &Path) -> AppResult<(LibraryStore, OpenedLibrary)> {
     if !root.is_dir() {
         return Err(takio::app_error!("storage-unavailable"));
     }
-    // Even a malformed or dangling manifest identifies a backup, not a live root.
-    match std::fs::symlink_metadata(root.join("manifest.json")) {
-        Ok(_) => return Err(takio::app_error!("library-is-backup")),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error.into()),
-    }
     let paths = LibraryPaths::resolve(None, Some(&root.join("library.sqlite")))?;
     let store = LibraryStore::open_existing(paths)?;
     Ok((store, OpenedLibrary { root }))

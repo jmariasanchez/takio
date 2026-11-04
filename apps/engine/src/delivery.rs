@@ -1,8 +1,13 @@
 //! Shared eligibility, format choice, naming, and reviewed delivery workflow.
+mod batch;
 pub mod destinations;
 pub mod kindle_ssh;
 pub mod koreader;
 pub mod reader_shelf;
+pub use batch::{
+    MAX_SEND_ITEMS, SendEntry, SendPreview, SendPreviewEntry, SendReport, preview_send_many,
+    send_reviewed_many,
+};
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -84,7 +89,7 @@ pub fn plan_send(
         format: format.format,
         source_path: format.source_path.clone(),
     };
-    let file_name = destinations::destination_file_name(
+    let file_name = crate::file_name::destination_file_name(
         &item.title,
         item.primary_author(),
         format.format.extension(),
@@ -120,4 +125,73 @@ pub fn send_library_item(
         options.subdir,
         options.overwrite,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::library::{
+        model::{ImportMode, Provenance},
+        paths::LibraryPaths,
+    };
+    use std::fs;
+
+    #[test]
+    fn reviewed_send_rejects_changed_preference_and_path_without_writes() {
+        for change in ["capabilities", "preferred-attachment", "source-path"] {
+            let temp = tempfile::tempdir().unwrap();
+            let paths =
+                LibraryPaths::resolve(None, Some(&temp.path().join("library.sqlite"))).unwrap();
+            let mut store = LibraryStore::create_or_migrate(paths).unwrap();
+            let volumes = temp.path().join("Volumes");
+            let mount = volumes.join("Kindle");
+            fs::create_dir_all(mount.join("documents")).unwrap();
+            fs::create_dir_all(mount.join("system")).unwrap();
+            let destination = destinations::authorize(&mount, &volumes).unwrap();
+            let epub = temp.path().join("book.epub");
+            fs::write(&epub, b"epub").unwrap();
+            let item = store
+                .import(&epub, Some("Reviewed"), ImportMode::Copy)
+                .unwrap();
+            let mobi = temp.path().join("book.mobi");
+            fs::write(&mobi, b"mobi").unwrap();
+            store
+                .attach_format(&item.id, &mobi, Provenance::Referenced)
+                .unwrap();
+            let reviewed = plan_send(&store, &destination, &item.id, None)
+                .unwrap()
+                .ready;
+            assert_eq!(reviewed.format, FormatId::Mobi);
+            match change {
+                "capabilities" => fs::create_dir(mount.join("koreader")).unwrap(),
+                "preferred-attachment" => {
+                    let azw3 = temp.path().join("preferred.azw3");
+                    fs::write(&azw3, b"azw3").unwrap();
+                    store
+                        .attach_format(&item.id, &azw3, Provenance::Managed)
+                        .unwrap();
+                }
+                _ => {
+                    store.remove_format(&item.id, FormatId::Mobi).unwrap();
+                    let replacement = temp.path().join("replacement.mobi");
+                    fs::write(&replacement, b"replacement").unwrap();
+                    store
+                        .attach_format(&item.id, &replacement, Provenance::Referenced)
+                        .unwrap();
+                }
+            }
+            let error = send_library_item(
+                &store,
+                &destination,
+                &item.id,
+                DeliveryOptions {
+                    reviewed: Some(&reviewed),
+                    ..Default::default()
+                },
+            )
+            .unwrap_err();
+            assert_eq!(error.code(), "send-review-changed", "{change}");
+            assert_eq!(fs::read_dir(mount.join("documents")).unwrap().count(), 0);
+        }
+    }
 }

@@ -49,6 +49,7 @@ fault injection for adapter tests, without coupling adapters to engine tables.
 | `tui` (executable) | Ratatui interaction, rendering, and terminal restoration |
 | `error` | Closed `ErrorCode` vocabulary and application results |
 | `format` | Ebook format vocabulary and extension detection |
+| `file_name` | Dependency-free safe publication names shared by exports and delivery |
 | `fingerprint` | Streaming SHA-256 byte counts and digests for owned-file operations |
 | `test_support` (feature-gated) | Disposable-library corruption, provenance, legacy schema, and PDF fixtures for adapter tests |
 | `library` | Catalogue domain modules |
@@ -63,7 +64,7 @@ fault injection for adapter tests, without coupling adapters to engine tables.
 | `import` | Discovery and external-library ingestion |
 | `import::scan` | Recursive discovery, source validation, and per-file import outcomes |
 | `import::calibre` | Read-only Calibre catalogue ingestion and per-book outcomes |
-| `delivery` | Shared compatible-copy planning and verified item delivery |
+| `delivery` | Shared compatible-copy planning, bounded batch review, and verified item delivery |
 | `delivery::destinations` | Mounted-volume authorization, copy, inventory, removal, and eject |
 | `delivery::kindle_ssh` | Explicit rooted Kindle SSH/SCP validation, upload, verification, and publication |
 | `delivery::koreader` | Read-only KOReader recognition and reading-progress parsing |
@@ -74,7 +75,7 @@ fault injection for adapter tests, without coupling adapters to engine tables.
 | `library::metadata_candidates` | Typed metadata candidate preparation and reviewed application (consumes the store) |
 | `library::metadata_reconcile` | Bounded multi-item candidate reconciliation and cancellation (consumes the store) |
 | `conversion` | Calibre discovery, planning, execution, and artifact verification |
-| `conversion::executable_discovery` (internal) | Backend precedence and canonical executable resolution |
+| `executable_discovery` (internal) | Shared backend precedence and canonical executable resolution |
 | `conversion::maintenance` | Ebook polishing and bounded text extraction |
 | `conversion::prepare` | Reviewed local EPUB-to-AZW3 preparation, staged conversion, source revalidation, and verified attachment |
 | `conversion::jobs` | Independent schema-v4 foreground conversion ledger |

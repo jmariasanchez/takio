@@ -11,8 +11,8 @@ use tempfile::Builder;
 use uuid::Uuid;
 
 use crate::conversion::discover_ebook_convert;
-use crate::conversion::executable_discovery::discover_executable;
 use crate::error::{AppError, AppResult};
+use crate::executable_discovery::discover_executable;
 use crate::format::{FormatId, detect_format};
 
 pub const POLISH_OPERATIONS: [&str; 8] = [

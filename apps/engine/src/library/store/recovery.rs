@@ -5,8 +5,10 @@ use std::path::Component;
 #[cfg(test)]
 mod tests;
 
+const BACKUP_MANIFEST: &str = "manifest.json";
+
 pub(super) fn is_backup_root(root: &Path) -> AppResult<bool> {
-    match fs::symlink_metadata(root.join("manifest.json")) {
+    match fs::symlink_metadata(root.join(BACKUP_MANIFEST)) {
         Ok(_) => Ok(true),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
         Err(error) => Err(error.into()),
@@ -15,7 +17,7 @@ pub(super) fn is_backup_root(root: &Path) -> AppResult<bool> {
 
 pub(super) fn reject_backup_root(root: &Path) -> AppResult<()> {
     if is_backup_root(root)? {
-        return Err(crate::app_error!("invalid-arguments"));
+        return Err(crate::app_error!("library-is-backup"));
     }
     Ok(())
 }
@@ -269,7 +271,7 @@ pub(super) fn backup(store: &LibraryStore, destination: &Path) -> AppResult<Back
     let manifest =
         serde_json::to_vec_pretty(&manifest).map_err(|_| crate::app_error!("backup-failed"))?;
     output
-        .file(&destination.join("manifest.json"))?
+        .file(&destination.join(BACKUP_MANIFEST))?
         .write_all(&manifest)?;
     output.committed = true;
     Ok(BackupReport {
@@ -300,7 +302,7 @@ pub(super) fn restore(
         .database
         .file_name()
         .ok_or_else(|| crate::app_error!("invalid-arguments"))?;
-    if ["items", "covers", "jobs.sqlite", "manifest.json"]
+    if ["items", "covers", "jobs.sqlite", BACKUP_MANIFEST]
         .iter()
         .any(|reserved| name == *reserved)
     {
@@ -319,11 +321,11 @@ pub(super) fn restore(
             return Err(crate::app_error!("source-invalid"));
         }
     }
-    regular_file(&source.join("manifest.json"))?;
+    regular_file(&source.join(BACKUP_MANIFEST))?;
     regular_file(&source.join("library.sqlite"))?;
     const MAX_MANIFEST_BYTES: usize = 64 * 1024;
     let mut manifest_bytes = Vec::new();
-    File::open(source.join("manifest.json"))?
+    File::open(source.join(BACKUP_MANIFEST))?
         .take((MAX_MANIFEST_BYTES + 1) as u64)
         .read_to_end(&mut manifest_bytes)?;
     if manifest_bytes.len() > MAX_MANIFEST_BYTES {

@@ -1,4 +1,3 @@
-pub(crate) mod executable_discovery;
 pub mod jobs;
 pub mod maintenance;
 pub mod prepare;
@@ -90,7 +89,7 @@ pub struct Artifact {
 #[must_use]
 pub fn discover_ebook_convert() -> BackendDiscovery {
     backend_discovery(
-        crate::conversion::executable_discovery::discover_executable_with_source(
+        crate::executable_discovery::discover_executable_with_source(
             "TAKIO_EBOOK_CONVERT",
             "ebook-convert",
             "/Applications/calibre.app/Contents/MacOS/ebook-convert",
@@ -99,21 +98,19 @@ pub fn discover_ebook_convert() -> BackendDiscovery {
 }
 
 #[cfg(test)]
-fn discover_with_paths(
+fn discover_backend_with_paths(
     override_path: Option<&Path>,
     search_path: Option<&std::ffi::OsStr>,
     bundle: Option<&Path>,
     cwd: Option<&Path>,
 ) -> BackendDiscovery {
-    backend_discovery(
-        crate::conversion::executable_discovery::discover_with_paths(
-            override_path,
-            search_path,
-            "ebook-convert",
-            bundle,
-            cwd,
-        ),
-    )
+    backend_discovery(crate::executable_discovery::discover_with_paths(
+        override_path,
+        search_path,
+        "ebook-convert",
+        bundle,
+        cwd,
+    ))
 }
 
 fn backend_discovery(found: Option<(PathBuf, &'static str)>) -> BackendDiscovery {
@@ -286,7 +283,7 @@ mod tests {
         let elsewhere = directory.path().join("elsewhere");
         let approved = script(&cwd, "approved");
         script(&elsewhere, "wrong-path-backend");
-        let discovered = discover_with_paths(
+        let discovered = discover_backend_with_paths(
             Some(Path::new("ebook-convert")),
             Some(elsewhere.as_os_str()),
             None,
@@ -314,7 +311,7 @@ mod tests {
         let approved = script(&cwd, "approved");
         script(&elsewhere, "wrong-path-backend");
         let search_path = std::env::join_paths([Path::new(""), elsewhere.as_path()]).unwrap();
-        let discovered = discover_with_paths(None, Some(&search_path), None, Some(&cwd));
+        let discovered = discover_backend_with_paths(None, Some(&search_path), None, Some(&cwd));
         assert_eq!(discovered.source, "path");
         assert_eq!(
             discovered.path.as_ref(),
@@ -336,12 +333,18 @@ mod tests {
         let path_candidate = script(&directory.path().join("bin"), "path");
         let bundle = script(&directory.path().join("bundle"), "bundle");
         let search_path = path_candidate.parent().unwrap().as_os_str();
-        let discover =
-            || discover_with_paths(Some(&override_path), Some(search_path), Some(&bundle), None);
+        let discover = || {
+            discover_backend_with_paths(
+                Some(&override_path),
+                Some(search_path),
+                Some(&bundle),
+                None,
+            )
+        };
         assert_eq!(discover().source, "env");
         fs::set_permissions(&override_path, fs::Permissions::from_mode(0o600)).unwrap();
         assert!(!discover().available);
-        let discover = || discover_with_paths(None, Some(search_path), Some(&bundle), None);
+        let discover = || discover_backend_with_paths(None, Some(search_path), Some(&bundle), None);
         let found = discover();
         assert_eq!(found.source, "path");
         assert_eq!(found.path, Some(path_candidate.canonicalize().unwrap()));

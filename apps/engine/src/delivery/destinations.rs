@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::error::{AppError, AppResult, ErrorCode};
+use crate::file_name::sanitize_file_name;
 use crate::fingerprint::{CopyError, Fingerprint};
 use crate::format::FormatId;
 use crate::library::model::BookFormat;
@@ -400,35 +401,6 @@ fn default_subdir(kind: DestinationKind) -> PathBuf {
         DestinationKind::Kindle => PathBuf::from("documents"),
         DestinationKind::Kobo | DestinationKind::Generic => PathBuf::new(),
     }
-}
-
-pub fn destination_file_name(title: &str, author: Option<&str>, extension: &str) -> String {
-    let title = sanitize_file_name(title).unwrap_or_else(|| "Untitled".to_owned());
-    let stem = author
-        .and_then(sanitize_file_name)
-        .map_or(title.clone(), |author| format!("{author} - {title}"));
-    let mut value = format!("{stem}.{extension}");
-    if value.chars().count() > 180 {
-        let keep = 179usize.saturating_sub(extension.chars().count());
-        let prefix = stem.chars().take(keep).collect::<String>();
-        value = format!("{}.{extension}", prefix.trim_end());
-    }
-    value
-}
-
-fn sanitize_file_name(value: &str) -> Option<String> {
-    let name = Path::new(value).file_name()?.to_string_lossy();
-    let clean = name
-        .chars()
-        .filter(|character| {
-            !character.is_control()
-                && !matches!(
-                    character,
-                    '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*'
-                )
-        })
-        .collect::<String>();
-    (!clean.is_empty() && clean != "." && clean != "..").then_some(clean)
 }
 
 fn validate_relative(path: &Path) -> AppResult<()> {
@@ -884,14 +856,6 @@ mod tests {
         assert!(!failed_target.exists());
         assert_eq!(hash_file(&target).unwrap(), expected);
         assert!(partial.exists());
-    }
-
-    #[test]
-    fn destination_names_are_safe_and_bounded() {
-        let name = destination_file_name(&"A".repeat(300), Some("Author/Name"), "epub");
-        assert!(name.chars().count() <= 180);
-        assert!(!name.contains('/'));
-        assert!(name.ends_with(".epub"));
     }
 
     #[test]

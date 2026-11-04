@@ -21,8 +21,8 @@ use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 use tempfile::Builder;
 
-use crate::conversion::executable_discovery::discover_executable;
 use crate::error::AppResult;
+use crate::executable_discovery::discover_executable;
 use crate::library::model::BookAuthor;
 use crate::metadata::candidate_cover::CapturedCover;
 

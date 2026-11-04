@@ -1868,13 +1868,13 @@ mod tests {
             LibraryStore::create_or_migrate(paths.clone()),
             LibraryStore::open_existing(paths.clone()),
         ] {
-            assert_eq!(result.err().unwrap().code(), "invalid-arguments");
+            assert_eq!(result.err().unwrap().code(), "library-is-backup");
         }
         assert_eq!(
             LibraryStore::requires_verified_migration(paths.clone())
                 .unwrap_err()
                 .code(),
-            "invalid-arguments"
+            "library-is-backup"
         );
         assert!(LibraryStore::open_read_only(paths.clone()).is_ok());
         assert_eq!(fs::read(&paths.database).unwrap(), before);
@@ -1886,7 +1886,7 @@ mod tests {
             assert!(LibraryStore::is_backup_root(&paths.root).unwrap());
             assert_eq!(
                 LibraryStore::create_or_migrate(paths).err().unwrap().code(),
-                "invalid-arguments"
+                "library-is-backup"
             );
         }
     }
