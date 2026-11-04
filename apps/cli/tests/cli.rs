@@ -2,7 +2,7 @@ use std::fs;
 
 use assert_cmd::cargo::cargo_bin_cmd;
 use rusqlite::Connection;
-use serde_json::Value;
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 fn add_book(database: &std::path::Path, source: &std::path::Path) -> String {
@@ -2005,6 +2005,65 @@ fn library_service_correlates_mutations_with_request_ids() {
     assert_eq!(response["id"], "request-7");
     assert_eq!(response["ok"], true);
     assert_eq!(response["value"]["item"]["title"], "A Wizard of Earthsea");
+}
+
+#[test]
+fn sibling_item_mutations_share_one_mutation_result_envelope() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let database = temp.path().join("library.sqlite");
+    let source = temp.path().join("earthsea.epub");
+    fs::write(&source, b"epub").expect("write source ebook");
+    let imported = cargo_bin_cmd!("takio")
+        .args(["library", "import", "--db"])
+        .arg(&database)
+        .args(["--source-path"])
+        .arg(&source)
+        .output()
+        .expect("import ebook");
+    let item_id = success_value(&imported.stdout)["item"]["id"]
+        .as_str()
+        .expect("book id")
+        .to_owned();
+    let requests = [
+        json!({"id":"u","command":"library_update","args":{"id":item_id,"patch":{"title":"T"}}}),
+        json!({"id":"t","command":"library_trash","args":{"id":item_id}}),
+        json!({"id":"r","command":"library_restore","args":{"id":item_id}}),
+        json!({"id":"c","command":"library_cover_remove","args":{"id":item_id}}),
+    ];
+    let input: String = requests
+        .iter()
+        .map(|request| format!("{request}\n"))
+        .collect();
+    let output = cargo_bin_cmd!("takio")
+        .args(["library", "service", "--db"])
+        .arg(&database)
+        .write_stdin(input)
+        .output()
+        .expect("run library service");
+    assert!(output.status.success());
+    let responses: Vec<Value> = output
+        .stdout
+        .split(|byte| *byte == b'\n')
+        .filter(|line| !line.is_empty())
+        .map(|line| serde_json::from_slice(line).expect("service JSON line"))
+        .collect();
+    assert_eq!(responses.len(), requests.len());
+    for response in responses {
+        assert_eq!(response["ok"], true, "{response}");
+        let mut keys: Vec<_> = response["value"]
+            .as_object()
+            .expect("mutation object")
+            .keys()
+            .cloned()
+            .collect();
+        keys.sort();
+        assert_eq!(
+            keys,
+            ["cleanupPending", "cleanupPendingPaths", "item"],
+            "{response}"
+        );
+        assert_eq!(response["value"]["cleanupPending"], false);
+    }
 }
 
 #[test]

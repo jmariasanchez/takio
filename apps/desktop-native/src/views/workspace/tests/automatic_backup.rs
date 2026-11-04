@@ -104,7 +104,7 @@ fn native_automatic_backup_enable_reload_mutate_restore_and_disable(cx: &mut Tes
         .recv()
         .unwrap()
         .unwrap();
-    assert_eq!(updated.title, "Changed after automatic backup");
+    assert_eq!(updated.item.title, "Changed after automatic backup");
     f.state.update(cx, |state, cx| {
         state.select_only(1, cx);
         state.trash_selected(cx);

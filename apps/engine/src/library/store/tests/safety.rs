@@ -217,7 +217,8 @@ fn purge_reports_changed_file_and_continues_other_cleanup() {
     fs::write(&pdf, b"pdf bytes").unwrap();
     let item = store
         .attach_format(&item.id, &pdf, Provenance::Managed)
-        .unwrap();
+        .unwrap()
+        .item;
     let changed = item.formats[0].source_path.clone();
     let unchanged = item.formats[1].source_path.clone();
     fs::write(&changed, b"user changed bytes").unwrap();
@@ -334,7 +335,7 @@ fn trash_preserves_files_and_purge_requires_trash() {
     let (_temp, mut store, item) = fixture();
     assert_eq!(store.purge(&item.id).unwrap_err().code(), "not-trashed");
     assert!(item.formats[0].source_path.exists());
-    assert_eq!(store.trash(&item.id).unwrap().id, item.id);
+    assert_eq!(store.trash(&item.id).unwrap().item.id, item.id);
     assert!(item.formats[0].source_path.exists());
     assert_eq!(store.list_trash().unwrap()[0].id, item.id);
     store.trash(&item.id).unwrap();
@@ -410,7 +411,8 @@ fn scalar_author_is_always_derived_when_structured_authors_are_patched() {
             }))
             .unwrap(),
         )
-        .unwrap();
+        .unwrap()
+        .item;
     assert_eq!(updated.author.as_deref(), Some("Ada, Grace"));
     let stored = store.get(&item.id).unwrap().unwrap();
     assert_eq!(stored.author.as_deref(), Some("Ada, Grace"));
@@ -434,7 +436,8 @@ fn scalar_author_patch_updates_structured_authors_so_they_cannot_diverge() {
             &item.id,
             serde_json::from_value(serde_json::json!({"author":" Carol "})).unwrap(),
         )
-        .unwrap();
+        .unwrap()
+        .item;
     assert_eq!(updated.author.as_deref(), Some("Carol"));
     assert_eq!(
         updated
@@ -453,7 +456,8 @@ fn scalar_author_patch_updates_structured_authors_so_they_cannot_diverge() {
             &item.id,
             serde_json::from_value(serde_json::json!({"author":null})).unwrap(),
         )
-        .unwrap();
+        .unwrap()
+        .item;
     assert!(cleared.author.is_none());
     assert!(cleared.authors.is_empty());
 }
@@ -469,7 +473,8 @@ fn update_resynchronizes_legacy_author_and_clear() {
             }))
             .unwrap(),
         )
-        .unwrap();
+        .unwrap()
+        .item;
     assert_eq!(updated.author.as_deref(), Some("Alice, Bob"));
     assert_eq!(store.get(&item.id).unwrap().unwrap().author, updated.author);
     let cleared = store
@@ -477,7 +482,8 @@ fn update_resynchronizes_legacy_author_and_clear() {
             &item.id,
             serde_json::from_value(serde_json::json!({"authors":null})).unwrap(),
         )
-        .unwrap();
+        .unwrap()
+        .item;
     assert!(cleared.author.is_none());
 }
 

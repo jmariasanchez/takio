@@ -122,9 +122,9 @@ pub(super) fn library(
                         patch: patch.clone(),
                     },
                 ) {
-                    Ok(item) => outcomes.push(UpdateOutcome::Updated {
+                    Ok(result) => outcomes.push(UpdateOutcome::Updated {
                         item_id: id,
-                        item: Box::new(item),
+                        item: Box::new(result.item),
                     }),
                     Err(error) if error.kind() == ErrorCode::NotFound => {
                         outcomes.push(UpdateOutcome::Missing { item_id: id });
@@ -209,7 +209,7 @@ pub(super) fn library(
             db.as_deref(),
             "library_trash",
             &json!({"id":id}),
-            CliEnvelope::TrashWithoutCleanup,
+            CliEnvelope::Direct,
         )?),
         LibraryCommand::ImportCalibre { db, library_root } => {
             let paths = LibraryPaths::resolve(library, db.as_deref())?;

@@ -169,10 +169,12 @@ impl Operation {
             Self::DuplicatesMerge(request) => {
                 encode_response(store.merge_duplicate_pair(&request)?)
             }
-            Self::Update(request) => Ok(json!({"item":update_item(store, request)?})),
-            Self::AttachFormat(request) => Ok(
-                json!({"item":store.attach_format(&request.id, &request.source.path, request.source.provenance())?}),
-            ),
+            Self::Update(request) => encode_response(update_item(store, request)?),
+            Self::AttachFormat(request) => encode_response(store.attach_format(
+                &request.id,
+                &request.source.path,
+                request.source.provenance(),
+            )?),
             Self::RemoveFormat(request) => {
                 encode_response(store.remove_format(&request.id, request.format)?)
             }
@@ -187,8 +189,8 @@ impl Operation {
                 encode_response(store.set_cover(&request.id, &request.source_path)?)
             }
             Self::CoverRemove(request) => encode_response(store.remove_cover(&request.id)?),
-            Self::Trash(request) => Ok(json!({"item":store.trash(&request.id)?})),
-            Self::Restore(request) => Ok(json!({"item":store.restore(&request.id)?})),
+            Self::Trash(request) => encode_response(store.trash(&request.id)?),
+            Self::Restore(request) => encode_response(store.restore(&request.id)?),
             Self::Purge(request) => encode_response(store.purge(&request.id)?),
         }
     }
@@ -197,7 +199,7 @@ impl Operation {
 pub(super) fn update_item(
     store: &mut LibraryStore,
     request: UpdateRequest,
-) -> AppResult<takio::library::model::LibraryItem> {
+) -> AppResult<takio::library::store::MutationResult> {
     store.update(&request.id, request.patch)
 }
 
@@ -241,9 +243,6 @@ pub(super) enum CliEnvelope {
     Direct,
     /// Service response wrapped under a named key, for example `definitions`.
     Wrapped(&'static str),
-    /// `library remove` keeps its historical trash envelope: trash never leaves
-    /// cleanup pending, so these fields are always false and empty.
-    TrashWithoutCleanup,
 }
 
 impl CliEnvelope {
@@ -251,12 +250,6 @@ impl CliEnvelope {
         match self {
             Self::Direct => value,
             Self::Wrapped(key) => json!({ key: value }),
-            Self::TrashWithoutCleanup => {
-                let mut value = value;
-                value["cleanupPending"] = json!(false);
-                value["cleanupPendingPaths"] = json!([]);
-                value
-            }
         }
     }
 }
@@ -338,10 +331,6 @@ mod tests {
         assert_eq!(
             CliEnvelope::Wrapped("definitions").apply(json!([1])),
             json!({"definitions":[1]})
-        );
-        assert_eq!(
-            CliEnvelope::TrashWithoutCleanup.apply(value),
-            json!({"item":{"id":"a"},"cleanupPending":false,"cleanupPendingPaths":[]})
         );
     }
 }

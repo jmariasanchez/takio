@@ -88,8 +88,9 @@ impl std::ops::Deref for ReadOnlyLibraryStore {
     }
 }
 
-/// A committed catalogue mutation. Cleanup failures never turn a committed
-/// change into an error, and every preserved orphan path is reported here.
+/// A committed catalog mutation. Every public `LibraryStore` item mutation
+/// returns this one shape. Cleanup failures never turn a committed change into
+/// an error, and every preserved orphan path is reported here.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MutationResult {
@@ -707,6 +708,16 @@ impl LibraryStore {
         id: &str,
         source: &Path,
         provenance: Provenance,
+    ) -> AppResult<MutationResult> {
+        self.attach_format_item(id, source, provenance)
+            .map(MutationResult::new)
+    }
+
+    fn attach_format_item(
+        &mut self,
+        id: &str,
+        source: &Path,
+        provenance: Provenance,
     ) -> AppResult<LibraryItem> {
         let source = canonical_file(source)?;
         let format =
@@ -1047,8 +1058,9 @@ impl LibraryStore {
         Ok(updated)
     }
 
-    pub fn update(&mut self, id: &str, patch: LibraryPatch) -> AppResult<LibraryItem> {
+    pub fn update(&mut self, id: &str, patch: LibraryPatch) -> AppResult<MutationResult> {
         self.update_inner(id, patch, false, None)
+            .map(MutationResult::new)
     }
 
     pub(crate) fn apply_metadata_candidate(
@@ -1345,12 +1357,13 @@ impl LibraryStore {
         Ok(result)
     }
 
-    pub fn trash(&mut self, id: &str) -> AppResult<LibraryItem> {
+    pub fn trash(&mut self, id: &str) -> AppResult<MutationResult> {
         self.set_trash(id, Some(Utc::now().to_rfc3339()))
+            .map(MutationResult::new)
     }
 
-    pub fn restore(&mut self, id: &str) -> AppResult<LibraryItem> {
-        self.set_trash(id, None)
+    pub fn restore(&mut self, id: &str) -> AppResult<MutationResult> {
+        self.set_trash(id, None).map(MutationResult::new)
     }
 
     /// Permanently deletes a trashed item and reports any preserved orphan paths.

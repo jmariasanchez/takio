@@ -219,7 +219,7 @@ pub enum Request {
     Update {
         id: String,
         patch: LibraryPatch,
-        reply: Sender<AppResult<LibraryItem>>,
+        reply: Sender<AppResult<takio::library::store::MutationResult>>,
     },
     Import {
         roots: Vec<PathBuf>,
@@ -446,14 +446,10 @@ fn worker_with_reader_scans(
                 let _ = reply.send(result);
             }
             Request::Trash { ids, reply } => {
-                let _ = reply.send(Ok(mutation_report_for(&ids, |id| {
-                    store.trash(id).map(Into::into)
-                })));
+                let _ = reply.send(Ok(mutation_report_for(&ids, |id| store.trash(id))));
             }
             Request::Restore { ids, reply } => {
-                let _ = reply.send(Ok(mutation_report_for(&ids, |id| {
-                    store.restore(id).map(Into::into)
-                })));
+                let _ = reply.send(Ok(mutation_report_for(&ids, |id| store.restore(id))));
             }
             Request::Purge { ids, reply } => {
                 let _ = reply.send(Ok(mutation_report_for(&ids, |id| store.purge(id))));
@@ -1435,7 +1431,7 @@ mod tests {
             .recv()
             .unwrap()
             .unwrap();
-        assert_eq!(updated.title, "After");
+        assert_eq!(updated.item.title, "After");
         let preview = engine
             .request(|reply| Request::PreviewSend {
                 destination,

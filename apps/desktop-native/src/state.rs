@@ -783,8 +783,8 @@ impl LibraryState {
         self.await_reply(receiver, cx, |this, result, cx| {
             this.session.activity = Activity::Idle;
             match result {
-                Ok(item) => {
-                    this.session.metadata_save_result = Some(Ok(item.id));
+                Ok(result) => {
+                    this.session.metadata_save_result = Some(Ok(result.item.id));
                     this.set_status("Book details saved".into(), false, cx);
                     this.reload(cx);
                 }

@@ -329,8 +329,8 @@ impl App {
             return;
         };
         match self.store.trash(&id) {
-            Ok(item) => {
-                self.status = format!("Moved {} to Trash", item.title);
+            Ok(result) => {
+                self.status = format!("Moved {} to Trash", result.item.title);
                 self.refresh();
             }
             Err(error) => self.status = format!("Trash failed: {}", error.code()),

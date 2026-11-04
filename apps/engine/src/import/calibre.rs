@@ -161,11 +161,11 @@ pub fn import_calibre_library(
                 &extra.path,
                 crate::library::model::Provenance::Managed,
             ) {
-                item = attached;
+                item = attached.item;
             }
         }
         if let Ok(updated) = store.update(&item.id, patch_for(&book)) {
-            item = updated;
+            item = updated.item;
         }
         if let Some(cover) = &book.cover_path
             && let Ok(covered) = store.set_cover(&item.id, cover)
