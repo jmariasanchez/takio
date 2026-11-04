@@ -9,8 +9,7 @@ use sha2::{Digest, Sha256};
 use unicode_normalization::UnicodeNormalization;
 use uuid::Uuid;
 
-use crate::error::{AppError, AppResult};
-use crate::fingerprint::write_new_file;
+use crate::error::{AppError, AppResult, ErrorCode};
 use crate::format::FormatId;
 use crate::library::model::{BookAuthor, CustomColumnDefinition, LibraryItem, Provenance};
 use crate::library::paths::{LibraryPaths, absolute as absolute_nonempty};
@@ -90,9 +89,7 @@ fn export_into(
 ) -> AppResult<serde_json::Value> {
     create_private_dir(temporary)?;
     create_private_dir(&temporary.join("books"))?;
-    let items = store
-        .list(false)
-        .map_err(|_| crate::app_error!("storage-unavailable"))?;
+    let items = store.list(false)?;
     let mut books = Vec::with_capacity(items.len());
     let mut directories = HashSet::new();
     let mut format_count = 0usize;
@@ -100,11 +97,11 @@ fn export_into(
 
     for item in &items {
         if item.formats.is_empty() {
-            return Err(crate::app_error!("storage-unavailable"));
+            return Err(crate::app_error!("invalid-stored-data"));
         }
         let directory = safe_book_directory(item);
         if !directories.insert(directory.clone()) {
-            return Err(crate::app_error!("storage-unavailable"));
+            return Err(crate::app_error!("invalid-stored-data"));
         }
         let book_root = temporary.join("books").join(&directory);
         create_private_dir(&book_root)?;
@@ -130,7 +127,7 @@ fn export_into(
                 if matches!(extension.as_str(), "jpg" | "jpeg" | "png") {
                     Ok(format!("cover.{extension}"))
                 } else {
-                    Err(crate::app_error!("storage-unavailable"))
+                    Err(crate::app_error!("invalid-stored-data"))
                 }
             })
             .transpose()?;
@@ -140,7 +137,7 @@ fn export_into(
         }
         let opf = portable_opf(item, cover_name.as_deref());
         if opf.len() as u64 > MAX_DOCUMENT_BYTES {
-            return Err(crate::app_error!("storage-unavailable"));
+            return Err(crate::app_error!("invalid-stored-data"));
         }
         let opf_path = book_root.join("metadata.opf");
         write_new_file(&opf_path, opf.as_bytes())?;
@@ -159,13 +156,13 @@ fn export_into(
         books,
     };
     let mut bytes = serde_json::to_vec_pretty(&manifest)
-        .map_err(|_| crate::app_error!("storage-unavailable"))?;
+        .map_err(|_| crate::app_error!("invalid-stored-data"))?;
     bytes.push(b'\n');
     if bytes.len() as u64 > MAX_DOCUMENT_BYTES {
-        return Err(crate::app_error!("storage-unavailable"));
+        return Err(crate::app_error!("invalid-stored-data"));
     }
     write_new_file(&temporary.join("manifest.json"), &bytes)?;
-    validate_source(temporary).map_err(|_| crate::app_error!("storage-unavailable"))?;
+    validate_source(temporary).map_err(|_| crate::app_error!("integrity-failed"))?;
     if destination.exists() {
         return Err(crate::app_error!("destination-exists"));
     }
@@ -173,7 +170,7 @@ fn export_into(
         if destination.exists() || error.kind() == std::io::ErrorKind::AlreadyExists {
             crate::app_error!("destination-exists")
         } else {
-            crate::app_error!("storage-unavailable")
+            destination_error(error)
         }
     })?;
     Ok(
@@ -213,29 +210,22 @@ fn rebuild_into(
     temporary_paths: LibraryPaths,
 ) -> AppResult<serde_json::Value> {
     create_private_dir(temporary)?;
-    let mut store = LibraryStore::create_or_migrate(temporary_paths.clone())
-        .map_err(|_| crate::app_error!("storage-unavailable"))?;
+    let mut store = LibraryStore::create_or_migrate(temporary_paths.clone())?;
     store
         .replace_custom_column_definitions(&source.definitions)
         .map_err(|_| crate::app_error!("source-invalid"))?;
     for book in &source.books {
-        store
-            .restore_portable_item(&book.item, &book.formats, book.cover.as_deref())
-            .map_err(|_| crate::app_error!("storage-unavailable"))?;
+        store.restore_portable_item(&book.item, &book.formats, book.cover.as_deref())?;
     }
-    let report = store
-        .verify()
-        .map_err(|_| crate::app_error!("storage-unavailable"))?;
+    let report = store.verify()?;
     let final_database = destination.join(
         temporary_paths
             .database
             .file_name()
-            .ok_or_else(|| crate::app_error!("storage-unavailable"))?,
+            .ok_or_else(|| crate::app_error!("invalid-arguments"))?,
     );
     let final_paths = LibraryPaths::resolve(None, Some(&final_database))?;
-    store
-        .rebase_portable_paths(&final_paths)
-        .map_err(|_| crate::app_error!("storage-unavailable"))?;
+    store.rebase_portable_paths(&final_paths)?;
     drop(store);
     if destination.exists() {
         return Err(crate::app_error!("destination-exists"));
@@ -244,7 +234,7 @@ fn rebuild_into(
         if destination.exists() || error.kind() == std::io::ErrorKind::AlreadyExists {
             crate::app_error!("destination-exists")
         } else {
-            crate::app_error!("storage-unavailable")
+            destination_error(error)
         }
     })?;
     Ok(json!({"rebuild":{"path":final_database,"report":integrity_value(&report)}}))
@@ -697,28 +687,30 @@ fn safe_book_directory(item: &LibraryItem) -> String {
 }
 
 fn copy_artifact(source: &Path, destination: &Path, relative: &str) -> AppResult<PortableArtifact> {
-    let source_metadata = fs::symlink_metadata(source)?;
+    let source_error = |error| AppError::from_io(ErrorCode::SourceUnavailable, error);
+    let source_metadata = fs::symlink_metadata(source).map_err(source_error)?;
     if !source_metadata.is_file()
         || source_metadata.file_type().is_symlink()
         || source_metadata.len() == 0
     {
-        return Err(crate::app_error!("storage-unavailable"));
+        return Err(crate::app_error!("source-unavailable"));
     }
-    let mut input = File::open(source)?;
+    let mut input = File::open(source).map_err(source_error)?;
     let mut output = OpenOptions::new()
         .write(true)
         .create_new(true)
-        .open(destination)?;
+        .open(destination)
+        .map_err(destination_error)?;
     let crate::fingerprint::Fingerprint { bytes, sha256 } =
         crate::fingerprint::copy_and_hash(&mut input, &mut output).map_err(
             |error| match error {
-                crate::fingerprint::CopyError::Read(error)
-                | crate::fingerprint::CopyError::Write(error) => AppError::from(error),
+                crate::fingerprint::CopyError::Read(error) => source_error(error),
+                crate::fingerprint::CopyError::Write(error) => destination_error(error),
             },
         )?;
-    output.sync_all()?;
+    output.sync_all().map_err(destination_error)?;
     if bytes == 0 || bytes > MAX_SAFE_INTEGER {
-        return Err(crate::app_error!("storage-unavailable"));
+        return Err(crate::app_error!("invalid-stored-data"));
     }
     Ok(PortableArtifact {
         path: relative.to_owned(),
@@ -832,13 +824,27 @@ fn owned_staging_path(destination: &Path) -> AppResult<PathBuf> {
     Ok(parent.join(format!(".{name}.{}.tmp", Uuid::new_v4())))
 }
 fn create_private_dir(path: &Path) -> AppResult<()> {
-    fs::create_dir(path)?;
+    fs::create_dir(path).map_err(destination_error)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700)).map_err(destination_error)?;
     }
     Ok(())
+}
+fn destination_error(error: std::io::Error) -> AppError {
+    AppError::from_io(ErrorCode::DestinationUnavailable, error)
+}
+
+fn write_new_file(path: &Path, bytes: &[u8]) -> AppResult<()> {
+    use std::io::Write;
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map_err(destination_error)?;
+    file.write_all(bytes).map_err(destination_error)?;
+    file.sync_all().map_err(destination_error)
 }
 fn xml(value: &str) -> String {
     value
@@ -956,14 +962,30 @@ mod tests {
     fn portable_io_errors_preserve_kind_and_wire_code() {
         let temp = tempfile::tempdir().unwrap();
         let error = write_new_file(&temp.path().join("missing/manifest.json"), b"{}").unwrap_err();
-        assert_eq!(error.code(), "storage-unavailable");
+        assert_eq!(error.code(), "destination-unavailable");
         assert_eq!(error.io_kind(), Some(std::io::ErrorKind::NotFound));
         let path = temp.path().join("existing");
         fs::write(&path, b"keep").unwrap();
         let error = write_new_file(&path, b"replace").unwrap_err();
-        assert_eq!(error.code(), "storage-unavailable");
+        assert_eq!(error.code(), "destination-unavailable");
         assert_eq!(error.io_kind(), Some(std::io::ErrorKind::AlreadyExists));
         assert_eq!(fs::read(path).unwrap(), b"keep");
+    }
+
+    #[test]
+    fn artifact_errors_identify_source_or_destination_without_overwrite() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("book.epub");
+        let target = temp.path().join("copy.epub");
+        let error = copy_artifact(&source, &target, "book.epub").err().unwrap();
+        assert_eq!(error.code(), "source-unavailable");
+        assert_eq!(error.io_kind(), Some(std::io::ErrorKind::NotFound));
+        fs::write(&source, b"book").unwrap();
+        fs::write(&target, b"keep").unwrap();
+        let error = copy_artifact(&source, &target, "book.epub").err().unwrap();
+        assert_eq!(error.code(), "destination-unavailable");
+        assert_eq!(error.io_kind(), Some(std::io::ErrorKind::AlreadyExists));
+        assert_eq!(fs::read(target).unwrap(), b"keep");
     }
 
     fn replace_opf(fixture: &Path, before: &str, after: &str) {

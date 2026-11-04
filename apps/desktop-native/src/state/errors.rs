@@ -17,6 +17,46 @@ pub(super) fn preparation_started() -> String {
     )
 }
 
+pub fn humanize_app_error(error: &takio::error::AppError) -> String {
+    let message = humanize_error(error.kind());
+    match error.io_kind() {
+        Some(std::io::ErrorKind::StorageFull) => {
+            format!("{message} The disk is full. Free space and retry.")
+        }
+        Some(std::io::ErrorKind::PermissionDenied) => {
+            format!("{message} Permission was denied. Check access permissions and retry.")
+        }
+        _ => message,
+    }
+}
+
+#[cfg(test)]
+mod io_tests {
+    #[test]
+    fn actionable_io_messages_keep_private_details_redacted() {
+        for (kind, expected) in [
+            (std::io::ErrorKind::StorageFull, "disk is full"),
+            (
+                std::io::ErrorKind::PermissionDenied,
+                "Permission was denied",
+            ),
+        ] {
+            let error = takio::error::AppError::from_io(
+                takio::error::ErrorCode::WriteFailed,
+                std::io::Error::new(kind, "private/path"),
+            );
+            let message = super::humanize_app_error(&error);
+            assert!(message.contains(expected));
+            assert!(!message.contains("private/path"));
+        }
+        let error = takio::app_error!("write-failed");
+        assert_eq!(
+            super::humanize_app_error(&error),
+            super::humanize_error(error.kind())
+        );
+    }
+}
+
 pub fn humanize_error(code: takio::error::ErrorCode) -> String {
     use takio::error::ErrorCode::*;
     match code {
@@ -61,7 +101,7 @@ pub fn humanize_error(code: takio::error::ErrorCode) -> String {
         | MetadataExtractionFailed | MetadataFetchFailed | MetadataInvalid | MetadataTimeout
         | MetadataUnavailable | MigrationFailed | NotTrashed | OpenFailed | OperationCanceled
         | OutputFileExists | PolishFailed | PreferenceInvalid | PreferenceUnsafePath
-        | PublicationFailed | QueryCancelled | RestoreFailed | RollbackFailed | ServerUnavailable
+        | PublicationFailed | RestoreFailed | RollbackFailed | ServerUnavailable
         | SourceChanged | SourceInvalid | StaleReview | TerminalUnavailable | UnknownJob
         | Unreadable | UnsupportedConversion | UnsupportedPlatform | WriteFailed => {
             format!("Something went wrong ({code})")
@@ -90,7 +130,7 @@ pub(super) fn humanize_recovery_error(code: takio::error::ErrorCode) -> String {
         | MetadataTimeout | MetadataUnavailable | MigrationFailed | NoCompatibleFormat | NoEpubSource
         | NotFound | NotTrashed | OpenFailed | OperationCanceled | OperationInProgress | OutputFileExists
         | PolishFailed | PreferenceInvalid | PreferenceUnsafePath | PrepareBackendChanged
-        | PrepareSourceChanged | PrepareSourceUnavailable | PublicationFailed | QueryCancelled
+        | PrepareSourceChanged | PrepareSourceUnavailable | PublicationFailed
         | ReaderScanInProgress | ReaderScanUnavailable | RestoreFailed | RollbackFailed
         | SendReviewChanged | ServerUnavailable | SourceChanged | SourceUnavailable | StaleReview
         | StorageUnavailable | TerminalUnavailable | UnknownDestination | UnknownJob | Unreadable
@@ -172,7 +212,6 @@ pub(super) fn open_library_error(code: takio::error::ErrorCode) -> String {
         | PrepareSourceChanged
         | PrepareSourceUnavailable
         | PublicationFailed
-        | QueryCancelled
         | ReaderScanInProgress
         | ReaderScanUnavailable
         | RestoreFailed

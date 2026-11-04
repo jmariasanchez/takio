@@ -168,8 +168,9 @@ fn save(root: &Path, config: &Config) -> AppResult<()> {
 
 fn validate_destination(root: &Path, destination: &Path) -> AppResult<PathBuf> {
     path_text(destination)?;
-    let metadata = fs::symlink_metadata(destination)
-        .map_err(|_| takio::app_error!("automatic-backup-destination-unavailable"))?;
+    let metadata = fs::symlink_metadata(destination).map_err(|error| {
+        AppError::from_io(ErrorCode::AutomaticBackupDestinationUnavailable, error)
+    })?;
     if !metadata.is_dir() {
         return Err(takio::app_error!(
             "automatic-backup-destination-unavailable"

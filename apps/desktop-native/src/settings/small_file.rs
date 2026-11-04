@@ -42,13 +42,13 @@ pub fn write_atomic(
     unsafe_code: ErrorCode,
 ) -> AppResult<()> {
     regular_or_missing(path, unsafe_code)?;
-    let write_error = |_| AppError::new(ErrorCode::WriteFailed);
+    let write_error = |error| AppError::from_io(ErrorCode::WriteFailed, error);
     let mut staged = tempfile::NamedTempFile::new_in(parent).map_err(write_error)?;
     staged.write_all(bytes).map_err(write_error)?;
     staged.as_file().sync_all().map_err(write_error)?;
     regular_or_missing(path, unsafe_code)?;
     staged
         .persist(path)
-        .map_err(|_| AppError::new(ErrorCode::WriteFailed))?;
+        .map_err(|error| write_error(error.error))?;
     Ok(())
 }

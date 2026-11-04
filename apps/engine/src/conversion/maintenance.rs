@@ -88,14 +88,15 @@ pub fn polish(
     let workspace = Builder::new()
         .prefix("takio-polish-")
         .tempdir()
-        .map_err(|_| crate::app_error!("copy-failed"))?;
+        .map_err(|error| AppError::from_io(crate::error::ErrorCode::CopyFailed, error))?;
     let staged_input = workspace
         .path()
         .join(format!("source.{}", format.extension()));
     let staged_output = workspace
         .path()
         .join(format!("polished.{}", format.extension()));
-    fs::copy(&input, &staged_input).map_err(|_| crate::app_error!("copy-failed"))?;
+    fs::copy(&input, &staged_input)
+        .map_err(|error| AppError::from_io(crate::error::ErrorCode::CopyFailed, error))?;
 
     let mut command = Command::new(backend);
     for operation in operations {
@@ -122,11 +123,12 @@ pub fn polish(
             .write(true)
             .create_new(true)
             .open(&partial)
-            .map_err(|_| crate::app_error!("copy-failed"))?;
-        std::io::copy(&mut source, &mut target).map_err(|_| crate::app_error!("copy-failed"))?;
+            .map_err(|error| AppError::from_io(crate::error::ErrorCode::CopyFailed, error))?;
+        std::io::copy(&mut source, &mut target)
+            .map_err(|error| AppError::from_io(crate::error::ErrorCode::CopyFailed, error))?;
         target
             .flush()
-            .map_err(|_| crate::app_error!("copy-failed"))?;
+            .map_err(|error| AppError::from_io(crate::error::ErrorCode::CopyFailed, error))?;
         fs::hard_link(&partial, output).map_err(|error| {
             if output.exists() {
                 crate::app_error!("output-file-exists")

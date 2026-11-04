@@ -110,7 +110,6 @@ error_codes! {
     PrepareSourceChanged => "prepare-source-changed",
     PrepareSourceUnavailable => "prepare-source-unavailable",
     PublicationFailed => "publication-failed",
-    QueryCancelled => "query-cancelled",
     ReaderScanInProgress => "reader-scan-in-progress",
     ReaderScanUnavailable => "reader-scan-unavailable",
     RestoreFailed => "restore-failed",
@@ -240,6 +239,15 @@ impl From<std::io::Error> for AppError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cancellation_has_one_wire_code() {
+        assert_eq!(
+            crate::app_error!("operation-canceled").kind(),
+            ErrorCode::OperationCanceled
+        );
+        assert_eq!(ErrorCode::from_wire("query-cancelled"), None);
+    }
 
     #[test]
     fn io_errors_keep_redacted_kind_and_explicit_codes() {

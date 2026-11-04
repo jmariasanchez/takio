@@ -275,7 +275,7 @@ impl LibraryState {
         let task = cx.background_executor().spawn(async move {
             timer.await;
             if cancelled.load(Ordering::Acquire) {
-                return Err(takio::app_error!("query-cancelled"));
+                return Err(takio::app_error!("operation-canceled"));
             }
             let items = crate::engine::recv(request_section(&engine, section, query, filters))?;
             Ok(build_snapshot(items, sort))
@@ -630,7 +630,7 @@ impl LibraryState {
                         cx,
                     );
                 }
-                Err(error) => this.set_error(error.kind(), cx),
+                Err(error) => this.set_app_error(&error, cx),
             }
             this.reload(cx);
             this.scan_readers(cx);
@@ -776,7 +776,7 @@ impl LibraryState {
                     this.reload(cx);
                 }
                 Err(error) => {
-                    this.set_error(error.kind(), cx);
+                    this.set_app_error(&error, cx);
                     this.session.metadata_save_result = Some(Err(error));
                 }
             }
@@ -897,7 +897,7 @@ impl LibraryState {
                         cx,
                     );
                 }
-                Err(error) => this.set_error(error.kind(), cx),
+                Err(error) => this.set_app_error(&error, cx),
             }
             this.reload(cx);
             this.scan_readers(cx);
@@ -1103,7 +1103,7 @@ impl LibraryState {
                     this.session.activity = Activity::ReviewingSend(preview);
                     this.set_status(format!("Review send: {ready} ready, {blocked} need attention. Nothing sent yet."), false, cx);
                 }
-                Err(error) => this.set_error(error.kind(), cx),
+                Err(error) => this.set_app_error(&error, cx),
             }
         }).detach();
     }
@@ -1189,7 +1189,7 @@ impl LibraryState {
                     );
                     this.session.delivery_report = Some(report);
                 }
-                Err(error) => this.set_error(error.kind(), cx),
+                Err(error) => this.set_app_error(&error, cx),
             }
             this.scan_readers(cx);
             cx.notify();
@@ -1211,7 +1211,7 @@ impl LibraryState {
             this.session.activity = Activity::Idle;
             match result {
                 Ok(()) => this.set_status(format!("Ejected {name}"), false, cx),
-                Err(error) => this.set_error(error.kind(), cx),
+                Err(error) => this.set_app_error(&error, cx),
             }
             this.refresh_destinations(cx);
         })
@@ -1270,7 +1270,7 @@ impl LibraryState {
                         this.set_error(takio::error::ErrorCode::BackendUnavailable, cx);
                     }
                 }
-                Err(error) => this.set_error(error.kind(), cx),
+                Err(error) => this.set_app_error(&error, cx),
             }
         })
         .detach();
@@ -1315,7 +1315,7 @@ impl LibraryState {
                     );
                     this.reload(cx);
                 }
-                Err(error) => this.set_error(error.kind(), cx),
+                Err(error) => this.set_app_error(&error, cx),
             }
         })
         .detach();
@@ -1326,6 +1326,10 @@ impl LibraryState {
     pub fn set_status(&mut self, text: String, is_error: bool, cx: &mut Context<Self>) {
         self.session.status = Some(Status { text, is_error });
         cx.notify();
+    }
+
+    fn set_app_error(&mut self, error: &takio::error::AppError, cx: &mut Context<Self>) {
+        self.set_status(errors::humanize_app_error(error), true, cx);
     }
 
     fn set_error(&mut self, code: takio::error::ErrorCode, cx: &mut Context<Self>) {
@@ -1361,7 +1365,7 @@ impl LibraryState {
                             .spawn(async move { drop((old_items, old_facets)) })
                             .detach();
                     }
-                    Err(error) => this.set_error(error.kind(), cx),
+                    Err(error) => this.set_app_error(&error, cx),
                 }
                 cx.notify();
             });
