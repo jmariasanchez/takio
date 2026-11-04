@@ -2240,6 +2240,35 @@ mod tests {
     }
 
     #[gpui::test]
+    fn both_sections_clear_loading_and_report_disconnected_reply(cx: &mut TestAppContext) {
+        for section in [Section::Library, Section::Trash] {
+            let f = fixture(cx);
+            let (engine, requests) = Engine::test_channel();
+            f.state.update(cx, |state, cx| {
+                state.engine = engine;
+                state.session.section = section;
+                state.reload(cx);
+                assert!(state.session.loading);
+            });
+            match (section, requests.recv().unwrap()) {
+                (Section::Library, Request::Query { reply, .. })
+                | (Section::Trash, Request::ListTrash { reply }) => drop(reply),
+                _ => panic!("unexpected section request"),
+            }
+            settle(&f.state, cx);
+            f.state.read_with(cx, |state, _| {
+                assert!(!state.session().loading);
+                let status = state.session().status.as_ref().unwrap();
+                assert!(status.is_error);
+                assert_eq!(
+                    status.text,
+                    humanize_error(takio::error::ErrorCode::StorageUnavailable)
+                );
+            });
+        }
+    }
+
+    #[gpui::test]
     fn partial_mutation_failures_warn_and_reload_committed_changes(cx: &mut TestAppContext) {
         for operation in ["trash", "restore", "purge"] {
             let f = fixture(cx);
