@@ -115,6 +115,7 @@ pub(super) fn migrate(
             inject_failure(source + 1)?;
         }
         rebase_historical_paths(&transaction, paths)?;
+        backfill_structured_authors(&transaction)?;
         install_canonical_v11_indexes(&transaction)?;
         verify_v11_domain(&transaction, paths)?;
         transaction.pragma_update(None, "user_version", LIBRARY_SCHEMA_VERSION)?;
@@ -871,6 +872,21 @@ const LIBRARY_ADOPTIONS_DDL: &str =
      ) STRICT;
      CREATE INDEX library_adoptions_by_state ON library_adoptions(state,updated_at,id);";
 
+/// Structured authors are authoritative. Pre-v5 rows only carried the legacy
+/// scalar, so give each such row one structured author. Rows that already have
+/// structured authors are left untouched, which makes this idempotent; it runs
+/// inside the migration transaction after the verified backup is taken.
+fn backfill_structured_authors(transaction: &Transaction<'_>) -> Result<(), rusqlite::Error> {
+    transaction.execute(
+        "INSERT INTO library_item_authors(library_item_id,name,sort_name,position)
+         SELECT li.id, trim(li.author), NULL, 0 FROM library_items li
+         WHERE li.author IS NOT NULL AND length(trim(li.author)) > 0
+           AND NOT EXISTS(SELECT 1 FROM library_item_authors a WHERE a.library_item_id=li.id)",
+        [],
+    )?;
+    Ok(())
+}
+
 fn rebase_historical_paths(
     transaction: &Transaction<'_>,
     paths: &LibraryPaths,
@@ -1265,6 +1281,38 @@ mod tests {
                 "ok"
             );
         }
+    }
+
+    #[test]
+    fn migration_backfills_structured_authors_from_legacy_scalar_once() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = paths(&temp);
+        install_fixture(&paths, 4);
+        let store = LibraryStore::create_or_migrate(paths.clone()).unwrap();
+        let complete = store.get("book-v4-complete").unwrap().unwrap();
+        assert_eq!(complete.author.as_deref(), Some("Octavia E. Butler"));
+        assert_eq!(
+            complete
+                .authors
+                .iter()
+                .map(|a| a.name.as_str())
+                .collect::<Vec<_>>(),
+            ["Octavia E. Butler"]
+        );
+        let minimal = store.get("book-v4-minimal").unwrap().unwrap();
+        assert!(minimal.author.is_none() && minimal.authors.is_empty());
+        drop(store);
+        // Reopening a current catalogue must not duplicate backfilled rows.
+        let reopened = LibraryStore::create_or_migrate(paths).unwrap();
+        let rows: i64 = reopened
+            .connection
+            .query_row(
+                "SELECT count(*) FROM library_item_authors WHERE library_item_id='book-v4-complete'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(rows, 1);
     }
 
     #[test]

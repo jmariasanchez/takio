@@ -399,6 +399,44 @@ fn remove_view_ignores_unrelated_corrupt_definition() {
 }
 
 #[test]
+fn scalar_author_patch_updates_structured_authors_so_they_cannot_diverge() {
+    let (_temp, mut store, item) = fixture();
+    store
+        .update(
+            &item.id,
+            serde_json::from_value(serde_json::json!({"authors":[{"name":"Alice"}]})).unwrap(),
+        )
+        .unwrap();
+    let updated = store
+        .update(
+            &item.id,
+            serde_json::from_value(serde_json::json!({"author":" Carol "})).unwrap(),
+        )
+        .unwrap();
+    assert_eq!(updated.author.as_deref(), Some("Carol"));
+    assert_eq!(
+        updated
+            .authors
+            .iter()
+            .map(|a| a.name.as_str())
+            .collect::<Vec<_>>(),
+        ["Carol"]
+    );
+    assert_eq!(updated.primary_author(), Some("Carol"));
+    let stored = store.get(&item.id).unwrap().unwrap();
+    assert_eq!(stored.author, updated.author);
+    assert_eq!(stored.authors.len(), 1);
+    let cleared = store
+        .update(
+            &item.id,
+            serde_json::from_value(serde_json::json!({"author":null})).unwrap(),
+        )
+        .unwrap();
+    assert!(cleared.author.is_none());
+    assert!(cleared.authors.is_empty());
+}
+
+#[test]
 fn update_resynchronizes_legacy_author_and_clear() {
     let (_temp, mut store, item) = fixture();
     let updated = store

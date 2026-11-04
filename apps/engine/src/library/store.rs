@@ -1128,13 +1128,19 @@ impl LibraryStore {
             }
             item.title = title.to_owned();
         }
-        match patch.author {
-            Patch::Missing => {}
-            Patch::Null => item.author = None,
-            Patch::Set(value) => item.author = Some(required_text(value)?),
-        }
-        let authors_changed = !matches!(patch.authors, Patch::Missing);
-        match patch.authors {
+        // Structured `authors` are the source of truth. The legacy scalar
+        // `author` is a derived display value, so a scalar-only patch is
+        // translated into a single structured author instead of diverging.
+        let authors_patch = match (patch.authors, patch.author) {
+            (Patch::Missing, Patch::Set(value)) => Patch::Set(vec![BookAuthor {
+                name: required_text(value)?,
+                sort_name: None,
+            }]),
+            (Patch::Missing, Patch::Null) => Patch::Null,
+            (authors, _) => authors,
+        };
+        let authors_changed = !matches!(authors_patch, Patch::Missing);
+        match authors_patch {
             Patch::Missing => {}
             Patch::Null => item.authors = Vec::new(),
             Patch::Set(value) => {
