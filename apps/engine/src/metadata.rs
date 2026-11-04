@@ -22,8 +22,8 @@ use tempfile::Builder;
 
 use crate::error::AppResult;
 use crate::executable_discovery::discover_executable;
-use crate::library::model::{BookAuthor, LibraryPatch, Patch};
 use crate::metadata::candidate_cover::CapturedCover;
+use crate::model::{BookAuthor, LibraryPatch, Patch};
 
 mod pdf;
 pub use pdf::embedded_pdf;

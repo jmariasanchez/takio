@@ -52,10 +52,11 @@ fault injection for adapter tests, without coupling adapters to engine tables.
 | `file_name` | Dependency-free safe publication names shared by exports and delivery |
 | `fingerprint` | Streaming SHA-256 byte counts and digests for owned-file operations |
 | `test_support` (feature-gated) | Disposable-library corruption, provenance, legacy schema, and PDF fixtures for adapter tests |
-| `library` | Catalogue domain modules |
+| `model` | Leaf domain values: items, authors, formats, provenance, and metadata patch wire models (depends only on `format` and `error`; shared by `metadata` and `library`) |
+| `library` | Catalog domain modules |
 | `library::store` | Schema-v12 SQLite catalogue and owned-file transactions |
 | `library::paths` | Default, named, and explicit library path resolution |
-| `library::model` | Items, authors, formats, provenance, and metadata patch wire models |
+| `library::model` | Re-export of the top-level `model` leaf for storage callers |
 | `library::query` | Typed query requests, facets, sorting, and shared query presentation |
 | `library::catalog` | Public catalogue projection and catalogue file publication |
 | `library::export` | Bounded multi-item export planning and outcomes |

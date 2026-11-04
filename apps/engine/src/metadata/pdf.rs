@@ -5,7 +5,7 @@ use std::path::Path;
 
 use lopdf::{Document, LoadOptions, Object};
 
-use crate::library::model::BookAuthor;
+use crate::model::BookAuthor;
 
 const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_STREAM_BYTES: usize = 2 * 1024 * 1024;
