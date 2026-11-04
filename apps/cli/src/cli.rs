@@ -987,7 +987,7 @@ fn metadata_candidates(command: MetadataCandidatesCommand, library: Option<&str>
             let candidates = metadata_candidates_for_item_at(
                 &item,
                 include_online,
-                timeout_seconds,
+                Duration::from_secs(timeout_seconds),
                 &store.paths().root,
             )?;
             print_success(json!({"itemId":item.id,"candidates":candidates}))
@@ -1016,9 +1016,9 @@ fn metadata_candidates(command: MetadataCandidatesCommand, library: Option<&str>
                 request.item_ids(),
                 snapshots,
                 request.include_online(),
-                timeout_seconds,
+                Duration::from_secs(timeout_seconds),
                 request.concurrency(),
-                signals.flag(),
+                signals.flag().as_ref(),
                 |item, online, timeout, canceled| {
                     metadata_candidates_for_reconcile(
                         item,
@@ -1026,13 +1026,7 @@ fn metadata_candidates(command: MetadataCandidatesCommand, library: Option<&str>
                         timeout,
                         &candidate_root,
                         canceled,
-                    )?
-                    .into_iter()
-                    .map(|candidate| {
-                        serde_json::to_value(candidate)
-                            .map_err(|_| takio::app_error!("metadata-invalid"))
-                    })
-                    .collect()
+                    )
                 },
             );
             print_success(response)

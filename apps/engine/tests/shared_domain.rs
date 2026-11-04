@@ -4,6 +4,51 @@ use takio::library::paths::LibraryPaths;
 use takio::library::store::LibraryStore;
 
 #[test]
+fn candidate_closed_sets_preserve_wire_spellings() {
+    use takio::library::metadata_candidates::{
+        CandidateBackend, CandidateConfidence, CandidateSource,
+    };
+    for value in [
+        CandidateSource::Filename,
+        CandidateSource::Embedded,
+        CandidateSource::Online,
+    ] {
+        let json = serde_json::to_value(value).unwrap();
+        assert_eq!(json, value.as_str());
+        assert_eq!(
+            serde_json::from_value::<CandidateSource>(json).unwrap(),
+            value
+        );
+    }
+    for value in [
+        CandidateConfidence::Low,
+        CandidateConfidence::Medium,
+        CandidateConfidence::High,
+    ] {
+        let json = serde_json::to_value(value).unwrap();
+        assert_eq!(json, value.as_str());
+        assert_eq!(
+            serde_json::from_value::<CandidateConfidence>(json).unwrap(),
+            value
+        );
+    }
+    for value in [
+        CandidateBackend::EbookMeta,
+        CandidateBackend::FetchEbookMetadata,
+    ] {
+        let json = serde_json::to_value(value).unwrap();
+        assert_eq!(json, value.as_str());
+        assert_eq!(
+            serde_json::from_value::<CandidateBackend>(json).unwrap(),
+            value
+        );
+    }
+    assert!(serde_json::from_str::<CandidateSource>("\"unknown\"").is_err());
+    assert!(serde_json::from_str::<CandidateConfidence>("\"unknown\"").is_err());
+    assert!(serde_json::from_str::<CandidateBackend>("\"unknown\"").is_err());
+}
+
+#[test]
 fn typed_metadata_candidate_applies_only_reviewed_fields() {
     use std::collections::BTreeSet;
     use takio::library::metadata_candidates::{
@@ -26,7 +71,7 @@ fn typed_metadata_candidate_applies_only_reviewed_fields() {
     let candidate = filename_candidates(&source, Some(&item.id), &[])
         .unwrap()
         .remove(0);
-    assert_eq!(candidate.source, "filename");
+    assert_eq!(candidate.source.as_str(), "filename");
     assert!(candidate.provenance.pattern.is_some());
     assert!(candidate.cover.is_none());
     assert_eq!(

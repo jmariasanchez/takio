@@ -9,6 +9,9 @@ use signal_hook::consts::signal::{SIGINT, SIGTERM};
 #[cfg(feature = "cli-signals")]
 use signal_hook::iterator::{Handle, Signals};
 
+use std::time::Duration;
+
+use super::metadata_candidates::MetadataCandidate;
 use crate::error::AppResult;
 use crate::library::model::LibraryItem;
 use crate::library::store::valid_item_id;
@@ -69,7 +72,7 @@ pub enum ReconcileOutcome {
     Ready {
         #[serde(rename = "itemId")]
         item_id: String,
-        candidates: Vec<Value>,
+        candidates: Vec<MetadataCandidate>,
     },
     NoCandidates {
         #[serde(rename = "itemId")]
@@ -160,13 +163,13 @@ pub fn reconcile<F>(
     item_ids: &[String],
     snapshots: Vec<AppResult<Option<LibraryItem>>>,
     include_online: bool,
-    timeout_seconds: u64,
+    timeout: Duration,
     concurrency: usize,
-    canceled: Arc<AtomicBool>,
+    canceled: &AtomicBool,
     discover: F,
 ) -> ReconcileResponse
 where
-    F: Fn(&LibraryItem, bool, u64, &AtomicBool) -> AppResult<Vec<Value>> + Sync,
+    F: Fn(&LibraryItem, bool, Duration, &AtomicBool) -> AppResult<Vec<MetadataCandidate>> + Sync,
 {
     debug_assert_eq!(item_ids.len(), snapshots.len());
     let total = item_ids.len();
@@ -202,7 +205,6 @@ where
                 let receiver = Arc::clone(&job_receiver);
                 let sender = result_sender.clone();
                 let discover = &discover;
-                let canceled = Arc::clone(&canceled);
                 scope.spawn(move || {
                     loop {
                         let job = receiver.lock().expect("job receiver poisoned").recv();
@@ -212,7 +214,7 @@ where
                         let result = if canceled.load(Ordering::Acquire) {
                             Err(crate::app_error!("operation-canceled"))
                         } else {
-                            discover(&item, include_online, timeout_seconds, canceled.as_ref())
+                            discover(&item, include_online, timeout, canceled)
                         };
                         if sender.send((index, result)).is_err() {
                             break;
@@ -414,6 +416,15 @@ mod tests {
         );
     }
 
+    fn candidate(id: &str) -> MetadataCandidate {
+        serde_json::from_value(json!({
+            "schemaVersion":1, "id":"filename:1", "source":"filename",
+            "confidence":"medium", "patch":{"title":"Title"},
+            "provenance":{"generatedAt":"1970-01-01T00:00:00Z", "itemId":id}
+        }))
+        .unwrap()
+    }
+
     #[test]
     fn reconciliation_preserves_order_and_exact_counts() {
         let ids = ["ready", "missing", "none", "failed"]
@@ -428,11 +439,11 @@ mod tests {
                 Ok(Some(item("failed"))),
             ],
             false,
-            30,
+            Duration::from_secs(30),
             3,
-            Arc::new(AtomicBool::new(false)),
+            &AtomicBool::new(false),
             |item, _, _, _| match item.id.as_str() {
-                "ready" => Ok(vec![json!({"provenance":{"itemId":"ready"}})]),
+                "ready" => Ok(vec![candidate("ready")]),
                 "none" => Ok(Vec::new()),
                 _ => Err(crate::app_error!("metadata-unavailable")),
             },
@@ -442,7 +453,7 @@ mod tests {
         assert_eq!(
             value["outcomes"],
             json!([
-                {"status":"ready","itemId":"ready","candidates":[{"provenance":{"itemId":"ready"}}]},
+                {"status":"ready","itemId":"ready","candidates":[candidate("ready")]},
                 {"status":"missing","itemId":"missing"},
                 {"status":"no-candidates","itemId":"none"},
                 {"status":"failed","itemId":"failed","code":"metadata-unavailable"}
@@ -467,10 +478,10 @@ mod tests {
                 Ok(Some(item("ready"))),
             ],
             false,
-            30,
+            Duration::from_secs(30),
             1,
-            Arc::new(AtomicBool::new(false)),
-            |_, _, _, _| Ok(vec![json!({"candidate":true})]),
+            &AtomicBool::new(false),
+            |_, _, _, _| Ok(vec![candidate("ready")]),
         );
         let value = serde_json::to_value(response).expect("response JSON");
         assert_eq!(
@@ -478,7 +489,7 @@ mod tests {
             json!([
                 {"status":"failed","itemId":"corrupt","code":"invalid-stored-data"},
                 {"status":"missing","itemId":"missing"},
-                {"status":"ready","itemId":"ready","candidates":[{"candidate":true}]}
+                {"status":"ready","itemId":"ready","candidates":[candidate("ready")]}
             ])
         );
     }
@@ -495,15 +506,15 @@ mod tests {
             &ids,
             snapshots,
             false,
-            30,
+            Duration::from_secs(30),
             4,
-            Arc::new(AtomicBool::new(false)),
+            &AtomicBool::new(false),
             |_, _, _, _| {
                 let current = active.fetch_add(1, Ordering::SeqCst) + 1;
                 maximum.fetch_max(current, Ordering::SeqCst);
                 std::thread::sleep(Duration::from_millis(10));
                 active.fetch_sub(1, Ordering::SeqCst);
-                Ok(vec![json!({"candidate":true})])
+                Ok(vec![candidate("ready")])
             },
         );
         assert_eq!(response.counts.ready, 16);
@@ -522,13 +533,13 @@ mod tests {
             &ids,
             snapshots,
             false,
-            30,
+            Duration::from_secs(30),
             2,
-            Arc::clone(&canceled),
+            &canceled,
             |_, _, _, _| {
                 calls.fetch_add(1, Ordering::SeqCst);
                 canceled.store(true, Ordering::Release);
-                Ok(vec![json!({"candidate":true})])
+                Ok(vec![candidate("ready")])
             },
         );
         assert!(calls.load(Ordering::SeqCst) <= 2);

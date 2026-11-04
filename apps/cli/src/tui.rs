@@ -354,7 +354,7 @@ impl App {
                 metadata_candidates_for_item_at_cancellable(
                     item,
                     include_online,
-                    15,
+                    Duration::from_secs(15),
                     &library_root,
                     canceled,
                 )
@@ -1412,7 +1412,7 @@ fn draw_candidate_review(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) 
                 let backend = candidate
                     .provenance
                     .backend
-                    .as_deref()
+                    .map(|backend| backend.as_str())
                     .or(candidate.provenance.pattern.as_deref())
                     .unwrap_or("Takio");
                 if compact {

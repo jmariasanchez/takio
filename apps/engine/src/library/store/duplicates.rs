@@ -20,6 +20,14 @@ mod scan;
 use metadata::{apply_duplicate_metadata, write_duplicate_metadata};
 use scan::{canonical_pair, scan_duplicate_candidates_in, valid_pair, valid_review_token};
 
+struct SourceFormatRow {
+    path: String,
+    added_at: String,
+    provenance: String,
+    bytes: Option<i64>,
+    sha256: Option<String>,
+}
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum DuplicateSignal {
@@ -252,8 +260,7 @@ impl LibraryStore {
             .iter()
             .map(|format| format.format.as_str())
             .collect::<Vec<_>>();
-        let mut source_rows =
-            HashMap::<String, (String, String, String, Option<i64>, Option<String>)>::new();
+        let mut source_rows = HashMap::<String, SourceFormatRow>::new();
         let mut statement = transaction.prepare(
             "SELECT format,source_path,added_at,provenance,content_bytes,content_sha256
              FROM library_item_formats WHERE library_item_id=?1 ORDER BY position",
@@ -261,15 +268,17 @@ impl LibraryStore {
         for row in statement.query_map([&request.source_id], |row| {
             Ok((
                 row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, String>(3)?,
-                row.get::<_, Option<i64>>(4)?,
-                row.get::<_, Option<String>>(5)?,
+                SourceFormatRow {
+                    path: row.get(1)?,
+                    added_at: row.get(2)?,
+                    provenance: row.get(3)?,
+                    bytes: row.get(4)?,
+                    sha256: row.get(5)?,
+                },
             ))
         })? {
-            let row = row?;
-            source_rows.insert(row.0.clone(), (row.1, row.2, row.3, row.4, row.5));
+            let (format, row) = row?;
+            source_rows.insert(format, row);
         }
         drop(statement);
         let mut selected = Vec::new();
@@ -310,15 +319,15 @@ impl LibraryStore {
         let next_position = i64::try_from(target.formats.len())
             .map_err(|_| crate::app_error!("invalid-arguments"))?;
         for (index, format) in request.add_source_formats.iter().enumerate() {
-            let (path, added_at, provenance, bytes, sha) = source_rows
+            let row = source_rows
                 .get(format.as_str())
                 .ok_or_else(|| crate::app_error!("invalid-arguments"))?;
             transaction.execute(
                 "INSERT INTO library_item_formats
                  (library_item_id,format,source_path,added_at,provenance,position,content_bytes,content_sha256)
                  VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
-                params![request.target_id, format.as_str(), path, added_at, provenance,
-                    next_position + i64::try_from(index).map_err(|_| crate::app_error!("invalid-arguments"))?, bytes, sha],
+                params![request.target_id, format.as_str(), row.path, row.added_at, row.provenance,
+                    next_position + i64::try_from(index).map_err(|_| crate::app_error!("invalid-arguments"))?, row.bytes, row.sha256],
             )?;
         }
         transaction.execute(
