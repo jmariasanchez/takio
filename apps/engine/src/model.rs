@@ -247,6 +247,9 @@ pub fn derived_display_author(authors: &[BookAuthor]) -> Option<String> {
 pub struct LibraryPatch {
     #[serde(default, skip_serializing_if = "Patch::is_missing")]
     pub title: Patch<String>,
+    /// Input-only compatibility alias for existing JSON clients. The store
+    /// translates a scalar-only patch into one structured author and ignores it
+    /// whenever `authors` is present. Engine code never produces it.
     #[serde(default, skip_serializing_if = "Patch::is_missing")]
     pub author: Patch<String>,
     #[serde(default, skip_serializing_if = "Patch::is_missing")]
