@@ -1,6 +1,18 @@
 # `@takio/library-store-bun`
 
-Bun-only SQLite implementation of `LibraryStore`.
+Frozen Bun-only reference implementation of `LibraryStore`, retained for historical
+contract tests. It is not a supported runtime store and must not open production
+libraries. The Rust engine in `apps/engine` is the single owner of the production
+SQLite schema, migrations, and file-ownership policy. New schema changes belong
+there, not in this package. Existing root Bun gates exercise the frozen historical
+contract only, not cross-runtime parity. Removing this package or those gates
+requires an explicit product-owner decision.
+
+Rust's historical migration schemas live under
+`apps/engine/src/library/store/migration/reference_schemas`. They are checked-in,
+source-owned inputs and do not depend on this package or its fixtures at runtime
+or build time. The usage and schema notes below describe the frozen reference,
+not the current Rust engine's full behavior.
 
 ```ts
 const store = new BunSqliteLibraryStore(databasePath);
