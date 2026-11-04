@@ -11,6 +11,7 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 
+pub(crate) mod automatic_backup;
 mod library_location;
 #[cfg(all(test, unix))]
 mod preparation_tests;
@@ -184,7 +185,7 @@ pub enum Request {
     AutomaticBackupRun {
         config: crate::settings::automatic_backup::Config,
         now: u64,
-        reply: Sender<AppResult<crate::settings::automatic_backup::RunReport>>,
+        reply: Sender<AppResult<automatic_backup::RunReport>>,
     },
     OpenLibrary {
         directory: PathBuf,
@@ -390,7 +391,7 @@ fn worker_with_reader_scans(
                 ));
             }
             Request::AutomaticBackupRun { config, now, reply } => {
-                let _ = reply.send(crate::settings::automatic_backup::run(&store, config, now));
+                let _ = reply.send(automatic_backup::run(&store, config, now));
             }
             Request::RestoreBackupCopy {
                 source,

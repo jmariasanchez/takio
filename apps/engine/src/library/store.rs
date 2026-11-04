@@ -1488,7 +1488,19 @@ impl LibraryStore {
         source: &Path,
         destination: &Path,
     ) -> AppResult<RestoreReport> {
-        let destination = recovery::disjoint_destination(destination, &self.paths.root)?;
+        Self::restore_to_new_root(source, destination, &[&self.paths.root])
+    }
+
+    /// Restore only into a new directory disjoint from every protected library.
+    pub fn restore_to_new_root(
+        source: &Path,
+        destination: &Path,
+        protected: &[&Path],
+    ) -> AppResult<RestoreReport> {
+        let mut destination = destination.to_path_buf();
+        for root in protected {
+            destination = recovery::disjoint_destination(&destination, root)?;
+        }
         let paths = LibraryPaths::resolve(None, Some(&destination.join("library.sqlite")))?;
         recovery::restore(source, paths, true)
     }

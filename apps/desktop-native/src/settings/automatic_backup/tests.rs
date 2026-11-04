@@ -1,5 +1,7 @@
 use super::*;
+use crate::engine::automatic_backup::run;
 use takio::library::paths::LibraryPaths;
+use takio::library::store::LibraryStore;
 
 fn fixture() -> (tempfile::TempDir, LibraryStore, PathBuf, String) {
     let temp = tempfile::tempdir().unwrap();

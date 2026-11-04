@@ -1,6 +1,37 @@
 use super::*;
 use serde_json::Value;
 
+#[test]
+fn restore_to_new_root_checks_all_protected_roots_and_never_merges() {
+    let (temp, store, _) = fixture();
+    let backup = temp.path().join("backup");
+    store.backup(&backup).unwrap();
+    let other = temp.path().join("other-library");
+    fs::create_dir(&other).unwrap();
+    let protected = [store.paths().root.as_path(), other.as_path()];
+    let nested = other.join("restore");
+    assert_eq!(
+        LibraryStore::restore_to_new_root(&backup, &nested, &protected)
+            .unwrap_err()
+            .code(),
+        "invalid-arguments"
+    );
+    assert!(!nested.exists());
+    let existing = temp.path().join("existing");
+    fs::create_dir(&existing).unwrap();
+    assert_eq!(
+        LibraryStore::restore_to_new_root(&backup, &existing, &protected)
+            .unwrap_err()
+            .code(),
+        "destination-exists"
+    );
+    assert_eq!(fs::read_dir(&existing).unwrap().count(), 0);
+    let restored = temp.path().join("restored");
+    LibraryStore::restore_to_new_root(&backup, &restored, &protected).unwrap();
+    assert!(restored.join("library.sqlite").is_file());
+    assert!(store.paths().database.is_file());
+}
+
 fn fixture() -> (tempfile::TempDir, LibraryStore, String) {
     let temp = tempfile::tempdir().unwrap();
     let paths =

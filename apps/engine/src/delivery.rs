@@ -42,8 +42,8 @@ pub struct DeliveryOptions<'a> {
 
 pub fn reauthorize(destination: &Destination) -> AppResult<Destination> {
     let root = destination
-        .path
-        .parent()
+        .authorization_root
+        .as_deref()
         .ok_or_else(|| crate::app_error!("unknown-destination"))?;
     destinations::authorize(&destination.path, root)
 }
@@ -135,6 +135,30 @@ mod tests {
         paths::LibraryPaths,
     };
     use std::fs;
+
+    #[test]
+    fn reauthorization_uses_original_root_not_the_destinations_parent() {
+        let temp = tempfile::tempdir().unwrap();
+        let volumes = temp.path().join("Volumes");
+        let mount = volumes.join("Reader");
+        fs::create_dir_all(&mount).unwrap();
+        let mut destination = destinations::authorize(&mount, &volumes).unwrap();
+        assert!(reauthorize(&destination).is_ok());
+        let wire = serde_json::to_value(&destination).unwrap();
+        assert!(wire.get("authorizationRoot").is_none());
+        let decoded: Destination = serde_json::from_value(wire).unwrap();
+        assert_eq!(
+            reauthorize(&decoded).unwrap_err().code(),
+            "unknown-destination"
+        );
+        let outside = temp.path().join("elsewhere/Reader");
+        fs::create_dir_all(&outside).unwrap();
+        destination.path = outside;
+        assert_eq!(
+            reauthorize(&destination).unwrap_err().code(),
+            "unknown-destination"
+        );
+    }
 
     #[test]
     fn reviewed_send_rejects_changed_preference_and_path_without_writes() {

@@ -9,7 +9,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::small_file;
 use takio::error::{AppError, AppResult, ErrorCode};
-use takio::library::store::{BackupReport, LibraryStore};
 
 const SETTINGS_NAME: &str = ".takio-automatic-backup";
 const MAX_BYTES: usize = 16 * 1024;
@@ -23,13 +22,6 @@ pub struct Config {
     pub enabled: bool,
     pub destination: Option<PathBuf>,
     pub last_success: Option<u64>,
-}
-
-#[derive(Debug)]
-pub struct RunReport {
-    pub backup: BackupReport,
-    pub config: Config,
-    pub settings_error: Option<AppError>,
 }
 
 #[derive(Default)]
@@ -132,7 +124,7 @@ pub fn load(root: &Path) -> AppResult<Config> {
     })
 }
 
-fn save(root: &Path, config: &Config) -> AppResult<()> {
+pub(crate) fn save(root: &Path, config: &Config) -> AppResult<()> {
     let root = root.canonicalize()?;
     let path = root.join(SETTINGS_NAME);
     small_file::regular_or_missing(&path, ErrorCode::AutomaticBackupUnsafeSettings)?;
@@ -166,7 +158,7 @@ fn save(root: &Path, config: &Config) -> AppResult<()> {
     )
 }
 
-fn validate_destination(root: &Path, destination: &Path) -> AppResult<PathBuf> {
+pub(crate) fn validate_destination(root: &Path, destination: &Path) -> AppResult<PathBuf> {
     path_text(destination)?;
     let metadata = fs::symlink_metadata(destination).map_err(|error| {
         AppError::from_io(ErrorCode::AutomaticBackupDestinationUnavailable, error)
@@ -199,43 +191,6 @@ pub fn configure(root: &Path, destination: Option<PathBuf>) -> AppResult<Config>
     };
     save(root, &config)?;
     Ok(config)
-}
-
-pub fn run(store: &LibraryStore, mut config: Config, now: u64) -> AppResult<RunReport> {
-    if !config.enabled {
-        return Err(takio::app_error!("automatic-backup-disabled"));
-    }
-    let root = &store.paths().root;
-    let parent = validate_destination(
-        root,
-        config
-            .destination
-            .as_deref()
-            .ok_or_else(|| takio::app_error!("automatic-backup-invalid-settings"))?,
-    )?;
-    // Reserve a timestamp/random container exclusively. The engine itself reserves every
-    // entry in its new child directory, and never overwrites an existing recovery copy.
-    let container = tempfile::Builder::new()
-        .prefix(&format!("Takio-{now}-"))
-        .tempdir_in(&parent)?
-        .keep();
-    let destination = container.join("library");
-    let backup = match store.backup(&destination) {
-        Ok(backup) => backup,
-        Err(error) => {
-            // Only remove an empty container we created, never another writer's contents.
-            let _ = fs::remove_dir(&container);
-            return Err(error);
-        }
-    };
-    config.last_success = Some(now);
-    let settings_error = save(root, &config).err();
-    // A verified copy is success even when recording its timestamp fails.
-    Ok(RunReport {
-        backup,
-        config,
-        settings_error,
-    })
 }
 
 #[cfg(test)]

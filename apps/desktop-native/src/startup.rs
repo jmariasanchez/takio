@@ -91,27 +91,8 @@ pub fn restore_recovery(
     {
         protected.push(saved);
     }
-    for root in protected {
-        let root = resolved_location(&root)?;
-        if destination.starts_with(&root) || root.starts_with(&destination) {
-            return Err(takio::app_error!("invalid-arguments"));
-        }
-    }
-    // Reserve a new root exclusively. CLI restore may use an existing parent,
-    // but the recovery UI must never merge into one, including an empty folder.
-    std::fs::create_dir(&destination).map_err(|error| {
-        if error.kind() == std::io::ErrorKind::AlreadyExists {
-            takio::app_error!("destination-exists")
-        } else {
-            error.into()
-        }
-    })?;
-    let paths = LibraryPaths::resolve(None, Some(&destination.join("library.sqlite")))?;
-    if let Err(error) = LibraryStore::restore_backup(source, paths) {
-        // Remove only the empty root reserved here, never another writer's files.
-        let _ = std::fs::remove_dir(&destination);
-        return Err(error);
-    }
+    let protected = protected.iter().map(PathBuf::as_path).collect::<Vec<_>>();
+    LibraryStore::restore_to_new_root(source, &destination, &protected)?;
     open_recovery(destination, preference)
 }
 

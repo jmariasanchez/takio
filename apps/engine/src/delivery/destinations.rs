@@ -44,6 +44,9 @@ pub struct Destination {
     pub kind: DestinationKind,
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub features: Vec<DestinationFeature>,
+    /// Local discovery context, never accepted from or exposed in wire JSON.
+    #[serde(skip)]
+    pub authorization_root: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -95,8 +98,11 @@ struct Manifest {
 }
 
 pub fn list(root: &Path) -> AppResult<Vec<Destination>> {
+    let root = root
+        .canonicalize()
+        .map_err(|_| crate::app_error!("destination-unavailable"))?;
     let mut destinations = Vec::new();
-    let entries = fs::read_dir(root).map_err(|_| crate::app_error!("destination-unavailable"))?;
+    let entries = fs::read_dir(&root).map_err(|_| crate::app_error!("destination-unavailable"))?;
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();
         let Ok(path) = entry.path().canonicalize() else {
@@ -132,6 +138,7 @@ pub fn list(root: &Path) -> AppResult<Vec<Destination>> {
             path,
             kind,
             features,
+            authorization_root: Some(root.clone()),
         });
     }
     destinations.sort_by(|left, right| left.id.cmp(&right.id));
@@ -677,6 +684,7 @@ mod tests {
     fn manifest_destination(path: &Path) -> Destination {
         Destination {
             id: "temporary-reader".to_owned(),
+            authorization_root: None,
             name: "Temporary reader".to_owned(),
             path: path.to_path_buf(),
             kind: DestinationKind::Kindle,
@@ -878,6 +886,7 @@ mod tests {
         fs::write(&source, b"epub bytes").expect("write source");
         let destination = Destination {
             id: "Kobo Reader".to_owned(),
+            authorization_root: None,
             name: "Kobo Reader".to_owned(),
             path: mount.clone(),
             kind: DestinationKind::Kobo,

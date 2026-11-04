@@ -200,6 +200,7 @@ fn library_switch_guards_edits_operations_loading_and_reviews(cx: &mut TestAppCo
                 state.session.activity = Activity::ReviewingSend(SendPreview {
                     destination: takio::delivery::destinations::Destination {
                         id: "test".into(),
+                        authorization_root: None,
                         name: "test".into(),
                         path: "/unused".into(),
                         kind: takio::delivery::destinations::DestinationKind::Generic,

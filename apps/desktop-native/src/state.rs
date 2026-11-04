@@ -1596,6 +1596,7 @@ mod tests {
             let item = state.session.items[0].clone();
             let destination = Destination {
                 id: "unused".into(),
+                authorization_root: None,
                 name: "unused".into(),
                 path: "/unused".into(),
                 kind: takio::delivery::destinations::DestinationKind::Generic,
