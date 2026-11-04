@@ -454,7 +454,7 @@ fn worker_with_reader_scans(
                         &mut store,
                         &preview,
                         backend.clone(),
-                        std::time::Duration::from_secs(120),
+                        takio::conversion::prepare::PREPARATION_TIMEOUT,
                     ),
                     None => preparation::prepare(&mut store, &preview),
                 };

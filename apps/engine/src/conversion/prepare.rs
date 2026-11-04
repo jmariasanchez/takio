@@ -10,7 +10,7 @@ use crate::format::FormatId;
 use crate::library::model::LibraryItem;
 use crate::library::store::LibraryStore;
 
-const PREPARATION_TIMEOUT: Duration = Duration::from_secs(120);
+pub const PREPARATION_TIMEOUT: Duration = Duration::from_secs(120);
 
 #[derive(Clone, Debug)]
 pub struct PreparationPreview {

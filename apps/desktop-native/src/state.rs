@@ -1296,7 +1296,7 @@ impl LibraryState {
             return;
         }
         self.session.activity = Activity::Running(Operation::Mutation);
-        self.set_status("Preparing an AZW3 copy locally (120-second conversion limit). EPUB kept. Nothing sent.".into(), false, cx);
+        self.set_status(format!("Preparing an AZW3 copy locally ({}-second conversion limit). EPUB kept. Nothing sent.", takio::conversion::prepare::PREPARATION_TIMEOUT.as_secs()), false, cx);
         let receiver = self
             .engine
             .request(|reply| Request::PrepareReviewed { preview, reply });

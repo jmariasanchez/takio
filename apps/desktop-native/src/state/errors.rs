@@ -24,7 +24,7 @@ pub fn humanize_error(code: takio::error::ErrorCode) -> String {
         ItemTrashed => "This book is in Trash. Restore it to the library, then review the operation again.".into(),
         BackendUnavailable => "Local preparation needs Calibre's ebook-convert. Install Calibre, then cancel and review preparation again. Nothing was converted or sent.".into(),
         ConversionFailed => "AZW3 preparation failed. The EPUB was kept. Check that the EPUB opens and the local converter works, then retry.".into(),
-        ConversionTimeout => "AZW3 preparation exceeded the 120-second conversion limit. The EPUB was kept. Check the source and local converter before retrying.".into(),
+        ConversionTimeout => format!("AZW3 preparation exceeded the {}-second conversion limit. The EPUB was kept. Check the source and local converter before retrying.", takio::conversion::prepare::PREPARATION_TIMEOUT.as_secs()),
         ArtifactInvalid => "The converted file could not be verified. The EPUB was kept. Check the source and local converter before retrying.".into(),
         FormatNotFound => "That book has no file to send".into(),
         NoCompatibleFormat => "No file this reader can open. KOReader reads EPUB, PDF, MOBI, AZW3, TXT and CBZ. A stock Kindle needs AZW3, MOBI, PDF or TXT.".into(),
