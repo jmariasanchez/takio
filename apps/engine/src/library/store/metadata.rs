@@ -191,11 +191,20 @@ pub(super) fn normalize_published_date(value: String) -> AppResult<String> {
         7 => {
             value.as_bytes().get(4) == Some(&b'-')
                 && value[..4].bytes().all(|byte| byte.is_ascii_digit())
+                && value[5..].bytes().all(|byte| byte.is_ascii_digit())
                 && value[5..]
                     .parse::<u32>()
                     .is_ok_and(|month| (1..=12).contains(&month))
         }
-        10 => NaiveDate::parse_from_str(value, "%Y-%m-%d").is_ok(),
+        10 => {
+            value.bytes().enumerate().all(|(index, byte)| {
+                if index == 4 || index == 7 {
+                    byte == b'-'
+                } else {
+                    byte.is_ascii_digit()
+                }
+            }) && NaiveDate::parse_from_str(value, "%Y-%m-%d").is_ok()
+        }
         _ => false,
     };
     if valid {
@@ -243,4 +252,40 @@ pub(super) fn replace_metadata(transaction: &Transaction<'_>, item: &LibraryItem
     }
     transaction.execute("DELETE FROM tags WHERE NOT EXISTS(SELECT 1 FROM library_item_tags WHERE tag_normalized_name=tags.normalized_name)", [])?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn published_dates_accept_only_calendar_valid_ascii_forms() {
+        for value in ["2024", "2024-01", "2024-12", "2024-02-29", " 2024-01-02 "] {
+            assert_eq!(
+                normalize_published_date(value.into()).unwrap(),
+                value.trim()
+            );
+        }
+        for value in [
+            "2024-+1",
+            "2024-13",
+            "2024-00",
+            "2024-02-30",
+            "2023-02-29",
+            "2024-1",
+            "2024-1-02",
+            "2024-01-2",
+            "\u{ff12}\u{ff10}\u{ff12}\u{ff14}",
+            "2024- \u{e9}",
+            "2024-01- 2",
+            "",
+        ] {
+            let error = normalize_published_date(value.into()).expect_err(value);
+            assert_eq!(
+                error.kind(),
+                crate::error::ErrorCode::InvalidArguments,
+                "{value}"
+            );
+        }
+    }
 }

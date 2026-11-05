@@ -44,6 +44,59 @@ fn failure_code(output: &[u8]) -> String {
 }
 
 #[test]
+fn invalid_publication_date_does_not_commit_other_metadata_changes() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("library");
+    fs::create_dir(&root).unwrap();
+    let database = root.join("library.sqlite");
+    let source = temp.path().join("Original.epub");
+    fs::write(&source, b"unchanged source book").unwrap();
+    let id = add_book(&database, &source);
+    let output = cargo_bin_cmd!("takio")
+        .args(["library", "update", "--db"])
+        .arg(&database)
+        .args([
+            "--id",
+            &id,
+            "--patch-json",
+            r#"{"publishedDate":"2024-02-29"}"#,
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let connection = Connection::open(&database).unwrap();
+    let metadata = || {
+        connection
+            .query_row(
+                "SELECT title, published_date, updated_at FROM library_items WHERE id=?1",
+                [&id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                },
+            )
+            .unwrap()
+    };
+    let before = metadata();
+    for date in ["2024-+1", "2024-13", "2024-02-30", "2024-01- 2"] {
+        let patch = json!({"title": "must not commit", "publishedDate": date});
+        let output = cargo_bin_cmd!("takio")
+            .args(["library", "update", "--db"])
+            .arg(&database)
+            .args(["--id", &id, "--patch-json", &patch.to_string()])
+            .output()
+            .unwrap();
+        assert!(!output.status.success(), "{date}: {output:?}");
+        assert_eq!(failure_code(&output.stdout), "invalid-arguments");
+        assert_eq!(metadata(), before, "{date}");
+    }
+    assert_eq!(fs::read(source).unwrap(), b"unchanged source book");
+}
+
+#[test]
 fn capabilities_identify_the_native_tui() {
     let output = cargo_bin_cmd!("takio")
         .arg("capabilities")
