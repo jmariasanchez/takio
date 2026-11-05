@@ -157,7 +157,7 @@ jobs:
           echo "value=$mode" >> "$GITHUB_OUTPUT"
       - name: Import supplied Developer ID certificate
         if: steps.mode.outputs.value == 'distribution'
-        uses: apple-actions/import-codesign-certs@7abe6dfe88f6bf6b1fa06e6a5704a2605d897418 # v7
+        uses: apple-actions/import-codesign-certs@4cfe2fe1e08914305eba4f8bd021d9544e2e8040 # v7
         with:
           p12-file-base64: ${{ secrets.APPLE_CERTIFICATE }}
           p12-password: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
