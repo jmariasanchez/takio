@@ -92,7 +92,10 @@ fn corrupt_default_has_recovery_choices_and_every_cancel_is_read_only(cx: &mut T
             view.message
                 .starts_with("Operation failed: Opening your library...")
         );
-        assert!(view.message.contains("The library could not be read"));
+        assert!(
+            view.message
+                .contains("The library operation could not be completed.")
+        );
     });
     assert!(f.view.update(cx, |view, cx| view.request_close(cx)));
     assert!(!f.preference.exists());

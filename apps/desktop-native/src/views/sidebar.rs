@@ -574,7 +574,7 @@ mod tests {
         assert!(!shelf_summary(Some(&Ok(shelf(false, 1, 2)))).contains("finished"));
         assert_eq!(
             shelf_summary(Some(&Err(takio::app_error!("storage-unavailable")))),
-            "Could not check books. The library could not be read"
+            "Could not check books. The library operation could not be completed."
         );
         assert_eq!(shelf_summary(None), "Refresh to check books");
     }
