@@ -247,13 +247,20 @@ fn convert_inner(
         let _ = fs::remove_file(&temporary);
         return Err(crate::app_error!("conversion-failed"));
     }
-    let crate::fingerprint::Fingerprint { bytes, sha256 } =
-        crate::fingerprint::hash_file(&temporary).map_err(crate::io_error!("artifact-invalid"))?;
-    if output.exists() {
-        let _ = fs::remove_file(&temporary);
-        return Err(crate::app_error!("output-file-exists"));
-    }
-    fs::rename(&temporary, output).map_err(crate::io_error!("publication-failed"))?;
+    let publication = (|| {
+        let fingerprint = crate::fingerprint::hash_file(&temporary)
+            .map_err(crate::io_error!("artifact-invalid"))?;
+        fs::hard_link(&temporary, output).map_err(|error| {
+            if error.kind() == std::io::ErrorKind::AlreadyExists {
+                crate::app_error!("output-file-exists")
+            } else {
+                AppError::from_io(crate::error::ErrorCode::PublicationFailed, error)
+            }
+        })?;
+        Ok::<_, AppError>(fingerprint)
+    })();
+    let _ = fs::remove_file(&temporary);
+    let crate::fingerprint::Fingerprint { bytes, sha256 } = publication?;
     Ok(Artifact {
         path: output.to_path_buf(),
         bytes,
@@ -265,7 +272,157 @@ fn convert_inner(
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+    use crate::error::ErrorCode;
     use std::os::unix::fs::PermissionsExt;
+
+    fn fake_conversion(
+        directory: &Path,
+        output: &Path,
+        body: &str,
+        timeout: Duration,
+    ) -> AppResult<Artifact> {
+        let input = directory.join("input.txt");
+        fs::write(&input, "source book").unwrap();
+        let backend = directory.join("ebook-convert");
+        fs::write(&backend, format!("#!/bin/sh\nset -eu\n{body}\n")).unwrap();
+        fs::set_permissions(&backend, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::write(directory.join(".takio-convert-other.epub"), "other attempt").unwrap();
+        let result = convert_with_backend(
+            &input,
+            output,
+            FormatId::Epub,
+            ConversionProfile::Default,
+            timeout,
+            &backend,
+        );
+        assert_eq!(fs::read(&input).unwrap(), b"source book");
+        assert_eq!(
+            fs::read(directory.join(".takio-convert-other.epub")).unwrap(),
+            b"other attempt"
+        );
+        let staging: Vec<_> = fs::read_dir(directory)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .filter(|name| name.to_string_lossy().starts_with(".takio-convert-"))
+            .collect();
+        assert_eq!(staging, [".takio-convert-other.epub"]);
+        result
+    }
+
+    #[test]
+    fn conversion_publishes_correct_bytes_and_hash_without_staging() {
+        let directory = tempfile::tempdir().unwrap();
+        let output = directory.path().join("output.epub");
+        let artifact = fake_conversion(
+            directory.path(),
+            &output,
+            "printf abc > \"$2\"",
+            Duration::from_secs(5),
+        )
+        .unwrap();
+        assert_eq!(fs::read(&output).unwrap(), b"abc");
+        assert_eq!(artifact.path, output);
+        assert_eq!(artifact.bytes, 3);
+        assert_eq!(
+            artifact.sha256,
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+    }
+
+    #[test]
+    fn conversion_preserves_output_created_during_backend_work() {
+        let directory = tempfile::tempdir().unwrap();
+        let output = directory.path().join("output.epub");
+        let error = fake_conversion(
+            directory.path(),
+            &output,
+            "printf converted > \"$2\"\nprintf competing > \"${1%/*}/output.epub\"",
+            Duration::from_secs(5),
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), ErrorCode::OutputFileExists);
+        assert_eq!(fs::read(output).unwrap(), b"competing");
+    }
+
+    #[test]
+    fn conversion_preserves_existing_and_racing_dangling_symlinks() {
+        for racing in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let output = directory.path().join("output.epub");
+            if !racing {
+                std::os::unix::fs::symlink("missing.epub", &output).unwrap();
+            }
+            let body = if racing {
+                "printf converted > \"$2\"\nln -s missing.epub \"${1%/*}/output.epub\""
+            } else {
+                "printf converted > \"$2\""
+            };
+            let error = fake_conversion(directory.path(), &output, body, Duration::from_secs(5))
+                .unwrap_err();
+            assert_eq!(error.kind(), ErrorCode::OutputFileExists);
+            assert_eq!(fs::read_link(output).unwrap(), Path::new("missing.epub"));
+            assert!(!directory.path().join("missing.epub").exists());
+        }
+    }
+
+    #[test]
+    fn conversion_cleans_staging_after_backend_failure_and_timeout() {
+        for (body, timeout, expected) in [
+            (
+                "printf partial > \"$2\"\nexit 1",
+                Duration::from_secs(5),
+                ErrorCode::ConversionFailed,
+            ),
+            (
+                "printf partial > \"$2\"\nwhile :; do :; done",
+                Duration::from_millis(250),
+                ErrorCode::ConversionTimeout,
+            ),
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let output = directory.path().join("output.epub");
+            let error = fake_conversion(directory.path(), &output, body, timeout).unwrap_err();
+            assert_eq!(error.kind(), expected);
+            assert!(!output.exists());
+        }
+    }
+
+    #[test]
+    fn conversion_cleans_staging_after_publication_failure() {
+        let directory = tempfile::tempdir().unwrap();
+        let output = directory.path().join(format!("{}.epub", "x".repeat(300)));
+        let error = fake_conversion(
+            directory.path(),
+            &output,
+            "printf converted > \"$2\"",
+            Duration::from_secs(5),
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), ErrorCode::PublicationFailed);
+        assert!(!output.exists());
+    }
+
+    #[test]
+    fn conversion_cleans_staging_after_hash_failure() {
+        let directory = tempfile::tempdir().unwrap();
+        let probe = directory.path().join("unreadable");
+        fs::write(&probe, "probe").unwrap();
+        fs::set_permissions(&probe, fs::Permissions::from_mode(0o000)).unwrap();
+        if fs::File::open(&probe).is_ok() {
+            // Privileged users can bypass the permissions used to force a hash error.
+            return;
+        }
+        let output = directory.path().join("output.epub");
+        let error = fake_conversion(
+            directory.path(),
+            &output,
+            "printf converted > \"$2\"\nchmod 000 \"$2\"",
+            Duration::from_secs(5),
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), ErrorCode::ArtifactInvalid);
+        assert!(!output.exists());
+    }
 
     fn script(directory: &Path, marker: &str) -> PathBuf {
         fs::create_dir_all(directory).unwrap();
