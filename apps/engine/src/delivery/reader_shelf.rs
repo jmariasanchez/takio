@@ -181,9 +181,12 @@ impl HashCache {
                     .sha256
                     .bytes()
                     .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'));
+            if !valid {
+                continue;
+            }
             let modified =
                 UNIX_EPOCH.checked_add(Duration::new(entry.modified_secs, entry.modified_nanos));
-            if valid && let Some(modified) = modified {
+            if let Some(modified) = modified {
                 cache.entries.insert(
                     PathBuf::from(entry.path),
                     (
@@ -928,6 +931,29 @@ mod tests {
             .filter(|name| name.ends_with(".tmp"))
             .collect();
         assert!(staged.is_empty(), "{staged:?}");
+    }
+
+    #[test]
+    fn cache_ignores_invalid_timestamps_before_constructing_duration() {
+        let directory = tempfile::tempdir().unwrap();
+        let entry = |seconds, nanos| {
+            serde_json::json!({
+                "path": "cached-book.epub", "bytes": 13,
+                "modifiedSecs": seconds, "modifiedNanos": nanos, "sha256": "a".repeat(64),
+            })
+        };
+        for (seconds, nanos) in [
+            (u64::MAX, 1_000_000_000),
+            (u64::MAX, u32::MAX),
+            (0, 1_000_000_000),
+        ] {
+            let body = serde_json::json!({"version": 1, "entries": [entry(seconds, nanos)]});
+            fs::write(directory.path().join(HASH_CACHE_FILE), body.to_string()).unwrap();
+            assert!(HashCache::load(directory.path()).entries.is_empty());
+        }
+        let body = serde_json::json!({"version": 1, "entries": [entry(1, 999_999_999)]});
+        fs::write(directory.path().join(HASH_CACHE_FILE), body.to_string()).unwrap();
+        assert_eq!(HashCache::load(directory.path()).entries.len(), 1);
     }
 
     #[test]
