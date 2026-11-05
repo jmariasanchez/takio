@@ -18,14 +18,15 @@ pub fn failure(code: ErrorCode) -> Value {
 }
 
 /// Failure envelope for an engine error. Adds a stable, path-free `reason`
-/// only for the actionable OS categories a caller can fix: `storage-full` and
-/// `permission-denied`. Other io kinds are omitted rather than guessed.
+/// only for actionable storage categories: `storage-full`, `permission-denied`,
+/// and `storage-busy`. Other io kinds are omitted rather than guessed.
 #[must_use]
 pub fn app_failure(error: &AppError) -> Value {
     let mut value = failure(error.kind());
     let reason = match error.io_kind() {
         Some(io::ErrorKind::StorageFull) => Some("storage-full"),
         Some(io::ErrorKind::PermissionDenied) => Some("permission-denied"),
+        Some(io::ErrorKind::WouldBlock) => Some("storage-busy"),
         _ => None,
     };
     if let Some(reason) = reason {
@@ -80,6 +81,7 @@ mod tests {
         for (kind, reason) in [
             (io::ErrorKind::StorageFull, json!("storage-full")),
             (io::ErrorKind::PermissionDenied, json!("permission-denied")),
+            (io::ErrorKind::WouldBlock, json!("storage-busy")),
             (io::ErrorKind::NotFound, Value::Null),
         ] {
             let error = AppError::from_io(
@@ -91,6 +93,23 @@ mod tests {
             assert_eq!(value["error"]["reason"], reason);
             assert!(!value.to_string().contains("private"));
         }
+    }
+
+    #[test]
+    fn sqlite_write_failure_reaches_redacted_cli_envelope() {
+        let connection = rusqlite::Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch("CREATE TABLE private_books (title TEXT); PRAGMA query_only = ON;")
+            .unwrap();
+        let error = connection
+            .execute("INSERT INTO private_books VALUES ('private title')", [])
+            .unwrap_err();
+        assert_eq!(
+            app_failure(&AppError::from(error)),
+            json!({"ok": false, "error": {
+                "code": "storage-unavailable", "reason": "permission-denied"
+            }})
+        );
     }
 
     #[test]

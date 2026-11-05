@@ -44,6 +44,9 @@ fn with_io_hint(message: String, error: &takio::error::AppError) -> String {
         Some(std::io::ErrorKind::PermissionDenied) => {
             format!("{message} Permission was denied. Check access permissions and retry.")
         }
+        Some(std::io::ErrorKind::WouldBlock) => {
+            format!("{message} Storage is busy. Wait for other operations to finish and retry.")
+        }
         _ => message,
     }
 }
@@ -54,6 +57,7 @@ mod io_tests {
     fn actionable_io_messages_keep_private_details_redacted() {
         for (kind, expected) in [
             (std::io::ErrorKind::StorageFull, "disk is full"),
+            (std::io::ErrorKind::WouldBlock, "Storage is busy"),
             (
                 std::io::ErrorKind::PermissionDenied,
                 "Permission was denied",
@@ -91,7 +95,7 @@ pub fn humanize_error(code: takio::error::ErrorCode) -> String {
         InvalidRequest | MethodNotAllowed | MissingFile | ResponseTooLarge | Unauthorized => "The content server could not complete that request. Check access and request details.".into(),
         OperationInProgress => "Finish the current operation first".into(),
         ReaderScanUnavailable => "Reader scanning could not start. Restart Takio to retry. Your library is still available.".into(),
-        StorageUnavailable => "The library could not be read".into(),
+        StorageUnavailable => "The library operation could not be completed.".into(),
         UnsupportedFormat => "That file format is not supported".into(),
         NotFound => "That book is no longer in the library".into(),
         DestinationUnavailable | UnknownDestination => "The reader is no longer available. Reconnect it with a data-capable USB cable. It reappears in a moment, or choose Refresh readers, then try again.".into(),

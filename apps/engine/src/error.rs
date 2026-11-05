@@ -212,6 +212,7 @@ impl AppError {
         }
     }
 
+    /// Redacted filesystem or equivalent SQLite failure category, when known.
     #[must_use]
     pub const fn io_kind(&self) -> Option<std::io::ErrorKind> {
         self.io_kind
@@ -236,8 +237,24 @@ impl AppError {
 pub type AppResult<T> = Result<T, AppError>;
 
 impl From<rusqlite::Error> for AppError {
-    fn from(_: rusqlite::Error) -> Self {
-        Self::new(ErrorCode::StorageUnavailable)
+    fn from(error: rusqlite::Error) -> Self {
+        use rusqlite::ErrorCode as SqliteCode;
+        use std::io::ErrorKind;
+
+        let io_kind = match error.sqlite_error_code() {
+            Some(SqliteCode::DiskFull) => Some(ErrorKind::StorageFull),
+            Some(SqliteCode::ReadOnly | SqliteCode::PermissionDenied) => {
+                Some(ErrorKind::PermissionDenied)
+            }
+            Some(SqliteCode::DatabaseBusy | SqliteCode::DatabaseLocked) => {
+                Some(ErrorKind::WouldBlock)
+            }
+            _ => None,
+        };
+        Self {
+            io_kind,
+            ..Self::new(ErrorCode::StorageUnavailable)
+        }
     }
 }
 
@@ -284,6 +301,95 @@ mod tests {
             assert!(!format!("{explicit:?}").contains("private"));
         }
         assert_eq!(AppError::new(ErrorCode::InvalidArguments).io_kind(), None);
+    }
+
+    fn assert_sqlite_category(error: rusqlite::Error, kind: std::io::ErrorKind) {
+        let error = AppError::from(error);
+        assert_eq!(error.kind(), ErrorCode::StorageUnavailable);
+        assert_eq!(error.io_kind(), Some(kind));
+        assert_eq!(error.exit_code(), 1);
+        assert_eq!(error.to_string(), "storage-unavailable");
+        assert!(!format!("{error:?}").contains("private"));
+    }
+
+    #[test]
+    fn sqlite_full_database_preserves_storage_full_category() {
+        let connection = rusqlite::Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch("PRAGMA max_page_count = 2; CREATE TABLE private_books (content BLOB);")
+            .unwrap();
+        let error = connection
+            .execute("INSERT INTO private_books VALUES (zeroblob(65536))", [])
+            .unwrap_err();
+        assert_eq!(
+            error.sqlite_error_code(),
+            Some(rusqlite::ErrorCode::DiskFull)
+        );
+        assert_sqlite_category(error, std::io::ErrorKind::StorageFull);
+    }
+
+    #[test]
+    fn sqlite_readonly_database_preserves_permission_category() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("private-library.sqlite");
+        let connection = rusqlite::Connection::open(&path).unwrap();
+        connection
+            .execute("CREATE TABLE private_books (title TEXT)", [])
+            .unwrap();
+        drop(connection);
+        let connection =
+            rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+                .unwrap();
+        let error = connection
+            .execute("INSERT INTO private_books VALUES ('private title')", [])
+            .unwrap_err();
+        assert_eq!(
+            error.sqlite_error_code(),
+            Some(rusqlite::ErrorCode::ReadOnly)
+        );
+        assert_sqlite_category(error, std::io::ErrorKind::PermissionDenied);
+    }
+
+    #[test]
+    fn sqlite_busy_database_preserves_retryable_category() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("private-library.sqlite");
+        let first = rusqlite::Connection::open(&path).unwrap();
+        let second = rusqlite::Connection::open(&path).unwrap();
+        second.busy_timeout(std::time::Duration::ZERO).unwrap();
+        first.execute_batch("BEGIN IMMEDIATE").unwrap();
+        let error = second.execute_batch("BEGIN IMMEDIATE").unwrap_err();
+        assert_eq!(
+            error.sqlite_error_code(),
+            Some(rusqlite::ErrorCode::DatabaseBusy)
+        );
+        assert_sqlite_category(error, std::io::ErrorKind::WouldBlock);
+    }
+
+    #[test]
+    fn sqlite_categories_redact_messages_without_guessing_other_failures() {
+        for (code, expected) in [
+            (
+                rusqlite::ffi::SQLITE_PERM,
+                Some(std::io::ErrorKind::PermissionDenied),
+            ),
+            (
+                rusqlite::ffi::SQLITE_LOCKED,
+                Some(std::io::ErrorKind::WouldBlock),
+            ),
+            (rusqlite::ffi::SQLITE_CORRUPT, None),
+            (rusqlite::ffi::SQLITE_CANTOPEN, None),
+        ] {
+            let error = AppError::from(rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(code),
+                Some("private database path".into()),
+            ));
+            assert_eq!(error.io_kind(), expected);
+            assert_eq!(error.kind(), ErrorCode::StorageUnavailable);
+            assert!(!format!("{error:?}").contains("private"));
+        }
+        let error = AppError::from(rusqlite::Error::QueryReturnedNoRows);
+        assert_eq!(error.io_kind(), None);
     }
 
     #[test]
