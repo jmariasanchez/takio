@@ -415,6 +415,82 @@ target. Scores rose for abstraction fitness (80 to 87), package organization
 (80 to 86) and incomplete migration (76 to 80), and design coherence recovered
 to 82. API surface coherence (82.5), contract coherence (82.5), error
 consistency (79), low-level elegance (81) and test strategy (80) are now the
-lowest. No dimension landed exactly on the target. The review queued 140 new
-findings. Next is to work the lowest dimensions first, using the same
-audit-before-resolve rule.
+lowest. No dimension landed exactly on the target. The review left 140 total
+open findings, including carried-over items. Next is to work concrete defects
+in the lowest dimensions first, resolving only findings supported by inspected
+code and reproducible acceptance evidence.
+
+## Sixth implementation round: November 5
+
+Started from clean `703d948`, strict **84.4**, with 140 open review findings.
+Selected five concrete correctness or validation defects rather than changing
+subjective assessments. The coordinator inspected every patch and exercised the
+integrated checks. This round did not use independent reviewers or a new blind
+assessment.
+
+- `4f448c6`: corrected the ignored-benchmark CI allowlist after the import module
+  rename. Executing the exact workflow shell block reproduced rejection of
+  `import/scan.rs` before the change and passed afterward. Approved paths and
+  reasons remain narrow, and no tests or CI gates were disabled.
+- `57cc375`: validates hash-cache entries before constructing a duration. A
+  temporary JSON fixture reproduced the overflow panic with maximum seconds and
+  invalid nanoseconds. The regression now rejects those entries while retaining
+  a valid boundary timestamp. No physical reader was accessed.
+- `8473c04`: rejects noncanonical publication dates such as `2024-+1` and
+  space-padded day fields. Table-driven regressions cover valid partial dates,
+  leap days, invalid ranges and non-ASCII input. An actual CLI test proves a
+  rejected combined title/date patch preserves stored metadata and source bytes.
+- `e5605d1`: SQLite disk-full, read-only/permission and busy/locked failures retain
+  actionable redacted categories and the stable `storage-unavailable` wire code.
+  Real full, read-only and locked-connection errors failed the new tests before
+  the fix and pass afterward. CLI envelopes and native messages consume the
+  categories without retaining private paths or database error text. Generic
+  wording now describes an operation failure rather than incorrectly claiming
+  every failed write was a read.
+- `d2966fe`: conversion publication uses no-clobber linking and attempts cleanup
+  after hashing or publication fails. Fake-backend regressions cover competing
+  output, existing/racing dangling symlinks, output hash, backend failure,
+  timeout, publication failure and hash failure. Original bytes and another
+  attempt's staging file remain intact. The permission-based hash-failure case
+  returns early for privileged users who can bypass file permissions.
+- `fdc761e`: updates two exact native UI assertions for the intentional storage
+  wording change. The first full test run caught both stale expectations. The
+  corrected run passes without weakening their recovery or reader-summary checks.
+
+Final reproducible checks, with no dependency downloads:
+
+```sh
+CARGO_NET_OFFLINE=true CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=0 bash scripts/check-native-macos.sh
+CARGO_NET_OFFLINE=true CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=0 bash scripts/bench-desktop-native.sh --interactions
+git diff --check
+```
+
+The first parallel native Clippy attempt stopped progressing and was cancelled.
+The final serial integrated run passes formatting, strict workspace all-target
+Clippy, **678 tests** with the same **3 pre-existing ignored tests**,
+the native release-size gate, and bundle/release-script self-tests. The release
+binary is **11,895,024 bytes**. The existing `block 0.1.6` future-incompatibility
+notice remains. This is not signing or notarization of a distributed build.
+
+The benchmark uses five real GUI processes and a disposable 10,000-book library.
+All 100 state interactions are correct and all budgets pass. Median first paint,
+first query and RSS are **101.849 ms / 165.544 ms / 126,352 KiB**. Matching and
+clearing search settlement p95 are **21.724 / 27.281 ms**. Sort dispatch p95 is
+**0.072 ms**, and select-all/reload settlement p95 is **10.211 ms**. These are
+state-dispatch-to-settlement checks, not hardware-input-to-paint measurements.
+Fake converters and temporary reader fixtures do not prove Calibre or physical
+Kindle compatibility.
+
+Only the five matching findings were resolved after validation. Stored review
+state is now **323 fixed, 135 open, 1 wontfix**. Commit evidence was recorded in
+Desloppify. An ordinary rescan refused to run with 135 queued items remaining.
+The queue was not reset or bypassed, and no new subjective scores were imported.
+The last recorded strict score remains **84.4**, below **85**, not a fresh
+post-change assessment.
+
+Next concrete candidates include replacement-send publication safety,
+attachment publication cleanup after database failure, and Trash search/filter
+semantics. The broader multi-site staging-cleanup issue remains open because
+this slice only fixes conversion. Frozen TypeScript ownership decisions also
+remain open. All commits are local. No real libraries or reader hardware were
+modified, and nothing was pushed.
